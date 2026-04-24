@@ -253,7 +253,49 @@ dsl.selectOne().from(inlined).where(snapshotRange(beginSnap, endSnap, snapshotId
 
 ### Transaction retry: `ctx.transaction(...)` vs. bespoke loop
 
-**Decision: keep the bespoke loop.** Reasons below — written up so future-us
+**Context — what upstream does.** Confirmed by reading the C++ ducklake extension
+at `duckdb/ducklake@main`:
+
+- **Optimistic, app-level, same shape as ours.** Default isolation, compute
+  `snapshot_id = MAX(snapshot_id) + 1` in the app, INSERT into `ducklake_snapshot`
+  (PK on `snapshot_id`), catch PK/unique/"conflict"/"concurrent" errors, retry.
+  Source: `src/storage/ducklake_transaction.cpp:FlushChanges()` (lines 2515–2615)
+  and `RetryOnError()` (2498–2513). No `SET TRANSACTION ISOLATION`, no `FOR
+  UPDATE`, no `pg_advisory_lock`, no `ON CONFLICT DO UPDATE`.
+- **Postgres catalog path is identical to DuckDB / SQLite.**
+  `src/metadata_manager/postgres_metadata_manager.cpp` dispatches through DuckDB's
+  `postgres_execute` CALL with zero isolation tweaks. Postgres-specific code is
+  limited to type mapping / BLOB reinterpretation.
+- **Internal retry loop.** Up to `ducklake_max_retry_count` (default 10) with
+  exponential backoff (`retry_wait_ms=100`, `retry_backoff=1.5`), lines 2520–2533
+  and 2597–2604. Surfaces `"Failed to commit DuckLake transaction. Exceeded the
+  maximum retry count..."` only after exhaustion.
+- **Logical conflict check after winning the PK race.** Even once the INSERT
+  succeeds, upstream runs `CheckForConflicts()`
+  (`ducklake_transaction.cpp:1194–1334`, called from line 2547) to reject
+  semantically incompatible interleavings — e.g. "I dropped column X in my
+  snapshot; someone else altered it in the intervening snapshot." The PK gives
+  mutual exclusion on `snapshot_id`; the logical check catches everything else.
+
+**Decision: keep the bespoke loop** — it's the same model upstream uses, not a
+custom invention. But note two behaviors we don't yet implement and should track:
+
+- [ ] **Follow-up: internal retry with backoff.** We surface
+  `TransactionConflictException` on the first PK collision. Upstream retries 10×
+  with exponential backoff before surfacing. Low-contention workloads don't care;
+  high-concurrency writers will see spurious failures we could absorb. Pick up
+  after the jOOQ migration lands — it's an orthogonal change and rides on the
+  same loop.
+- [ ] **Follow-up: logical `CheckForConflicts` pass.** Our current conflict check
+  is "did `max(snapshot_id)` advance while I was working" — purely lineage-based.
+  Upstream additionally scans `ducklake_snapshot_changes` for incompatible
+  change pairs. Without this pass we accept some interleavings that upstream
+  would reject (e.g. two writers both altering the same column's type in
+  different snapshots — our PK check passes for one of them, but the other's
+  schema is now stale). Worth a defect-report entry before we cut the next
+  release.
+
+**Why not `ctx.transaction(...)`.** Reasons below — written up so future-us
 doesn't relitigate.
 
 `ctx.transaction(TransactionalRunnable)` wins on:
