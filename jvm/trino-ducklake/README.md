@@ -122,8 +122,8 @@ Restart Trino for the new plugin and catalog to take effect.
 | `multilinestring` | VARBINARY | Yes | Yes | Degraded |
 | `multipolygon` | VARBINARY | Yes | Yes | Degraded |
 | `geometrycollection` | VARBINARY | Yes | Yes | Degraded |
-| `int128` | — | No | No | Not yet mapped |
-| `uint128` | — | No | No | Not yet mapped |
+| `int128` | DECIMAL(38,0) | Yes | Yes | Values beyond ±10^38 overflow the decimal and will error |
+| `uint128` | VARCHAR | Yes | Yes | Degraded — Trino caps decimal at 38 digits; preserved as text, no numeric ops |
 
 "Degraded" means data is fully preserved and round-trips correctly, but type-specific
 operators and functions are not available through Trino.
@@ -143,7 +143,7 @@ operators and functions are not available through Trino.
 | Inlined data (small tables) | Yes | Reads from catalog metadata tables |
 | Mixed inline + Parquet snapshots | Yes | Both sources unioned transparently |
 | Delete files (merge-on-read) | Yes | Parquet positional delete files |
-| Multiple delete files per data file | Yes | Accumulated across snapshots |
+| Delete-file evolution across snapshots | Yes | Reads the currently-valid delete file per data file at the active snapshot (spec: at most one delete file per data file per snapshot) |
 | Schema evolution on read | Yes | Missing columns return NULL |
 | Time travel — FOR VERSION AS OF | Yes | By snapshot ID |
 | Time travel — FOR TIMESTAMP AS OF | Yes | By timestamp |
@@ -310,11 +310,10 @@ for single-user, local development, and testing workflows.
   sub-fields are not used for pushdown.
 - Geometry types are readable as VARBINARY but without spatial functions or bounding-box
   statistics for file pruning.
-- `int128` and `uint128` types are not yet mapped. Tables containing these columns will
-  report a type conversion error. These types are rare in practice and do not have min/max
-  statistics in the DuckLake spec.
-- The DuckLake spec's `linestring_z` type (renamed from `linestring z` in spec v1.0) is not
-  yet recognized by the type converter.
+- `int128` maps to `DECIMAL(38, 0)`. Values in the narrow ±1.7e38..±10^38 edge bands exceed
+  the decimal's range and will error on read.
+- `uint128` is degraded to `VARCHAR`; Trino cannot represent a ≥39-digit signed-or-unsigned
+  integer. Values round-trip as text; no numeric operations are available.
 - Unsigned integer types (uint8/16/32/64) are widened to larger signed Trino types on read.
   No range validation is performed on the write path — writing a value that exceeds the
   unsigned range of the DuckLake column type is not prevented.

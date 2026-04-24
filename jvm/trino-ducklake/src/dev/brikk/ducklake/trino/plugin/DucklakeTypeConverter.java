@@ -127,6 +127,15 @@ public class DucklakeTypeConverter
             case "uint32" -> BigintType.BIGINT;      // 0..2^32-1 -> -2^63..2^63-1
             case "uint64" -> DecimalType.createDecimalType(20, 0); // 0..2^64-1 -> decimal(20,0)
 
+            // 128-bit integers. DuckLake stores these as "int128" / "uint128" (see upstream
+            // ducklake_types.cpp: int128 <-> HUGEINT, uint128 <-> UHUGEINT). int128 fits in
+            // DECIMAL(38, 0) for all but the extreme edges of its ±1.7e38 range; uint128's
+            // 0..3.4e38 range exceeds any Trino decimal, so we degrade it to VARCHAR (data
+            // preserved as text, no numeric ops). See TODO-compatibility.md and
+            // COMPARE-pg_ducklake.md B3.
+            case "int128" -> DecimalType.createDecimalType(38, 0);
+            case "uint128" -> VarcharType.VARCHAR;
+
             // Floating point
             case "float32" -> RealType.REAL;
             case "float64" -> DoubleType.DOUBLE;
@@ -155,10 +164,12 @@ public class DucklakeTypeConverter
             case "variant" -> VarcharType.VARCHAR;  // DEGRADED: No variant support, needs shredding implementation
             case "interval" -> VarcharType.VARCHAR;  // DEGRADED: Interval not supported in Trino, stored as string
 
-            // DEGRADED: Geometry types stored as raw bytes, no spatial functions
+            // DEGRADED: Geometry types stored as raw bytes, no spatial functions.
+            // DuckLake 1.0 renamed "linestring z" to "linestring_z"; we accept both
+            // so catalogs written against either spec version read correctly.
             case "geometry", "point", "linestring", "polygon",
                  "multipoint", "multilinestring", "multipolygon",
-                 "linestring z", "geometrycollection" -> VarbinaryType.VARBINARY;
+                 "linestring_z", "linestring z", "geometrycollection" -> VarbinaryType.VARBINARY;
 
             default -> {
                 // Check for decimal(P,S)

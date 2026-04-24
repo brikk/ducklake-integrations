@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 /**
@@ -559,6 +560,241 @@ public class TestDucklakeCrossEngineCompatibility
         }
     }
 
+    // ==================== Inlined-data encoding audit (COMPARE-pg_ducklake.md) ====================
+    //
+    // Upstream's PostgreSQL metadata manager encodes inlined rows using specific PG column types
+    // (pg_ducklake/docs/data_types.md):
+    //   - date / timestamp* / timestamptz  -> VARCHAR
+    //   - varchar / blob                    -> BYTEA (allows embedded null bytes)
+    //   - list<T>                           -> native PG arrays (e.g. INT4[])
+    // The tests below create tables via DuckDB with `data_inlining_row_limit` high enough that the
+    // rows stay in `ducklake_inlined_data_<table_id>_<schema_version>` metadata tables, then read
+    // them through Trino and verify value fidelity.
+
+    @Test
+    public void testDuckdbInlinedListIntCurrentlyFailsInTrino()
+            throws Exception
+    {
+        // Pins the current bug: DucklakeInlinedValueConverter treats a PG `INTEGER[]` inlined
+        // value as a scalar and hands Trino a Slice where ArrayType expects a Block. See
+        // COMPARE-pg_ducklake.md B2 and TODO-compatibility.md. When the converter is widened to
+        // consume PG arrays, delete this test and enable
+        // {@link #testDuckdbInlinedListIntReadsInTrino_target}.
+        String tableName = "xengine_inlined_list_int";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, tags INTEGER[])");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, [10, 20, 30]), (2, [42]), (3, NULL)");
+            }
+            assertRowsStayedInlined(tableName, 3);
+
+            assertThatThrownBy(() -> computeActual("SELECT id, tags FROM " + fullTrino + " ORDER BY id"))
+                    .hasMessageContaining("Slice cannot be cast to")
+                    .hasMessageContaining("Block");
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Disabled("TODO (TODO-compatibility.md B2): widen DucklakeInlinedValueConverter to consume PG arrays")
+    public void testDuckdbInlinedListIntReadsInTrino_target()
+            throws Exception
+    {
+        // Target behavior after the B2 fix lands: Trino reads DuckDB-written inlined list<int>
+        // columns as ArrayType(Integer) with the array contents intact.
+        String tableName = "xengine_inlined_list_int_target";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, tags INTEGER[])");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, [10, 20, 30]), (2, [42]), (3, NULL)");
+            }
+            assertRowsStayedInlined(tableName, 3);
+
+            MaterializedResult result = computeActual("SELECT id, tags FROM " + fullTrino + " ORDER BY id");
+            assertThat(result.getMaterializedRows()).hasSize(3);
+            assertThat(result.getMaterializedRows().get(0).getField(1)).isEqualTo(List.of(10, 20, 30));
+            assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo(List.of(42));
+            assertThat(result.getMaterializedRows().get(2).getField(1)).isNull();
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    public void testDuckdbInlinedDateAndTimestampReadInTrino()
+            throws Exception
+    {
+        String tableName = "xengine_inlined_date_ts";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, d DATE, ts TIMESTAMP)");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES " +
+                        "(1, DATE '2024-06-15', TIMESTAMP '2024-06-15 12:34:56.123456'), " +
+                        "(2, NULL, NULL)");
+            }
+            assertRowsStayedInlined(tableName, 2);
+
+            MaterializedResult result = computeActual("SELECT id, d, ts FROM " + fullTrino + " ORDER BY id");
+            assertThat(result.getMaterializedRows()).hasSize(2);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1).toString()).isEqualTo("2024-06-15");
+            // Upstream serializes timestamps into VARCHAR columns as ISO strings; our converter
+            // must parse them back to TIMESTAMP_MICROS. Don't assert exact form here — just that
+            // Trino got a non-null value with the expected microsecond component visible.
+            assertThat(result.getMaterializedRows().get(0).getField(2)).isNotNull();
+            assertThat(result.getMaterializedRows().get(0).getField(2).toString()).contains("2024-06-15");
+            assertThat(result.getMaterializedRows().get(0).getField(2).toString()).contains("12:34:56.123456");
+            assertThat(result.getMaterializedRows().get(1).getField(1)).isNull();
+            assertThat(result.getMaterializedRows().get(1).getField(2)).isNull();
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    public void testDuckdbInlinedBlobReadsInTrino()
+            throws Exception
+    {
+        String tableName = "xengine_inlined_blob";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, payload BLOB)");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                // Include a null byte to confirm BYTEA (not TEXT) is actually used upstream.
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, '\\x00\\x01\\x02\\xFF'::BLOB), (2, NULL)");
+            }
+            assertRowsStayedInlined(tableName, 2);
+
+            MaterializedResult result = computeActual("SELECT id, payload FROM " + fullTrino + " ORDER BY id");
+            assertThat(result.getMaterializedRows()).hasSize(2);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            // Whatever representation Trino chooses, it must preserve all four bytes.
+            Object payload = result.getMaterializedRows().get(0).getField(1);
+            assertThat(payload).isNotNull();
+            if (payload instanceof byte[] bytes) {
+                assertThat(bytes).containsExactly((byte) 0x00, (byte) 0x01, (byte) 0x02, (byte) 0xFF);
+            }
+            assertThat(result.getMaterializedRows().get(1).getField(1)).isNull();
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    public void testDuckdbInlinedVarcharWithEmbeddedNullByteReadsInTrino()
+            throws Exception
+    {
+        // pg_ducklake docs/data_types.md explicitly calls out that DuckDB VARCHAR can carry
+        // embedded null bytes and that PG TEXT/VARCHAR cannot, which is why upstream stores
+        // inlined VARCHAR as BYTEA. This test probes whether our read path survives a null byte
+        // — if this fails with "null character not permitted", we likely need the BYTEA-aware
+        // read path that pg_ducklake documents.
+        String tableName = "xengine_inlined_varchar_nullbyte";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, s VARCHAR)");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, 'ABC' || chr(0) || '123')");
+            }
+            assertRowsStayedInlined(tableName, 1);
+
+            // Current expectation: this may throw — that's informative. If it returns a value,
+            // verify the null byte survived. Either way, don't make the test falsely pass.
+            MaterializedResult result = computeActual("SELECT id, length(s), s FROM " + fullTrino);
+            assertThat(result.getMaterializedRows()).hasSize(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1))
+                    .as("length must be 7 if the null byte round-tripped")
+                    .isEqualTo(7L);
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    // ==================== hugeint / uhugeint ====================
+
+    @Test
+    public void testDuckdbHugeintColumnReadsAsDecimalInTrino()
+            throws Exception
+    {
+        String tableName = "xengine_hugeint";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, big HUGEINT)");
+                // A value that fits in DECIMAL(38, 0). Values past ~1.7e38 would overflow.
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, 99999999999999999999999999999999999999)");
+            }
+
+            MaterializedResult result = computeActual("SELECT id, CAST(big AS VARCHAR) FROM " + fullTrino);
+            assertThat(result.getMaterializedRows()).hasSize(1);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1))
+                    .isEqualTo("99999999999999999999999999999999999999");
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    public void testDuckdbUhugeintColumnReadsAsVarcharInTrino()
+            throws Exception
+    {
+        String tableName = "xengine_uhugeint";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, big UHUGEINT)");
+                // Max uhugeint exceeds DECIMAL(38) — that's why we degrade to VARCHAR.
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES (1, 340282366920938463463374607431768211455)");
+            }
+
+            MaterializedResult result = computeActual("SELECT id, big FROM " + fullTrino);
+            assertThat(result.getMaterializedRows()).hasSize(1);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1).toString())
+                    .isEqualTo("340282366920938463463374607431768211455");
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
     // ==================== Helpers ====================
 
     private void tryDropTable(String tableName)
@@ -567,6 +803,50 @@ public class TestDucklakeCrossEngineCompatibility
             computeActual("DROP TABLE " + tableName);
         }
         catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * Asserts that a table has no active Parquet data files (all rows live in the
+     * {@code ducklake_inlined_data_<tableId>_<schemaVersion>} metadata tables) and that the
+     * total inlined row count matches {@code expectedRowCount}. Throws if the assumption fails —
+     * used to guarantee the *inlined* read path is the one under test.
+     */
+    private void assertRowsStayedInlined(String tableName, long expectedRowCount)
+            throws Exception
+    {
+        DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
+        try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
+            long snapshotId = queryLong(pgConn, "SELECT max(snapshot_id) FROM ducklake_snapshot");
+            long tableId = queryLong(pgConn,
+                    "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL",
+                    tableName);
+
+            long activeDataFiles = queryLong(pgConn,
+                    "SELECT count(*) FROM ducklake_data_file WHERE table_id = ? AND end_snapshot IS NULL",
+                    tableId);
+            assertThat(activeDataFiles)
+                    .as("table %s should have no active Parquet files if rows are inlined", tableName)
+                    .isZero();
+
+            long totalInlined = 0;
+            try (PreparedStatement stmt = pgConn.prepareStatement(
+                    "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id = ?")) {
+                stmt.setLong(1, tableId);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        long schemaVersion = rs.getLong("schema_version");
+                        totalInlined += queryLong(pgConn,
+                                "SELECT count(*) FROM ducklake_inlined_data_" + tableId + "_" + schemaVersion +
+                                        " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)",
+                                snapshotId,
+                                snapshotId);
+                    }
+                }
+            }
+            assertThat(totalInlined)
+                    .as("table %s active inlined row count", tableName)
+                    .isEqualTo(expectedRowCount);
         }
     }
 

@@ -938,6 +938,15 @@ public class JdbcDucklakeCatalog
         return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }
 
+    // Serializes the list of change entries into the DuckLake `ducklake_snapshot_changes.changes_made`
+    // text column. Per spec it's a comma-separated list of `<kind>:<value>` entries. Entries are
+    // passed through verbatim today — see TODO-compatibility.md for a tracked item to quote/escape
+    // values (schema / table / view names) that may contain commas or double quotes.
+    static String formatChangesMade(List<String> changes)
+    {
+        return String.join(",", changes);
+    }
+
     @Override
     public Optional<String> getDataPath()
     {
@@ -1087,7 +1096,7 @@ public class JdbcDucklakeCatalog
 
                 // 6. Insert snapshot changes (comma-separated per spec, one row per snapshot)
                 if (!tx.getChanges().isEmpty()) {
-                    String changesMade = String.join(",", tx.getChanges());
+                    String changesMade = formatChangesMade(tx.getChanges());
                     try (PreparedStatement stmt = conn.prepareStatement(
                             "INSERT INTO ducklake_snapshot_changes (snapshot_id, changes_made) VALUES (?, ?)")) {
                         stmt.setLong(1, tx.getNewSnapshotId());
