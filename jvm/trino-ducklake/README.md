@@ -117,6 +117,7 @@ Restart Trino for the new plugin and catalog to take effect.
 | `geometry` | VARBINARY | Yes | Yes | Degraded — no spatial functions |
 | `point` | VARBINARY | Yes | Yes | Degraded |
 | `linestring` | VARBINARY | Yes | Yes | Degraded |
+| `linestring_z` | VARBINARY | Yes | Yes | Degraded — DuckLake 1.0 name; legacy pre-1.0 form `linestring z` also accepted |
 | `polygon` | VARBINARY | Yes | Yes | Degraded |
 | `multipoint` | VARBINARY | Yes | Yes | Degraded |
 | `multilinestring` | VARBINARY | Yes | Yes | Degraded |

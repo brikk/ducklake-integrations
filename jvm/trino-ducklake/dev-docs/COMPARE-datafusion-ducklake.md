@@ -44,18 +44,16 @@ file's Parquet stream), so the behavior is actually spec-correct — only the do
 loose. Worth a direct source read before copying any ideas verbatim, since a future reader
 of their docs could be misled.
 
-### A README-vs-spec mismatch on our side
+### A README-vs-spec mismatch on our side — fixed
 
-Our `trino-ducklake/README.md` says:
-
-> Multiple delete files per data file | Yes | Accumulated across snapshots
-
-Read literally against the spec, this is wrong — there is at most one delete file per data
-file per snapshot. The feature we almost certainly meant is "our read path correctly sees
-the currently-valid delete file for each data file, which may have been rewritten across
-snapshots." Worth rewording to avoid implying concurrent stacked delete files. The 1.0
-`partial_max` column (where multi-snapshot deletes actually live) is not yet read by
-either implementation — see `DUCKLAKE_1_0_IMPACT.md`.
+Original concern: `trino-ducklake/README.md` used to read
+"Multiple delete files per data file | Yes | Accumulated across snapshots", which is
+wrong at face value (spec: at most one delete file per data file per snapshot). The
+row is now "Delete-file evolution across snapshots | Yes | Reads the currently-valid
+delete file per data file at the active snapshot (spec: at most one delete file per
+data file per snapshot)" — matches spec. The 1.0 `partial_max` column (where
+multi-snapshot deletes actually live) is still not read by either implementation — see
+`DUCKLAKE_1_0_IMPACT.md`.
 
 ## Ideas worth stealing
 
@@ -91,10 +89,15 @@ either implementation — see `DUCKLAKE_1_0_IMPACT.md`.
 
 ## Action items surfaced by this comparison
 
-- **Reword the README delete-file row.** "Multiple delete files per data file: Yes |
-  Accumulated across snapshots" should probably become something like "Delete files are
-  resolved per data file, respecting DuckLake 1.0 partial deletion file semantics (once
-  implemented)." The current wording contradicts the spec at face value.
+Closed:
+
+- ~~**Reword the README delete-file row.**~~ Done — README now says "Delete-file
+  evolution across snapshots | Yes | Reads the currently-valid delete file per data
+  file at the active snapshot (spec: at most one delete file per data file per
+  snapshot)."
+
+Still open:
+
 - **Track `partial_max` handling for 1.0.** `DUCKLAKE_1_0_IMPACT.md` already flags Puffin
   format as a medium-priority gap; `partial_max` deserves the same treatment. Neither
   implementation reads it today. When a DuckDB compaction rewrites a delete file as partial,

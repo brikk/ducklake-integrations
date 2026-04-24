@@ -1337,6 +1337,7 @@ public class JdbcDucklakeCatalog
             tx.addChange(changeCreatedView(schemaName, viewName));
 
             insertViewRow(tx, viewId, newCatalogUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
+            tx.incrementSchemaVersion();
         });
     }
 
@@ -1348,6 +1349,7 @@ public class JdbcDucklakeCatalog
             ActiveViewRow view = resolveActiveViewRow(tx, schemaId, viewName);
             endSnapshotActiveView(tx, view.viewId());
             tx.addChange("dropped_view:" + view.viewId());
+            tx.incrementSchemaVersion();
         });
     }
 
@@ -1379,7 +1381,11 @@ public class JdbcDucklakeCatalog
                             sourceView.dialect(),
                             sourceView.sql(),
                             sourceView.viewMetadata().orElse(null));
-                    tx.addChange("renamed_view:" + sourceView.viewId());
+                    // Upstream's ParseChangeType does not recognize `renamed_view`; a rename is
+                    // semantically a schema/name change, so emit `altered_view` to stay
+                    // spec-conformant with DuckDB's ducklake_snapshots() parser.
+                    tx.addChange("altered_view:" + sourceView.viewId());
+                    tx.incrementSchemaVersion();
                 });
     }
 
@@ -1393,6 +1399,7 @@ public class JdbcDucklakeCatalog
             endSnapshotActiveView(tx, view.viewId());
             insertViewRow(tx, view.viewId(), view.viewUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
             tx.addChange("altered_view:" + view.viewId());
+            tx.incrementSchemaVersion();
         });
     }
 
@@ -1524,6 +1531,8 @@ public class JdbcDucklakeCatalog
                 stmt.setString(5, schemaName + "/");
                 stmt.executeUpdate();
             }
+
+            tx.incrementSchemaVersion();
         });
     }
 
@@ -1545,6 +1554,8 @@ public class JdbcDucklakeCatalog
                 stmt.setLong(2, schemaId);
                 stmt.executeUpdate();
             }
+
+            tx.incrementSchemaVersion();
         });
     }
 

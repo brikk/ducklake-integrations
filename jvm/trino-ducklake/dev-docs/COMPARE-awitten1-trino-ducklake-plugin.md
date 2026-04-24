@@ -54,7 +54,8 @@ sortdev plugin is the main implementation in this repository.
 | **Type System** | | | |
 | Primitives (bool, int, float, decimal, varchar, varbinary, date, time, timestamp, timestamptz, uuid) | Yes | Yes | |
 | Unsigned integers (uint8/16/32/64) | Yes | Yes | Both use next-larger-signed-type / DECIMAL(20,0) |
-| int128 / HUGEINT | Yes → DECIMAL(38,0) | **Not yet mapped** | awitten1 accepts the overflow risk for values >10^38. sortdev decision pending. |
+| int128 / HUGEINT | Yes → DECIMAL(38,0) | Yes → DECIMAL(38,0) | Both accept the overflow risk for the narrow ±1.7e38..±10^38 edge band. Spec canonical name is `int128` (not `hugeint`). |
+| uint128 / UHUGEINT | Not mapped | Yes → VARCHAR (degraded) | sortdev degrades to VARCHAR — Trino caps decimal at 38 digits and ≥39-digit unsigned integers cannot be represented numerically. |
 | ARRAY / LIST | VARCHAR fallback | Native ARRAY | |
 | STRUCT | VARCHAR fallback | Native ROW | |
 | MAP | VARCHAR fallback | Native MAP | |
@@ -193,12 +194,7 @@ or schema evolution. This can mislead the Trino query optimizer into suboptimal 
 Useful for local development and single-user workflows. We previously supported these but
 removed them to reduce scope. Planned to re-add once the core implementation is stable.
 
-### 2. int128/HUGEINT → DECIMAL(38,0)
-
-They map int128 to DECIMAL(38,0), accepting that values above ~10^38 will overflow. We haven't
-mapped this type yet. The overflow risk is real but the type is uncommon in practice.
-
-### 3. Separate page source wrapper classes
+### 2. Separate page source wrapper classes
 
 Their wrapping chain (base → delete filter → constraint filter → projection) is arguably more
 composable and easier to test in isolation. Whether this is better or worse depends on

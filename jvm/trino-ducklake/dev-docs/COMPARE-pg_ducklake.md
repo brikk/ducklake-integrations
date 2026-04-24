@@ -19,25 +19,34 @@ access, an FDW for cross-catalog reads), that's called out separately.
 ## TL;DR
 
 The reference largely agrees with what we do. No catastrophic spec-level breakage. Most
-of our deltas are either **already tracked** (hugeint/uhugeint, variant, partial_max,
-Puffin, linestring_z, unsigned range validation, maintenance ops) or **cosmetic**. The
-handful of new concerns surfaced here are: a couple of encoding/escaping fragility spots
-on our write path, and a real gap against the reference in how we read *inlined* data
-containing nested types. Maintenance operations are a major feature area we still don't
-expose, but the scope is well understood and tractable.
+of the original deltas from this audit have since been closed (changes_made quoting,
+inlined `list<T>` primitive element reads, `int128`/`uint128` mapping, `linestring_z`,
+UUIDv7, `renamed_view` → `altered_view` folding, schema_version bumps on view/schema
+DDL). Remaining open items are **unsigned write-side range checks**, and a small tail
+of inlined-read cases we still haven't validated (nested list elements — `list<blob>`
+hex decoding and `list<uuid>` 16-byte packing — both pinned by `@Disabled` tests).
+Maintenance operations are a major feature area we still don't expose, but the scope is
+well understood and tractable.
 
 ## Bugs / fragility in our JVM impl surfaced by this audit
 
 ### Real bugs (worth fixing)
 
-| # | Finding | File / line | Severity |
-|---|---|---|---|
-| B1 | **`snapshot_changes` column is built with `String.join(",", ...)` and no escaping.** Upstream uses `KeywordHelper::WriteQuoted()` with double quotes for values, e.g. `created_table:"main.users"`. If an entry ever contains a comma or quote (legal in table names), our row is malformed and the DuckDB parser will trip. Low probability in practice, but it's a silent correctness bomb. | `JdbcDucklakeCatalog.java:1090` | Medium |
-| B2 | **Inlined `list<T>` rows stored as `VARCHAR[]` (Postgres array), not a serialized scalar.** Reference Postgres metadata manager writes native PG arrays (`INT4[]`, etc.) for inlined lists and lets the reader reconstruct. Our `DucklakeInlinedValueConverter` path assumes a single string and calls `toStringValue()`. If a DuckDB-written catalog has small tables with list columns inlined, our reads will be wrong or fail. Needs confirmation with a real fixture, but the C++ clearly takes the array path. | `DucklakeInlinedValueConverter.java` (array path) | High (when triggered) |
-| B3 | **`hugeint` / `uhugeint` are unmapped and throw** on any column that uses them, including nested (a `struct<amount: hugeint>` rejects the whole struct). Spec has them as 128-bit integer types; pg_ducklake maps to VARCHAR in inline + native HUGEINT/UHUGEINT for DuckDB/Parquet. Viable JVM target: `DECIMAL(38, 0)` for `hugeint`, `DECIMAL(39, 0)` impossible (Trino caps at 38) so for `uhugeint` it has to be VARCHAR. Our README lists these under "Not yet mapped" — this audit just confirms they're reachable from a real DuckDB-written catalog. | `DucklakeTypeConverter.java:172` | High (when triggered) |
-| B4 | **`linestring z` in the type converter switch** — spec 1.0 renamed it `linestring_z` (underscore). A DuckDB-written catalog with that column fails to parse. Our README already flags this; it's a one-line fix. | `DucklakeTypeConverter.java:161` | Low but trivial |
-| B5 | **Unsigned writes silently truncate.** We widen on read (uint8→SMALLINT etc.) but do no range check on write. A Trino `SMALLINT 300` into a `uint8` column becomes 44 through integer wrap. Reference doesn't enforce this either (DuckDB has native unsigneds), but we don't — so the issue is purely on writes from Trino. Known; README acknowledges. | `DucklakePageSink` write path | Medium |
-| B6 | **Decimal `p > 38` errors hard.** Trino can't represent it, so there is no graceful path — but right now we throw at type construction time rather than at `CREATE TABLE` time with a clearer message. Upstream allows higher precisions. Unlikely to be hit. | `DucklakeTypeConverter.java:166` | Low |
+| # | Finding | File / line | Severity | Status |
+|---|---|---|---|---|
+| B1 | **`snapshot_changes` column is built with `String.join(",", ...)` and no escaping.** Upstream uses `KeywordHelper::WriteQuoted()` with double quotes for values, e.g. `created_table:"main.users"`. If an entry ever contains a comma or quote (legal in table names), our row is malformed and the DuckDB parser will trip. | `JdbcDucklakeCatalog.java` (quoting helpers + call sites in `createTable` / `createView` / `createSchema`) | Medium | **Fixed.** `writeQuotedValue()` + `changeCreated{Table,View,Schema}` helpers emit spec-conformant `"schema"."name"`. Pinned by `TestJdbcDucklakeCatalogChangesMadeFormat` + two cross-engine tests (all kinds + pathological comma-bearing names). |
+| B2 | **Inlined `list<T>` rows stored as `VARCHAR[]` (Postgres array), not a serialized scalar.** Reference Postgres metadata manager writes native PG arrays (`INT4[]`, etc.) for inlined lists and lets the reader reconstruct. Our `DucklakeInlinedValueConverter` path assumes a single string and calls `toStringValue()`. | `DucklakeInlinedValueConverter.java` (array path) | High (when triggered) | **Fixed for primitive element types.** `DucklakeInlinedValueConverter` now detects `ArrayType` columns and parses DuckDB's `[elem, elem, ...]` inlined text form (with NULL + `\'` / `\\` escape handling) plus a `java.sql.Array` / `Object[]` fallback for native PG arrays. Covered across 12 primitive element types (int/bigint/smallint/tinyint/bool/real/double/decimal/varchar/date/timestamp/timestamptz) via both inlined and Parquet paths. `list<blob>` and `list<uuid>` remain `@Disabled` — separate follow-ups tracked in `TODO-compatibility.md`. |
+| B3 | **`hugeint` / `uhugeint` are unmapped and throw** on any column that uses them. | `DucklakeTypeConverter.java` | High (when triggered) | **Fixed.** `int128` → `DECIMAL(38, 0)`, `uint128` → `VARCHAR` (Trino caps decimal at 38 digits). README type table + limitations updated. Pinned by `TestDucklakeTypeConverter` unit tests + cross-engine `testDuckdbHugeintColumnReadsAsDecimalInTrino` / `testDuckdbUhugeintColumnReadsAsVarcharInTrino`. Note: spec canonical names are `int128`/`uint128`, not `hugeint`/`uhugeint` — the DuckDB SQL names never appear in the catalog column_type column. |
+| B4 | **`linestring z` in the type converter switch** — spec 1.0 renamed it `linestring_z` (underscore). | `DucklakeTypeConverter.java` | Low but trivial | **Fixed.** Converter matches both `linestring_z` (1.0 name) and `linestring z` (legacy form for pre-1.0 catalogs). Covered by `testLinestringZUnderscoreIsVarbinary` + `testLinestringZLegacySpaceFormStillAccepted`. |
+| B5 | **Unsigned writes silently truncate.** We widen on read (uint8→SMALLINT etc.) but do no range check on write. A Trino `SMALLINT 300` into a `uint8` column becomes 44 through integer wrap. | `DucklakePageSink` write path | Medium | Open. README acknowledges. |
+| B6 | **Decimal `p > 38` errors hard.** Trino can't represent it, so there is no graceful path — but right now we throw at type construction time rather than at `CREATE TABLE` time with a clearer message. Upstream allows higher precisions. Unlikely to be hit. | `DucklakeTypeConverter.java` | Low | Open. |
+
+### Additional gaps surfaced after the original audit
+
+| # | Finding | Status |
+|---|---|---|
+| C1 | **`renamed_view:<viewId>` is not a recognized upstream change type.** Upstream's `ParseChangeType` (in `ducklake_transaction_changes.cpp`) enumerates `created_view` / `altered_view` / `dropped_view` but no `RENAMED_*`. Any snapshot that renamed a view made DuckDB's `ducklake_snapshots()` / `table_changes()` throw `InvalidInputException`. | **Fixed.** `renameView` now emits `altered_view:<viewId>` (rename is semantically a schema/name change). Pinned by `testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges`. |
+| C2 | **`schema_version` not bumped on view and schema DDL.** Upstream's `DuckLakeTransaction::SchemaChangesMade()` flips on new/dropped view entries and new/dropped schema entries, not just table DDL. A DuckDB reader that caches the catalog keyed on `schema_version` would miss Trino-created/dropped views and schemas until something else (a table DDL) happened to bump the counter. | **Fixed.** Added no-arg `DucklakeWriteTransaction.incrementSchemaVersion()` (table_id = NULL) and wired it into `createView` / `dropView` / `renameView` / `replaceViewMetadata` / `createSchema` / `dropSchema`. Pinned by `testSchemaVersionBumpsOnViewAndSchemaDdl`. |
 
 ### Known, documented, no action required
 
@@ -47,9 +56,11 @@ expose, but the scope is well understood and tractable.
   already documented this in `REPORT_CROSS_ENGINE_WRITE.md`. Reference actually does
   something similar — it writes the dialect that wrote the column. Fine until we want
   to support expression defaults.
-- **`UUID.randomUUID()` (v4) vs upstream UUIDv7.** Spec doesn't mandate a version; both
-  are valid 128-bit UUIDs and `schema_uuid`/`table_uuid` are opaque identity. Cosmetic;
-  no action needed.
+- **UUIDv7 for catalog-identity UUIDs.** Done. Switched `schema_uuid` / `table_uuid` /
+  `view_uuid` generation to `Generators.timeBasedEpochGenerator()` to match upstream's
+  UUIDv7 locality (keeps PK B-tree inserts roughly monotonic). Transient
+  `DucklakeTransactionHandle` UUID and Parquet filename UUIDs intentionally left on v4
+  (no DB locality value there). Pinned by `TestJdbcDucklakeCatalogUuidVersion`.
 
 ### Things the earlier audit flagged that I verified as *not* bugs
 
@@ -160,15 +171,18 @@ Categories we can ignore (PG-specific): `fdw`, `frozen_fdw`, `import_foreign_sch
 
 ## Action items surfaced by this comparison
 
-1. **Fix the `snapshot_changes` join.** Either escape values or switch to the upstream
-   `created_table:"name"` quoted form. `JdbcDucklakeCatalog.java:1090`. Small, safe, and
-   removes a silent correctness bomb.
-2. **Verify inlined `list<T>` read path with a real DuckDB-written fixture.** If it fails,
-   adjust `DucklakeInlinedValueConverter` to consume PG arrays for list-typed columns.
-3. **Map `hugeint`/`uhugeint`.** `hugeint` → `DECIMAL(38, 0)`; `uhugeint` has to be
-   VARCHAR (Trino can't represent ≥39-digit integers). Clearer than the current hard
-   fail. Update README.
-4. **Rename `"linestring z"` → `"linestring_z"`** in `DucklakeTypeConverter`. One line.
+Closed:
+
+1. ~~**Fix the `snapshot_changes` join.**~~ Done — quoted form via `writeQuotedValue()` +
+   `changeCreated{Table,View,Schema}` helpers. (B1)
+2. ~~**Verify inlined `list<T>` read path with a real DuckDB-written fixture.**~~ Done for
+   primitive element types. `list<blob>` / `list<uuid>` still `@Disabled`. (B2)
+3. ~~**Map `hugeint`/`uhugeint`.**~~ Done — `int128` → `DECIMAL(38, 0)`, `uint128` →
+   `VARCHAR`. (B3; spec canonical names are `int128`/`uint128`.)
+4. ~~**Rename `"linestring z"` → `"linestring_z"`.**~~ Done — converter matches both. (B4)
+
+Still open:
+
 5. **Start planning maintenance ops.** Scope above. Earliest wins are probably
    `expire_snapshots` and `cleanup_orphaned_files` — both are catalog-driven and don't
    require a compaction engine.
@@ -178,6 +192,7 @@ Categories we can ignore (PG-specific): `fdw`, `frozen_fdw`, `import_foreign_sch
 7. **Consider session properties** for `commit_author`/`commit_message`/`commit_extra_info`.
    Already on the roadmap; pg_ducklake exposing `set_commit_message()` is a nudge it's a
    commonly wanted feature.
+8. **Unsigned write-side range check.** (B5) Still open.
 
 ## Appendix — Type mapping differences worth knowing
 
@@ -191,9 +206,12 @@ or pg_ducklake writer.
 | `boolean`, `int*`, `float*`, `decimal`, `time`, `timetz`, `interval`, `json`, `uuid` | Native PG types | Native | ✓ |
 | `uint8`/`uint16` | INTEGER | SMALLINT/INTEGER | Mismatch — verify we don't assume SMALLINT for `uint8` |
 | `uint32` | BIGINT | BIGINT | ✓ |
-| `uint64`, `hugeint`, `uhugeint` | VARCHAR | unmapped | B3 |
-| `date`, `timestamp`, `timestamp_s/ms/ns`, `timestamptz` | VARCHAR | Needs string-parse | Verify converter accepts DuckDB's ISO form |
-| `varchar`, `blob` | BYTEA (not text — to allow null bytes) | ? | Verify we read as bytes, not JDBC string |
-| `list<T>` | VARCHAR[] (PG array) | Treated as string | B2 |
+| `uint64` | VARCHAR | — | Verify converter |
+| `int128` | VARCHAR | VARCHAR → `DECIMAL(38, 0)` on read | ✓ B3 fixed |
+| `uint128` | VARCHAR | VARCHAR → VARCHAR on read (degraded) | ✓ B3 fixed |
+| `date`, `timestamp`, `timestamp_s/ms/ns`, `timestamptz` | VARCHAR | String-parse via `DucklakeInlinedValueConverter` | ✓ Verified for `date`, `timestamp`, `timestamptz` via cross-engine fixtures |
+| `varchar`, `blob` | BYTEA (not text — to allow null bytes) | BYTEA | ✓ Verified with embedded null byte + high-bit bytes |
+| `list<T>` (primitive T) | VARCHAR (DuckDB `[elem, ...]` text form) OR VARCHAR[] (PG array) | Parses both | ✓ B2 fixed for primitive element types; `list<blob>` + `list<uuid>` still @Disabled |
+| `list<struct>` / `list<map>` / `list<list>` | nested | Throws `UnsupportedOperationException` | Tracked separately |
 | `struct`, `map` | VARCHAR (DuckDB serialized form) | Treated as string | Probably broken for anything non-trivial |
 | `variant`, geometry family | No inline (Parquet only) | n/a | ✓ |

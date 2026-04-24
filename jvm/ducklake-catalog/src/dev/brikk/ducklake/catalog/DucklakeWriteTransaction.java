@@ -163,6 +163,19 @@ class DucklakeWriteTransaction
         schemaVersionTableId = tableId;
     }
 
+    /**
+     * Increments the schema version for a non-table-scoped DDL operation
+     * (create/drop view, create/drop schema). Leaves {@code table_id} as
+     * SQL NULL in {@code ducklake_schema_versions}. Upstream
+     * {@code DuckLakeTransaction::SchemaChangesMade()} flips on new/dropped
+     * views and schemas the same way it flips on table DDL, so a DuckDB
+     * reader that caches by {@code schema_version} must see the bump.
+     */
+    public void incrementSchemaVersion()
+    {
+        schemaVersion++;
+    }
+
     long getSchemaVersionTableId()
     {
         return schemaVersionTableId;

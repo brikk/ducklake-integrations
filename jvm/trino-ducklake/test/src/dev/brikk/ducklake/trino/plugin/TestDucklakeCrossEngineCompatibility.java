@@ -1236,6 +1236,192 @@ public class TestDucklakeCrossEngineCompatibility
         }
     }
 
+    // ==================== View/schema DDL cross-engine parse + schema_version bump ====================
+
+    /**
+     * Upstream's {@code ParseChangeType} (in
+     * {@code third_party/ducklake/src/storage/ducklake_transaction_changes.cpp}) enumerates
+     * {@code created_view} / {@code altered_view} / {@code dropped_view} but no
+     * {@code RENAMED_*}. An earlier revision of this connector emitted
+     * {@code renamed_view:<viewId>} on {@code ALTER VIEW ... RENAME}, which made any later
+     * call to DuckDB's {@code ducklake_snapshots()} throw
+     * {@code InvalidInputException: Unsupported change type renamed_view} for any snapshot
+     * that ever renamed a view. A rename is semantically a schema/name change, so the
+     * current code emits {@code altered_view} and bumps {@code schema_version} (upstream
+     * {@code SchemaChangesMade()} flips on dropped/new view entries). This test exercises
+     * the full view-DDL surface (create, rename, replace, drop) plus schema DDL
+     * (create/drop) and confirms DuckDB parses every snapshot cleanly.
+     */
+    @Test
+    public void testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges()
+            throws Exception
+    {
+        String schemaName = "xengine_view_changes";
+
+        try {
+            computeActual("CREATE SCHEMA " + schemaName);
+            computeActual("CREATE VIEW " + schemaName + ".v_src AS SELECT id FROM test_schema.simple_table");
+            // Fully qualify RENAME TO — Trino resolves an unqualified target against the
+            // session default schema (test_schema), not the source view's schema.
+            computeActual("ALTER VIEW " + schemaName + ".v_src RENAME TO " + schemaName + ".v_dst");
+            computeActual("CREATE OR REPLACE VIEW " + schemaName + ".v_dst AS SELECT id, name FROM test_schema.simple_table");
+            computeActual("DROP VIEW " + schemaName + ".v_dst");
+
+            try (Connection conn = createDuckdbConnection();
+                    Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery(
+                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id")) {
+                int rowCount = 0;
+                boolean sawAlteredView = false;
+                boolean sawDroppedView = false;
+                while (rs.next()) {
+                    rowCount++;
+                    Object changes = rs.getObject("changes");
+                    if (changes == null) {
+                        continue;
+                    }
+                    String text = changes.toString();
+                    if (text.contains("views_altered")) {
+                        sawAlteredView = true;
+                    }
+                    if (text.contains("views_dropped")) {
+                        sawDroppedView = true;
+                    }
+                }
+                assertThat(rowCount).as("ducklake_snapshots row count").isGreaterThanOrEqualTo(5);
+                assertThat(sawAlteredView)
+                        .as("DuckDB parsed at least one `altered_view` entry (rename + replace both map here)")
+                        .isTrue();
+                assertThat(sawDroppedView).as("DuckDB parsed a `dropped_view` entry").isTrue();
+            }
+        }
+        finally {
+            try {
+                computeActual("DROP VIEW " + schemaName + ".v_dst");
+            }
+            catch (Exception ignored) {
+            }
+            try {
+                computeActual("DROP VIEW " + schemaName + ".v_src");
+            }
+            catch (Exception ignored) {
+            }
+            try {
+                computeActual("DROP SCHEMA " + schemaName);
+            }
+            catch (Exception ignored) {
+            }
+        }
+    }
+
+    /**
+     * Upstream {@code DuckLakeTransaction::SchemaChangesMade()} flips on new/dropped view
+     * entries and on new/dropped schema entries — the same trigger used for table DDL.
+     * A DuckDB reader that caches catalog state keyed on {@code schema_version} must see
+     * a bump when Trino creates/drops/replaces/renames a view or creates/drops a schema.
+     * Before this was wired up, a Trino-only sequence of view + schema DDL would leave
+     * {@code ducklake_snapshot.schema_version} frozen — DuckDB's next query would hit
+     * stale cache and miss those objects. This test walks the full DDL surface and asserts
+     * the counter advances on every step.
+     * <p>
+     * Surface covered:
+     * <ul>
+     *   <li>{@code CREATE SCHEMA} → {@code createSchema}</li>
+     *   <li>{@code CREATE VIEW} → {@code createView}</li>
+     *   <li>{@code COMMENT ON VIEW} → {@code replaceViewMetadata}</li>
+     *   <li>{@code ALTER VIEW ... RENAME TO} → {@code renameView}</li>
+     *   <li>{@code DROP VIEW} → {@code dropView}</li>
+     *   <li>{@code DROP SCHEMA} → {@code dropSchema}</li>
+     * </ul>
+     */
+    @Test
+    public void testSchemaVersionBumpsOnViewAndSchemaDdl()
+            throws Exception
+    {
+        String schemaName = "xengine_sv_bumps";
+        DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
+
+        try {
+            long before = readCurrentSchemaVersion(catalog);
+
+            computeActual("CREATE SCHEMA " + schemaName);
+            long afterCreateSchema = readCurrentSchemaVersion(catalog);
+            assertThat(afterCreateSchema).as("CREATE SCHEMA bumps schema_version").isGreaterThan(before);
+
+            computeActual("CREATE VIEW " + schemaName + ".v AS SELECT id FROM test_schema.simple_table");
+            long afterCreateView = readCurrentSchemaVersion(catalog);
+            assertThat(afterCreateView).as("CREATE VIEW bumps schema_version").isGreaterThan(afterCreateSchema);
+
+            // Note: Trino resolves an unqualified `RENAME TO <name>` against the session's
+            // default schema, not the source view's schema. Fully qualify the target to
+            // keep the rename scoped to our test schema.
+            computeActual("ALTER VIEW " + schemaName + ".v RENAME TO " + schemaName + ".v2");
+            long afterRename = readCurrentSchemaVersion(catalog);
+            assertThat(afterRename).as("ALTER VIEW ... RENAME bumps schema_version").isGreaterThan(afterCreateView);
+
+            // COMMENT ON VIEW dispatches to replaceViewMetadata (the only SQL path that does —
+            // CREATE OR REPLACE VIEW goes through dropView + createView in DucklakeMetadata).
+            computeActual("COMMENT ON VIEW " + schemaName + ".v2 IS 'a view with a comment'");
+            long afterComment = readCurrentSchemaVersion(catalog);
+            assertThat(afterComment).as("COMMENT ON VIEW (replaceViewMetadata) bumps schema_version").isGreaterThan(afterRename);
+
+            computeActual("DROP VIEW " + schemaName + ".v2");
+            long afterDropView = readCurrentSchemaVersion(catalog);
+            assertThat(afterDropView).as("DROP VIEW bumps schema_version").isGreaterThan(afterComment);
+
+            computeActual("DROP SCHEMA " + schemaName);
+            long afterDropSchema = readCurrentSchemaVersion(catalog);
+            assertThat(afterDropSchema).as("DROP SCHEMA bumps schema_version").isGreaterThan(afterDropView);
+
+            // Non-table-scoped bumps must land in ducklake_schema_versions with table_id = NULL
+            // (spec ducklake_schema_versions.md: table_id is BIGINT, nullable). A future DuckDB
+            // version that reads per-table snapshots via this table still needs the broadcast
+            // bump, which is keyed on table_id IS NULL.
+            long nonTableScopedRows = countSchemaVersionRowsWithNullTableId(catalog, before);
+            assertThat(nonTableScopedRows)
+                    .as("expected one schema_versions row with NULL table_id per view/schema DDL (6 total)")
+                    .isGreaterThanOrEqualTo(6);
+        }
+        finally {
+            try {
+                computeActual("DROP VIEW " + schemaName + ".v2");
+            }
+            catch (Exception ignored) {
+            }
+            try {
+                computeActual("DROP VIEW " + schemaName + ".v");
+            }
+            catch (Exception ignored) {
+            }
+            try {
+                computeActual("DROP SCHEMA " + schemaName);
+            }
+            catch (Exception ignored) {
+            }
+        }
+    }
+
+    private long readCurrentSchemaVersion(DucklakeCatalogGenerator.IsolatedCatalog catalog)
+            throws Exception
+    {
+        try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
+            return queryLong(pgConn,
+                    "SELECT schema_version FROM ducklake_snapshot WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)");
+        }
+    }
+
+    private long countSchemaVersionRowsWithNullTableId(
+            DucklakeCatalogGenerator.IsolatedCatalog catalog,
+            long sinceExclusiveSchemaVersion)
+            throws Exception
+    {
+        try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
+            return queryLong(pgConn,
+                    "SELECT count(*) FROM ducklake_schema_versions WHERE table_id IS NULL AND schema_version > ?",
+                    sinceExclusiveSchemaVersion);
+        }
+    }
+
     // ==================== Helpers ====================
 
     private void tryDropTable(String tableName)

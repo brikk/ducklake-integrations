@@ -45,12 +45,6 @@ and each links back to where the decision came from.
   `ducklake_snapshots('ducklake_db')` parses every row without raising; the pathological
   names test passes a comma-bearing schema and table name through the full pipeline.
 
-  Known remaining gap (separate item, not covered here): `renameView` still emits
-  `renamed_view:<viewId>`, which upstream's `ParseChangeType` does not recognize (the
-  spec enum has no `RENAMED_*`). Calling `ducklake_snapshots()` on a catalog that has
-  any `renameView` snapshot will still throw `InvalidInputException`. Folding renames
-  into `altered_view:<viewId>` (schema/name change = alter) is the likely fix — tracked
-  below.
   - `JdbcDucklakeCatalog.java` (helpers next to `formatChangesMade`; call sites in
     `createTable` / `createView` / `createSchema`)
   - Tests: `TestJdbcDucklakeCatalogChangesMadeFormat`,
@@ -58,33 +52,35 @@ and each links back to where the decision came from.
     `TestDucklakeCrossEngineCompatibility.testDuckdbParsesTrinoWrittenChangesMadeWithPathologicalNames`
   - Source: `COMPARE-pg_ducklake.md` B1
 
-- [ ] **`renamed_view` is not a recognized upstream change type.** Upstream's
-  `ParseChangeType` in `ducklake_transaction_changes.cpp` lists no `RENAMED_*`; emitting
-  `renamed_view:<viewId>` (see `JdbcDucklakeCatalog.renameView`) causes DuckDB's
-  `ducklake_snapshots()` / `table_changes()` etc. to throw "Unsupported change type
-  renamed_view" for any snapshot that ever renamed a view. Semantically a rename is a
-  schema-and-name change — map it to `altered_view:<viewId>` (and likely bump the schema
-  version the same way the other `altered_view` path does) to stay spec-conformant.
+- [x] **`renamed_view` is not a recognized upstream change type — folded into
+  `altered_view`.** Upstream's `ParseChangeType` in `ducklake_transaction_changes.cpp`
+  lists no `RENAMED_*`; emitting `renamed_view:<viewId>` used to make DuckDB's
+  `ducklake_snapshots()` / `table_changes()` throw "Unsupported change type
+  renamed_view" for any snapshot that ever renamed a view. `JdbcDucklakeCatalog.renameView`
+  now emits `altered_view:<viewId>` instead — semantically correct (a rename is a
+  schema/name change) and spec-conformant. Also bumps `schema_version` the same way the
+  other `altered_view` paths do. Pinned by
+  `TestDucklakeCrossEngineCompatibility.testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges`,
+  which exercises create → rename → replace → drop through DuckDB's parser.
   - `JdbcDucklakeCatalog.renameView`
   - Source: cross-engine gap uncovered while fixing B1
 
-- [ ] **Bump `schema_version` on view and schema DDL, not just table DDL.** Today
-  `DucklakeWriteTransaction.incrementSchemaVersion` is only called from table DDL paths
-  (`createTable`, `addColumn`, `dropColumn`, `renameColumn`, `dropTable`). Upstream's
-  `DuckLakeTransaction::SchemaChangesMade()`
-  (`third_party/ducklake/src/storage/ducklake_transaction.cpp:718`) also flips on
+- [x] **Bump `schema_version` on view and schema DDL, not just table DDL.** Done.
+  Added a no-arg `DucklakeWriteTransaction.incrementSchemaVersion()` overload that bumps
+  the counter but leaves `schema_versions.table_id` as SQL NULL (spec allows nullable —
+  see `ducklake_schema_versions.md`, upstream's `SchemaChangesMade()` in
+  `third_party/ducklake/src/storage/ducklake_transaction.cpp:718` also flips on
   `new_tables` *including view entries*, `dropped_views`, `new_schemas`, and
-  `dropped_schemas` — meaning `CREATE VIEW`, `DROP VIEW`, `CREATE SCHEMA`, and
-  `DROP SCHEMA` should each produce a new `ducklake_snapshot.schema_version`. A DuckDB
-  reader that caches the catalog keyed on `schema_version` won't notice Trino-created /
-  dropped views or schemas until something else (a table DDL) happens to bump the counter.
-  Fix: call `incrementSchemaVersion` (or a non-table-scoped variant that writes
-  `schema_versions` with `table_id = NULL`) in `createView`, `dropView`, `renameView`,
-  `replaceViewMetadata`, `createSchema`, `dropSchema`. Verify upstream's
-  `ducklake_schema_versions.table_id` is nullable for non-table schema bumps.
+  `dropped_schemas`). Wired into `createView`, `dropView`, `renameView`,
+  `replaceViewMetadata`, `createSchema`, `dropSchema`. A DuckDB reader that caches the
+  catalog keyed on `schema_version` now sees Trino-created/dropped views and schemas
+  without waiting on a table DDL to bump the counter. Pinned by
+  `TestDucklakeCrossEngineCompatibility.testSchemaVersionBumpsOnViewAndSchemaDdl` (walks
+  the full view/schema DDL surface and asserts a bump per step + ≥6 new rows in
+  `ducklake_schema_versions` with `table_id IS NULL`).
   - `JdbcDucklakeCatalog.java` (`createView` / `dropView` / `renameView` /
     `replaceViewMetadata` / `createSchema` / `dropSchema`)
-  - `DucklakeWriteTransaction.incrementSchemaVersion`
+  - `DucklakeWriteTransaction.incrementSchemaVersion()` (no-arg overload)
   - Source: cross-engine gap uncovered while fixing B1
 
 - [ ] **When user-defined DEFAULT expressions ship, set `default_value_dialect = 'trino'`.**
