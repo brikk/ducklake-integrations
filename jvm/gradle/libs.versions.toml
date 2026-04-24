@@ -6,6 +6,7 @@ arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
 terpal-sql-lib = "2.0.0.PL-4.4.0"
 jackson-databind = "2.21.2"
+java-uuid-generator = "5.0.0"
 junit = "5.12.2"
 assertj = "3.27.3"
 trino = "480"
@@ -39,6 +40,7 @@ testcontainers-core = { module = "org.testcontainers:testcontainers", version.re
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "containers" }
 
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson-databind" }
+java-uuid-generator = { module = "com.fasterxml.uuid:java-uuid-generator", version.ref = "java-uuid-generator" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api" }

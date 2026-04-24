@@ -54,14 +54,16 @@ and each links back to where the decision came from.
   - `DucklakePageSink` write path
   - Source: `COMPARE-pg_ducklake.md` B5 (already in README as acknowledged limitation)
 
-- [ ] **Switch UUID generation to v7** for `schema_uuid` / `table_uuid` / `view_uuid`.
-  Upstream uses UUIDv7 (time-ordered: 48-bit unix-ms + random). Matches upstream, and
-  v7s have better B-tree locality on PG than v4s — non-trivial catalog perf win at scale.
-  Add `com.fasterxml.uuid:java-uuid-generator` (already-approved dep family — we use
-  Jackson) and call `Generators.timeBasedEpochGenerator().generate()` instead of
-  `UUID.randomUUID()`.
-  - `JdbcDucklakeCatalog.java:1284, 1466, 1512` (catalog-identity UUIDs only; the
-    transient `DucklakeTransactionHandle` UUID and Parquet file-name UUIDs can stay v4).
+- [x] **UUIDv7 for catalog-identity UUIDs.** Done. Added
+  `com.fasterxml.uuid:java-uuid-generator` 5.0.0, introduced a
+  `JdbcDucklakeCatalog.newCatalogUuid()` helper backed by
+  `Generators.timeBasedEpochGenerator()`, and swapped the three catalog-identity call sites
+  (view / schema / table). Transient `DucklakeTransactionHandle` UUID and Parquet filename
+  UUIDs intentionally left on v4 (no DB locality value there). Covered by
+  `TestJdbcDucklakeCatalogUuidVersion` (pins version bits + verifies embedded timestamp
+  matches wall clock, so a swap to v1/v4 would be caught). Cross-engine sanity pass with
+  DuckDB reading Trino-written UUIDv7 values.
+  - `JdbcDucklakeCatalog.java:57-64` (generator + helper), `:1308, :1490, :1536` (call sites)
   - Source: `COMPARE-pg_ducklake.md` (cosmetic but cheap)
 
 ## Verified via fixtures (2026-04-23)

@@ -35,6 +35,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.fasterxml.uuid.Generators;
+import com.fasterxml.uuid.impl.TimeBasedEpochGenerator;
+
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
@@ -47,6 +50,18 @@ public class JdbcDucklakeCatalog
 {
     private static final System.Logger log = System.getLogger(JdbcDucklakeCatalog.class.getName());
     private static final int CONFLICT_CHANGE_SUMMARY_LIMIT = 10;
+
+    // Matches the upstream DuckDB ducklake extension, which uses UUIDv7 for catalog-identity
+    // UUIDs (schema_uuid, table_uuid, view_uuid). v7 embeds a millisecond timestamp in the high
+    // bits, giving better B-tree locality on the catalog's PK indexes than v4.
+    private static final TimeBasedEpochGenerator V7_UUIDS = Generators.timeBasedEpochGenerator();
+
+    // Allocates a fresh catalog-identity UUID (schema_uuid / table_uuid / view_uuid). Always
+    // UUIDv7. Exposed package-private so tests can pin the version without reflection.
+    static String newCatalogUuid()
+    {
+        return V7_UUIDS.generate().toString();
+    }
 
     private final DataSource dataSource;
     private final HikariDataSource hikariDataSource;
@@ -1290,7 +1305,7 @@ public class JdbcDucklakeCatalog
             long viewId = tx.allocateCatalogId();
             tx.addChange("created_view:" + viewName);
 
-            insertViewRow(tx, viewId, UUID.randomUUID().toString(), schemaId, viewName, dialect, viewSql, viewMetadata);
+            insertViewRow(tx, viewId, newCatalogUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
         });
     }
 
@@ -1472,7 +1487,7 @@ public class JdbcDucklakeCatalog
                     "INSERT INTO ducklake_schema (schema_id, schema_uuid, begin_snapshot, end_snapshot, schema_name, path, path_is_relative) " +
                             "VALUES (?, ?, ?, NULL, ?, ?, true)")) {
                 stmt.setLong(1, schemaId);
-                setUuid(stmt, 2, UUID.randomUUID().toString());
+                setUuid(stmt, 2, newCatalogUuid());
                 stmt.setLong(3, tx.getNewSnapshotId());
                 stmt.setString(4, schemaName);
                 stmt.setString(5, schemaName + "/");
@@ -1518,7 +1533,7 @@ public class JdbcDucklakeCatalog
                     "INSERT INTO ducklake_table (table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative) " +
                             "VALUES (?, ?, ?, NULL, ?, ?, ?, true)")) {
                 stmt.setLong(1, tableId);
-                setUuid(stmt, 2, UUID.randomUUID().toString());
+                setUuid(stmt, 2, newCatalogUuid());
                 stmt.setLong(3, tx.getNewSnapshotId());
                 stmt.setLong(4, schemaId);
                 stmt.setString(5, tableName);
