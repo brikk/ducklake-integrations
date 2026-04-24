@@ -15,6 +15,14 @@ package dev.brikk.ducklake.catalog;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import dev.brikk.ducklake.catalog.schema.tables.DucklakeDeleteFileTable;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnRecord;
+import org.jooq.Condition;
+import org.jooq.Field;
+import org.jooq.Record;
+import org.jooq.Result;
+import org.jooq.Table;
+import org.jooq.exception.DataAccessException;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSchemaRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSnapshotChangesRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSnapshotRecord;
@@ -51,8 +59,17 @@ import com.fasterxml.uuid.Generators;
 import com.fasterxml.uuid.impl.TimeBasedEpochGenerator;
 
 import static dev.brikk.ducklake.catalog.SnapshotRange.activeAt;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_COLUMN;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_INFO;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA_VERSIONS;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT_CHANGES;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE;
@@ -244,37 +261,7 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeColumn> getTableColumns(long tableId, long snapshotId)
     {
-        String sql = "SELECT column_id, begin_snapshot, end_snapshot, table_id, column_order, column_name, column_type, nulls_allowed, parent_column " +
-                     "FROM ducklake_column " +
-                     "WHERE table_id = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) " +
-                     "ORDER BY column_order, column_id";
-
-        List<DucklakeColumn> allColumns = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    allColumns.add(new DucklakeColumn(
-                            rs.getLong("column_id"),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("table_id"),
-                            rs.getLong("column_order"),
-                            rs.getString("column_name"),
-                            rs.getString("column_type"),
-                            rs.getBoolean("nulls_allowed"),
-                            getLongOptional(rs, "parent_column")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get columns for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
+        List<DucklakeColumn> allColumns = fetchTableColumns(tableId, snapshotId);
 
         Map<Long, List<DucklakeColumn>> childrenByParent = new HashMap<>();
         for (DucklakeColumn column : allColumns) {
@@ -304,142 +291,103 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeColumn> getAllColumnsWithParentage(long tableId, long snapshotId)
     {
-        String sql = "SELECT column_id, begin_snapshot, end_snapshot, table_id, column_order, column_name, column_type, nulls_allowed, parent_column " +
-                     "FROM ducklake_column " +
-                     "WHERE table_id = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) " +
-                     "ORDER BY column_order, column_id";
+        return fetchTableColumns(tableId, snapshotId);
+    }
 
-        List<DucklakeColumn> allColumns = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    allColumns.add(new DucklakeColumn(
-                            rs.getLong("column_id"),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("table_id"),
-                            rs.getLong("column_order"),
-                            rs.getString("column_name"),
-                            rs.getString("column_type"),
-                            rs.getBoolean("nulls_allowed"),
-                            getLongOptional(rs, "parent_column")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get all columns for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
-
-        return allColumns;
+    private List<DucklakeColumn> fetchTableColumns(long tableId, long snapshotId)
+    {
+        return dsl.selectFrom(DUCKLAKE_COLUMN)
+                .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_COLUMN, snapshotId))
+                .orderBy(DUCKLAKE_COLUMN.COLUMN_ORDER, DUCKLAKE_COLUMN.COLUMN_ID)
+                .fetch(JdbcDucklakeCatalog::toDucklakeColumn);
     }
 
     @Override
     public List<DucklakeDataFile> getDataFiles(long tableId, long snapshotId)
     {
-        String sql = "SELECT data.data_file_id, data.table_id, data.begin_snapshot, data.end_snapshot, data.file_order, " +
-                     "       data.path, data.path_is_relative, data.file_format, data.record_count, data.file_size_bytes, " +
-                     "       data.footer_size, data.row_id_start, data.partition_id, " +
-                     "       del.path AS delete_file_path, del.path_is_relative AS delete_path_is_relative, " +
-                     "       del.footer_size AS delete_footer_size " +
-                     "FROM ducklake_data_file AS data " +
-                     "LEFT JOIN ducklake_delete_file AS del ON data.data_file_id = del.data_file_id " +
-                     "  AND ? >= del.begin_snapshot AND (? < del.end_snapshot OR del.end_snapshot IS NULL) " +
-                     "WHERE data.table_id = ? AND ? >= data.begin_snapshot AND (? < data.end_snapshot OR data.end_snapshot IS NULL) " +
-                     "ORDER BY data.file_order";
-
-        List<DucklakeDataFile> files = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, snapshotId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, tableId);
-            stmt.setLong(4, snapshotId);
-            stmt.setLong(5, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    files.add(new DucklakeDataFile(
-                            rs.getLong("data_file_id"),
-                            rs.getLong("table_id"),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("file_order"),
-                            rs.getString("path"),
-                            rs.getBoolean("path_is_relative"),
-                            rs.getString("file_format"),
-                            rs.getLong("record_count"),
-                            rs.getLong("file_size_bytes"),
-                            rs.getLong("footer_size"),
-                            rs.getLong("row_id_start"),
-                            getLongOptional(rs, "partition_id"),
-                            getStringOptional(rs, "delete_file_path"),
-                            getBooleanOptional(rs, "delete_path_is_relative"),
-                            getLongOptional(rs, "delete_footer_size")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get data files for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
-
-        return files;
+        DucklakeDeleteFileTable del = DUCKLAKE_DELETE_FILE.as("del");
+        return dsl.select(
+                        DUCKLAKE_DATA_FILE.DATA_FILE_ID,
+                        DUCKLAKE_DATA_FILE.TABLE_ID,
+                        DUCKLAKE_DATA_FILE.BEGIN_SNAPSHOT,
+                        DUCKLAKE_DATA_FILE.END_SNAPSHOT,
+                        DUCKLAKE_DATA_FILE.FILE_ORDER,
+                        DUCKLAKE_DATA_FILE.PATH,
+                        DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE,
+                        DUCKLAKE_DATA_FILE.FILE_FORMAT,
+                        DUCKLAKE_DATA_FILE.RECORD_COUNT,
+                        DUCKLAKE_DATA_FILE.FILE_SIZE_BYTES,
+                        DUCKLAKE_DATA_FILE.FOOTER_SIZE,
+                        DUCKLAKE_DATA_FILE.ROW_ID_START,
+                        DUCKLAKE_DATA_FILE.PARTITION_ID,
+                        del.PATH,
+                        del.PATH_IS_RELATIVE,
+                        del.FOOTER_SIZE)
+                .from(DUCKLAKE_DATA_FILE)
+                .leftJoin(del)
+                .on(DUCKLAKE_DATA_FILE.DATA_FILE_ID.eq(del.DATA_FILE_ID))
+                .and(activeAt(del, snapshotId))
+                .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                .orderBy(DUCKLAKE_DATA_FILE.FILE_ORDER)
+                .fetch(r -> new DucklakeDataFile(
+                        orZero(r.get(DUCKLAKE_DATA_FILE.DATA_FILE_ID)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.TABLE_ID)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.BEGIN_SNAPSHOT)),
+                        Optional.ofNullable(r.get(DUCKLAKE_DATA_FILE.END_SNAPSHOT)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.FILE_ORDER)),
+                        r.get(DUCKLAKE_DATA_FILE.PATH),
+                        Boolean.TRUE.equals(r.get(DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE)),
+                        r.get(DUCKLAKE_DATA_FILE.FILE_FORMAT),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.RECORD_COUNT)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.FILE_SIZE_BYTES)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.FOOTER_SIZE)),
+                        orZero(r.get(DUCKLAKE_DATA_FILE.ROW_ID_START)),
+                        Optional.ofNullable(r.get(DUCKLAKE_DATA_FILE.PARTITION_ID)),
+                        Optional.ofNullable(r.get(del.PATH)),
+                        Optional.ofNullable(r.get(del.PATH_IS_RELATIVE)),
+                        Optional.ofNullable(r.get(del.FOOTER_SIZE))));
     }
 
     @Override
     public List<Long> findDataFileIdsInRange(long tableId, long snapshotId, ColumnRangePredicate predicate)
     {
         long columnId = predicate.columnId();
-        String minValue = predicate.minValue();
-        String maxValue = predicate.maxValue();
 
-        Optional<String> columnType = getColumnType(tableId, columnId, snapshotId);
-        if (columnType.isEmpty()) {
+        String columnType = dsl.select(DUCKLAKE_COLUMN.COLUMN_TYPE)
+                .from(DUCKLAKE_COLUMN)
+                .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
+                .and(activeAt(DUCKLAKE_COLUMN, snapshotId))
+                .fetchOne(DUCKLAKE_COLUMN.COLUMN_TYPE);
+        if (columnType == null) {
             return List.of();
         }
 
-        String sql = "SELECT stats.data_file_id, stats.min_value, stats.max_value " +
-                     "FROM ducklake_file_column_stats AS stats " +
-                     "JOIN ducklake_data_file AS data ON stats.data_file_id = data.data_file_id " +
-                     "WHERE stats.table_id = ? AND stats.column_id = ? " +
-                     "  AND data.table_id = ? " +
-                     "  AND ? >= data.begin_snapshot AND (? < data.end_snapshot OR data.end_snapshot IS NULL)";
+        Comparable<?> lowerBound = parseStatValue(columnType, predicate.minValue());
+        Comparable<?> upperBound = parseStatValue(columnType, predicate.maxValue());
 
-        List<Long> fileIds = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, columnId);
-            stmt.setLong(3, tableId);
-            stmt.setLong(4, snapshotId);
-            stmt.setLong(5, snapshotId);
-
-            Comparable<?> lowerBound = parseStatValue(columnType.get(), minValue);
-            Comparable<?> upperBound = parseStatValue(columnType.get(), maxValue);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    Comparable<?> minStat = parseStatValue(columnType.get(), rs.getString("min_value"));
-                    Comparable<?> maxStat = parseStatValue(columnType.get(), rs.getString("max_value"));
-
-                    if (isWithinBounds(lowerBound, upperBound, minStat, maxStat)) {
-                        fileIds.add(rs.getLong("data_file_id"));
-                    }
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get file IDs for predicate on table: " + tableId + ", column: " + columnId, e);
-        }
-
-        return fileIds;
+        return dsl.select(
+                        DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID,
+                        DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
+                        DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
+                .from(DUCKLAKE_FILE_COLUMN_STATS)
+                .innerJoin(DUCKLAKE_DATA_FILE)
+                .on(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
+                .where(DUCKLAKE_FILE_COLUMN_STATS.TABLE_ID.eq(tableId))
+                .and(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID.eq(columnId))
+                .and(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                .fetch()
+                .stream()
+                .filter(r -> isWithinBounds(
+                        lowerBound,
+                        upperBound,
+                        parseStatValue(columnType, r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE)),
+                        parseStatValue(columnType, r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE))))
+                .map(r -> r.get(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID))
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -454,58 +402,43 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeColumnStats> getColumnStats(long tableId, long snapshotId)
     {
-        // Resolve column types internally for typed min/max comparison
         Map<Long, String> columnTypes = getTableColumns(tableId, snapshotId).stream()
                 .collect(Collectors.toMap(DucklakeColumn::columnId, DucklakeColumn::columnType));
 
-        // Fetch per-file stats and aggregate in Java with typed min/max comparison
-        String sql = "SELECT stats.column_id, stats.value_count, stats.null_count, " +
-                     "       stats.column_size_bytes, stats.min_value, stats.max_value " +
-                     "FROM ducklake_file_column_stats AS stats " +
-                     "JOIN ducklake_data_file AS data ON stats.data_file_id = data.data_file_id " +
-                     "WHERE stats.table_id = ? AND data.table_id = ? " +
-                     "  AND ? >= data.begin_snapshot AND (? < data.end_snapshot OR data.end_snapshot IS NULL)";
-
-        // Accumulate per-column aggregates
         Map<Long, long[]> countAccumulators = new HashMap<>(); // [valueCount, nullCount, sizeBytes]
         Map<Long, String> minAccumulators = new HashMap<>();
         Map<Long, String> maxAccumulators = new HashMap<>();
 
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, tableId);
-            stmt.setLong(3, snapshotId);
-            stmt.setLong(4, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    long columnId = rs.getLong("column_id");
-                    long valueCount = rs.getLong("value_count");
-                    long nullCount = rs.getLong("null_count");
-                    long sizeBytes = rs.getLong("column_size_bytes");
-                    String minValue = rs.getString("min_value");
-                    String maxValue = rs.getString("max_value");
-
-                    countAccumulators.computeIfAbsent(columnId, _ -> new long[3]);
-                    long[] counts = countAccumulators.get(columnId);
-                    counts[0] += valueCount;
-                    counts[1] += nullCount;
-                    counts[2] += sizeBytes;
+        dsl.select(
+                        DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID,
+                        DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT,
+                        DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT,
+                        DUCKLAKE_FILE_COLUMN_STATS.COLUMN_SIZE_BYTES,
+                        DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
+                        DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
+                .from(DUCKLAKE_FILE_COLUMN_STATS)
+                .innerJoin(DUCKLAKE_DATA_FILE)
+                .on(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
+                .where(DUCKLAKE_FILE_COLUMN_STATS.TABLE_ID.eq(tableId))
+                .and(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                .forEach(r -> {
+                    long columnId = orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID));
+                    long[] counts = countAccumulators.computeIfAbsent(columnId, _ -> new long[3]);
+                    counts[0] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT));
+                    counts[1] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT));
+                    counts[2] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_SIZE_BYTES));
 
                     String columnType = columnTypes.getOrDefault(columnId, "");
+                    String minValue = r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE);
+                    String maxValue = r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE);
                     if (minValue != null) {
                         minAccumulators.merge(columnId, minValue, (a, b) -> typedMin(a, b, columnType));
                     }
                     if (maxValue != null) {
                         maxAccumulators.merge(columnId, maxValue, (a, b) -> typedMax(a, b, columnType));
                     }
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get column stats for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
+                });
 
         List<DucklakeColumnStats> result = new ArrayList<>();
         for (Map.Entry<Long, long[]> entry : countAccumulators.entrySet()) {
@@ -555,38 +488,31 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakePartitionSpec> getPartitionSpecs(long tableId, long snapshotId)
     {
-        String sql = "SELECT pi.partition_id, pi.table_id, " +
-                     "       pc.partition_key_index, pc.column_id, pc.transform " +
-                     "FROM ducklake_partition_info pi " +
-                     "JOIN ducklake_partition_column pc ON pi.partition_id = pc.partition_id AND pi.table_id = pc.table_id " +
-                     "WHERE pi.table_id = ? " +
-                     "  AND ? >= pi.begin_snapshot AND (? < pi.end_snapshot OR pi.end_snapshot IS NULL) " +
-                     "ORDER BY pi.partition_id, pc.partition_key_index";
-
         Map<Long, List<DucklakePartitionField>> fieldsByPartition = new LinkedHashMap<>();
         Map<Long, Long> tableIdByPartition = new HashMap<>();
 
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    long partitionId = rs.getLong("partition_id");
-                    tableIdByPartition.put(partitionId, rs.getLong("table_id"));
+        dsl.select(
+                        DUCKLAKE_PARTITION_INFO.PARTITION_ID,
+                        DUCKLAKE_PARTITION_INFO.TABLE_ID,
+                        DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX,
+                        DUCKLAKE_PARTITION_COLUMN.COLUMN_ID,
+                        DUCKLAKE_PARTITION_COLUMN.TRANSFORM)
+                .from(DUCKLAKE_PARTITION_INFO)
+                .innerJoin(DUCKLAKE_PARTITION_COLUMN)
+                .on(DUCKLAKE_PARTITION_INFO.PARTITION_ID.eq(DUCKLAKE_PARTITION_COLUMN.PARTITION_ID))
+                .and(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(DUCKLAKE_PARTITION_COLUMN.TABLE_ID))
+                .where(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_PARTITION_INFO, snapshotId))
+                .orderBy(DUCKLAKE_PARTITION_INFO.PARTITION_ID, DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX)
+                .forEach(r -> {
+                    long partitionId = orZero(r.get(DUCKLAKE_PARTITION_INFO.PARTITION_ID));
+                    tableIdByPartition.put(partitionId, orZero(r.get(DUCKLAKE_PARTITION_INFO.TABLE_ID)));
                     fieldsByPartition.computeIfAbsent(partitionId, _ -> new ArrayList<>())
                             .add(new DucklakePartitionField(
-                                    rs.getInt("partition_key_index"),
-                                    rs.getLong("column_id"),
-                                    DucklakePartitionTransform.fromString(rs.getString("transform"))));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get partition specs for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
+                                    (int) orZero(r.get(DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX)),
+                                    orZero(r.get(DUCKLAKE_PARTITION_COLUMN.COLUMN_ID)),
+                                    DucklakePartitionTransform.fromString(r.get(DUCKLAKE_PARTITION_COLUMN.TRANSFORM))));
+                });
 
         List<DucklakePartitionSpec> specs = new ArrayList<>();
         for (Map.Entry<Long, List<DucklakePartitionField>> entry : fieldsByPartition.entrySet()) {
@@ -598,34 +524,26 @@ public class JdbcDucklakeCatalog
     @Override
     public Map<Long, List<DucklakeFilePartitionValue>> getFilePartitionValues(long tableId, long snapshotId)
     {
-        String sql = "SELECT fpv.data_file_id, fpv.partition_key_index, fpv.partition_value " +
-                     "FROM ducklake_file_partition_value fpv " +
-                     "JOIN ducklake_data_file df ON fpv.data_file_id = df.data_file_id AND fpv.table_id = df.table_id " +
-                     "WHERE fpv.table_id = ? " +
-                     "  AND ? >= df.begin_snapshot AND (? < df.end_snapshot OR df.end_snapshot IS NULL)";
-
         Map<Long, List<DucklakeFilePartitionValue>> result = new HashMap<>();
 
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    long dataFileId = rs.getLong("data_file_id");
+        dsl.select(
+                        DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID,
+                        DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_KEY_INDEX,
+                        DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_VALUE)
+                .from(DUCKLAKE_FILE_PARTITION_VALUE)
+                .innerJoin(DUCKLAKE_DATA_FILE)
+                .on(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
+                .and(DUCKLAKE_FILE_PARTITION_VALUE.TABLE_ID.eq(DUCKLAKE_DATA_FILE.TABLE_ID))
+                .where(DUCKLAKE_FILE_PARTITION_VALUE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                .forEach(r -> {
+                    long dataFileId = orZero(r.get(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID));
                     result.computeIfAbsent(dataFileId, _ -> new ArrayList<>())
                             .add(new DucklakeFilePartitionValue(
                                     dataFileId,
-                                    rs.getInt("partition_key_index"),
-                                    rs.getString("partition_value")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get file partition values for table: " + tableId + " at snapshot: " + snapshotId, e);
-        }
+                                    (int) orZero(r.get(DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_KEY_INDEX)),
+                                    r.get(DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_VALUE)));
+                });
 
         return result;
     }
@@ -634,42 +552,39 @@ public class JdbcDucklakeCatalog
     public List<DucklakeInlinedDataInfo> getInlinedDataInfos(long tableId, long snapshotId)
     {
         // A table can have multiple inlined data tables (one per schema version).
-        String sql = "SELECT table_id, table_name, schema_version " +
-                "FROM ducklake_inlined_data_tables " +
-                "WHERE table_id = ? " +
-                "  AND schema_version <= (SELECT schema_version FROM ducklake_snapshot WHERE snapshot_id = ?) " +
-                "ORDER BY schema_version";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                List<DucklakeInlinedDataInfo> infos = new ArrayList<>();
-                while (rs.next()) {
-                    long resolvedTableId = rs.getLong("table_id");
-                    long schemaVersion = rs.getLong("schema_version");
-                    String inlinedTableName = String.format("ducklake_inlined_data_%d_%d", resolvedTableId, schemaVersion);
-                    try (PreparedStatement verifyStmt = conn.prepareStatement("SELECT 1 FROM " + inlinedTableName + " WHERE 1 = 0")) {
-                        verifyStmt.executeQuery();
-                    }
-                    catch (SQLException e) {
-                        // Catalog metadata can point to a dropped/non-materialized inlined table.
-                        // Treat this as "no inlined data" so scan planning does not emit a dead split.
-                        log.log(System.Logger.Level.DEBUG, "Inlined data table {0} not available for table {1}: {2}", inlinedTableName, tableId, e.getMessage());
-                        continue;
-                    }
-
-                    infos.add(new DucklakeInlinedDataInfo(
-                            resolvedTableId,
-                            rs.getString("table_name"),
-                            schemaVersion));
-                }
-                return infos;
-            }
+        try {
+            return dsl.select(
+                            DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID,
+                            DUCKLAKE_INLINED_DATA_TABLES.TABLE_NAME,
+                            DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)
+                    .from(DUCKLAKE_INLINED_DATA_TABLES)
+                    .where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION.le(
+                            DSL.select(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION)
+                                    .from(DUCKLAKE_SNAPSHOT)
+                                    .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(snapshotId))))
+                    .orderBy(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)
+                    .fetch()
+                    .stream()
+                    .filter(r -> {
+                        InlinedDataTable inlined = InlinedDataTable.of(
+                                orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID)),
+                                orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)));
+                        if (!inlined.existsAsTable(dsl)) {
+                            // Catalog metadata can point to a dropped/non-materialized inlined table.
+                            // Treat this as "no inlined data" so scan planning does not emit a dead split.
+                            log.log(System.Logger.Level.DEBUG, "Inlined data table {0} not available for table {1}", inlined.name, tableId);
+                            return false;
+                        }
+                        return true;
+                    })
+                    .map(r -> new DucklakeInlinedDataInfo(
+                            orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID)),
+                            r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_NAME),
+                            orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION))))
+                    .collect(Collectors.toList());
         }
-        catch (SQLException e) {
+        catch (DataAccessException e) {
             // ducklake_inlined_data_tables may not exist in catalogs that never used inlining
             log.log(System.Logger.Level.DEBUG, "Could not query inlined data tables (table may not exist): {0}", e.getMessage());
             return List.of();
@@ -679,21 +594,15 @@ public class JdbcDucklakeCatalog
     @Override
     public boolean hasInlinedRows(long tableId, long schemaVersion, long snapshotId)
     {
-        String inlinedTableName = String.format("ducklake_inlined_data_%d_%d", tableId, schemaVersion);
-        String sql = "SELECT 1 FROM " + quoteIdentifier(inlinedTableName) +
-                " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) LIMIT 1";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, snapshotId);
-            stmt.setLong(2, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                return rs.next();
-            }
+        InlinedDataTable inlined = InlinedDataTable.of(tableId, schemaVersion);
+        try {
+            return dsl.fetchExists(
+                    DSL.selectOne()
+                            .from(inlined.table)
+                            .where(inlined.activeAt(snapshotId)));
         }
-        catch (SQLException e) {
-            log.log(System.Logger.Level.DEBUG, "Could not probe inlined data rows from {0} (table may not exist): {1}", inlinedTableName, e.getMessage());
+        catch (DataAccessException e) {
+            log.log(System.Logger.Level.DEBUG, "Could not probe inlined data rows from {0} (table may not exist): {1}", inlined.name, e.getMessage());
             return false;
         }
     }
@@ -705,103 +614,121 @@ public class JdbcDucklakeCatalog
             return List.of();
         }
 
-        String inlinedTableName = String.format("ducklake_inlined_data_%d_%d", tableId, schemaVersion);
+        InlinedDataTable inlined = InlinedDataTable.of(tableId, schemaVersion);
 
-        List<List<Object>> rows = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection()) {
-            OptionalLong sourceSchemaSnapshot = getSnapshotIdForSchemaVersion(conn, tableId, schemaVersion, snapshotId);
-            if (sourceSchemaSnapshot.isEmpty()) {
-                return List.of();
-            }
-
-            Map<Long, DucklakeColumn> sourceColumnsById = getTableColumns(tableId, sourceSchemaSnapshot.getAsLong()).stream()
-                    .collect(Collectors.toMap(DucklakeColumn::columnId, column -> column));
-
-            List<String> projectedExpressions = new ArrayList<>(columns.size());
-            for (int index = 0; index < columns.size(); index++) {
-                DucklakeColumn requestedColumn = columns.get(index);
-                String alias = "c" + index;
-                DucklakeColumn sourceColumn = sourceColumnsById.get(requestedColumn.columnId());
-                if (sourceColumn == null) {
-                    projectedExpressions.add("NULL AS " + quoteIdentifier(alias));
-                    continue;
-                }
-                projectedExpressions.add(quoteIdentifier(sourceColumn.columnName()) + " AS " + quoteIdentifier(alias));
-            }
-
-            String sql = String.format(
-                    "SELECT %s FROM %s WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) ORDER BY row_id",
-                    String.join(", ", projectedExpressions),
-                    quoteIdentifier(inlinedTableName));
-            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setLong(1, snapshotId);
-                stmt.setLong(2, snapshotId);
-
-                try (ResultSet rs = stmt.executeQuery()) {
-                    int columnCount = columns.size();
-                    while (rs.next()) {
-                        List<Object> row = new ArrayList<>(columnCount);
-                        for (int i = 1; i <= columnCount; i++) {
-                            row.add(rs.getObject(i));
-                        }
-                        rows.add(row);
-                    }
-                }
-            }
-        }
-        catch (SQLException e) {
-            // The inlined data table may not exist if the table was created but never had data inserted,
-            // or if the inlined data was flushed to Parquet files. Return empty in these cases.
-            log.log(System.Logger.Level.DEBUG, "Could not read inlined data from {0} (table may not exist): {1}", inlinedTableName, e.getMessage());
+        OptionalLong sourceSchemaSnapshot = getSnapshotIdForSchemaVersion(tableId, schemaVersion, snapshotId);
+        if (sourceSchemaSnapshot.isEmpty()) {
             return List.of();
         }
 
-        return rows;
+        Map<Long, DucklakeColumn> sourceColumnsById = getTableColumns(tableId, sourceSchemaSnapshot.getAsLong()).stream()
+                .collect(Collectors.toMap(DucklakeColumn::columnId, column -> column));
+
+        List<Field<?>> projected = new ArrayList<>(columns.size());
+        for (int index = 0; index < columns.size(); index++) {
+            String alias = "c" + index;
+            DucklakeColumn sourceColumn = sourceColumnsById.get(columns.get(index).columnId());
+            projected.add(sourceColumn == null
+                    ? DSL.inline((Object) null).as(alias)
+                    : DSL.field(DSL.name(sourceColumn.columnName())).as(alias));
+        }
+
+        try {
+            Result<Record> result = dsl.select(projected)
+                    .from(inlined.table)
+                    .where(inlined.activeAt(snapshotId))
+                    .orderBy(DSL.field(DSL.name("row_id")))
+                    .fetch();
+
+            int columnCount = columns.size();
+            List<List<Object>> rows = new ArrayList<>(result.size());
+            for (Record rec : result) {
+                List<Object> row = new ArrayList<>(columnCount);
+                for (int i = 0; i < columnCount; i++) {
+                    row.add(rec.get(i));
+                }
+                rows.add(row);
+            }
+            return rows;
+        }
+        catch (DataAccessException e) {
+            // The inlined data table may not exist if the table was created but never had data inserted,
+            // or if the inlined data was flushed to Parquet files. Return empty in these cases.
+            log.log(System.Logger.Level.DEBUG, "Could not read inlined data from {0} (table may not exist): {1}", inlined.name, e.getMessage());
+            return List.of();
+        }
     }
 
-    private OptionalLong getSnapshotIdForSchemaVersion(Connection conn, long tableId, long schemaVersion, long snapshotId)
-            throws SQLException
+    private OptionalLong getSnapshotIdForSchemaVersion(long tableId, long schemaVersion, long snapshotId)
     {
         // Prefer table-scoped schema version rows when available.
         // Some catalogs include ducklake_schema_versions.table_id (DuckDB behavior),
         // which gives an unambiguous snapshot where this table's schema version was introduced.
-        String tableScopedSql = "SELECT begin_snapshot FROM ducklake_schema_versions " +
-                "WHERE table_id = ? AND schema_version = ? AND begin_snapshot <= ? " +
-                "ORDER BY begin_snapshot DESC LIMIT 1";
-        try (PreparedStatement stmt = conn.prepareStatement(tableScopedSql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, schemaVersion);
-            stmt.setLong(3, snapshotId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return OptionalLong.of(rs.getLong("begin_snapshot"));
-                }
+        try {
+            Long tableScoped = dsl.select(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT)
+                    .from(DUCKLAKE_SCHEMA_VERSIONS)
+                    .where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION.eq(schemaVersion))
+                    .and(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT.le(snapshotId))
+                    .orderBy(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT.desc())
+                    .limit(1)
+                    .fetchOne(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT);
+            if (tableScoped != null) {
+                return OptionalLong.of(tableScoped);
             }
         }
-        catch (SQLException e) {
+        catch (DataAccessException e) {
             // Fallback for catalogs without table_id in ducklake_schema_versions or older metadata.
             log.log(System.Logger.Level.DEBUG, "Could not resolve schema version via ducklake_schema_versions for table {0}: {1}", tableId, e.getMessage());
         }
 
         // Backward-compatible fallback: resolve by snapshot.schema_version only.
-        String fallbackSql = "SELECT snapshot_id FROM ducklake_snapshot " +
-                "WHERE schema_version = ? AND snapshot_id <= ? ORDER BY snapshot_id DESC LIMIT 1";
-        try (PreparedStatement stmt = conn.prepareStatement(fallbackSql)) {
-            stmt.setLong(1, schemaVersion);
-            stmt.setLong(2, snapshotId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return OptionalLong.of(rs.getLong("snapshot_id"));
-                }
-                return OptionalLong.empty();
-            }
-        }
+        Long fallback = dsl.select(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID)
+                .from(DUCKLAKE_SNAPSHOT)
+                .where(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION.eq(schemaVersion))
+                .and(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.le(snapshotId))
+                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+                .limit(1)
+                .fetchOne(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID);
+        return fallback == null ? OptionalLong.empty() : OptionalLong.of(fallback);
     }
 
-    private static String quoteIdentifier(String identifier)
+    /**
+     * Handle to a dynamic {@code ducklake_inlined_data_{tableId}_{schemaVersion}} table that
+     * codegen doesn't know about. Bundles the table reference with its {@code begin_snapshot} /
+     * {@code end_snapshot} fields so the per-method setup dance reduces to one line.
+     */
+    private record InlinedDataTable(
+            String name,
+            Table<?> table,
+            Field<Long> beginSnapshot,
+            Field<Long> endSnapshot)
     {
-        return "\"" + identifier.replace("\"", "\"\"") + "\"";
+        static InlinedDataTable of(long tableId, long schemaVersion)
+        {
+            String name = String.format("ducklake_inlined_data_%d_%d", tableId, schemaVersion);
+            return new InlinedDataTable(
+                    name,
+                    DSL.table(DSL.name(name)),
+                    DSL.field(DSL.name("begin_snapshot"), Long.class),
+                    DSL.field(DSL.name("end_snapshot"), Long.class));
+        }
+
+        Condition activeAt(long snapshotId)
+        {
+            return SnapshotRange.activeAt(beginSnapshot, endSnapshot, snapshotId);
+        }
+
+        boolean existsAsTable(DSLContext dsl)
+        {
+            try {
+                dsl.selectOne().from(table).where(DSL.falseCondition()).fetch();
+                return true;
+            }
+            catch (DataAccessException e) {
+                return false;
+            }
+        }
     }
 
     // Matches upstream's KeywordHelper::WriteQuoted (DuckDB) as consumed by
@@ -2000,14 +1927,37 @@ public class JdbcDucklakeCatalog
         }
     }
 
+    // DuckLake's jOOQ codegen marks most BIGINT columns as nullable (no schema-level NOT NULL
+    // constraint), so accessor methods return Long. The JDBC implementation historically used
+    // ResultSet.getLong() which returns 0 on SQL NULL; preserve that fallback to keep fidelity
+    // with records that don't populate optional columns (e.g. file_order).
+    private static long orZero(Long value)
+    {
+        return value == null ? 0L : value;
+    }
+
+    private static DucklakeColumn toDucklakeColumn(DucklakeColumnRecord r)
+    {
+        return new DucklakeColumn(
+                orZero(r.getColumnId()),
+                orZero(r.getBeginSnapshot()),
+                Optional.ofNullable(r.getEndSnapshot()),
+                orZero(r.getTableId()),
+                orZero(r.getColumnOrder()),
+                r.getColumnName(),
+                r.getColumnType(),
+                Boolean.TRUE.equals(r.getNullsAllowed()),
+                Optional.ofNullable(r.getParentColumn()));
+    }
+
     private static DucklakeSnapshot toDucklakeSnapshot(DucklakeSnapshotRecord r)
     {
         return new DucklakeSnapshot(
                 r.getSnapshotId(),
                 r.getSnapshotTime().toInstant(),
-                r.getSchemaVersion(),
-                r.getNextCatalogId(),
-                r.getNextFileId());
+                orZero(r.getSchemaVersion()),
+                orZero(r.getNextCatalogId()),
+                orZero(r.getNextFileId()));
     }
 
     private static DucklakeSnapshotChange toDucklakeSnapshotChange(DucklakeSnapshotChangesRecord r)
@@ -2025,7 +1975,7 @@ public class JdbcDucklakeCatalog
         return new DucklakeSchema(
                 r.getSchemaId(),
                 r.getSchemaUuid(),
-                r.getBeginSnapshot(),
+                orZero(r.getBeginSnapshot()),
                 Optional.ofNullable(r.getEndSnapshot()),
                 r.getSchemaName(),
                 Optional.ofNullable(r.getPath()),
@@ -2035,11 +1985,11 @@ public class JdbcDucklakeCatalog
     private static DucklakeTable toDucklakeTable(DucklakeTableRecord r)
     {
         return new DucklakeTable(
-                r.getTableId(),
+                orZero(r.getTableId()),
                 r.getTableUuid(),
-                r.getBeginSnapshot(),
+                orZero(r.getBeginSnapshot()),
                 Optional.ofNullable(r.getEndSnapshot()),
-                r.getSchemaId(),
+                orZero(r.getSchemaId()),
                 r.getTableName(),
                 Optional.ofNullable(r.getPath()),
                 Optional.ofNullable(r.getPathIsRelative()));
@@ -2048,9 +1998,9 @@ public class JdbcDucklakeCatalog
     private static DucklakeTableStats toDucklakeTableStats(DucklakeTableStatsRecord r)
     {
         return new DucklakeTableStats(
-                r.getTableId(),
-                r.getRecordCount(),
-                r.getFileSizeBytes());
+                orZero(r.getTableId()),
+                orZero(r.getRecordCount()),
+                orZero(r.getFileSizeBytes()));
     }
 
     private static DucklakeView toDucklakeView(DucklakeViewRecord r)
@@ -2059,14 +2009,14 @@ public class JdbcDucklakeCatalog
         OptionalLong endSnapshot = endRaw == null ? OptionalLong.empty() : OptionalLong.of(endRaw);
         UUID viewUuid = r.getViewUuid();
         return new DucklakeView(
-                r.getViewId(),
+                orZero(r.getViewId()),
                 viewUuid == null ? null : viewUuid.toString(),
-                r.getSchemaId(),
+                orZero(r.getSchemaId()),
                 r.getViewName(),
                 r.getSql(),
                 r.getDialect(),
                 Optional.ofNullable(r.getColumnAliases()),
-                r.getBeginSnapshot(),
+                orZero(r.getBeginSnapshot()),
                 endSnapshot);
     }
 
@@ -2128,32 +2078,6 @@ public class JdbcDucklakeCatalog
             }
             default:
                 return columnType;
-        }
-    }
-
-    private Optional<String> getColumnType(long tableId, long columnId, long snapshotId)
-    {
-        String sql = "SELECT column_type " +
-                     "FROM ducklake_column " +
-                     "WHERE table_id = ? AND column_id = ? " +
-                     "  AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, columnId);
-            stmt.setLong(3, snapshotId);
-            stmt.setLong(4, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(rs.getString("column_type"));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get column type for table: " + tableId + ", column: " + columnId, e);
         }
     }
 

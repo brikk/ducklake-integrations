@@ -91,39 +91,65 @@ commit + run of `:ducklake-catalog:test`.
 
 ### Phase 3 — Tier 2 reads (joins + aggregation)
 
-- [ ] `getTableColumns` + `getAllColumnsWithParentage` — SELECT ducklake_column with
+- [x] `getTableColumns` + `getAllColumnsWithParentage` — SELECT ducklake_column with
   snapshot range + ORDER BY; keep the parent-link graph walk in Java (jOOQ doesn't
-  simplify struct/list/map reconstruction). Retire `getColumnType` private helper.
-- [ ] `getDataFiles` — LEFT JOIN `ducklake_data_file` with `ducklake_delete_file` on
-  `data_file_id` + snapshot range on both sides; Java-side fold into
-  `DucklakeDataFile` with optional delete info.
-- [ ] `getPartitionSpecs` — INNER JOIN `ducklake_partition_info` with
-  `ducklake_partition_column`; Java-side group by `partition_id`.
-- [ ] `getFilePartitionValues` — INNER JOIN `ducklake_file_partition_value` with
-  `ducklake_data_file` for snapshot range; Java-side group by `data_file_id`.
-- [ ] `findDataFileIdsInRange` — INNER JOIN `ducklake_file_column_stats` with
-  `ducklake_data_file`; keep typed min/max comparison (`parseStatValue`,
-  `isWithinBounds`) in Java — that logic is column-type-aware and shouldn't live in
-  SQL.
-- [ ] `getColumnStats` — INNER JOIN + Java-side typed min/max merge. Candidate for a
-  follow-up cleanup to centralize `AggregatedColumnStats.merge()`.
+  simplify struct/list/map reconstruction). Retired `getColumnType` private helper
+  (its only caller, `findDataFileIdsInRange`, now inlines the SELECT).
+- [x] `getDataFiles` — LEFT JOIN `ducklake_data_file` with `ducklake_delete_file`
+  (aliased `del`) on `data_file_id` + `activeAt(del, snapshotId)` in the ON
+  clause; Java-side `fetch(...)` mapper folds into `DucklakeDataFile` with
+  optional delete info.
+- [x] `getPartitionSpecs` — INNER JOIN `ducklake_partition_info` with
+  `ducklake_partition_column`; Java-side `forEach` groups by `partition_id`.
+- [x] `getFilePartitionValues` — INNER JOIN `ducklake_file_partition_value` with
+  `ducklake_data_file` for snapshot range; Java-side `forEach` groups by
+  `data_file_id`.
+- [x] `findDataFileIdsInRange` — INNER JOIN `ducklake_file_column_stats` with
+  `ducklake_data_file`; typed min/max comparison (`parseStatValue`,
+  `isWithinBounds`) stays in Java as a post-fetch stream filter — column-type-aware
+  logic doesn't belong in SQL.
+- [x] `getColumnStats` — INNER JOIN + Java-side typed min/max merge via `forEach`
+  accumulator. Still a candidate for follow-up cleanup to centralize
+  `AggregatedColumnStats.merge()` — out of scope for this phase.
+
+**Null-safety note:** DuckLake's schema leaves most BIGINT columns nullable at the
+database layer, so jOOQ's generated accessors return `Long`. The original
+`ResultSet.getLong()` path silently returned `0L` for SQL NULL — callers (and the
+test data generator!) rely on that for fields like `file_order`. Added a
+package-private `orZero(Long)` helper in `JdbcDucklakeCatalog` and threaded it
+through every `Long → long` unbox in the mapper helpers and inline join
+projections. If we ever tighten the schema (DuckLake upstream or our own
+migrations), `orZero` becomes a no-op we can delete.
 
 ### Phase 4 — Inlined data (dynamic table names)
 
-- [ ] `getInlinedDataInfos` — the outer query is a straight SELECT on
-  `ducklake_inlined_data_tables`; the per-row existence probe targets a dynamic table
-  name (`ducklake_inlined_data_{tableId}_{schemaVersion}`) that jOOQ codegen does not
-  know about. Use `DSL.table(DSL.name(...))` and
-  `selectOne().from(...).where(falseCondition()).limit(1)`.
-- [ ] `hasInlinedRows` — same pattern; snapshot range on the dynamic table. Build the
-  `Field<?>` refs via `DSL.field(DSL.name(...))`.
-- [ ] `readInlinedData` — dynamic projection (NULL-aliasing missing columns) against
-  the dynamic table. This one stays closest to hand-written SQL; goal is to eliminate
-  `Statement`/`PreparedStatement` construction and route through
-  `dsl.resultQuery(...)`.
-- [ ] `getSnapshotIdForSchemaVersion` — 2 SELECTs (table-scoped + fallback) on
-  `ducklake_schema_versions` / `ducklake_snapshot`; trivial ports, just sequencing
-  matters.
+- [x] `getInlinedDataInfos` — outer SELECT on `ducklake_inlined_data_tables` with
+  the sub-query `SCHEMA_VERSION.le(dsl.select(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION).where(SNAPSHOT_ID.eq(?)))`;
+  per-row existence probe targets the dynamic table via
+  `InlinedDataTable.existsAsTable(dsl)` (`selectOne().from(table).where(falseCondition()).fetch()`,
+  catching `DataAccessException` for non-materialized tables).
+- [x] `hasInlinedRows` — `dsl.fetchExists(DSL.selectOne().from(table).where(activeAt(...)))`.
+- [x] `readInlinedData` — dynamic projection built as `List<Field<?>>` with
+  `DSL.inline((Object) null).as("cN")` for missing source columns and
+  `DSL.field(DSL.name(srcColumn)).as("cN")` for present ones. Runs through
+  `dsl.select(projected).from(table).where(...).orderBy(...).fetch()`.
+- [x] `getSnapshotIdForSchemaVersion` — 2 SELECTs (table-scoped + fallback) on
+  `ducklake_schema_versions` / `ducklake_snapshot`; signature changed to drop the
+  `Connection` param now that writes don't need a shared connection.
+
+**Dynamic-table helper:** introduced a private nested `InlinedDataTable` record in
+`JdbcDucklakeCatalog` that bundles `{name, Table<?>, Field<Long> beginSnapshot,
+Field<Long> endSnapshot}` with `activeAt(snapshotId)` and `existsAsTable(dsl)`
+convenience methods. Collapses the 4-line "build table + field refs" dance to a
+single `InlinedDataTable.of(tableId, schemaVersion)` call at the top of each
+method. Validates the `SnapshotRange.activeAt(Field<Long>, Field<Long>, long)`
+overload added in Phase 1 — it gets exercised by every inlined-data path.
+
+**Retired:** `quoteIdentifier(String)` private helper — its only callers were the
+inlined-data methods, and `DSL.name(...)` handles identifier quoting in a
+dialect-aware way. `writeQuotedValue` stays — still used by
+`changeCreatedTable/View/Schema` for the DuckLake-specific `changes_made` text
+column format.
 
 ### Phase 5 — Transaction framework
 
