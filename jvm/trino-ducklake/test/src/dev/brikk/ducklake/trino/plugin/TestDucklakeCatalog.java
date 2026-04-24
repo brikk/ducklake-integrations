@@ -13,13 +13,10 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
-import dev.brikk.ducklake.catalog.ColumnRangePredicate;
 import dev.brikk.ducklake.catalog.DucklakeCatalog;
 import dev.brikk.ducklake.catalog.DucklakeColumn;
-import dev.brikk.ducklake.catalog.DucklakeColumnStats;
 import dev.brikk.ducklake.catalog.DucklakeDataFile;
 import dev.brikk.ducklake.catalog.DucklakeSchema;
-import dev.brikk.ducklake.catalog.DucklakeSnapshot;
 import dev.brikk.ducklake.catalog.DucklakeTable;
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog;
 import io.trino.spi.TrinoException;
@@ -34,7 +31,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -64,108 +60,6 @@ public class TestDucklakeCatalog
         if (catalog != null) {
             catalog.close();
         }
-    }
-
-    @Test
-    public void testGetCurrentSnapshot()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        assertThat(snapshotId).isGreaterThan(0);
-        assertThat(catalog.listSchemas(snapshotId))
-                .extracting(DucklakeSchema::schemaName)
-                .contains("test_schema");
-    }
-
-    @Test
-    public void testGetSnapshotAtOrBefore()
-    {
-        long currentSnapshotId = catalog.getCurrentSnapshotId();
-        DucklakeSnapshot currentSnapshot = catalog.getSnapshot(currentSnapshotId).orElseThrow();
-
-        assertThat(catalog.getSnapshotAtOrBefore(currentSnapshot.snapshotTime()))
-                .isPresent()
-                .get()
-                .extracting(DucklakeSnapshot::snapshotId)
-                .isEqualTo(currentSnapshotId);
-
-        assertThat(catalog.getSnapshotAtOrBefore(Instant.EPOCH)).isEmpty();
-    }
-
-    @Test
-    public void testListSchemas()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        var schemas = catalog.listSchemas(snapshotId);
-
-        assertThat(schemas)
-                .isNotEmpty()
-                .anySatisfy(schema ->
-                        assertThat(schema.schemaName()).isEqualTo("test_schema"));
-    }
-
-    @Test
-    public void testListTables()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        DucklakeSchema testSchema = getSchema("test_schema", snapshotId);
-        List<DucklakeTable> tables = catalog.listTables(testSchema.schemaId(), snapshotId);
-
-        assertThat(tables)
-                .isNotEmpty()
-                .hasSize(18)
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("simple_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("partitioned_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("temporal_partitioned_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("array_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("nested_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("wide_types_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("nullable_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("empty_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("schema_evolution_table"))
-                .anySatisfy(table ->
-                        assertThat(table.tableName()).isEqualTo("aggregation_table"));
-    }
-
-    @Test
-    public void testGetTable()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        DucklakeTable table = getTable("test_schema", "simple_table", snapshotId);
-        var retrievedTable = catalog.getTableById(table.tableId(), snapshotId);
-
-        assertThat(retrievedTable)
-                .isPresent()
-                .get()
-                .satisfies(t -> {
-                    assertThat(t.tableId()).isEqualTo(table.tableId());
-                    assertThat(t.tableName()).isEqualTo(table.tableName());
-                });
-    }
-
-    @Test
-    public void testGetDataFiles()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        DucklakeTable table = getTable("test_schema", "simple_table", snapshotId);
-        var dataFiles = catalog.getDataFiles(table.tableId(), snapshotId);
-
-        assertThat(dataFiles)
-                .isNotEmpty()
-                .allSatisfy(file -> {
-                    assertThat(file.path()).isNotBlank();
-                    assertThat(file.fileFormat()).isEqualTo("parquet");
-                    assertThat(file.recordCount()).isGreaterThan(0);
-                    assertThat(file.fileSizeBytes()).isGreaterThan(0);
-                });
     }
 
     @Test
@@ -252,63 +146,6 @@ public class TestDucklakeCatalog
                 .contains("name:varchar")
                 .contains("scores:list<int32>")
                 .contains("attrs:map<varchar,varchar>");
-    }
-
-    @Test
-    public void testGetDataFileIdsForPredicate()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        DucklakeTable table = getTable("test_schema", "simple_table", snapshotId);
-        List<DucklakeColumn> columns = catalog.getTableColumns(table.tableId(), snapshotId);
-
-        long priceColumnId = getColumnId(columns, "price");
-        long createdDateColumnId = getColumnId(columns, "created_date");
-
-        assertThat(catalog.findDataFileIdsInRange(table.tableId(), snapshotId, new ColumnRangePredicate(priceColumnId, "30.0", "30.0")))
-                .isNotEmpty();
-        assertThat(catalog.findDataFileIdsInRange(table.tableId(), snapshotId, new ColumnRangePredicate(priceColumnId, "1000.0", "1000.0")))
-                .isEmpty();
-
-        assertThat(catalog.findDataFileIdsInRange(table.tableId(), snapshotId, new ColumnRangePredicate(createdDateColumnId, "2024-02-01", "2024-02-01")))
-                .isNotEmpty();
-        assertThat(catalog.findDataFileIdsInRange(table.tableId(), snapshotId, new ColumnRangePredicate(createdDateColumnId, "2025-01-01", "2025-01-01")))
-                .isEmpty();
-    }
-
-    @Test
-    public void testGetColumnStatsReturnsTypedMinMax()
-    {
-        long snapshotId = catalog.getCurrentSnapshotId();
-        DucklakeTable table = getTable("test_schema", "simple_table", snapshotId);
-        List<DucklakeColumn> columns = catalog.getTableColumns(table.tableId(), snapshotId);
-
-        List<DucklakeColumnStats> statsList = catalog.getColumnStats(table.tableId(), snapshotId);
-        assertThat(statsList).isNotEmpty();
-
-        // Verify price column (DOUBLE) has typed min/max
-        long priceColumnId = getColumnId(columns, "price");
-        DucklakeColumnStats priceStats = statsList.stream()
-                .filter(s -> s.columnId() == priceColumnId)
-                .findFirst().orElseThrow();
-        assertThat(priceStats.minValue()).isPresent();
-        assertThat(priceStats.maxValue()).isPresent();
-        // price values: 19.99, 29.99, 39.99, 49.99, 59.99
-        assertThat(Double.parseDouble(priceStats.minValue().get())).isLessThanOrEqualTo(19.99);
-        assertThat(Double.parseDouble(priceStats.maxValue().get())).isGreaterThanOrEqualTo(59.99);
-
-        // Verify id column (INTEGER) has typed min/max
-        long idColumnId = getColumnId(columns, "id");
-        DucklakeColumnStats idStats = statsList.stream()
-                .filter(s -> s.columnId() == idColumnId)
-                .findFirst().orElseThrow();
-        assertThat(idStats.minValue()).isPresent();
-        assertThat(idStats.maxValue()).isPresent();
-        assertThat(Long.parseLong(idStats.minValue().get())).isEqualTo(1);
-        assertThat(Long.parseLong(idStats.maxValue().get())).isEqualTo(5);
-
-        // Verify value counts
-        assertThat(priceStats.totalValueCount()).isEqualTo(5);
-        assertThat(priceStats.totalNullCount()).isEqualTo(0);
     }
 
     @Test

@@ -87,31 +87,6 @@ public class TestDucklakePartitionPruning
     }
 
     @Test
-    public void testPartitionSpecsReturned()
-    {
-        List<DucklakePartitionSpec> specs = catalog.getPartitionSpecs(
-                partitionedTable.tableId(), snapshotId);
-
-        assertThat(specs).hasSize(1);
-        assertThat(specs.getFirst().fields()).hasSize(1);
-        assertThat(specs.getFirst().fields().getFirst().transform()).isEqualTo(DucklakePartitionTransform.IDENTITY);
-    }
-
-    @Test
-    public void testFilePartitionValuesReturned()
-    {
-        Map<Long, List<DucklakeFilePartitionValue>> values = catalog.getFilePartitionValues(
-                partitionedTable.tableId(), snapshotId);
-
-        assertThat(values).hasSize(3);
-        // Each file should have a partition value for region
-        for (List<DucklakeFilePartitionValue> fileValues : values.values()) {
-            assertThat(fileValues).hasSize(1);
-            assertThat(fileValues.getFirst().partitionKeyIndex()).isEqualTo(0);
-        }
-    }
-
-    @Test
     public void testApplyFilterClassifiesEnforcedPredicate()
     {
         DucklakeTypeConverter typeConverter = new DucklakeTypeConverter(TESTING_TYPE_MANAGER);

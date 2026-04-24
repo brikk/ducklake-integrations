@@ -5,11 +5,12 @@ duckdb = "1.5.2.0"
 arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
 terpal-sql-lib = "2.0.0.PL-4.4.0"
-jackson-databind = "2.21.2"
+jackson = "2.21.2"
 java-uuid-generator = "5.0.0"
 junit = "5.12.2"
 assertj = "3.27.3"
 trino = "480"
+postgres = "42.7.8"
 minio = "8.6.0"
 hikari = "7.0.2"
 containers = "2.0.5"
@@ -35,11 +36,13 @@ hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
 duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
 trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
 trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }
+postgres-jdbc = { module = "org.postgresql:postgresql", version.ref = "postgres" }
 
 testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "containers" }
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "containers" }
 
-jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson-databind" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-jdk8 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jdk8", version.ref = "jackson" }
 java-uuid-generator = { module = "com.fasterxml.uuid:java-uuid-generator", version.ref = "java-uuid-generator" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }

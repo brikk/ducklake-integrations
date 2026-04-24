@@ -10,6 +10,8 @@ dependencies {
     implementation(libs.java.uuid.generator)
     implementation(libs.hikari)
 
+    testImplementation(libs.duckdb.jdbc)
     testImplementation(libs.testcontainers.core)
     testImplementation(libs.testcontainers.postgresql)
+    testRuntimeOnly(libs.postgres.jdbc)
 }

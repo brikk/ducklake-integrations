@@ -116,7 +116,6 @@ class TestDucklakeWriteFragment
     @Test
     void testFragmentWithoutPartitionValues()
     {
-        // Unpartitioned fragment using convenience constructor
         DucklakeWriteFragment original = new DucklakeWriteFragment(
                 "ducklake-nopart.parquet", 1024L, 200L, 50L, List.of());
 
