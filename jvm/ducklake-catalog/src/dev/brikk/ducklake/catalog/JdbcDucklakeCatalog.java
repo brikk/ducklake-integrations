@@ -826,64 +826,52 @@ public class JdbcDucklakeCatalog
     {
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            DSLContext txDsl = forConnection(conn);
             long baseSnapshotId = -1;
             try {
                 // 1. Read current snapshot state
-                long currentSnapshotId;
-                long schemaVersion;
-                long nextCatalogId;
-                long nextFileId;
-                try (PreparedStatement stmt = conn.prepareStatement(
-                        "SELECT snapshot_id, schema_version, next_catalog_id, next_file_id " +
-                                "FROM ducklake_snapshot WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)")) {
-                    try (ResultSet rs = stmt.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new IllegalStateException("No snapshots found");
-                        }
-                        currentSnapshotId = rs.getLong("snapshot_id");
-                        baseSnapshotId = currentSnapshotId;
-                        schemaVersion = rs.getLong("schema_version");
-                        nextCatalogId = rs.getLong("next_catalog_id");
-                        nextFileId = rs.getLong("next_file_id");
-                    }
+                DucklakeSnapshotRecord snapshotRow = txDsl.selectFrom(DUCKLAKE_SNAPSHOT)
+                        .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(
+                                DSL.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID)).from(DUCKLAKE_SNAPSHOT)))
+                        .fetchOne();
+                if (snapshotRow == null) {
+                    throw new IllegalStateException("No snapshots found");
                 }
+                long currentSnapshotId = snapshotRow.getSnapshotId();
+                baseSnapshotId = currentSnapshotId;
+                long schemaVersion = orZero(snapshotRow.getSchemaVersion());
+                long nextCatalogId = orZero(snapshotRow.getNextCatalogId());
+                long nextFileId = orZero(snapshotRow.getNextFileId());
 
                 // 2. Execute the caller's mutations
                 DucklakeWriteTransaction tx = new DucklakeWriteTransaction(
-                        conn, currentSnapshotId, schemaVersion, nextCatalogId, nextFileId);
+                        conn, txDsl, currentSnapshotId, schemaVersion, nextCatalogId, nextFileId);
                 action.execute(tx);
 
                 // 3. Strict optimistic conflict check: if snapshot lineage advanced, abort.
-                ensureSnapshotLineageUnchanged(conn, tx.getCurrentSnapshotId(), operationDescription);
+                ensureSnapshotLineageUnchanged(txDsl, tx.getCurrentSnapshotId(), operationDescription);
 
                 // 4. Create new snapshot row (with final allocated IDs)
-                insertSnapshotRow(conn, tx, operationDescription);
+                insertSnapshotRow(txDsl, tx, operationDescription);
 
                 // 5. Insert schema_versions row if schema version changed
                 if (tx.getSchemaVersion() != schemaVersion) {
-                    try (PreparedStatement stmt = conn.prepareStatement(
-                            "INSERT INTO ducklake_schema_versions (begin_snapshot, schema_version, table_id) VALUES (?, ?, ?)")) {
-                        stmt.setLong(1, tx.getNewSnapshotId());
-                        stmt.setLong(2, tx.getSchemaVersion());
-                        if (tx.getSchemaVersionTableId() >= 0) {
-                            stmt.setLong(3, tx.getSchemaVersionTableId());
-                        }
-                        else {
-                            stmt.setNull(3, java.sql.Types.BIGINT);
-                        }
-                        stmt.executeUpdate();
-                    }
+                    Long schemaVersionTableId = tx.getSchemaVersionTableId() >= 0
+                            ? tx.getSchemaVersionTableId()
+                            : null;
+                    txDsl.insertInto(DUCKLAKE_SCHEMA_VERSIONS)
+                            .set(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                            .set(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION, tx.getSchemaVersion())
+                            .set(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID, schemaVersionTableId)
+                            .execute();
                 }
 
                 // 6. Insert snapshot changes (comma-separated per spec, one row per snapshot)
                 if (!tx.getChanges().isEmpty()) {
-                    String changesMade = formatChangesMade(tx.getChanges());
-                    try (PreparedStatement stmt = conn.prepareStatement(
-                            "INSERT INTO ducklake_snapshot_changes (snapshot_id, changes_made) VALUES (?, ?)")) {
-                        stmt.setLong(1, tx.getNewSnapshotId());
-                        stmt.setString(2, changesMade);
-                        stmt.executeUpdate();
-                    }
+                    txDsl.insertInto(DUCKLAKE_SNAPSHOT_CHANGES)
+                            .set(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID, tx.getNewSnapshotId())
+                            .set(DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE, formatChangesMade(tx.getChanges()))
+                            .execute();
                 }
 
                 conn.commit();
@@ -894,8 +882,8 @@ public class JdbcDucklakeCatalog
                     throw (RuntimeException) e;
                 }
                 if (isMetadataPrimaryKeyConflict(e)) {
-                    long currentSnapshot = readLatestSnapshotId(conn);
-                    throw transactionConflictException(conn, baseSnapshotId, currentSnapshot, operationDescription, e);
+                    long currentSnapshot = readLatestSnapshotId(txDsl);
+                    throw transactionConflictException(txDsl, baseSnapshotId, currentSnapshot, operationDescription, e);
                 }
                 throw new RuntimeException("Failed to " + operationDescription, e);
             }
@@ -905,45 +893,43 @@ public class JdbcDucklakeCatalog
         }
     }
 
-    private void ensureSnapshotLineageUnchanged(Connection conn, long expectedSnapshotId, String operationDescription)
-            throws SQLException
+    private void ensureSnapshotLineageUnchanged(DSLContext ctx, long expectedSnapshotId, String operationDescription)
     {
-        long currentSnapshotId = readLatestSnapshotId(conn);
+        long currentSnapshotId = readLatestSnapshotId(ctx);
         if (currentSnapshotId != expectedSnapshotId) {
-            throw transactionConflictException(conn, expectedSnapshotId, currentSnapshotId, operationDescription, null);
+            throw transactionConflictException(ctx, expectedSnapshotId, currentSnapshotId, operationDescription, null);
         }
     }
 
-    private void insertSnapshotRow(Connection conn, DucklakeWriteTransaction tx, String operationDescription)
-            throws SQLException
+    private void insertSnapshotRow(DSLContext ctx, DucklakeWriteTransaction tx, String operationDescription)
     {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "INSERT INTO ducklake_snapshot (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id) " +
-                        "VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?)")) {
-            stmt.setLong(1, tx.getNewSnapshotId());
-            stmt.setLong(2, tx.getSchemaVersion());
-            stmt.setLong(3, tx.getFinalNextCatalogId());
-            stmt.setLong(4, tx.getFinalNextFileId());
-            stmt.executeUpdate();
+        try {
+            ctx.insertInto(DUCKLAKE_SNAPSHOT)
+                    .set(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID, tx.getNewSnapshotId())
+                    .set(DUCKLAKE_SNAPSHOT.SNAPSHOT_TIME, DSL.currentOffsetDateTime())
+                    .set(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION, tx.getSchemaVersion())
+                    .set(DUCKLAKE_SNAPSHOT.NEXT_CATALOG_ID, tx.getFinalNextCatalogId())
+                    .set(DUCKLAKE_SNAPSHOT.NEXT_FILE_ID, tx.getFinalNextFileId())
+                    .execute();
         }
-        catch (SQLException e) {
-            if (isDuplicateKeyViolation(e)) {
-                long currentSnapshotId = readLatestSnapshotId(conn);
-                throw transactionConflictException(conn, tx.getCurrentSnapshotId(), currentSnapshotId, operationDescription, e);
+        catch (DataAccessException e) {
+            SQLException cause = findSqlException(e);
+            if (cause != null && isDuplicateKeyViolation(cause)) {
+                long currentSnapshotId = readLatestSnapshotId(ctx);
+                throw transactionConflictException(ctx, tx.getCurrentSnapshotId(), currentSnapshotId, operationDescription, e);
             }
             throw e;
         }
     }
 
     private TransactionConflictException transactionConflictException(
-            Connection conn,
+            DSLContext ctx,
             long expectedSnapshotId,
             long currentSnapshotId,
             String operationDescription,
             Throwable cause)
-            throws SQLException
     {
-        String interveningChanges = getInterveningChangesSummary(conn, expectedSnapshotId, currentSnapshotId);
+        String interveningChanges = getInterveningChangesSummary(ctx, expectedSnapshotId, currentSnapshotId);
         String message = "Concurrent DuckLake commit while attempting to " + operationDescription +
                 ": expected base snapshot " + expectedSnapshotId +
                 ", but current snapshot is " + currentSnapshotId +
@@ -951,29 +937,25 @@ public class JdbcDucklakeCatalog
         return new TransactionConflictException(message, cause);
     }
 
-    private String getInterveningChangesSummary(Connection conn, long fromSnapshotExclusive, long toSnapshotInclusive)
-            throws SQLException
+    private String getInterveningChangesSummary(DSLContext ctx, long fromSnapshotExclusive, long toSnapshotInclusive)
     {
         if (toSnapshotInclusive <= fromSnapshotExclusive) {
             return "none";
         }
 
-        List<String> changes = new ArrayList<>();
-        String sql = "SELECT snapshot_id, changes_made FROM ducklake_snapshot_changes " +
-                "WHERE snapshot_id > ? AND snapshot_id <= ? " +
-                "ORDER BY snapshot_id";
-        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, fromSnapshotExclusive);
-            stmt.setLong(2, toSnapshotInclusive);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    if (changes.size() >= CONFLICT_CHANGE_SUMMARY_LIMIT) {
-                        break;
-                    }
-                    changes.add(rs.getLong("snapshot_id") + ":" + rs.getString("changes_made"));
-                }
-            }
-        }
+        List<String> changes = ctx.select(
+                        DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID,
+                        DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE)
+                .from(DUCKLAKE_SNAPSHOT_CHANGES)
+                .where(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.gt(fromSnapshotExclusive))
+                .and(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.le(toSnapshotInclusive))
+                .orderBy(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID)
+                .limit(CONFLICT_CHANGE_SUMMARY_LIMIT)
+                .fetch()
+                .stream()
+                .map(r -> r.get(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID)
+                        + ":" + r.get(DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE))
+                .collect(Collectors.toList());
 
         if (changes.isEmpty()) {
             return "snapshot advanced without snapshot_changes rows";
@@ -981,18 +963,15 @@ public class JdbcDucklakeCatalog
         return String.join("; ", changes);
     }
 
-    private long readLatestSnapshotId(Connection conn)
-            throws SQLException
+    private long readLatestSnapshotId(DSLContext ctx)
     {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "SELECT snapshot_id FROM ducklake_snapshot " +
-                        "WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)");
-                ResultSet rs = stmt.executeQuery()) {
-            if (!rs.next()) {
-                throw new IllegalStateException("No snapshots found");
-            }
-            return rs.getLong("snapshot_id");
+        Long maxId = ctx.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
+                .from(DUCKLAKE_SNAPSHOT)
+                .fetchOne(0, Long.class);
+        if (maxId == null) {
+            throw new IllegalStateException("No snapshots found");
         }
+        return maxId;
     }
 
     private static boolean hasTransactionConflict(Throwable throwable)
@@ -1071,7 +1050,7 @@ public class JdbcDucklakeCatalog
             long viewId = tx.allocateCatalogId();
             tx.addChange(changeCreatedView(schemaName, viewName));
 
-            insertViewRow(tx, viewId, newCatalogUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
+            insertViewRow(tx, viewId, UUID.fromString(newCatalogUuid()), schemaId, viewName, dialect, viewSql, viewMetadata);
             tx.incrementSchemaVersion();
         });
     }
@@ -1139,108 +1118,90 @@ public class JdbcDucklakeCatalog
     }
 
     private ActiveViewRow resolveActiveViewRow(DucklakeWriteTransaction tx, long schemaId, String viewName)
-            throws SQLException
     {
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "SELECT view_id, view_uuid, schema_id, view_name, dialect, sql, column_aliases " +
-                        "FROM ducklake_view " +
-                        "WHERE schema_id = ? AND view_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)")) {
-            stmt.setLong(1, schemaId);
-            stmt.setString(2, viewName);
-            stmt.setLong(3, tx.getCurrentSnapshotId());
-            stmt.setLong(4, tx.getCurrentSnapshotId());
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (!rs.next()) {
-                    throw new RuntimeException("View not found: schema_id=" + schemaId + ", view_name=" + viewName);
-                }
-
-                return new ActiveViewRow(
-                        rs.getLong("view_id"),
-                        rs.getString("view_uuid"),
-                        rs.getLong("schema_id"),
-                        rs.getString("view_name"),
-                        rs.getString("dialect"),
-                        rs.getString("sql"),
-                        getStringOptional(rs, "column_aliases"));
-            }
+        Record row = tx.dsl().select(
+                        DUCKLAKE_VIEW.VIEW_ID,
+                        DUCKLAKE_VIEW.VIEW_UUID,
+                        DUCKLAKE_VIEW.SCHEMA_ID,
+                        DUCKLAKE_VIEW.VIEW_NAME,
+                        DUCKLAKE_VIEW.DIALECT,
+                        DUCKLAKE_VIEW.SQL,
+                        DUCKLAKE_VIEW.COLUMN_ALIASES)
+                .from(DUCKLAKE_VIEW)
+                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
+                .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
+                .and(activeAt(DUCKLAKE_VIEW, tx.getCurrentSnapshotId()))
+                .fetchOne();
+        if (row == null) {
+            throw new RuntimeException("View not found: schema_id=" + schemaId + ", view_name=" + viewName);
         }
+        return new ActiveViewRow(
+                orZero(row.get(DUCKLAKE_VIEW.VIEW_ID)),
+                row.get(DUCKLAKE_VIEW.VIEW_UUID),
+                orZero(row.get(DUCKLAKE_VIEW.SCHEMA_ID)),
+                row.get(DUCKLAKE_VIEW.VIEW_NAME),
+                row.get(DUCKLAKE_VIEW.DIALECT),
+                row.get(DUCKLAKE_VIEW.SQL),
+                Optional.ofNullable(row.get(DUCKLAKE_VIEW.COLUMN_ALIASES)));
     }
 
     private void insertViewRow(
             DucklakeWriteTransaction tx,
             long viewId,
-            String viewUuid,
+            UUID viewUuid,
             long schemaId,
             String viewName,
             String dialect,
             String viewSql,
             String viewMetadata)
-            throws SQLException
     {
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "INSERT INTO ducklake_view (view_id, view_uuid, begin_snapshot, end_snapshot, schema_id, view_name, dialect, sql, column_aliases) " +
-                        "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)")) {
-            stmt.setLong(1, viewId);
-            setUuid(stmt, 2, viewUuid);
-            stmt.setLong(3, tx.getNewSnapshotId());
-            stmt.setLong(4, schemaId);
-            stmt.setString(5, viewName);
-            stmt.setString(6, dialect);
-            stmt.setString(7, viewSql);
-            setNullableString(stmt, 8, viewMetadata);
-            stmt.executeUpdate();
-        }
+        tx.dsl().insertInto(DUCKLAKE_VIEW)
+                .set(DUCKLAKE_VIEW.VIEW_ID, viewId)
+                .set(DUCKLAKE_VIEW.VIEW_UUID, viewUuid)
+                .set(DUCKLAKE_VIEW.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(DUCKLAKE_VIEW.SCHEMA_ID, schemaId)
+                .set(DUCKLAKE_VIEW.VIEW_NAME, viewName)
+                .set(DUCKLAKE_VIEW.DIALECT, dialect)
+                .set(DUCKLAKE_VIEW.SQL, viewSql)
+                .set(DUCKLAKE_VIEW.COLUMN_ALIASES, viewMetadata)
+                .execute();
     }
 
     private void endSnapshotActiveView(DucklakeWriteTransaction tx, long viewId)
-            throws SQLException
     {
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "UPDATE ducklake_view SET end_snapshot = ? WHERE view_id = ? AND end_snapshot IS NULL")) {
-            stmt.setLong(1, tx.getNewSnapshotId());
-            stmt.setLong(2, viewId);
-            int updatedRows = stmt.executeUpdate();
-            if (updatedRows == 0) {
-                throw new RuntimeException("View not found: " + viewId);
-            }
+        int updatedRows = tx.dsl().update(DUCKLAKE_VIEW)
+                .set(DUCKLAKE_VIEW.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(DUCKLAKE_VIEW.VIEW_ID.eq(viewId))
+                .and(DUCKLAKE_VIEW.END_SNAPSHOT.isNull())
+                .execute();
+        if (updatedRows == 0) {
+            throw new RuntimeException("View not found: " + viewId);
         }
     }
 
     private static boolean hasActiveView(DucklakeWriteTransaction tx, long schemaId, String viewName)
-            throws SQLException
     {
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "SELECT 1 FROM ducklake_view " +
-                        "WHERE schema_id = ? AND view_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) LIMIT 1")) {
-            stmt.setLong(1, schemaId);
-            stmt.setString(2, viewName);
-            stmt.setLong(3, tx.getCurrentSnapshotId());
-            stmt.setLong(4, tx.getCurrentSnapshotId());
-            try (ResultSet rs = stmt.executeQuery()) {
-                return rs.next();
-            }
-        }
+        return tx.dsl().fetchExists(
+                DSL.selectOne()
+                        .from(DUCKLAKE_VIEW)
+                        .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
+                        .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
+                        .and(activeAt(DUCKLAKE_VIEW, tx.getCurrentSnapshotId())));
     }
 
     private static boolean hasActiveTable(DucklakeWriteTransaction tx, long schemaId, String tableName)
-            throws SQLException
     {
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "SELECT 1 FROM ducklake_table " +
-                        "WHERE schema_id = ? AND table_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL) LIMIT 1")) {
-            stmt.setLong(1, schemaId);
-            stmt.setString(2, tableName);
-            stmt.setLong(3, tx.getCurrentSnapshotId());
-            stmt.setLong(4, tx.getCurrentSnapshotId());
-            try (ResultSet rs = stmt.executeQuery()) {
-                return rs.next();
-            }
-        }
+        return tx.dsl().fetchExists(
+                DSL.selectOne()
+                        .from(DUCKLAKE_TABLE)
+                        .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schemaId))
+                        .and(DUCKLAKE_TABLE.TABLE_NAME.eq(tableName))
+                        .and(activeAt(DUCKLAKE_TABLE, tx.getCurrentSnapshotId())));
     }
 
     private record ActiveViewRow(
             long viewId,
-            String viewUuid,
+            UUID viewUuid,
             long schemaId,
             String viewName,
             String dialect,
@@ -1256,16 +1217,14 @@ public class JdbcDucklakeCatalog
             long schemaId = tx.allocateCatalogId();
             tx.addChange(changeCreatedSchema(schemaName));
 
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "INSERT INTO ducklake_schema (schema_id, schema_uuid, begin_snapshot, end_snapshot, schema_name, path, path_is_relative) " +
-                            "VALUES (?, ?, ?, NULL, ?, ?, true)")) {
-                stmt.setLong(1, schemaId);
-                setUuid(stmt, 2, newCatalogUuid());
-                stmt.setLong(3, tx.getNewSnapshotId());
-                stmt.setString(4, schemaName);
-                stmt.setString(5, schemaName + "/");
-                stmt.executeUpdate();
-            }
+            tx.dsl().insertInto(DUCKLAKE_SCHEMA)
+                    .set(DUCKLAKE_SCHEMA.SCHEMA_ID, schemaId)
+                    .set(DUCKLAKE_SCHEMA.SCHEMA_UUID, UUID.fromString(newCatalogUuid()))
+                    .set(DUCKLAKE_SCHEMA.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(DUCKLAKE_SCHEMA.SCHEMA_NAME, schemaName)
+                    .set(DUCKLAKE_SCHEMA.PATH, schemaName + "/")
+                    .set(DUCKLAKE_SCHEMA.PATH_IS_RELATIVE, true)
+                    .execute();
 
             tx.incrementSchemaVersion();
         });
@@ -1283,12 +1242,11 @@ public class JdbcDucklakeCatalog
 
             tx.addChange("dropped_schema:" + schemaId);
 
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_schema SET end_snapshot = ? WHERE schema_id = ? AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, schemaId);
-                stmt.executeUpdate();
-            }
+            tx.dsl().update(DUCKLAKE_SCHEMA)
+                    .set(DUCKLAKE_SCHEMA.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(DUCKLAKE_SCHEMA.SCHEMA_ID.eq(schemaId))
+                    .and(DUCKLAKE_SCHEMA.END_SNAPSHOT.isNull())
+                    .execute();
 
             tx.incrementSchemaVersion();
         });
@@ -1304,19 +1262,18 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("create table " + schemaName + "." + tableName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long tableId = tx.allocateCatalogId();
+            DSLContext ctx = tx.dsl();
 
             // 1. Insert table row
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "INSERT INTO ducklake_table (table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative) " +
-                            "VALUES (?, ?, ?, NULL, ?, ?, ?, true)")) {
-                stmt.setLong(1, tableId);
-                setUuid(stmt, 2, newCatalogUuid());
-                stmt.setLong(3, tx.getNewSnapshotId());
-                stmt.setLong(4, schemaId);
-                stmt.setString(5, tableName);
-                stmt.setString(6, tableName + "/");
-                stmt.executeUpdate();
-            }
+            ctx.insertInto(DUCKLAKE_TABLE)
+                    .set(DUCKLAKE_TABLE.TABLE_ID, tableId)
+                    .set(DUCKLAKE_TABLE.TABLE_UUID, UUID.fromString(newCatalogUuid()))
+                    .set(DUCKLAKE_TABLE.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(DUCKLAKE_TABLE.SCHEMA_ID, schemaId)
+                    .set(DUCKLAKE_TABLE.TABLE_NAME, tableName)
+                    .set(DUCKLAKE_TABLE.PATH, tableName + "/")
+                    .set(DUCKLAKE_TABLE.PATH_IS_RELATIVE, true)
+                    .execute();
 
             // 2. Insert column rows (flattening nested types with parent links)
             // column_order is 1-based per DuckDB convention
@@ -1335,31 +1292,25 @@ public class JdbcDucklakeCatalog
             if (partitionSpec.isPresent() && !partitionSpec.get().isEmpty()) {
                 long partitionId = tx.allocateCatalogId();
 
-                try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                        "INSERT INTO ducklake_partition_info (partition_id, table_id, begin_snapshot, end_snapshot) " +
-                                "VALUES (?, ?, ?, NULL)")) {
-                    stmt.setLong(1, partitionId);
-                    stmt.setLong(2, tableId);
-                    stmt.setLong(3, tx.getNewSnapshotId());
-                    stmt.executeUpdate();
-                }
+                ctx.insertInto(DUCKLAKE_PARTITION_INFO)
+                        .set(DUCKLAKE_PARTITION_INFO.PARTITION_ID, partitionId)
+                        .set(DUCKLAKE_PARTITION_INFO.TABLE_ID, tableId)
+                        .set(DUCKLAKE_PARTITION_INFO.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                        .execute();
 
-                int keyIndex = 0;
+                long keyIndex = 0;
                 for (PartitionFieldSpec field : partitionSpec.get()) {
                     Long columnId = topLevelColumnIds.get(field.columnName());
                     if (columnId == null) {
                         throw new RuntimeException("Partition column not found: " + field.columnName());
                     }
-                    try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                            "INSERT INTO ducklake_partition_column (partition_id, table_id, partition_key_index, column_id, transform) " +
-                                    "VALUES (?, ?, ?, ?, ?)")) {
-                        stmt.setLong(1, partitionId);
-                        stmt.setLong(2, tableId);
-                        stmt.setLong(3, keyIndex++);
-                        stmt.setLong(4, columnId);
-                        stmt.setString(5, field.transform().name().toLowerCase(java.util.Locale.ENGLISH));
-                        stmt.executeUpdate();
-                    }
+                    ctx.insertInto(DUCKLAKE_PARTITION_COLUMN)
+                            .set(DUCKLAKE_PARTITION_COLUMN.PARTITION_ID, partitionId)
+                            .set(DUCKLAKE_PARTITION_COLUMN.TABLE_ID, tableId)
+                            .set(DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX, keyIndex++)
+                            .set(DUCKLAKE_PARTITION_COLUMN.COLUMN_ID, columnId)
+                            .set(DUCKLAKE_PARTITION_COLUMN.TRANSFORM, field.transform().name().toLowerCase(ENGLISH))
+                            .execute();
                 }
             }
 
@@ -1374,37 +1325,28 @@ public class JdbcDucklakeCatalog
      */
     private long insertColumnTree(DucklakeWriteTransaction tx, long tableId,
             TableColumnSpec column, long columnOrder, OptionalLong parentColumnId)
-            throws SQLException
     {
         long columnId = tx.allocateCatalogId();
 
         // `default_value = 'NULL'` (the four-char string, not SQL NULL) is upstream's "no
         // default" sentinel; `default_value_type = 'literal'` is mandatory per upstream's
-        // migration (ducklake_metadata_manager.cpp backfills NULL → 'literal'). For
-        // `default_value_dialect` we write SQL NULL: the value is informational and only
-        // meaningful when there's a real expression to interpret. If we ever wire up
-        // user-written Trino DEFAULT expressions, use the literal 'trino' here — the dialect
-        // names the SQL syntax of the expression, which would be plain Trino SQL.
-        try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                "INSERT INTO ducklake_column (column_id, begin_snapshot, end_snapshot, table_id, column_order, " +
-                        "column_name, column_type, initial_default, default_value, nulls_allowed, parent_column, " +
-                        "default_value_type, default_value_dialect) " +
-                        "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, ?, 'literal', NULL)")) {
-            stmt.setLong(1, columnId);
-            stmt.setLong(2, tx.getNewSnapshotId());
-            stmt.setLong(3, tableId);
-            stmt.setLong(4, columnOrder);
-            stmt.setString(5, column.name());
-            stmt.setString(6, column.ducklakeType());
-            stmt.setBoolean(7, column.nullable());
-            if (parentColumnId.isPresent()) {
-                stmt.setLong(8, parentColumnId.getAsLong());
-            }
-            else {
-                stmt.setNull(8, java.sql.Types.BIGINT);
-            }
-            stmt.executeUpdate();
-        }
+        // migration (ducklake_metadata_manager.cpp backfills NULL → 'literal'). `initial_default`
+        // and `default_value_dialect` are left unset (SQL NULL): the dialect is informational
+        // and only meaningful when there's a real expression to interpret. If we ever wire up
+        // user-written Trino DEFAULT expressions, set 'trino' here — the dialect names the SQL
+        // syntax of the expression, which would be plain Trino SQL.
+        tx.dsl().insertInto(DUCKLAKE_COLUMN)
+                .set(DUCKLAKE_COLUMN.COLUMN_ID, columnId)
+                .set(DUCKLAKE_COLUMN.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(DUCKLAKE_COLUMN.TABLE_ID, tableId)
+                .set(DUCKLAKE_COLUMN.COLUMN_ORDER, columnOrder)
+                .set(DUCKLAKE_COLUMN.COLUMN_NAME, column.name())
+                .set(DUCKLAKE_COLUMN.COLUMN_TYPE, column.ducklakeType())
+                .set(DUCKLAKE_COLUMN.DEFAULT_VALUE, "NULL")
+                .set(DUCKLAKE_COLUMN.NULLS_ALLOWED, column.nullable())
+                .set(DUCKLAKE_COLUMN.PARENT_COLUMN, parentColumnId.isPresent() ? parentColumnId.getAsLong() : null)
+                .set(DUCKLAKE_COLUMN.DEFAULT_VALUE_TYPE, "literal")
+                .execute();
 
         // Insert children with their own column_order (0-based within parent)
         long childOrder = 0;
@@ -1421,48 +1363,46 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("drop table " + schemaName + "." + tableName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long tableId = tx.resolveTableId(schemaId, tableName);
+            DSLContext ctx = tx.dsl();
+            long newSnapshotId = tx.getNewSnapshotId();
 
             // End-snapshot the table row
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_table SET end_snapshot = ? WHERE table_id = ? AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.executeUpdate();
-            }
+            ctx.update(DUCKLAKE_TABLE)
+                    .set(DUCKLAKE_TABLE.END_SNAPSHOT, newSnapshotId)
+                    .where(DUCKLAKE_TABLE.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_TABLE.END_SNAPSHOT.isNull())
+                    .execute();
 
             // End-snapshot all active columns
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_column SET end_snapshot = ? WHERE table_id = ? AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.executeUpdate();
-            }
+            ctx.update(DUCKLAKE_COLUMN)
+                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, newSnapshotId)
+                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
+                    .execute();
 
             // End-snapshot all active data files
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_data_file SET end_snapshot = ? WHERE table_id = ? AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.executeUpdate();
-            }
+            ctx.update(DUCKLAKE_DATA_FILE)
+                    .set(DUCKLAKE_DATA_FILE.END_SNAPSHOT, newSnapshotId)
+                    .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_DATA_FILE.END_SNAPSHOT.isNull())
+                    .execute();
 
-            // End-snapshot all active delete files (via data_file join)
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_delete_file SET end_snapshot = ? " +
-                            "WHERE data_file_id IN (SELECT data_file_id FROM ducklake_data_file WHERE table_id = ?) " +
-                            "AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.executeUpdate();
-            }
+            // End-snapshot all active delete files (matched via data_file subquery)
+            ctx.update(DUCKLAKE_DELETE_FILE)
+                    .set(DUCKLAKE_DELETE_FILE.END_SNAPSHOT, newSnapshotId)
+                    .where(DUCKLAKE_DELETE_FILE.DATA_FILE_ID.in(
+                            DSL.select(DUCKLAKE_DATA_FILE.DATA_FILE_ID)
+                                    .from(DUCKLAKE_DATA_FILE)
+                                    .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))))
+                    .and(DUCKLAKE_DELETE_FILE.END_SNAPSHOT.isNull())
+                    .execute();
 
             // End-snapshot partition info
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_partition_info SET end_snapshot = ? WHERE table_id = ? AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.executeUpdate();
-            }
+            ctx.update(DUCKLAKE_PARTITION_INFO)
+                    .set(DUCKLAKE_PARTITION_INFO.END_SNAPSHOT, newSnapshotId)
+                    .where(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_PARTITION_INFO.END_SNAPSHOT.isNull())
+                    .execute();
 
             tx.incrementSchemaVersion(tableId);
             tx.addChange("dropped_table:" + tableId);
@@ -1474,22 +1414,14 @@ public class JdbcDucklakeCatalog
     {
         executeWriteTransaction("add column to table " + tableId, tx -> {
             // Find the current max column_order for top-level columns
-            long maxOrder = 0;
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "SELECT COALESCE(MAX(column_order), 0) FROM ducklake_column " +
-                            "WHERE table_id = ? AND parent_column IS NULL " +
-                            "AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)")) {
-                stmt.setLong(1, tableId);
-                stmt.setLong(2, tx.getCurrentSnapshotId());
-                stmt.setLong(3, tx.getCurrentSnapshotId());
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (rs.next()) {
-                        maxOrder = rs.getLong(1);
-                    }
-                }
-            }
+            Long maxOrder = tx.dsl().select(DSL.max(DUCKLAKE_COLUMN.COLUMN_ORDER))
+                    .from(DUCKLAKE_COLUMN)
+                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_COLUMN.PARENT_COLUMN.isNull())
+                    .and(activeAt(DUCKLAKE_COLUMN, tx.getCurrentSnapshotId()))
+                    .fetchOne(0, Long.class);
 
-            insertColumnTree(tx, tableId, column, maxOrder + 1, OptionalLong.empty());
+            insertColumnTree(tx, tableId, column, orZero(maxOrder) + 1, OptionalLong.empty());
             tx.incrementSchemaVersion(tableId);
             tx.addChange("altered_table:" + tableId);
         });
@@ -1500,15 +1432,13 @@ public class JdbcDucklakeCatalog
     {
         executeWriteTransaction("drop column from table " + tableId, tx -> {
             // End-snapshot the column and all its children (for nested types)
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_column SET end_snapshot = ? " +
-                            "WHERE table_id = ? AND (column_id = ? OR parent_column = ?) AND end_snapshot IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.setLong(3, columnId);
-                stmt.setLong(4, columnId);
-                stmt.executeUpdate();
-            }
+            tx.dsl().update(DUCKLAKE_COLUMN)
+                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId)
+                            .or(DUCKLAKE_COLUMN.PARENT_COLUMN.eq(columnId)))
+                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
+                    .execute();
 
             tx.incrementSchemaVersion(tableId);
             tx.addChange("altered_table:" + tableId);
@@ -1519,55 +1449,45 @@ public class JdbcDucklakeCatalog
     public void renameColumn(long tableId, long columnId, String newName)
     {
         executeWriteTransaction("rename column in table " + tableId, tx -> {
+            DSLContext ctx = tx.dsl();
+
             // Read the current column metadata
-            long columnOrder;
-            String columnType;
-            boolean nullsAllowed;
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "SELECT column_order, column_type, nulls_allowed FROM ducklake_column " +
-                            "WHERE table_id = ? AND column_id = ? " +
-                            "AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)")) {
-                stmt.setLong(1, tableId);
-                stmt.setLong(2, columnId);
-                stmt.setLong(3, tx.getCurrentSnapshotId());
-                stmt.setLong(4, tx.getCurrentSnapshotId());
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (!rs.next()) {
-                        throw new RuntimeException("Column not found: " + columnId);
-                    }
-                    columnOrder = rs.getLong("column_order");
-                    columnType = rs.getString("column_type");
-                    nullsAllowed = rs.getBoolean("nulls_allowed");
-                }
+            Record existing = ctx.select(DUCKLAKE_COLUMN.COLUMN_ORDER, DUCKLAKE_COLUMN.COLUMN_TYPE, DUCKLAKE_COLUMN.NULLS_ALLOWED)
+                    .from(DUCKLAKE_COLUMN)
+                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
+                    .and(activeAt(DUCKLAKE_COLUMN, tx.getCurrentSnapshotId()))
+                    .fetchOne();
+            if (existing == null) {
+                throw new RuntimeException("Column not found: " + columnId);
             }
+            long columnOrder = orZero(existing.get(DUCKLAKE_COLUMN.COLUMN_ORDER));
+            String columnType = existing.get(DUCKLAKE_COLUMN.COLUMN_TYPE);
+            boolean nullsAllowed = Boolean.TRUE.equals(existing.get(DUCKLAKE_COLUMN.NULLS_ALLOWED));
 
             // End-snapshot the current version
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "UPDATE ducklake_column SET end_snapshot = ? " +
-                            "WHERE table_id = ? AND column_id = ? AND end_snapshot IS NULL AND parent_column IS NULL")) {
-                stmt.setLong(1, tx.getNewSnapshotId());
-                stmt.setLong(2, tableId);
-                stmt.setLong(3, columnId);
-                stmt.executeUpdate();
-            }
+            ctx.update(DUCKLAKE_COLUMN)
+                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
+                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
+                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
+                    .and(DUCKLAKE_COLUMN.PARENT_COLUMN.isNull())
+                    .execute();
 
             // Insert new version with same column_id but new name. Default-value columns
             // preserve the "no default" sentinel (`'NULL'` string literal) and leave
             // `default_value_dialect` SQL NULL; same policy as insertColumnTree.
-            try (PreparedStatement stmt = tx.getConnection().prepareStatement(
-                    "INSERT INTO ducklake_column (column_id, begin_snapshot, end_snapshot, table_id, column_order, " +
-                            "column_name, column_type, initial_default, default_value, nulls_allowed, parent_column, " +
-                            "default_value_type, default_value_dialect) " +
-                            "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, NULL, 'literal', NULL)")) {
-                stmt.setLong(1, columnId);
-                stmt.setLong(2, tx.getNewSnapshotId());
-                stmt.setLong(3, tableId);
-                stmt.setLong(4, columnOrder);
-                stmt.setString(5, newName);
-                stmt.setString(6, columnType);
-                stmt.setBoolean(7, nullsAllowed);
-                stmt.executeUpdate();
-            }
+            ctx.insertInto(DUCKLAKE_COLUMN)
+                    .set(DUCKLAKE_COLUMN.COLUMN_ID, columnId)
+                    .set(DUCKLAKE_COLUMN.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(DUCKLAKE_COLUMN.TABLE_ID, tableId)
+                    .set(DUCKLAKE_COLUMN.COLUMN_ORDER, columnOrder)
+                    .set(DUCKLAKE_COLUMN.COLUMN_NAME, newName)
+                    .set(DUCKLAKE_COLUMN.COLUMN_TYPE, columnType)
+                    .set(DUCKLAKE_COLUMN.DEFAULT_VALUE, "NULL")
+                    .set(DUCKLAKE_COLUMN.NULLS_ALLOWED, nullsAllowed)
+                    .set(DUCKLAKE_COLUMN.DEFAULT_VALUE_TYPE, "literal")
+                    .execute();
 
             tx.incrementSchemaVersion(tableId);
             tx.addChange("altered_table:" + tableId);

@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.catalog;
 
+import org.jooq.DSLContext;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -30,6 +32,7 @@ import java.util.List;
 class DucklakeWriteTransaction
 {
     private final Connection connection;
+    private final DSLContext dsl;
     private final long currentSnapshotId;
     private final long newSnapshotId;
     private long schemaVersion;
@@ -38,15 +41,26 @@ class DucklakeWriteTransaction
     private long schemaVersionTableId = -1;
     private final List<String> changes = new ArrayList<>();
 
-    DucklakeWriteTransaction(Connection connection, long currentSnapshotId,
+    DucklakeWriteTransaction(Connection connection, DSLContext dsl, long currentSnapshotId,
             long schemaVersion, long nextCatalogId, long nextFileId)
     {
         this.connection = connection;
+        this.dsl = dsl;
         this.currentSnapshotId = currentSnapshotId;
         this.newSnapshotId = currentSnapshotId + 1;
         this.schemaVersion = schemaVersion;
         this.nextCatalogId = nextCatalogId;
         this.nextFileId = nextFileId;
+    }
+
+    /**
+     * Returns the connection-scoped {@link DSLContext} for building jOOQ statements that
+     * must run inside this write transaction. All mutations go through this context so
+     * they inherit the transaction's {@link Connection} and commit/rollback semantics.
+     */
+    public DSLContext dsl()
+    {
+        return dsl;
     }
 
     public long getCurrentSnapshotId()

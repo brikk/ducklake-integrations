@@ -156,40 +156,98 @@ column format.
 Bring `DucklakeWriteTransaction` onto jOOQ before porting writes — otherwise each
 write-path port duplicates transaction plumbing.
 
-- [ ] Rework `DucklakeWriteTransaction` to hold a connection-scoped `DSLContext`
-  alongside the existing `Connection`. Expose `dsl()` so write methods call jOOQ; keep
-  raw `Connection` accessor temporarily so un-migrated paths still compile.
-- [ ] `executeWriteTransaction` — port snapshot-lineage reads
+- [x] Reworked `DucklakeWriteTransaction` to hold a connection-scoped `DSLContext`
+  alongside the existing `Connection`. New `dsl()` accessor exposed; the raw
+  `getConnection()` accessor and the `resolveSchemaId` / `resolveTableId` /
+  `hasTablesInSchema` raw-JDBC helpers stay so Phase 6+ write paths still
+  compile. Constructor now takes `(Connection, DSLContext, long, long, long, long)`.
+- [x] `executeWriteTransaction` — ported snapshot-lineage reads
   (`readLatestSnapshotId`, `ensureSnapshotLineageUnchanged`, `insertSnapshotRow`,
-  `getInterveningChangesSummary`) to jOOQ. Keep PK-conflict detection
-  (`isMetadataPrimaryKeyConflict`) at the `SQLException` layer — jOOQ surfaces
-  `DataAccessException` wrapping the same cause, so the inspection logic just unwraps
-  one level.
-- [ ] Decide: use jOOQ's `TransactionProvider` (wraps `ctx.transaction { ... }`) or
-  keep the explicit `Connection.setAutoCommit(false)` + commit/rollback pattern.
-  Recommendation: keep explicit for now — the conflict/retry handling is bespoke and
-  doesn't map cleanly to jOOQ's `TransactionalRunnable`.
+  `getInterveningChangesSummary`, `transactionConflictException`) to jOOQ.
+  Signatures changed from `(Connection, ...) throws SQLException` to
+  `(DSLContext, ...)` (unchecked). The method also ports the initial state read,
+  the `ducklake_schema_versions` insert (nullable `table_id`), and the
+  `ducklake_snapshot_changes` insert — all three now use `txDsl.insertInto(...)`.
+  `DSL.currentOffsetDateTime()` replaces the raw `CURRENT_TIMESTAMP` literal for
+  the snapshot-time column.
+- [x] PK-conflict detection — no changes needed. `findSqlException` already walks
+  the cause chain, so jOOQ's `DataAccessException(cause=SQLException)` wrapping
+  is transparent to `isMetadataPrimaryKeyConflict` / `isDuplicateKeyViolation`.
+- [x] Decision: kept the explicit `Connection.setAutoCommit(false)` +
+  commit/rollback pattern rather than `ctx.transaction(...)`. Rationale in
+  "Resolved decisions → Transaction retry" below (unchanged).
 
 ### Phase 6 — Schema + table DDL writes
 
 Simple INSERT/UPDATE ports; the soft-delete (`end_snapshot`) pattern repeats.
 
-- [ ] `createSchema`, `dropSchema`.
-- [ ] `createTable` — INSERT `ducklake_table` + recursive column INSERT (keep
+- [x] `createSchema`, `dropSchema`.
+- [x] `createTable` — INSERT `ducklake_table` + recursive column INSERT (keep
   recursion in Java) + optional partition spec (INSERT `ducklake_partition_info` +
-  multi-row INSERT `ducklake_partition_column`).
-- [ ] `dropTable` — fan-out UPDATEs for `ducklake_table` / `ducklake_column` /
+  multi-row INSERT `ducklake_partition_column`). `insertColumnTree` lost its
+  `throws SQLException` — jOOQ wraps everything in unchecked
+  `DataAccessException`.
+- [x] `dropTable` — fan-out UPDATEs for `ducklake_table` / `ducklake_column` /
   `ducklake_data_file` / `ducklake_delete_file` / `ducklake_partition_info`. The
-  `ducklake_delete_file` update uses a subquery over `ducklake_data_file` — jOOQ
-  handles this with a `select(...)` in the `IN` clause.
-- [ ] `addColumn`, `dropColumn`, `renameColumn` — recursive column handling; port
-  alongside `createTable` since they share the recursion helper.
+  `ducklake_delete_file` update uses `DSL.select(DATA_FILE_ID).from(DUCKLAKE_DATA_FILE).where(...)`
+  inside an `.in(...)` clause — same shape as the original SQL subquery.
+- [x] `addColumn`, `dropColumn`, `renameColumn` — recursive column handling
+  reuses `insertColumnTree`. `addColumn` uses `DSL.max(COLUMN_ORDER) → orZero`
+  rather than a SQL `COALESCE`, since jOOQ returns `Long` and the empty-table
+  case is rare enough that one Java unbox beats an extra SQL function.
+
+**No `setUuid` / `setNullableString` calls remain in the Phase 6 paths.** The
+catalog UUID round-trips via `UUID.fromString(newCatalogUuid())` at the
+`.set(SCHEMA_UUID, ...)` / `.set(TABLE_UUID, ...)` call sites — generated UUID
+columns auto-bind via the `forcedTypes` entry from Phase 1. Nullable-string
+columns (`initial_default`, `default_value_dialect`) are left out of the
+`insertInto(...)` builder entirely; jOOQ omits them from the INSERT and the
+column defaults to SQL NULL, matching the original explicit-NULL semantics.
+
+**Verified by:** `./gradlew :ducklake-catalog:test` (24 tests, 0 failures) and
+`./gradlew :trino-ducklake:test` (473 tests, 0 failures). The catalog test
+fixture populates state via DuckDB's ducklake extension rather than our DDL
+methods, so the trino-ducklake suite is the load-bearing coverage for Phase 6
+paths (CREATE/DROP SCHEMA, CREATE/DROP TABLE, ADD/DROP/RENAME COLUMN all flow
+through here).
 
 ### Phase 7 — View writes
 
-- [ ] `createView`, `dropView`, `renameView`, `replaceViewMetadata`. The end-snapshot +
-  re-insert pattern is shared; extract a `soft-delete + reinsert` helper if the same
-  shape appears again in table DDL phase.
+- [x] `createView`, `dropView`, `renameView`, `replaceViewMetadata` — all four
+  converge on the four jOOQ helpers below; the public methods themselves are
+  now tiny callers.
+- [x] `insertViewRow` — takes `UUID` directly (was `String`); generated
+  `DUCKLAKE_VIEW.VIEW_UUID` binds to `java.util.UUID` via Phase 1's
+  `forcedTypes`, so no string round-trip inside jOOQ. Callers convert at
+  the boundary: `UUID.fromString(newCatalogUuid())` in `createView`,
+  passthrough from `ActiveViewRow.viewUuid()` in `renameView` /
+  `replaceViewMetadata`.
+- [x] `resolveActiveViewRow` — jOOQ select on `DUCKLAKE_VIEW` with
+  `activeAt(DUCKLAKE_VIEW, snapshotId)`; `ActiveViewRow.viewUuid` is now
+  `UUID` (internal-only record, flipped off `String`).
+- [x] `endSnapshotActiveView` — jOOQ `update(...).set(END_SNAPSHOT, ...).where(...)`;
+  rowcount check preserved via `.execute()` return value.
+- [x] `hasActiveView` / `hasActiveTable` — `dsl.fetchExists(DSL.selectOne().from(...))`
+  replaces the `SELECT 1 ... LIMIT 1 → rs.next()` idiom. Terser and
+  dialect-agnostic.
+
+**No shared soft-delete helper extracted.** Phase 6's `dropTable` fan-out
+(5 different tables) and Phase 7's single-view `endSnapshotActiveView` don't
+share a uniform "get active row + soft-delete" shape — the Phase 6 updates are
+keyed on `table_id` across heterogeneous tables with different column
+projections. With jOOQ the 4-line
+`update(T).set(T.END_SNAPSHOT, newSnapshotId).where(T.XXX_ID.eq(id)).and(T.END_SNAPSHOT.isNull()).execute()`
+form is readable enough inline; a helper would either hard-code the id column
+or require passing a `Field<Long>` plus the table, buying little over the
+literal.
+
+**`setUuid` / `isPostgresql` are now dead in the catalog** — last calls were in
+the view writes above. Kept in place (along with `setNullableString`, still
+used in Phase 8 commit paths) so Phase 9 owns the deletion diff cleanly.
+
+**Verified by:** `./gradlew :ducklake-catalog:test` (24 tests, 0 failures) and
+`./gradlew :trino-ducklake:test` (473 tests, 0 failures). View lifecycle
+coverage rides on trino-ducklake's CREATE/DROP/ALTER VIEW and rename paths.
 
 ### Phase 8 — Commit paths (hard)
 
