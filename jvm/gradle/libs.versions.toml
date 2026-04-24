@@ -1,0 +1,61 @@
+[versions]
+kotlin = "2.3.10"
+adbc = "0.21.0"
+duckdb = "1.5.2.0"
+arrow = "18.3.0"
+terpal-sql-plugin = "2.3.0-2.0.1.PL"
+terpal-sql-lib = "2.0.0.PL-4.4.0"
+jackson-databind = "2.21.2"
+junit = "5.12.2"
+assertj = "3.27.3"
+trino = "480"
+minio = "8.6.0"
+hikari = "7.0.2"
+containers = "2.0.5"
+
+[libraries]
+kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
+
+arrow-bom = { module = "org.apache.arrow:arrow-bom", version.ref = "arrow" }
+arrow-memory-core = { module = "org.apache.arrow:arrow-memory-core" }
+arrow-memory-netty = { module = "org.apache.arrow:arrow-memory-netty" }
+arrow-vector = { module = "org.apache.arrow:arrow-vector" }
+arrow-data = { module = "org.apache.arrow:arrow-c-data" }
+arrow-dataset = { module = "org.apache.arrow:arrow-dataset"  }
+arrow-flight-jdbc = { module = "org.apache.arrow:flight-sql-jdbc-driver" }
+arrow-flight-sql = { module = "org.apache.arrow:flight-sql" }
+arrow-jdbc-adapter = { module = "org.apache.arrow:arrow-jdbc" }
+
+adbc-core = { module = "org.apache.arrow.adbc:adbc-core", version.ref = "adbc" }
+adbc-mgr = { module = "org.apache.arrow.adbc:adbc-driver-manager", version.ref = "adbc" }
+adbc-jni = { module = "org.apache.arrow.adbc:adbc-driver-jni", version.ref = "adbc" }
+
+hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
+duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
+trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
+trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }
+
+testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "containers" }
+testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "containers" }
+
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson-databind" }
+
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api" }
+junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+
+minio-client = { module = "io.minio:minio", version.ref = "minio" }
+
+terpal-sql-lib = { module = "io.exoquery:terpal-sql-jdbc", version.ref = "terpal-sql-lib"}
+
+kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
+
+[bundles]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-plugin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+terpal-sql = { id = "io.exoquery.terpal-plugin", version.ref = "terpal-sql-plugin" }
