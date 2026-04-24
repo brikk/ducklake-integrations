@@ -307,15 +307,36 @@ suite (`TestDucklakeWriteIntegration`, `TestDucklakeDeleteIntegration`).
 
 ### Phase 9 — Cleanup
 
-- [ ] Delete the `isPostgresql` flag and `setUuid` helper (jOOQ handles dialect +
-  UUID binding via the `SQLDialect` + column types).
-- [ ] Delete `setNullableString`, `getLongOptional`, `getStringOptional`,
-  `getBooleanOptional` once no caller remains.
-- [ ] Delete `quoteIdentifier` / `writeQuotedValue` / `changeCreatedTable*` string
-  builders if their only caller was the raw-SQL change-log emission path (the change
-  text is a freeform `String` stored in `changes_made`; likely stays as-is).
-- [ ] Run `./gradlew :ducklake-catalog:test` and `./gradlew :trino-ducklake:test` to
-  pin regressions.
+- [x] Deleted `isPostgresql` + `setUuid`. jOOQ handles Postgres `UUID` binding
+  via the generated column type (`SQLDataType.UUID` via Phase 1's `forcedTypes`);
+  no dialect branch needed at call sites.
+- [x] Deleted `setNullableString`, `getLongOptional`, `getStringOptional`,
+  `getBooleanOptional`. No callers remained after Phase 8.
+- [x] **Kept** `writeQuotedValue` / `changeCreatedTable` / `changeCreatedView` /
+  `changeCreatedSchema`. These are *not* raw-SQL helpers — they format the text
+  written into `ducklake_snapshot_changes.changes_made`, which is a freeform
+  `String` column that upstream DuckLake's `ducklake_snapshots()` parser reads.
+  `TestJdbcDucklakeCatalogChangesMadeFormat` pins the output grammar. The
+  earlier `quoteIdentifier` helper was retired in Phase 4 (its only callers
+  were the inlined-data methods, now using `DSL.name(...)`).
+- [x] Dead imports dropped: `java.sql.PreparedStatement`,
+  `java.sql.ResultSet`, `java.util.HashSet`. `java.sql.Connection` /
+  `java.sql.SQLException` stay — `executeWriteTransaction` still opens a
+  pool `Connection`, wraps commit/rollback manually, and the
+  `WriteTransactionAction` interface declares `throws SQLException` for any
+  raw-JDBC helpers future code might add inside a transaction callback (none
+  today, but the surface is there).
+- [x] Regression pin: `./gradlew :ducklake-catalog:test` (24 tests, 0 failures)
+  and `./gradlew :trino-ducklake:test` (473 tests, 0 failures) both green
+  after the cleanup.
+
+**Migration complete.** All query construction in `JdbcDucklakeCatalog` and
+`DucklakeWriteTransaction` goes through jOOQ; the only raw JDBC that remains
+is the pool-connection lifecycle in `executeWriteTransaction` (intentional,
+per Phase 5's "Transaction retry: `ctx.transaction(...)` vs. bespoke loop"
+decision). The follow-ups in "Resolved decisions → Transaction retry"
+(internal retry with backoff, logical `CheckForConflicts` pass) remain open
+as orthogonal correctness work; they don't block shipping the migration.
 
 ## Non-goals
 

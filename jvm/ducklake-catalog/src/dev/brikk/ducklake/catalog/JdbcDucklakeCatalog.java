@@ -44,12 +44,9 @@ import org.jooq.tools.jdbc.JDBCUtils;
 import javax.sql.DataSource;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -109,7 +106,6 @@ public class JdbcDucklakeCatalog
 
     private final DataSource dataSource;
     private final HikariDataSource hikariDataSource;
-    private final boolean isPostgresql;
     private final SQLDialect dialect;
     private final Settings jooqSettings;
     private final DSLContext dsl;
@@ -117,8 +113,6 @@ public class JdbcDucklakeCatalog
     public JdbcDucklakeCatalog(DucklakeCatalogConfig config)
     {
         requireNonNull(config, "config is null");
-
-        this.isPostgresql = config.getCatalogDatabaseUrl().startsWith("jdbc:postgresql:");
 
         HikariConfig hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(config.getCatalogDatabaseUrl());
@@ -1759,28 +1753,6 @@ public class JdbcDucklakeCatalog
                 .execute();
     }
 
-    private void setUuid(PreparedStatement stmt, int index, String uuid)
-            throws SQLException
-    {
-        if (isPostgresql) {
-            stmt.setObject(index, uuid, java.sql.Types.OTHER);
-        }
-        else {
-            stmt.setString(index, uuid);
-        }
-    }
-
-    private static void setNullableString(PreparedStatement stmt, int index, String value)
-            throws SQLException
-    {
-        if (value != null) {
-            stmt.setString(index, value);
-        }
-        else {
-            stmt.setNull(index, java.sql.Types.VARCHAR);
-        }
-    }
-
     private static class AggregatedColumnStats
     {
         boolean containsNull;
@@ -1910,29 +1882,6 @@ public class JdbcDucklakeCatalog
         if (hikariDataSource != null) {
             hikariDataSource.close();
         }
-    }
-
-    // Helper methods for handling nullable columns
-
-    private Optional<Long> getLongOptional(ResultSet rs, String columnName)
-            throws SQLException
-    {
-        long value = rs.getLong(columnName);
-        return rs.wasNull() ? Optional.empty() : Optional.of(value);
-    }
-
-    private Optional<String> getStringOptional(ResultSet rs, String columnName)
-            throws SQLException
-    {
-        String value = rs.getString(columnName);
-        return Optional.ofNullable(value);
-    }
-
-    private Optional<Boolean> getBooleanOptional(ResultSet rs, String columnName)
-            throws SQLException
-    {
-        boolean value = rs.getBoolean(columnName);
-        return rs.wasNull() ? Optional.empty() : Optional.of(value);
     }
 
     private String resolveColumnType(DucklakeColumn column, Map<Long, List<DucklakeColumn>> childrenByParent)
