@@ -81,15 +81,54 @@ Added to `TestDucklakeCrossEngineCompatibility`: DuckDB writes small rows under
   `testDuckdbInlinedVarcharWithEmbeddedNullByteReadsInTrino`. Pleasant surprise — we were
   worried about this (`'ABC' || chr(0) || '123'`); length(s) comes back as 7 in Trino,
   so the null byte survives the round-trip. No action needed.
-- [ ] **Inlined `list<T>` reads FAIL.** Bug confirmed:
-  `ClassCastException: Slice cannot be cast to Block` at `ArrayType.writeObject`.
-  `DucklakeInlinedValueConverter` produces a Slice where Trino's `ArrayType` expects a
-  `Block` — we're treating the PG `INTEGER[]` column as a scalar. Pinned by
-  `testDuckdbInlinedListIntCurrentlyFailsInTrino`; intended behavior is described by
-  `@Disabled` `testDuckdbInlinedListIntReadsInTrino_target`. Fix: widen the converter to
-  consume PG arrays and emit an ARRAY `Block` for `ArrayType` columns.
+- [x] **`list<T>` reads work for flat primitive element types, via both the inlined and
+  Parquet paths.** Widened `DucklakeInlinedValueConverter` to detect `ArrayType` columns
+  and build a Trino element `Block` via `TypeUtils.writeNativeValue`. Upstream
+  (`ducklake_util.cpp::ToSQLString` LIST branch) encodes inlined lists for the PG catalog
+  as scalar VARCHAR holding DuckDB's `[elem, elem, ...]` text form, so the converter parses
+  that syntax (respecting `NULL` elements and single-quoted strings with `\'` / `\\`
+  backslash escapes — DuckDB's text form uses C-style escaping inside list elements, not
+  SQL-style `''` doubling). A `java.sql.Array` / `Object[]` path is also accepted for
+  forward-compat with catalogs that use native PG arrays. Each `TestDucklakeCrossEngineCompatibility.testDuckdbList*ReadsInTrino`
+  test runs through the `runListRoundTrip` helper, which writes twice — once with
+  `data_inlining_row_limit=100` (inlined) and once with `data_inlining_row_limit=0`
+  (Parquet, via Trino's native Parquet array reader) — and applies the same assertions to
+  both. Covered element types: `int`, `bigint`, `smallint`, `tinyint`, `boolean`, `real`,
+  `double`, `decimal`, `varchar` (incl. apostrophe + embedded comma + empty string),
+  `date`, `timestamp`, `timestamptz`. Every test includes a `NULL` element case; the `int`
+  and `varchar` tests additionally cover null-valued rows and empty lists. Nested
+  array/struct/map element types still throw `UnsupportedOperationException` pointing back
+  here — separately tracked.
   - `DucklakeInlinedValueConverter.java`
   - Source: `COMPARE-pg_ducklake.md` B2
+
+- [ ] **`list<blob>` inlined reads return raw `\xNN` text instead of decoded bytes;
+  Parquet path not yet validated.** DuckDB serializes a blob inside a list as
+  `'\x00\x01\xFF'` text. Our parser strips the single quotes but does not decode the
+  `\xNN` hex escapes, so `VarbinaryType` gets the literal string bytes (`\`, `x`, `0`,
+  `0`, ...) instead of the intended `0x00 0x01 0xFF`. Pinned by `@Disabled
+  testDuckdbListBlobReadsInTrino` — the test runs both inlined and Parquet paths, so
+  lifting the `@Disabled` will also confirm whether Trino's Parquet array reader survives
+  DuckDB's `ARRAY<BINARY>` layout. Fix: in the array path, when the element type is
+  `VarbinaryType` (or at the scalar `VarbinaryType` branch when the input is a `String`
+  that starts with `\x`), decode `\xNN` sequences into bytes before building the Trino
+  value. Compare against `ducklake_util.cpp::ToSQLString` BLOB branch and DuckDB's
+  `Blob::ToString` for exact escape semantics.
+  - `DucklakeInlinedValueConverter.java`
+  - Test: `testDuckdbListBlobReadsInTrino` (`@Disabled`)
+
+- [ ] **`uuid` scalar + `list<uuid>` inlined reads mis-handle the 36-char text form;
+  Parquet path not yet validated.** `DucklakeInlinedValueConverter` has no `UuidType`
+  branch, so a scalar UUID column falls through to the VARCHAR fallback and Trino's
+  `UuidType.writeSlice` rejects the resulting 36-byte Slice ("Expected entry size to be
+  exactly 16"). The list path inherits the same gap. Pinned by `@Disabled
+  testDuckdbListUuidReadsInTrino` — the test covers both inlined and Parquet paths, so
+  lifting the `@Disabled` will also validate Trino's Parquet UUID logical-type handling
+  against DuckDB-written files. Fix: add a `UuidType` branch that parses the string with
+  `java.util.UUID.fromString` and packs the 16 bytes as Trino expects (see
+  `io.trino.spi.type.UuidType.javaUuidToTrinoUuid`).
+  - `DucklakeInlinedValueConverter.java`
+  - Test: `testDuckdbListUuidReadsInTrino` (`@Disabled`)
 
 ## Feature gaps
 

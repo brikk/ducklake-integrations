@@ -14,20 +14,27 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import io.airlift.slice.Slices;
+import io.trino.spi.block.Block;
+import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.LongTimestampWithTimeZone;
+import io.trino.spi.type.MapType;
 import io.trino.spi.type.RealType;
+import io.trino.spi.type.RowType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeUtils;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -61,6 +68,9 @@ public final class DucklakeInlinedValueConverter
             return null;
         }
 
+        if (trinoType instanceof ArrayType arrayType) {
+            return convertArray(jdbcValue, arrayType);
+        }
         if (trinoType.equals(BOOLEAN)) {
             return toBoolean(jdbcValue);
         }
@@ -97,6 +107,114 @@ public final class DucklakeInlinedValueConverter
 
         // Fallback: try as string for any remaining types
         return Slices.utf8Slice(toStringValue(jdbcValue));
+    }
+
+    private static Block convertArray(Object jdbcValue, ArrayType arrayType)
+    {
+        Type elementType = arrayType.getElementType();
+        if (elementType instanceof ArrayType || elementType instanceof MapType || elementType instanceof RowType) {
+            throw new UnsupportedOperationException(
+                    "Inlined data reads for nested list/struct/map element types are not yet supported " +
+                            "(see TODO-compatibility.md B2); element type: " + elementType.getDisplayName());
+        }
+
+        Object[] elements = extractArrayElements(jdbcValue);
+        BlockBuilder builder = elementType.createBlockBuilder(null, elements.length);
+        for (Object element : elements) {
+            TypeUtils.writeNativeValue(elementType, builder, convertJdbcValue(element, elementType));
+        }
+        return builder.build();
+    }
+
+    // Upstream serializes inlined `list<T>` as VARCHAR text `[a, b, NULL, ...]`
+    // (ducklake_util.cpp::ToSQLString LIST branch); `java.sql.Array` is accepted too.
+    private static Object[] extractArrayElements(Object jdbcValue)
+    {
+        if (jdbcValue instanceof java.sql.Array array) {
+            try {
+                Object raw = array.getArray();
+                if (raw instanceof Object[] objects) {
+                    return objects;
+                }
+                throw new IllegalArgumentException("Unexpected raw JDBC array contents: " + raw.getClass().getName());
+            }
+            catch (SQLException e) {
+                throw new IllegalArgumentException("Failed to read JDBC array value", e);
+            }
+        }
+        if (jdbcValue instanceof Object[] objects) {
+            return objects;
+        }
+        if (jdbcValue instanceof String text) {
+            return parseDucklakeListText(text);
+        }
+        if (jdbcValue instanceof byte[] bytes) {
+            return parseDucklakeListText(new String(bytes, StandardCharsets.UTF_8));
+        }
+        throw new IllegalArgumentException("Unexpected array JDBC value: " + jdbcValue.getClass().getName());
+    }
+
+    private static Object[] parseDucklakeListText(String raw)
+    {
+        String text = raw.trim();
+        if (!text.startsWith("[") || !text.endsWith("]")) {
+            throw new IllegalArgumentException("Invalid inlined list text: " + raw);
+        }
+        String inner = text.substring(1, text.length() - 1).trim();
+        if (inner.isEmpty()) {
+            return new Object[0];
+        }
+
+        java.util.List<Object> elements = new java.util.ArrayList<>();
+        int len = inner.length();
+        int i = 0;
+        while (i < len) {
+            while (i < len && Character.isWhitespace(inner.charAt(i))) {
+                i++;
+            }
+            if (i >= len) {
+                break;
+            }
+            if (inner.charAt(i) == '\'') {
+                StringBuilder sb = new StringBuilder();
+                i++;
+                while (i < len) {
+                    char cc = inner.charAt(i);
+                    if (cc == '\\' && i + 1 < len) {
+                        sb.append(inner.charAt(i + 1));
+                        i += 2;
+                        continue;
+                    }
+                    if (cc == '\'') {
+                        if (i + 1 < len && inner.charAt(i + 1) == '\'') {
+                            sb.append('\'');
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    sb.append(cc);
+                    i++;
+                }
+                elements.add(sb.toString());
+            }
+            else {
+                int start = i;
+                while (i < len && inner.charAt(i) != ',') {
+                    i++;
+                }
+                String token = inner.substring(start, i).trim();
+                elements.add(token.equals("NULL") ? null : token);
+            }
+            while (i < len && Character.isWhitespace(inner.charAt(i))) {
+                i++;
+            }
+            if (i < len && inner.charAt(i) == ',') {
+                i++;
+            }
+        }
+        return elements.toArray();
     }
 
     private static Boolean toBoolean(Object value)
