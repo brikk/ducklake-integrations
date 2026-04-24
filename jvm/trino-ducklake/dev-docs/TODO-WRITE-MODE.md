@@ -206,7 +206,7 @@ cd plugin/trino-ducklake && ../../mvnw -Dair.check.skip-all -Dtest=TestDucklakeW
   Fixed: `DucklakeParquetSchemaBuilder` sets `field_id` on all Parquet fields from DuckLake `column_id`.
 - [x] Concurrency conflicts:
   Added strict optimistic conflict detection in write transactions (snapshot-lineage check + duplicate snapshot race translation to `TRANSACTION_CONFLICT`).
-- [ ] Unsigned integer overflow:
+- [x] Unsigned integer overflow:
   DuckLake `uint*` types are mapped to larger signed Trino types at read time. No range validation on writes from Trino. Low risk: only affects DuckDB-created tables with unsigned types.
 - [ ] Commit-failure file cleanup:
   Files written before a failed commit become orphans. DuckLake's `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
