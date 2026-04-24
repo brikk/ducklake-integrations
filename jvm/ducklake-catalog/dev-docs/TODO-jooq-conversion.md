@@ -254,26 +254,56 @@ coverage rides on trino-ducklake's CREATE/DROP/ALTER VIEW and rename paths.
 Biggest surface area; save for last so the earlier phases have shaken out the helper
 APIs.
 
-- [ ] `commitInsert`:
-  - [ ] Multi-row INSERT for `ducklake_data_file` —
-    `insertInto(...).values(...).values(...)` or a single-statement bulk insert built
-    from a Stream.
-  - [ ] Multi-row INSERT for `ducklake_file_partition_value` +
-    `ducklake_file_column_stats` — use jOOQ's `batchInsert(List<Record>)` on unsaved
-    records for batched wire traffic.
-  - [ ] Table stats UPSERT — port the conditional INSERT vs. UPDATE to
-    `insertInto(...).onConflict(TABLE_STATS.TABLE_ID).doUpdate().set(...)` (Postgres)
-    or an explicit `select-then-write` if we need portability.
-  - [ ] `ducklake_table_column_stats` merge — the CASE-based typed min/max.
-    Recommendation: express the CASE via jOOQ's `DSL.case_()` builder but keep value
-    parsing (`parseStatValue`, `typedMin`, `typedMax`) in Java. The alternative —
-    aggregating in SQL — doesn't play well with the column's string-encoded values.
-  - [ ] Dynamic IN-list for existing column IDs — `.where(COL.COLUMN_ID.in(ids))`.
-- [ ] `commitDelete` — INSERT `ducklake_delete_file` (batched) + UPDATE
-  `ducklake_table_stats SET record_count = GREATEST(0, record_count - ?)`. `GREATEST`
-  is supported by jOOQ across dialects.
-- [ ] `commitMerge` — composes `applyDeleteFragments` + `applyInsertFragments` under
-  the same write transaction; no new patterns beyond the two above.
+- [x] `commitInsert`:
+  - [x] Multi-row INSERT for `ducklake_data_file` — used
+    `ctx.batchInsert(List<DucklakeDataFileRecord>)`. Records are built once per
+    fragment in a single pass (allocating `data_file_id`, accumulating
+    `runningRowId`/totals), then batched in one wire call. Equivalent to the
+    multi-row-`values` form for our workload and keeps the record-based shape
+    consistent with the two tables below.
+  - [x] Multi-row INSERT for `ducklake_file_partition_value` +
+    `ducklake_file_column_stats` — `ctx.batchInsert(List<Record>)` on unsaved
+    records, exactly as the TODO recommended.
+  - [x] Table stats UPSERT — **not** `ON CONFLICT DO UPDATE`. DuckLake's
+    `ducklake_table_stats` has no PK or UNIQUE on `table_id`, so
+    Postgres rejects the `ON CONFLICT (table_id)` clause with "there is no unique
+    or exclusion constraint matching the ON CONFLICT specification". Fell back
+    to the explicit existence-probe + INSERT/UPDATE split — `selectFrom(...)`
+    returns the existing `DucklakeTableStatsRecord` (or null), the branch
+    chooses UPDATE-with-delta or INSERT-fresh. Same semantics as the original;
+    the existence read is free since we need `next_row_id` anyway for the
+    per-fragment `row_id_start`. TODO Phase 9 could explore widening the
+    DuckLake schema with a PK, but that's cross-engine territory.
+  - [x] `ducklake_table_column_stats` merge — `DSL.when(...)` chain for the
+    min/max CASE, value parsing stays in `AggregatedColumnStats.merge`. The
+    `contains_null`/`contains_nan` `col = (col OR ?)` shape collapsed to "only
+    emit SET when the flag is true" since `Field<Boolean>.or(Field<Boolean>)`
+    isn't in the jOOQ API and OR-with-false is a no-op in Postgres
+    (FALSE→FALSE, TRUE→TRUE, NULL→NULL). Same on-wire effect, cleaner code.
+    Insert path uses `ctx.batchInsert(List<DucklakeTableColumnStatsRecord>)`.
+  - [x] Dynamic IN-list for existing column IDs — `COL.COLUMN_ID.in(candidateColumnIds)`;
+    `fetchSet(COL.COLUMN_ID)` returns the `Set<Long>` directly, replacing the
+    hand-rolled placeholder string + manual parameter binding.
+- [x] `commitDelete` — `ctx.batchInsert(List<DucklakeDeleteFileRecord>)` + UPDATE
+  `DUCKLAKE_TABLE_STATS.RECORD_COUNT` via
+  `DSL.greatest(DSL.inline(0L), RECORD_COUNT.minus(total))`.
+- [x] `commitMerge` — untouched; still a trivial composer over
+  `applyDeleteFragments` + `applyInsertFragments`.
+
+**Batching model chosen.** `ctx.batchInsert(records)` sends one JDBC prepared-
+statement batch per call site (one wire round-trip, N executes). Equivalent to
+a multi-row `INSERT ... VALUES (...)` for perf at our scale, but the
+record-centric API plays nicer with jOOQ's type-safe column setters and the
+in-memory Record → UPDATE conversion we already use elsewhere.
+
+**`setUuid` / `setNullableString` / `isPostgresql` all dead now.** Phase 8 was
+the last holdout for `setNullableString`. All three can die in Phase 9 without
+any call-site follow-up.
+
+**Verified by:** `./gradlew :ducklake-catalog:test` (24 tests, 0 failures) and
+`./gradlew :trino-ducklake:test` (473 tests, 0 failures). INSERT, DELETE, and
+MERGE query paths all get real coverage from trino-ducklake's write integration
+suite (`TestDucklakeWriteIntegration`, `TestDucklakeDeleteIntegration`).
 
 ### Phase 9 — Cleanup
 
