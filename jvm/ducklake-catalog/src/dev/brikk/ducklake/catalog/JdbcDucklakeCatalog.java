@@ -953,10 +953,41 @@ public class JdbcDucklakeCatalog
         return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }
 
+    // Matches upstream's KeywordHelper::WriteQuoted (DuckDB) as consumed by
+    // DuckLakeUtil::ParseQuotedValue in third_party/ducklake/src/common/ducklake_util.cpp:
+    // wrap in double quotes and escape embedded " by doubling.
+    private static String writeQuotedValue(String value)
+    {
+        return "\"" + value.replace("\"", "\"\"") + "\"";
+    }
+
+    // Upstream's DuckLakeUtil::ParseCatalogEntry expects a fully-qualified "schema"."name" form,
+    // so `created_table` / `created_view` values must carry both parts.
+    static String changeCreatedTable(String schemaName, String tableName)
+    {
+        return "created_table:" + writeQuotedValue(schemaName) + "." + writeQuotedValue(tableName);
+    }
+
+    static String changeCreatedView(String schemaName, String viewName)
+    {
+        return "created_view:" + writeQuotedValue(schemaName) + "." + writeQuotedValue(viewName);
+    }
+
+    // `created_schema` is a single quoted value — see ducklake_transaction_changes.cpp:
+    // `ParseQuotedValue(entry.change_value, pos)`.
+    static String changeCreatedSchema(String schemaName)
+    {
+        return "created_schema:" + writeQuotedValue(schemaName);
+    }
+
     // Serializes the list of change entries into the DuckLake `ducklake_snapshot_changes.changes_made`
-    // text column. Per spec it's a comma-separated list of `<kind>:<value>` entries. Entries are
-    // passed through verbatim today — see TODO-compatibility.md for a tracked item to quote/escape
-    // values (schema / table / view names) that may contain commas or double quotes.
+    // text column. Per upstream `ParseChangesList` (ducklake_transaction_changes.cpp) it's a
+    // comma-separated list of `<kind>:<value>` entries; `ParseChangeValue` tracks balanced double
+    // quotes so commas inside quoted values are literal. Entries are passed through verbatim —
+    // callers that carry user-supplied names (schema / table / view) must quote via
+    // {@link #changeCreatedTable} / {@link #changeCreatedView} / {@link #changeCreatedSchema}.
+    // Numeric-id entries (`dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table`)
+    // are unquoted per spec and can be joined with simple string concatenation at the call site.
     static String formatChangesMade(List<String> changes)
     {
         return String.join(",", changes);
@@ -1303,7 +1334,7 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("create view " + schemaName + "." + viewName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long viewId = tx.allocateCatalogId();
-            tx.addChange("created_view:" + viewName);
+            tx.addChange(changeCreatedView(schemaName, viewName));
 
             insertViewRow(tx, viewId, newCatalogUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
         });
@@ -1481,7 +1512,7 @@ public class JdbcDucklakeCatalog
     {
         executeWriteTransaction("create schema " + schemaName, tx -> {
             long schemaId = tx.allocateCatalogId();
-            tx.addChange("created_schema:" + schemaName);
+            tx.addChange(changeCreatedSchema(schemaName));
 
             try (PreparedStatement stmt = tx.getConnection().prepareStatement(
                     "INSERT INTO ducklake_schema (schema_id, schema_uuid, begin_snapshot, end_snapshot, schema_name, path, path_is_relative) " +
@@ -1587,7 +1618,7 @@ public class JdbcDucklakeCatalog
             }
 
             tx.incrementSchemaVersion(tableId);
-            tx.addChange("created_table:" + tableName);
+            tx.addChange(changeCreatedTable(schemaName, tableName));
         });
     }
 

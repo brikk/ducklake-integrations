@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.catalog;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -21,17 +20,24 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Exercises {@link JdbcDucklakeCatalog#formatChangesMade(List)} — the serializer for the
- * {@code ducklake_snapshot_changes.changes_made} column.
+ * Exercises the {@code ducklake_snapshot_changes.changes_made} serializer:
+ * {@link JdbcDucklakeCatalog#formatChangesMade(List)} (joiner) plus the quoting builders
+ * {@link JdbcDucklakeCatalog#changeCreatedTable(String, String)},
+ * {@link JdbcDucklakeCatalog#changeCreatedView(String, String)}, and
+ * {@link JdbcDucklakeCatalog#changeCreatedSchema(String)}.
  * <p>
- * Upstream DuckDB parses this column as a comma-separated list of {@code <kind>:<value>} entries.
- * Values that embed the delimiters (comma, double quote) in a schema/table/view name would
- * produce ambiguous output today — see {@code TODO-compatibility.md} and
- * {@code COMPARE-pg_ducklake.md} (B1). The tests below pin current behavior; the
- * {@code @Disabled} test describes what we want after the fix lands.
+ * Upstream DuckDB parses this column via {@code ParseChangesList} in
+ * {@code third_party/ducklake/src/storage/ducklake_transaction_changes.cpp}.
+ * {@code created_table} / {@code created_view} values are read by
+ * {@code DuckLakeUtil::ParseCatalogEntry} which requires the fully qualified
+ * {@code "schema"."name"} form; {@code created_schema} is a single quoted value read by
+ * {@code DuckLakeUtil::ParseQuotedValue}. Both forms wrap the value in {@code "..."} and escape
+ * embedded {@code "} by doubling ({@code ""}).
  */
 public class TestJdbcDucklakeCatalogChangesMadeFormat
 {
+    // ==================== formatChangesMade: plain joiner ====================
+
     @Test
     public void testEmptyListProducesEmptyString()
     {
@@ -39,64 +45,103 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     }
 
     @Test
-    public void testSingleEntry()
+    public void testSingleEntryIsPassedThrough()
     {
-        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of("created_table:foo")))
-                .isEqualTo("created_table:foo");
+        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of("dropped_table:7")))
+                .isEqualTo("dropped_table:7");
     }
 
     @Test
     public void testMultipleEntriesJoinedWithComma()
     {
         assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of(
-                "created_schema:sales",
-                "created_table:orders",
+                JdbcDucklakeCatalog.changeCreatedSchema("sales"),
+                JdbcDucklakeCatalog.changeCreatedTable("sales", "orders"),
                 "inserted_into_table:7")))
-                .isEqualTo("created_schema:sales,created_table:orders,inserted_into_table:7");
-    }
-
-    // ==================== Current behavior with pathological names (the timebomb) ====================
-
-    @Test
-    public void testCurrentBehaviorUnescapedCommaInTableName()
-    {
-        // Current behavior: the comma in the table name is emitted raw, which makes the output
-        // indistinguishable from two separate changes ("created_table:bad" and "name"). A DuckDB
-        // reader parsing this column with a comma-split will see phantom entries.
-        //
-        // This test documents the bug; it does not fail. When the fix lands (quoting with
-        // upstream's `created_table:"..."` form), update this expectation and drop this test in
-        // favor of {@link #testFixedBehaviorQuotesValuesWithCommas}.
-        String out = JdbcDucklakeCatalog.formatChangesMade(List.of("created_table:bad,name"));
-        assertThat(out).isEqualTo("created_table:bad,name");
+                .isEqualTo("created_schema:\"sales\",created_table:\"sales\".\"orders\",inserted_into_table:7");
     }
 
     @Test
-    public void testCurrentBehaviorUnescapedQuoteInSchemaName()
+    public void testNumericIdEntriesStayUnquoted()
     {
-        // Same shape: a double quote in the name would break any reader that uses double quotes
-        // as value delimiters (which upstream does — KeywordHelper::WriteQuoted).
-        String out = JdbcDucklakeCatalog.formatChangesMade(List.of("created_schema:weird\"name"));
-        assertThat(out).isEqualTo("created_schema:weird\"name");
+        // Spec: `dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table` use raw
+        // integers (parsed by StringUtil::ToUnsigned upstream), never quoted.
+        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of(
+                "dropped_schema:3",
+                "dropped_table:12",
+                "altered_table:42",
+                "inserted_into_table:100",
+                "deleted_from_table:100")))
+                .isEqualTo("dropped_schema:3,dropped_table:12,altered_table:42,inserted_into_table:100,deleted_from_table:100");
     }
 
-    // ==================== Target behavior after the fix (Disabled until fixed) ====================
+    // ==================== changeCreatedTable: "schema"."name" ====================
 
     @Test
-    @Disabled("TODO (TODO-compatibility.md B1): quote values with upstream's KeywordHelper::WriteQuoted form")
-    public void testFixedBehaviorQuotesValuesWithCommas()
+    public void testChangeCreatedTableProducesFullyQualifiedQuotedForm()
     {
-        // After the fix: emit upstream's quoted form so round-tripping through DuckDB works
-        // regardless of embedded commas / quotes in names.
-        String out = JdbcDucklakeCatalog.formatChangesMade(List.of("created_table:bad,name"));
-        assertThat(out).isEqualTo("created_table:\"bad,name\"");
+        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "orders"))
+                .isEqualTo("created_table:\"sales\".\"orders\"");
     }
 
     @Test
-    @Disabled("TODO (TODO-compatibility.md B1): escape embedded double quotes by doubling them")
-    public void testFixedBehaviorEscapesEmbeddedQuotes()
+    public void testChangeCreatedTableQuotesCommaInName()
     {
-        String out = JdbcDucklakeCatalog.formatChangesMade(List.of("created_schema:weird\"name"));
-        assertThat(out).isEqualTo("created_schema:\"weird\"\"name\"");
+        // Without quoting, ParseChangesList would see three entries instead of one.
+        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "bad,name"))
+                .isEqualTo("created_table:\"sales\".\"bad,name\"");
+    }
+
+    @Test
+    public void testChangeCreatedTableEscapesEmbeddedQuoteByDoubling()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "weird\"name"))
+                .isEqualTo("created_table:\"sales\".\"weird\"\"name\"");
+    }
+
+    @Test
+    public void testChangeCreatedTableQuotesBothSchemaAndTable()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedTable("odd.schema", "odd.table"))
+                .isEqualTo("created_table:\"odd.schema\".\"odd.table\"");
+    }
+
+    // ==================== changeCreatedView: "schema"."name" ====================
+
+    @Test
+    public void testChangeCreatedViewProducesFullyQualifiedQuotedForm()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedView("analytics", "daily_summary"))
+                .isEqualTo("created_view:\"analytics\".\"daily_summary\"");
+    }
+
+    @Test
+    public void testChangeCreatedViewEscapesEmbeddedQuoteByDoubling()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedView("a\"b", "c\"d"))
+                .isEqualTo("created_view:\"a\"\"b\".\"c\"\"d\"");
+    }
+
+    // ==================== changeCreatedSchema: single quoted value ====================
+
+    @Test
+    public void testChangeCreatedSchemaWrapsNameInQuotes()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("sales"))
+                .isEqualTo("created_schema:\"sales\"");
+    }
+
+    @Test
+    public void testChangeCreatedSchemaEscapesEmbeddedQuoteByDoubling()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("weird\"name"))
+                .isEqualTo("created_schema:\"weird\"\"name\"");
+    }
+
+    @Test
+    public void testChangeCreatedSchemaQuotesCommaInName()
+    {
+        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("bad,name"))
+                .isEqualTo("created_schema:\"bad,name\"");
     }
 }

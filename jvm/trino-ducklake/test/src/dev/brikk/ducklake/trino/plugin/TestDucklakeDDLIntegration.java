@@ -284,7 +284,9 @@ public class TestDucklakeDDLIntegration
                     "SELECT changes_made FROM \"simple_table$snapshot_changes\" WHERE snapshot_id = " + newSnapshot);
             assertThat(changes.getRowCount()).isGreaterThan(0);
             String changeMade = changes.getMaterializedRows().get(0).getField(0).toString();
-            assertThat(changeMade).contains("created_table:snapshot_test");
+            // Spec form is `created_table:"schema"."name"` — upstream's ParseCatalogEntry expects
+            // both parts quoted and separated by a dot. See TODO-compatibility.md B1.
+            assertThat(changeMade).contains("created_table:\"test_schema\".\"snapshot_test\"");
         }
         finally {
             tryDropTable("test_schema.snapshot_test");

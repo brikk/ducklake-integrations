@@ -22,30 +22,51 @@ and each links back to where the decision came from.
   - `DucklakeTypeConverter.java:161-163`
   - Source: `COMPARE-pg_ducklake.md` B4
 
-- [ ] **Write spec-conformant `ducklake_snapshot_changes.changes_made`.** Two bugs, one fix:
-  - (a) Values aren't quoted. Upstream `DuckLakeUtil::ParseQuotedValue` (in
-    `third_party/ducklake/src/common/ducklake_util.cpp`) requires values start with `"`
-    and uses `""` to escape embedded quotes.
-  - (b) `created_table` / `created_view` values should be **fully qualified** as
-    `"schema"."name"` — upstream's `ParseCatalogEntry` expects both parts separately quoted
-    with a `.` between. Today we emit just `created_table:tableName` with no schema.
-  - (c) `created_schema` is a single quoted value: `created_schema:"schema_name"`.
-  - (d) `dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table` use numeric
-    IDs and are emitted unquoted — those are fine today.
-  
-  Impact: any DuckDB function that parses `changes_made` (`snapshots()`, `table_changes()`,
-  `table_insertions()`, `table_deletions()`) will raise `InvalidInputException` on our
-  snapshots today. Regular table reads are unaffected.
-  
-  The join has been extracted into a package-private
-  `JdbcDucklakeCatalog.formatChangesMade(List<String>)` helper and pinned by unit tests;
-  the two `@Disabled` tests in `TestJdbcDucklakeCatalogChangesMadeFormat` describe the
-  target. Plumbing schema names to the `created_table` / `created_view` call sites is part
-  of the fix.
-  - `JdbcDucklakeCatalog.java:1090` (call site), `JdbcDucklakeCatalog.java:940` (helper),
-    `JdbcDucklakeCatalog.java:1460, 1566, 1282` (addChange sites for created_*)
-  - Tests: `TestJdbcDucklakeCatalogChangesMadeFormat`
+- [x] **Write spec-conformant `ducklake_snapshot_changes.changes_made`.** Done for (a)–(d):
+  - (a) Values are quoted via `writeQuotedValue()` (double-quote wrap, `""` escape), matching
+    upstream `KeywordHelper::WriteQuoted` / `DuckLakeUtil::ParseQuotedValue` in
+    `third_party/ducklake/src/common/ducklake_util.cpp`.
+  - (b) `created_table` / `created_view` now emit the fully-qualified `"schema"."name"` form
+    (two quoted values separated by `.`) — schema name is threaded through the call sites in
+    `createTable` / `createView`. Upstream's `ParseCatalogEntry` round-trips this cleanly.
+  - (c) `created_schema` emits the single-value form `created_schema:"schema_name"`.
+  - (d) Numeric-id entries (`dropped_*`, `altered_*`, `inserted_into_table`,
+    `deleted_from_table`) stay unquoted — already spec-conformant.
+
+  Helpers live on `JdbcDucklakeCatalog` (`changeCreatedSchema` / `changeCreatedTable` /
+  `changeCreatedView`, all package-private). `formatChangesMade` remains a plain
+  comma-joiner; quoting happens at the entry-building helpers so `addChange` callers don't
+  need to know the format.
+
+  Pinned by `TestJdbcDucklakeCatalogChangesMadeFormat` (unit-level quoting + pathological
+  names) and two new cross-engine tests in `TestDucklakeCrossEngineCompatibility` —
+  `testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds` exercises
+  {schema/table create, insert, alter, delete, drop} and confirms DuckDB's
+  `ducklake_snapshots('ducklake_db')` parses every row without raising; the pathological
+  names test passes a comma-bearing schema and table name through the full pipeline.
+
+  Known remaining gap (separate item, not covered here): `renameView` still emits
+  `renamed_view:<viewId>`, which upstream's `ParseChangeType` does not recognize (the
+  spec enum has no `RENAMED_*`). Calling `ducklake_snapshots()` on a catalog that has
+  any `renameView` snapshot will still throw `InvalidInputException`. Folding renames
+  into `altered_view:<viewId>` (schema/name change = alter) is the likely fix — tracked
+  below.
+  - `JdbcDucklakeCatalog.java` (helpers next to `formatChangesMade`; call sites in
+    `createTable` / `createView` / `createSchema`)
+  - Tests: `TestJdbcDucklakeCatalogChangesMadeFormat`,
+    `TestDucklakeCrossEngineCompatibility.testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds`,
+    `TestDucklakeCrossEngineCompatibility.testDuckdbParsesTrinoWrittenChangesMadeWithPathologicalNames`
   - Source: `COMPARE-pg_ducklake.md` B1
+
+- [ ] **`renamed_view` is not a recognized upstream change type.** Upstream's
+  `ParseChangeType` in `ducklake_transaction_changes.cpp` lists no `RENAMED_*`; emitting
+  `renamed_view:<viewId>` (see `JdbcDucklakeCatalog.renameView`) causes DuckDB's
+  `ducklake_snapshots()` / `table_changes()` etc. to throw "Unsupported change type
+  renamed_view" for any snapshot that ever renamed a view. Semantically a rename is a
+  schema-and-name change — map it to `altered_view:<viewId>` (and likely bump the schema
+  version the same way the other `altered_view` path does) to stay spec-conformant.
+  - `JdbcDucklakeCatalog.renameView`
+  - Source: cross-engine gap uncovered while fixing B1
 
 - [ ] **Add a write-side range check for unsigned types.** Today we widen on read
   (uint8→SMALLINT etc.) but do nothing on write — a Trino `SMALLINT 300` written to a

@@ -997,6 +997,165 @@ public class TestDucklakeCrossEngineCompatibility
         }
     }
 
+    // ==================== ducklake_snapshot_changes.changes_made round-trip ====================
+
+    /**
+     * Verifies DuckDB's {@code ducklake_snapshots()} table function — which parses every snapshot's
+     * {@code changes_made} column via {@code ParseChangesList} + {@code ParseCatalogEntry} +
+     * {@code ParseQuotedValue} — succeeds on Trino-written snapshots.
+     * <p>
+     * If we ever regress to writing unquoted values or the pre-spec single-part
+     * {@code created_table:name} form, DuckDB raises {@code InvalidInputException} and the whole
+     * function errors (not just the offending row). This test exercises every kind we currently
+     * emit from Trino write paths: {@code created_schema}, {@code created_table},
+     * {@code inserted_into_table}, {@code deleted_from_table}, {@code altered_table},
+     * {@code dropped_table}, {@code dropped_schema}. See {@code TODO-compatibility.md} B1 and
+     * {@code third_party/ducklake/src/storage/ducklake_transaction_changes.cpp}.
+     */
+    @Test
+    public void testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds()
+            throws Exception
+    {
+        String schemaName = "xengine_changes_made";
+        String tableName = "orders";
+        String fullTrino = schemaName + "." + tableName;
+
+        try {
+            computeActual("CREATE SCHEMA " + schemaName);
+            computeActual("CREATE TABLE " + fullTrino + " (id INTEGER, note VARCHAR)");
+            computeActual("INSERT INTO " + fullTrino + " VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+            computeActual("ALTER TABLE " + fullTrino + " ADD COLUMN qty INTEGER");
+            computeActual("DELETE FROM " + fullTrino + " WHERE id = 2");
+
+            try (Connection conn = createDuckdbConnection();
+                    Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery(
+                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id")) {
+                // Parsing alone proves acceptability — any malformed entry makes the whole
+                // function throw. Still, assert we can traverse every row without error.
+                int rowCount = 0;
+                boolean sawCreatedSchema = false;
+                boolean sawCreatedTable = false;
+                boolean sawInserted = false;
+                boolean sawAltered = false;
+                boolean sawDeleted = false;
+                while (rs.next()) {
+                    rowCount++;
+                    // Force materialization of the MAP<VARCHAR, LIST<VARCHAR>> — that is where
+                    // ParseChangesMade() runs inside DuckDB's Bind path, but we also read the
+                    // value here to catch any lazy-decode surprises.
+                    Object changes = rs.getObject("changes");
+                    if (changes == null) {
+                        continue;
+                    }
+                    String changesText = changes.toString();
+                    if (changesText.contains("schemas_created") && changesText.contains(schemaName)) {
+                        sawCreatedSchema = true;
+                    }
+                    if (changesText.contains("tables_created") && changesText.contains(tableName)) {
+                        sawCreatedTable = true;
+                    }
+                    if (changesText.contains("tables_inserted_into")) {
+                        sawInserted = true;
+                    }
+                    if (changesText.contains("tables_altered")) {
+                        sawAltered = true;
+                    }
+                    if (changesText.contains("tables_deleted_from")) {
+                        sawDeleted = true;
+                    }
+                }
+                assertThat(rowCount).as("ducklake_snapshots row count").isGreaterThanOrEqualTo(5);
+                assertThat(sawCreatedSchema).as("DuckDB parsed a `created_schema` entry").isTrue();
+                assertThat(sawCreatedTable).as("DuckDB parsed a `created_table` entry").isTrue();
+                assertThat(sawInserted).as("DuckDB parsed a `inserted_into_table` entry").isTrue();
+                assertThat(sawAltered).as("DuckDB parsed a `altered_table` entry").isTrue();
+                assertThat(sawDeleted).as("DuckDB parsed a `deleted_from_table` entry").isTrue();
+            }
+
+            // Drop table + schema to cover the `dropped_*` emissions too. Those are numeric and
+            // already spec-conformant; asserting the parse still succeeds guards against future
+            // regressions to the quoting helpers.
+            computeActual("DROP TABLE " + fullTrino);
+            computeActual("DROP SCHEMA " + schemaName);
+
+            try (Connection conn = createDuckdbConnection();
+                    Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery(
+                            "SELECT changes FROM ducklake_snapshots('ducklake_db') " +
+                                    "ORDER BY snapshot_id DESC LIMIT 5")) {
+                while (rs.next()) {
+                    rs.getObject("changes");
+                }
+            }
+        }
+        finally {
+            tryDropTable(fullTrino);
+            try {
+                computeActual("DROP SCHEMA " + schemaName);
+            }
+            catch (Exception ignored) {
+            }
+        }
+    }
+
+    /**
+     * Exercises the quoting path: names containing characters (comma, double quote) that would
+     * break any naive {@code String.join(",", ...)} serializer. DuckDB must still parse the
+     * snapshot cleanly via {@code ParseQuotedValue}, which unescapes {@code ""} back to {@code "}.
+     */
+    @Test
+    public void testDuckdbParsesTrinoWrittenChangesMadeWithPathologicalNames()
+            throws Exception
+    {
+        // Trino's identifier parser rejects embedded double quotes in CREATE TABLE identifiers,
+        // but commas are legal (they just need double-quoting in SQL). Use a comma to exercise
+        // the non-trivial quoting path without running into SQL-parser issues.
+        String schemaName = "xengine,weird_schema";
+        String tableName = "table,with,commas";
+        String fullTrino = "\"" + schemaName + "\".\"" + tableName + "\"";
+
+        try {
+            computeActual("CREATE SCHEMA \"" + schemaName + "\"");
+            computeActual("CREATE TABLE " + fullTrino + " (id INTEGER)");
+            computeActual("INSERT INTO " + fullTrino + " VALUES (1)");
+
+            try (Connection conn = createDuckdbConnection();
+                    Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery(
+                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id")) {
+                boolean sawQuotedSchema = false;
+                boolean sawQuotedTable = false;
+                while (rs.next()) {
+                    Object changes = rs.getObject("changes");
+                    if (changes == null) {
+                        continue;
+                    }
+                    String text = changes.toString();
+                    // DuckDB's parsed MAP round-trips the unquoted schema/table names through
+                    // CatalogListToValue -> KeywordHelper::WriteOptionallyQuoted, so a name with
+                    // commas comes back wrapped in double quotes like "xengine,weird_schema".
+                    if (text.contains(schemaName)) {
+                        sawQuotedSchema = true;
+                    }
+                    if (text.contains(tableName)) {
+                        sawQuotedTable = true;
+                    }
+                }
+                assertThat(sawQuotedSchema).as("DuckDB saw the comma-bearing schema name").isTrue();
+                assertThat(sawQuotedTable).as("DuckDB saw the comma-bearing table name").isTrue();
+            }
+        }
+        finally {
+            tryDropTable(fullTrino);
+            try {
+                computeActual("DROP SCHEMA \"" + schemaName + "\"");
+            }
+            catch (Exception ignored) {
+            }
+        }
+    }
+
     // ==================== Helpers ====================
 
     private void tryDropTable(String tableName)
