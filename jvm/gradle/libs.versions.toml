@@ -14,6 +14,7 @@ postgres = "42.7.8"
 minio = "8.6.0"
 hikari = "7.0.2"
 containers = "2.0.5"
+jooq = "3.20.8"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -57,10 +58,20 @@ terpal-sql-lib = { module = "io.exoquery:terpal-sql-jdbc", version.ref = "terpal
 
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 
+jooq-core = { module = "org.jooq:jooq", version.ref = "jooq" }
+jooq-kotlin = { module = "org.jooq:jooq-kotlin", version.ref = "jooq" }
+jooq-codegen = { module = "org.jooq:jooq-codegen", version.ref = "jooq" }
+jooq-meta = { module = "org.jooq:jooq-meta-extensions", version.ref = "jooq" }
+
 [bundles]
+jooq = [
+    "jooq-core",
+    "jooq-kotlin",
+]
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlin-plugin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 terpal-sql = { id = "io.exoquery.terpal-plugin", version.ref = "terpal-sql-plugin" }
+jooq = { id = "org.jooq.jooq-codegen-gradle", version.ref = "jooq" }
