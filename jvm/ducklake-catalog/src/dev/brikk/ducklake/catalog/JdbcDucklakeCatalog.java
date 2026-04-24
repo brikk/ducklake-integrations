@@ -15,6 +15,12 @@ package dev.brikk.ducklake.catalog;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.conf.RenderQuotedNames;
+import org.jooq.conf.Settings;
+import org.jooq.impl.DSL;
+import org.jooq.tools.jdbc.JDBCUtils;
 import javax.sql.DataSource;
 
 import java.sql.Connection;
@@ -66,6 +72,8 @@ public class JdbcDucklakeCatalog
     private final DataSource dataSource;
     private final HikariDataSource hikariDataSource;
     private final boolean isPostgresql;
+    private final SQLDialect dialect;
+    private final DSLContext dsl;
 
     public JdbcDucklakeCatalog(DucklakeCatalogConfig config)
     {
@@ -88,7 +96,19 @@ public class JdbcDucklakeCatalog
         this.hikariDataSource = new HikariDataSource(hikariConfig);
         this.dataSource = hikariDataSource;
 
-        log.log(System.Logger.Level.INFO, "Initialized Ducklake JDBC catalog: {0}", config.getCatalogDatabaseUrl());
+        // Infer dialect from the JDBC URL. JDBCUtils.dialect() returns SQLDialect.DEFAULT for
+        // backends jOOQ OSS doesn't recognize, which keeps query rendering portable.
+        this.dialect = JDBCUtils.dialect(config.getCatalogDatabaseUrl());
+        Settings jooqSettings = new Settings()
+                // The generated DuckLake tables use lowercase unquoted identifiers. Quoting is
+                // only needed on identifiers that collide with reserved words (none in the
+                // ducklake_* schema today) — leaving it off keeps queries readable in logs.
+                .withRenderQuotedNames(RenderQuotedNames.EXPLICIT_DEFAULT_UNQUOTED);
+        this.dsl = DSL.using(dataSource, dialect, jooqSettings);
+
+        log.log(System.Logger.Level.INFO,
+                "Initialized Ducklake JDBC catalog: {0} (jOOQ dialect: {1})",
+                config.getCatalogDatabaseUrl(), dialect);
     }
 
     @Override
