@@ -369,19 +369,20 @@ widens to `text`/`varchar` on a non-Postgres backend.
   }
   ```
 - [x] Regen + confirm the generated record's getter returns `UUID` (not `String`).
-- [ ] Our internal call sites use `String` (`JdbcDucklakeCatalog.newCatalogUuid()`
+- [x] Our internal call sites use `String` (`JdbcDucklakeCatalog.newCatalogUuid()`
   returns a `String` representation of a UUIDv7). On the boundary between our code and
   jOOQ, convert with `UUID.fromString(str)` / `uuid.toString()`. Since every catalog
   UUID we mint is v7 and every one we read back is persisted as Postgres `uuid`, a
   round-trip through `java.util.UUID` preserves the value bit-for-bit (v7 layout fits
   in `UUID`'s 128-bit storage — the `version` nibble is `0x7`, nothing jOOQ cares
-  about).
+  about). **Done in Phases 6–8** — all `UUID.fromString(newCatalogUuid())`
+  conversions wired at the write-path call sites; read-path records hold
+  `java.util.UUID` directly where they weren't already `String` for
+  legacy-compat reasons.
 - [ ] If we ever want a UUIDv7-typed wrapper (e.g. to enforce "only v7 goes into these
   columns"), write a custom `Converter<UUID, UuidV7>` and add a `converter` entry
   alongside the `forcedType`. Not needed today — `UUID.version() == 7` is a one-line
   runtime assertion at the `newCatalogUuid` call site.
-- [ ] With UUIDs auto-bound, `setUuid` + the `isPostgresql` flag that guards it can
-  die in Phase 9.
 
 ### Inlined data dynamic tables
 
