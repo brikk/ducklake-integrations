@@ -123,7 +123,11 @@ public class DucklakeMetadata
     private static final Logger log = Logger.get(DucklakeMetadata.class);
     private static final String METADATA_TABLE_SEPARATOR = "$";
     private static final JsonCodec<ConnectorViewDefinition> VIEW_CODEC = new JsonCodecFactory().jsonCodec(ConnectorViewDefinition.class);
-    private static final String TRINO_VIEW_DIALECT = "sortdev/trino";
+    // `trino/brikk` — base dialect is Trino SQL, `/brikk` marks that this row also carries
+    // our plugin-specific JSON sidecar in `ducklake_view.column_aliases` (serialized
+    // `ConnectorViewDefinition`). Other writers that understand plain Trino SQL should skip
+    // rows with this suffix unless they want to cross-parse our metadata.
+    private static final String TRINO_VIEW_DIALECT = "trino/brikk";
 
     private final DucklakeCatalog catalog;
     private final DucklakeTypeConverter typeConverter;

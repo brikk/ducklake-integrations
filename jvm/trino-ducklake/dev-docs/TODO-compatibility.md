@@ -68,6 +68,39 @@ and each links back to where the decision came from.
   - `JdbcDucklakeCatalog.renameView`
   - Source: cross-engine gap uncovered while fixing B1
 
+- [ ] **Bump `schema_version` on view and schema DDL, not just table DDL.** Today
+  `DucklakeWriteTransaction.incrementSchemaVersion` is only called from table DDL paths
+  (`createTable`, `addColumn`, `dropColumn`, `renameColumn`, `dropTable`). Upstream's
+  `DuckLakeTransaction::SchemaChangesMade()`
+  (`third_party/ducklake/src/storage/ducklake_transaction.cpp:718`) also flips on
+  `new_tables` *including view entries*, `dropped_views`, `new_schemas`, and
+  `dropped_schemas` — meaning `CREATE VIEW`, `DROP VIEW`, `CREATE SCHEMA`, and
+  `DROP SCHEMA` should each produce a new `ducklake_snapshot.schema_version`. A DuckDB
+  reader that caches the catalog keyed on `schema_version` won't notice Trino-created /
+  dropped views or schemas until something else (a table DDL) happens to bump the counter.
+  Fix: call `incrementSchemaVersion` (or a non-table-scoped variant that writes
+  `schema_versions` with `table_id = NULL`) in `createView`, `dropView`, `renameView`,
+  `replaceViewMetadata`, `createSchema`, `dropSchema`. Verify upstream's
+  `ducklake_schema_versions.table_id` is nullable for non-table schema bumps.
+  - `JdbcDucklakeCatalog.java` (`createView` / `dropView` / `renameView` /
+    `replaceViewMetadata` / `createSchema` / `dropSchema`)
+  - `DucklakeWriteTransaction.incrementSchemaVersion`
+  - Source: cross-engine gap uncovered while fixing B1
+
+- [ ] **When user-defined DEFAULT expressions ship, set `default_value_dialect = 'trino'`.**
+  Today every column we write has `default_value = 'NULL'` (the "no default" sentinel) and
+  we leave `default_value_dialect` SQL NULL — safe and honest, since the field is
+  informational and only meaningful when there's a real literal or expression to interpret
+  (spec `ducklake_column.md:36`; upstream migration at
+  `ducklake_metadata_manager.cpp:297` adds the column with `DEFAULT NULL`; upstream's
+  ducklake extension never reads the field anywhere). When we wire up real `DEFAULT`
+  support for Trino-written tables, write the literal `'trino'` (not `'brikk-trino'` —
+  the dialect names the SQL syntax of the expression, which is plain Trino SQL; brikk
+  metadata lives only in our view rows). Call sites: `JdbcDucklakeCatalog.insertColumnTree`
+  and `JdbcDucklakeCatalog.renameColumn`. Pinned today by
+  `TestDucklakeCrossEngineCompatibility.testDuckdbReadsTrinoTableWithNullDefaultValueDialect`.
+  - Source: this design discussion; `REPORT_CROSS_ENGINE_WRITE.md` Issue 1
+
 - [ ] **Add a write-side range check for unsigned types.** Today we widen on read
   (uint8→SMALLINT etc.) but do nothing on write — a Trino `SMALLINT 300` written to a
   `uint8` column silently wraps to 44. Throw a `TrinoException` with the column and

@@ -1156,6 +1156,86 @@ public class TestDucklakeCrossEngineCompatibility
         }
     }
 
+    // ==================== default_value_dialect NULL round-trip ====================
+
+    /**
+     * Pins our policy on {@code ducklake_column.default_value_dialect}: we write SQL NULL
+     * when there is no user-defined default (the common case — every column we write today).
+     * The spec (`ducklake_column.md:36`) says the dialect is "especially useful for
+     * expressions"; upstream's own migration (`ducklake_metadata_manager.cpp:297`) adds the
+     * column with `DEFAULT NULL`, and upstream's ducklake extension never reads the field
+     * anywhere in its C++ source. This test confirms DuckDB can read a Trino-written table
+     * with NULL there without barfing, via both a normal `SELECT` (which loads column
+     * metadata) and `DESCRIBE` (which exercises the full type-and-default-aware path).
+     */
+    @Test
+    public void testDuckdbReadsTrinoTableWithNullDefaultValueDialect()
+            throws Exception
+    {
+        String tableName = "xengine_null_dialect";
+        String fullTrino = "test_schema." + tableName;
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+
+        try {
+            computeActual("CREATE TABLE " + fullTrino + " (id INTEGER, name VARCHAR, amount DOUBLE)");
+            computeActual("INSERT INTO " + fullTrino + " VALUES (1, 'alice', 1.5), (2, 'bob', 2.5)");
+
+            // Confirm we wrote SQL NULL (not the string 'NULL') to default_value_dialect.
+            DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
+            try (Connection pgConn = DriverManager.getConnection(
+                    catalog.jdbcUrl(), catalog.user(), catalog.password());
+                    Statement pgStmt = pgConn.createStatement();
+                    ResultSet rs = pgStmt.executeQuery(
+                            "SELECT default_value, default_value_type, default_value_dialect " +
+                                    "FROM ducklake_column c JOIN ducklake_table t USING (table_id) " +
+                                    "WHERE t.table_name = '" + tableName + "' AND t.end_snapshot IS NULL " +
+                                    "  AND c.end_snapshot IS NULL")) {
+                int columnCount = 0;
+                while (rs.next()) {
+                    columnCount++;
+                    assertThat(rs.getString("default_value"))
+                            .as("no-user-default column should carry the 'NULL' string sentinel")
+                            .isEqualTo("NULL");
+                    assertThat(rs.getString("default_value_type"))
+                            .as("default_value_type should remain 'literal' (spec-preferred)")
+                            .isEqualTo("literal");
+                    rs.getString("default_value_dialect");
+                    assertThat(rs.wasNull())
+                            .as("default_value_dialect should be SQL NULL when we don't touch the default")
+                            .isTrue();
+                }
+                assertThat(columnCount).as("expected 3 active columns").isEqualTo(3);
+            }
+
+            // Normal read — must survive the NULL dialect.
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement();
+                    ResultSet rs = stmt.executeQuery("SELECT id, name, amount FROM " + fullDuckdb + " ORDER BY id")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getInt("id")).isEqualTo(1);
+                assertThat(rs.getString("name")).isEqualTo("alice");
+                assertThat(rs.getDouble("amount")).isEqualTo(1.5);
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getInt("id")).isEqualTo(2);
+                assertThat(rs.next()).isFalse();
+            }
+
+            // DESCRIBE path — separately exercises upstream's column-metadata materialization.
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement();
+                    ResultSet rs = stmt.executeQuery("DESCRIBE " + fullDuckdb)) {
+                List<String> columnNames = new ArrayList<>();
+                while (rs.next()) {
+                    columnNames.add(rs.getString(1));
+                }
+                assertThat(columnNames).containsExactly("id", "name", "amount");
+            }
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
     // ==================== Helpers ====================
 
     private void tryDropTable(String tableName)

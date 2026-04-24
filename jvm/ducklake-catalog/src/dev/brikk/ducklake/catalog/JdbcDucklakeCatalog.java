@@ -1632,11 +1632,18 @@ public class JdbcDucklakeCatalog
     {
         long columnId = tx.allocateCatalogId();
 
+        // `default_value = 'NULL'` (the four-char string, not SQL NULL) is upstream's "no
+        // default" sentinel; `default_value_type = 'literal'` is mandatory per upstream's
+        // migration (ducklake_metadata_manager.cpp backfills NULL → 'literal'). For
+        // `default_value_dialect` we write SQL NULL: the value is informational and only
+        // meaningful when there's a real expression to interpret. If we ever wire up
+        // user-written Trino DEFAULT expressions, use the literal 'trino' here — the dialect
+        // names the SQL syntax of the expression, which would be plain Trino SQL.
         try (PreparedStatement stmt = tx.getConnection().prepareStatement(
                 "INSERT INTO ducklake_column (column_id, begin_snapshot, end_snapshot, table_id, column_order, " +
                         "column_name, column_type, initial_default, default_value, nulls_allowed, parent_column, " +
                         "default_value_type, default_value_dialect) " +
-                        "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, ?, 'literal', 'duckdb')")) {
+                        "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, ?, 'literal', NULL)")) {
             stmt.setLong(1, columnId);
             stmt.setLong(2, tx.getNewSnapshotId());
             stmt.setLong(3, tableId);
@@ -1798,12 +1805,14 @@ public class JdbcDucklakeCatalog
                 stmt.executeUpdate();
             }
 
-            // Insert new version with same column_id but new name
+            // Insert new version with same column_id but new name. Default-value columns
+            // preserve the "no default" sentinel (`'NULL'` string literal) and leave
+            // `default_value_dialect` SQL NULL; same policy as insertColumnTree.
             try (PreparedStatement stmt = tx.getConnection().prepareStatement(
                     "INSERT INTO ducklake_column (column_id, begin_snapshot, end_snapshot, table_id, column_order, " +
                             "column_name, column_type, initial_default, default_value, nulls_allowed, parent_column, " +
                             "default_value_type, default_value_dialect) " +
-                            "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, NULL, 'literal', 'duckdb')")) {
+                            "VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, 'NULL', ?, NULL, 'literal', NULL)")) {
                 stmt.setLong(1, columnId);
                 stmt.setLong(2, tx.getNewSnapshotId());
                 stmt.setLong(3, tableId);
