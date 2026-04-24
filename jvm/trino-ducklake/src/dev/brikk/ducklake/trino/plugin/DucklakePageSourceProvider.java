@@ -385,6 +385,12 @@ public class DucklakePageSourceProvider
                     memoryContext,
                     fileFormatDataSourceStats);
 
+            // Feed DuckLake's footer_size hint to Trino's Parquet reader. For typical
+            // footers (<48 KB), this trims the blind tail read down to the exact bytes;
+            // for oversized footers, it replaces the fallback two-round-trip path with a
+            // single-shot read. See FooterPrefetchingParquetDataSource.
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(dataSource, split.footerSize());
+
             // Read Parquet metadata
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(
                     dataSource,
@@ -552,6 +558,10 @@ public class DucklakePageSourceProvider
                     parquetReaderOptions,
                     memoryContext,
                     fileFormatDataSourceStats);
+
+            // Delete files carry their own footer_size in ducklake_delete_file.
+            long deleteFooterHint = split.deleteFileFooterSizes().getOrDefault(deleteFilePath, 0L);
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(dataSource, deleteFooterHint);
 
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(
                     dataSource,

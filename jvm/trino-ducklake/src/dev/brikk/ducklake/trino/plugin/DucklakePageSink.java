@@ -67,6 +67,7 @@ public class DucklakePageSink
     private final List<String> columnNames;
     private final MessageType messageType;
     private final Map<List<String>, Type> primitiveTypes;
+    private final DucklakeUnsignedRangeChecker unsignedRangeChecker;
 
     // Partition support
     private final DucklakePagePartitioner partitioner;
@@ -105,6 +106,8 @@ public class DucklakePageSink
         this.columnNames = handle.columns().stream()
                 .map(DucklakeColumnHandle::columnName)
                 .collect(toImmutableList());
+        this.unsignedRangeChecker = DucklakeUnsignedRangeChecker.build(
+                handle.columns(), handle.allCatalogColumns());
 
         // Build Parquet schema with field_id annotations for DuckDB compatibility
         ParquetSchemaConverter schemaConverter = new ParquetSchemaConverter(
@@ -134,6 +137,13 @@ public class DucklakePageSink
         if (page.getPositionCount() == 0) {
             return NOT_BLOCKED;
         }
+
+        // Validate unsigned column ranges *before* any bytes hit the Parquet writer — once
+        // the writer has consumed the page, the offending value is already encoded in a
+        // row-group buffer and throwing here would leave a half-written file behind. The
+        // checker is a no-op (zero per-page overhead) when the table has no unsigned
+        // columns, which is the common case.
+        unsignedRangeChecker.validate(page);
 
         try {
             if (partitioner == null) {

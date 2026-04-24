@@ -97,12 +97,28 @@ and each links back to where the decision came from.
   `TestDucklakeCrossEngineCompatibility.testDuckdbReadsTrinoTableWithNullDefaultValueDialect`.
   - Source: this design discussion; `REPORT_CROSS_ENGINE_WRITE.md` Issue 1
 
-- [ ] **Add a write-side range check for unsigned types.** Today we widen on read
-  (uint8→SMALLINT etc.) but do nothing on write — a Trino `SMALLINT 300` written to a
-  `uint8` column silently wraps to 44. Throw a `TrinoException` with the column and
-  range, or clamp, as soon as we detect overflow in the page sink.
-  - `DucklakePageSink` write path
-  - Source: `COMPARE-pg_ducklake.md` B5 (already in README as acknowledged limitation)
+- [x] **Write-side range check for unsigned types.** Done. `DucklakeUnsignedRangeChecker`
+  is built once per page sink from `DucklakeWritableTableHandle.allCatalogColumns()`,
+  maps each unsigned DuckLake type to its read-side Trino widening (uint8 → SMALLINT,
+  uint16 → INTEGER, uint32 → BIGINT, uint64 → DECIMAL(20, 0)), and validates page blocks
+  before they reach the `ParquetWriter`. Out-of-range values — including the silent-wrap
+  symptom where SMALLINT 300 gets written to a uint8 column and DuckDB reads back 44 —
+  throw a `TrinoException(NUMERIC_VALUE_OUT_OF_RANGE)` naming the column and the
+  allowed range. When the table has no unsigned columns (the common case) the checker
+  is a singleton no-op — one null-guarded method call per page, zero iteration. uint64
+  validation uses a single `Int128.getHigh() != 0` test regardless of whether the caller
+  sent a signed decimal, a negative value, or a value above 2^64 − 1.
+
+  Pinned by unit tests in `TestDucklakeUnsignedRangeChecker` (covers every unsigned
+  type, null handling, and the canonical 300-wrap symptom) and cross-engine test
+  `TestDucklakeCrossEngineCompatibility.testTrinoRejectsOutOfRangeInsertsIntoUnsignedColumns`,
+  which has DuckDB create the UTINYINT/USMALLINT/UINTEGER/UBIGINT columns (Trino can't
+  declare unsigned types — `DucklakeTypeConverter.toDucklakeType` only emits signed
+  forms), Trino inserts the max-valid boundary values and DuckDB reads them back
+  exactly, then Trino attempts overflow inserts on every type and each is rejected
+  without leaking partial rows into the catalog.
+  - `DucklakeUnsignedRangeChecker.java`, `DucklakePageSink.java`
+  - Source: `COMPARE-pg_ducklake.md` B5 (was in README as acknowledged limitation)
 
 - [x] **UUIDv7 for catalog-identity UUIDs.** Done. Added
   `com.fasterxml.uuid:java-uuid-generator` 5.0.0, introduced a
@@ -194,11 +210,34 @@ Added to `TestDucklakeCrossEngineCompatibility`: DuckDB writes small rows under
   - `DucklakeTypeConverter.java:130-137`
   - Source: `COMPARE-pg_ducklake.md` B3
 
-- [ ] **Add a Parquet footer size hint on the read path.** Pass
-  `ducklake_data_file.footer_size` (and the equivalent on `ducklake_delete_file`) to
-  Trino's Parquet reader as a footer-size hint. Saves an S3 range read per file. Low
-  effort, measurable S3 latency win. Rust `datafusion-ducklake` already does this.
-  - `DucklakePageSourceProvider` / related reader setup
+- [x] **Parquet footer-size hint on the read path.** Done for both data files and
+  delete files. `DucklakeDataFile` now carries `deleteFileFooterSize` alongside the
+  existing `footerSize`, pulled via a `del.footer_size` column added to the
+  `getDataFiles` SQL; `DucklakeSplitManager.createMergedSplit` threads both through to
+  `DucklakeSplit` (new `footerSize` + `deleteFileFooterSizes` Map<String, Long> fields),
+  and `DucklakePageSourceProvider` wraps the `ParquetDataSource` with
+  `FooterPrefetchingParquetDataSource.wrapIfHintUsable(...)` on both the data file and
+  each delete file read.
+
+  Trino's `MetadataReader.readFooter` API hardcodes a 48 KB blind tail read and has no
+  hint parameter, so the wrapper intercepts `readTail` on the single call Trino's
+  Parquet code makes: first call returns the pre-fetched `footerSize + 8 bytes` tail
+  (FileMetaData + 8-byte post-script), subsequent calls fall through to the delegate.
+  For typical footers this trims the first read down to the exact bytes; for oversized
+  footers it replaces the fallback two-round-trip path with a single read. Degrades
+  silently: a zero/negative hint or a hint exceeding the file size bypasses the wrapper
+  entirely, so a stale or missing catalog row matches today's behavior with no new
+  failure modes.
+
+  Pinned by `TestFooterPrefetchingParquetDataSource` (unit-level: in-range/oversized
+  hint, fall-through on second call, always-full-cache semantics for oversized footers,
+  bypass on 0 / negative / stale hints, non-tail reads always delegate) and
+  `TestDucklakeSplitManager.testGetSplitsCarryFooterSizeHintFromCatalog` (asserts the
+  catalog row has a positive footer_size and every emitted split carries a positive
+  hint — catches any drop between the JDBC query and split materialization).
+  - `FooterPrefetchingParquetDataSource.java`, `DucklakePageSourceProvider.java`,
+    `DucklakeSplitManager.java`, `DucklakeSplit.java`, `DucklakeDataFile.java`,
+    `JdbcDucklakeCatalog.getDataFiles`
   - Source: `COMPARE-datafusion-ducklake.md` (ideas worth stealing)
 
 - [ ] **Session properties for commit context.** Already on the roadmap, but pg_ducklake

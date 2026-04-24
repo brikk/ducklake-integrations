@@ -90,10 +90,10 @@ Restart Trino for the new plugin and catalog to take effect.
 | `int16` (smallint) | SMALLINT | Yes | Yes | |
 | `int32` (integer) | INTEGER | Yes | Yes | |
 | `int64` (bigint) | BIGINT | Yes | Yes | |
-| `uint8` | SMALLINT | Yes | Yes | Widened to avoid overflow |
-| `uint16` | INTEGER | Yes | Yes | Widened to avoid overflow |
-| `uint32` | BIGINT | Yes | Yes | Widened to avoid overflow |
-| `uint64` | DECIMAL(20,0) | Yes | Yes | Widened to avoid overflow |
+| `uint8` | SMALLINT | Yes | Yes | Widened on read; writes outside 0..255 are rejected |
+| `uint16` | INTEGER | Yes | Yes | Widened on read; writes outside 0..65535 are rejected |
+| `uint32` | BIGINT | Yes | Yes | Widened on read; writes outside 0..2^32-1 are rejected |
+| `uint64` | DECIMAL(20,0) | Yes | Yes | Widened on read; writes outside 0..2^64-1 are rejected |
 | `float32` | REAL | Yes | Yes | |
 | `float64` | DOUBLE | Yes | Yes | |
 | `decimal(p,s)` | DECIMAL(p,s) | Yes | Yes | Precision up to 38 |
@@ -141,6 +141,7 @@ operators and functions are not available through Trino.
 | Page-level filtering (Parquet page index) | Yes | |
 | Dynamic filter pushdown | Yes | Intersected with file-level stats |
 | Parquet data files | Yes | Via Trino's native Parquet reader |
+| Parquet footer-size hint | Yes | Uses `ducklake_data_file.footer_size` / `ducklake_delete_file.footer_size` to skip Trino's default 48 KB blind footer read |
 | Inlined data (small tables) | Yes | Reads from catalog metadata tables |
 | Mixed inline + Parquet snapshots | Yes | Both sources unioned transparently |
 | Delete files (merge-on-read) | Yes | Parquet positional delete files |
@@ -315,9 +316,12 @@ for single-user, local development, and testing workflows.
   the decimal's range and will error on read.
 - `uint128` is degraded to `VARCHAR`; Trino cannot represent a ≥39-digit signed-or-unsigned
   integer. Values round-trip as text; no numeric operations are available.
-- Unsigned integer types (uint8/16/32/64) are widened to larger signed Trino types on read.
-  No range validation is performed on the write path — writing a value that exceeds the
-  unsigned range of the DuckLake column type is not prevented.
+- Unsigned integer types (uint8/16/32/64) are widened to larger signed Trino types on
+  read (uint8 → SMALLINT, uint16 → INTEGER, uint32 → BIGINT, uint64 → DECIMAL(20, 0)).
+  On the write path, values outside the unsigned range of the target DuckLake column
+  are rejected at INSERT time with `NUMERIC_VALUE_OUT_OF_RANGE` — e.g. a SMALLINT 300
+  or a negative value written to a `uint8` column fails cleanly instead of silently
+  wrapping to 44.
 - Files written before a failed commit become orphans. DuckLake's
   `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
 - Puffin deletion vectors (experimental in DuckLake 1.0, opt-in) are not supported. Tables

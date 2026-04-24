@@ -186,6 +186,37 @@ public class TestDucklakeSplitManager
     }
 
     @Test
+    public void testGetSplitsCarryFooterSizeHintFromCatalog()
+            throws Exception
+    {
+        // End-to-end wiring check for the Parquet footer_size hint — the read-path
+        // optimization that lets Trino skip its 48 KB blind tail read. DucklakeDataFile
+        // pulls footer_size from the catalog, and DucklakeSplitManager copies it onto
+        // the DucklakeSplit so the worker can feed it to
+        // FooterPrefetchingParquetDataSource. If this field gets dropped anywhere in
+        // that chain, every read falls back to the default path silently — tests still
+        // pass, S3 bills quietly double. This test pins every link.
+        long snapshotId = catalog.getCurrentSnapshotId();
+        DucklakeTable table = getTable("test_schema", "simple_table", snapshotId);
+        DucklakeTableHandle tableHandle = new DucklakeTableHandle("test_schema", "simple_table", table.tableId(), snapshotId);
+
+        List<DucklakeSplit> splits = getSplits(tableHandle, Constraint.alwaysTrue());
+
+        // Sanity: the catalog row really does have a footer size — otherwise this test
+        // would pass vacuously against a corrupt fixture.
+        assertThat(catalog.getDataFiles(table.tableId(), snapshotId))
+                .allSatisfy(dataFile -> assertThat(dataFile.footerSize())
+                        .as("catalog footer_size for data file %s", dataFile.path())
+                        .isPositive());
+
+        assertThat(splits)
+                .isNotEmpty()
+                .allSatisfy(split -> assertThat(split.footerSize())
+                        .as("split footer_size hint for %s", split.dataFilePath())
+                        .isPositive());
+    }
+
+    @Test
     public void testGetSplitsReturnsEmptyForEmptyTable()
             throws Exception
     {

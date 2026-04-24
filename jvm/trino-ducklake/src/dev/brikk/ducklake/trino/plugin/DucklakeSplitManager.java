@@ -480,15 +480,24 @@ public class DucklakeSplitManager
         DucklakeDataFile primary = dataFileGroup.getFirst();
         String dataFilePath = pathResolver.resolveFilePath(primary.path(), primary.pathIsRelative(), tableDataPath);
 
-        // Collect all delete file paths from the group (multiple delete files for same data file)
-        List<String> deleteFilePaths = dataFileGroup.stream()
-                .filter(df -> df.deleteFilePath().isPresent())
-                .map(df -> pathResolver.resolveFilePath(
-                        df.deleteFilePath().orElseThrow(),
-                        df.deleteFilePathIsRelative().orElse(false),
-                        tableDataPath))
-                .distinct()
-                .collect(toImmutableList());
+        // Collect all delete file paths from the group (multiple delete files for same
+        // data file) together with each delete file's footer-size hint. Built in a single
+        // pass so resolved paths line up with their catalog-recorded footer sizes; paths
+        // are still deduplicated, and when duplicates carry different (or absent) hints we
+        // prefer the first recorded positive hint.
+        LinkedHashMap<String, Long> deleteFileFooterSizes = new LinkedHashMap<>();
+        for (DucklakeDataFile df : dataFileGroup) {
+            if (df.deleteFilePath().isEmpty()) {
+                continue;
+            }
+            String resolvedDeletePath = pathResolver.resolveFilePath(
+                    df.deleteFilePath().orElseThrow(),
+                    df.deleteFilePathIsRelative().orElse(false),
+                    tableDataPath);
+            long hint = df.deleteFileFooterSize().orElse(0L);
+            deleteFileFooterSizes.merge(resolvedDeletePath, hint, (existing, incoming) -> existing > 0 ? existing : incoming);
+        }
+        List<String> deleteFilePaths = List.copyOf(deleteFileFooterSizes.keySet());
 
         return new DucklakeSplit(
                 dataFilePath,
@@ -497,7 +506,9 @@ public class DucklakeSplitManager
                 primary.recordCount(),
                 primary.fileSizeBytes(),
                 primary.fileFormat(),
-                fileStatisticsDomain);
+                fileStatisticsDomain,
+                primary.footerSize(),
+                deleteFileFooterSizes);
     }
 
     private record PredicateBounds(String minValue, String maxValue) {}

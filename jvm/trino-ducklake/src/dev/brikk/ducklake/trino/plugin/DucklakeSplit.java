@@ -21,6 +21,7 @@ import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.predicate.TupleDomain;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
@@ -39,7 +40,15 @@ public record DucklakeSplit(
         @JsonProperty("recordCount") long recordCount,
         @JsonProperty("fileSizeBytes") long fileSizeBytes,
         @JsonProperty("fileFormat") String fileFormat,
-        @JsonProperty("fileStatisticsDomain") TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
+        @JsonProperty("fileStatisticsDomain") TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
+        // DuckLake footer-size hint (Thrift FileMetaData length, excluding the 8-byte
+        // post-script). 0 means "no hint" — the reader falls back to Trino's default
+        // 48 KB blind tail read. See ducklake_data_file.footer_size in the spec.
+        @JsonProperty("footerSize") long footerSize,
+        // Parallel hints for the delete files listed in deleteFilePaths. Map is used
+        // instead of a parallel list because deleteFilePaths is deduplicated; a missing
+        // entry (or 0 value) means "no hint for this path".
+        @JsonProperty("deleteFileFooterSizes") Map<String, Long> deleteFileFooterSizes)
         implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = instanceSize(DucklakeSplit.class);
@@ -52,6 +61,23 @@ public record DucklakeSplit(
         deleteFilePaths = List.copyOf(deleteFilePaths);
         requireNonNull(fileFormat, "fileFormat is null");
         requireNonNull(fileStatisticsDomain, "fileStatisticsDomain is null");
+        requireNonNull(deleteFileFooterSizes, "deleteFileFooterSizes is null");
+        deleteFileFooterSizes = Map.copyOf(deleteFileFooterSizes);
+    }
+
+    // Convenience constructor without footer-size hints — used by tests that don't
+    // exercise the hint path. Production code in DucklakeSplitManager always uses the
+    // canonical constructor with hints populated from the catalog.
+    public DucklakeSplit(
+            String dataFilePath,
+            List<String> deleteFilePaths,
+            long rowIdStart,
+            long recordCount,
+            long fileSizeBytes,
+            String fileFormat,
+            TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
+    {
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of());
     }
 
     /**
@@ -80,11 +106,15 @@ public record DucklakeSplit(
     @Override
     public long getRetainedSizeInBytes()
     {
+        long deleteFooterSizesRetained = deleteFileFooterSizes.entrySet().stream()
+                .mapToLong(entry -> estimatedSizeOf(entry.getKey()) + SIZE_OF_LONG)
+                .sum();
         return INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong(SizeOf::estimatedSizeOf).sum()
-                + (SIZE_OF_LONG * 3) // rowIdStart, recordCount, fileSizeBytes
+                + (SIZE_OF_LONG * 4) // rowIdStart, recordCount, fileSizeBytes, footerSize
                 + estimatedSizeOf(fileFormat)
-                + fileStatisticsDomain.getRetainedSizeInBytes(DucklakeColumnHandle::getRetainedSizeInBytes);
+                + fileStatisticsDomain.getRetainedSizeInBytes(DucklakeColumnHandle::getRetainedSizeInBytes)
+                + deleteFooterSizesRetained;
     }
 }

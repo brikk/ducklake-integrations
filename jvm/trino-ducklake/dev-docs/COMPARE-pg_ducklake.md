@@ -22,9 +22,9 @@ The reference largely agrees with what we do. No catastrophic spec-level breakag
 of the original deltas from this audit have since been closed (changes_made quoting,
 inlined `list<T>` primitive element reads, `int128`/`uint128` mapping, `linestring_z`,
 UUIDv7, `renamed_view` → `altered_view` folding, schema_version bumps on view/schema
-DDL). Remaining open items are **unsigned write-side range checks**, and a small tail
-of inlined-read cases we still haven't validated (nested list elements — `list<blob>`
-hex decoding and `list<uuid>` 16-byte packing — both pinned by `@Disabled` tests).
+DDL, unsigned write-side range checks). Remaining open items are a small tail of
+inlined-read cases we still haven't validated (nested list elements — `list<blob>` hex
+decoding and `list<uuid>` 16-byte packing — both pinned by `@Disabled` tests).
 Maintenance operations are a major feature area we still don't expose, but the scope is
 well understood and tractable.
 
@@ -38,7 +38,7 @@ well understood and tractable.
 | B2 | **Inlined `list<T>` rows stored as `VARCHAR[]` (Postgres array), not a serialized scalar.** Reference Postgres metadata manager writes native PG arrays (`INT4[]`, etc.) for inlined lists and lets the reader reconstruct. Our `DucklakeInlinedValueConverter` path assumes a single string and calls `toStringValue()`. | `DucklakeInlinedValueConverter.java` (array path) | High (when triggered) | **Fixed for primitive element types.** `DucklakeInlinedValueConverter` now detects `ArrayType` columns and parses DuckDB's `[elem, elem, ...]` inlined text form (with NULL + `\'` / `\\` escape handling) plus a `java.sql.Array` / `Object[]` fallback for native PG arrays. Covered across 12 primitive element types (int/bigint/smallint/tinyint/bool/real/double/decimal/varchar/date/timestamp/timestamptz) via both inlined and Parquet paths. `list<blob>` and `list<uuid>` remain `@Disabled` — separate follow-ups tracked in `TODO-compatibility.md`. |
 | B3 | **`hugeint` / `uhugeint` are unmapped and throw** on any column that uses them. | `DucklakeTypeConverter.java` | High (when triggered) | **Fixed.** `int128` → `DECIMAL(38, 0)`, `uint128` → `VARCHAR` (Trino caps decimal at 38 digits). README type table + limitations updated. Pinned by `TestDucklakeTypeConverter` unit tests + cross-engine `testDuckdbHugeintColumnReadsAsDecimalInTrino` / `testDuckdbUhugeintColumnReadsAsVarcharInTrino`. Note: spec canonical names are `int128`/`uint128`, not `hugeint`/`uhugeint` — the DuckDB SQL names never appear in the catalog column_type column. |
 | B4 | **`linestring z` in the type converter switch** — spec 1.0 renamed it `linestring_z` (underscore). | `DucklakeTypeConverter.java` | Low but trivial | **Fixed.** Converter matches both `linestring_z` (1.0 name) and `linestring z` (legacy form for pre-1.0 catalogs). Covered by `testLinestringZUnderscoreIsVarbinary` + `testLinestringZLegacySpaceFormStillAccepted`. |
-| B5 | **Unsigned writes silently truncate.** We widen on read (uint8→SMALLINT etc.) but do no range check on write. A Trino `SMALLINT 300` into a `uint8` column becomes 44 through integer wrap. | `DucklakePageSink` write path | Medium | Open. README acknowledges. |
+| B5 | **Unsigned writes silently truncate.** We widen on read (uint8→SMALLINT etc.) but do no range check on write. A Trino `SMALLINT 300` into a `uint8` column becomes 44 through integer wrap. | `DucklakePageSink` write path | Medium | **Fixed.** `DucklakeUnsignedRangeChecker` validates each page before it reaches the Parquet writer, throwing `TrinoException(NUMERIC_VALUE_OUT_OF_RANGE)` for any value outside the uint range. Built once per sink; singleton no-op when no unsigned columns. uint64 uses a single `Int128.getHigh() != 0` test to catch both negative values and values above 2^64 − 1. Pinned by `TestDucklakeUnsignedRangeChecker` (all four unsigned widths + 300-wrap symptom + null handling) and `TestDucklakeCrossEngineCompatibility.testTrinoRejectsOutOfRangeInsertsIntoUnsignedColumns` (DuckDB creates the UTINYINT/USMALLINT/UINTEGER/UBIGINT columns, Trino round-trips max values and gets rejected on every overflow case without leaking partial rows). |
 | B6 | **Decimal `p > 38` errors hard.** Trino can't represent it, so there is no graceful path — but right now we throw at type construction time rather than at `CREATE TABLE` time with a clearer message. Upstream allows higher precisions. Unlikely to be hit. | `DucklakeTypeConverter.java` | Low | Open. |
 
 ### Additional gaps surfaced after the original audit
@@ -192,7 +192,7 @@ Still open:
 7. **Consider session properties** for `commit_author`/`commit_message`/`commit_extra_info`.
    Already on the roadmap; pg_ducklake exposing `set_commit_message()` is a nudge it's a
    commonly wanted feature.
-8. **Unsigned write-side range check.** (B5) Still open.
+8. **Unsigned write-side range check.** (B5) Fixed — see B5 status row above.
 
 ## Appendix — Type mapping differences worth knowing
 

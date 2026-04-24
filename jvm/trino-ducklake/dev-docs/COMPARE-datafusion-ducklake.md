@@ -30,9 +30,9 @@ read-only, but its code has started a write path (`metadata_writer*`, `table_wri
 | Snapshot conflict detection on commit | None in writer | `ensureSnapshotLineageUnchanged()` — aborts on stale base | JVM way ahead |
 | Views | None | Trino dialect supported, cross-dialect filtered | JVM ahead |
 | Stats-driven pruning | Stats not exposed via `MetadataProvider` trait | Full file + table level; conservative mode when deletes present | JVM way ahead |
-| Parquet footer size hint | Passed via `with_metadata_size_hint()` — saves an S3 round-trip per file | Not currently used | **Worth stealing** |
+| Parquet footer size hint | Passed via `with_metadata_size_hint()` — saves an S3 round-trip per file | Passed via `FooterPrefetchingParquetDataSource` wrapper (Trino's `MetadataReader.readFooter` has no hint API, so we intercept `readTail`). Covers data files + delete files | At parity |
 | Path validation (null-byte, traversal) | `validate_path()` guards | Assumes trusted catalog | Rust more defensive |
-| Unsigned range validation on writes | None | None | Both have the hole |
+| Unsigned range validation on writes | None | `DucklakeUnsignedRangeChecker` rejects out-of-range SMALLINT/INTEGER/BIGINT/DECIMAL(20,0) writes into uint8/uint16/uint32/uint64 columns at page-sink time, before silent Parquet-truncation can corrupt the uint catalog column | JVM ahead |
 | Catalog backends | DuckDB (bundled), SQLite, Postgres, MySQL | JDBC (Postgres in prod; SQLite/DuckDB promised) | Rust wider today |
 
 ### A doc-vs-code mismatch on the Rust side
@@ -57,10 +57,16 @@ multi-snapshot deletes actually live) is still not read by either implementation
 
 ## Ideas worth stealing
 
-1. **Parquet footer size hints.** DuckLake stores `footer_size` in `ducklake_data_file`.
-   Rust passes it to `ParquetFormat::with_metadata_size_hint()` so the reader issues a
-   single range read instead of two. Low-effort, measurable S3 latency win. Applies to
-   both data files and delete files.
+1. **Parquet footer size hints.** ~~Worth stealing — Rust passes `footer_size` to
+   `ParquetFormat::with_metadata_size_hint()`.~~ **Done.** Trino's `MetadataReader.readFooter`
+   has no hint parameter (hardcodes a 48 KB blind tail read with a fallback re-read for
+   oversized footers), so the JVM integration wraps `ParquetDataSource` with
+   `FooterPrefetchingParquetDataSource`, which pre-fetches exactly `footer_size + 8`
+   bytes and short-circuits the first `readTail` call. For typical footers this replaces
+   the blind 48 KB read with an exact-size read; for oversized footers it replaces the
+   two-round-trip fallback with a single read. Covers `ducklake_data_file.footer_size`
+   and `ducklake_delete_file.footer_size`; stale or missing hints degrade silently to
+   the default path.
 2. **`sqllogictest` harness.** 248 `.slt` files across 48 categories (alter / attach /
    compaction / encryption / merge / partitioning / time_travel / tpch / …). Trino has
    its own product-tests story, but an `.slt` bridge could reuse this corpus for regression
@@ -102,8 +108,8 @@ Still open:
   format as a medium-priority gap; `partial_max` deserves the same treatment. Neither
   implementation reads it today. When a DuckDB compaction rewrites a delete file as partial,
   we need to not mis-attribute deletes to older snapshots.
-- **Consider adopting the footer-size hint** on the read path (passes `ducklake_data_file.footer_size`
-  to the Parquet reader, saves an S3 round-trip per file).
+- ~~Consider adopting the footer-size hint on the read path.~~ Adopted — see "Ideas worth
+  stealing" #1 above and `TODO-compatibility.md`.
 - **Evaluate the `.slt` corpus** as a portable regression suite for the catalog library.
 
 ## Test coverage, at a glance

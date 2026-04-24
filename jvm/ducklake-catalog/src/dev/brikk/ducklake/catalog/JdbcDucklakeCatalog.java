@@ -481,7 +481,8 @@ public class JdbcDucklakeCatalog
         String sql = "SELECT data.data_file_id, data.table_id, data.begin_snapshot, data.end_snapshot, data.file_order, " +
                      "       data.path, data.path_is_relative, data.file_format, data.record_count, data.file_size_bytes, " +
                      "       data.footer_size, data.row_id_start, data.partition_id, " +
-                     "       del.path AS delete_file_path, del.path_is_relative AS delete_path_is_relative " +
+                     "       del.path AS delete_file_path, del.path_is_relative AS delete_path_is_relative, " +
+                     "       del.footer_size AS delete_footer_size " +
                      "FROM ducklake_data_file AS data " +
                      "LEFT JOIN ducklake_delete_file AS del ON data.data_file_id = del.data_file_id " +
                      "  AND ? >= del.begin_snapshot AND (? < del.end_snapshot OR del.end_snapshot IS NULL) " +
@@ -515,7 +516,8 @@ public class JdbcDucklakeCatalog
                             rs.getLong("row_id_start"),
                             getLongOptional(rs, "partition_id"),
                             getStringOptional(rs, "delete_file_path"),
-                            getBooleanOptional(rs, "delete_path_is_relative")));
+                            getBooleanOptional(rs, "delete_path_is_relative"),
+                            getLongOptional(rs, "delete_footer_size")));
                 }
             }
         }
