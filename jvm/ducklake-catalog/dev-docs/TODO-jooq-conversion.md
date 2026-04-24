@@ -44,36 +44,50 @@ tests.
 
 Lay down the helpers every later phase will call. No behavior change yet.
 
-- [ ] `SnapshotRange` helper — a `Condition` builder for the
+- [x] `SnapshotRange` helper — a `Condition` builder for the
   `begin_snapshot <= ? AND (end_snapshot IS NULL OR end_snapshot > ?)` predicate that
   appears in ~30 queries. Takes a generated `Table<?>` and snapshot id, returns a
-  `Condition`.
-- [ ] Transaction bridge — `DSLContext forConnection(Connection c)` that returns a
+  `Condition`. Lives at `src/dev/brikk/ducklake/catalog/SnapshotRange.java`; also
+  exposes a `(Field<Long>, Field<Long>, long)` overload for the dynamic
+  inlined-data tables (Phase 4).
+- [x] Transaction bridge — `DSLContext forConnection(Connection c)` that returns a
   connection-scoped `DSLContext` using the same `dialect` + `Settings` as the field
   `dsl`. Used from inside `DucklakeWriteTransaction` so writes flow through the
   transaction's `Connection`, not a fresh pool checkout.
-- [ ] UUID binding — add a `forcedTypes { forcedType { name = "UUID"; includeExpression
-  = ".*\\.(?:schema|table|view)_uuid" } }` to the codegen config, regen, and confirm
-  records expose `UUID` getters. See "Resolved decisions → UUID columns" below for
-  the rationale and call-site conversion strategy.
-- [ ] `jooq-kotlin` usage audit — `JdbcDucklakeCatalog` is Java, but generated types
-  are Java too; Kotlin extensions are only relevant if we add Kotlin code. Note here
-  so later phases can opt in to `coroutines`/`kotlin` extensions if we ever Kotlinize.
+- [x] UUID binding — added a `forcedTypes` entry for `.*\.(?:schema|table|view)_uuid`
+  in `ducklake-catalog/build.gradle.kts`; regenerated and confirmed the three
+  UUID columns (`SCHEMA_UUID`, `TABLE_UUID`, `VIEW_UUID`) expose `UUID` getters.
+  See "Resolved decisions → UUID columns" below for the rationale and call-site
+  conversion strategy.
+- [ ] `jooq-kotlin` usage — `JdbcDucklakeCatalog` is being Kotlinized in a parallel
+  branch (not yet pushed) before this migration finishes. Plan around that: once the
+  Kotlin port lands, use jOOQ's Kotlin extensions (`org.jooq.kotlin.*`) — destructuring
+  on `Record`, `fetchInto<T>()`, `DSL.select { ... }` DSL blocks — rather than Java-
+  style call chains. The `jooq-kotlin` dep is already on the classpath via the bundle,
+  so no extra wiring needed. If a jOOQ-phase lands before the Kotlin port, write it in
+  Java with the expectation that Kotlin conversion will happen in the subsequent
+  refactor pass.
 
 ### Phase 2 — Tier 1 reads (pure SELECTs, no joins)
 
 Straight port of read-only methods, one method at a time, each landed as its own
 commit + run of `:ducklake-catalog:test`.
 
-- [ ] Snapshot reads: `getCurrentSnapshotId`, `getSnapshot`, `getSnapshotAtOrBefore`,
+- [x] Snapshot reads: `getCurrentSnapshotId`, `getSnapshot`, `getSnapshotAtOrBefore`,
   `listSnapshots`, `listSnapshotChanges`.
-- [ ] Metadata key read: `getDataPath`.
-- [ ] Schema reads: `listSchemas`, `getSchema`.
-- [ ] Table reads: `listTables`, `getTable`, `getTableById`.
-- [ ] Table stats read: `getTableStats`.
-- [ ] View reads: `listViews`, `getView`.
-- [ ] Retire the old `readSnapshot` / `readView` / `getXxxOptional` helpers once all
-  callers migrate (jOOQ records replace them).
+- [x] Metadata key read: `getDataPath`.
+- [x] Schema reads: `listSchemas`, `getSchema`.
+- [x] Table reads: `listTables`, `getTable`, `getTableById`.
+- [x] Table stats read: `getTableStats`.
+- [x] View reads: `listViews`, `getView`.
+- [x] Retire the old `readSnapshot` / `readView` helpers and the
+  `parseSnapshotTime` parser (jOOQ returns `OffsetDateTime` via the Postgres
+  driver — the SQLite/DuckDB text-format normalization is no longer needed).
+  Deleted the reflective pin test
+  `TestJdbcDucklakeCatalogSnapshotTimeParsing` alongside. `getLongOptional` /
+  `getStringOptional` / `getBooleanOptional` stay until Phase 3 finishes (still
+  called by `getTableColumns`, `getAllColumnsWithParentage`, `getDataFiles`,
+  etc.).
 
 ### Phase 3 — Tier 2 reads (joins + aggregation)
 
@@ -209,7 +223,7 @@ Postgres `uuid` (so jOOQ OSS's built-in `UUID` binding is usually enough on its 
 it anyway via `forcedTypes` so the binding doesn't drift if DuckLake's schema ever
 widens to `text`/`varchar` on a non-Postgres backend.
 
-- [ ] Add a `forcedTypes` entry in `ducklake-catalog/build.gradle.kts`:
+- [x] Add a `forcedTypes` entry in `ducklake-catalog/build.gradle.kts`:
   ```kotlin
   forcedTypes {
       forcedType {
@@ -219,7 +233,7 @@ widens to `text`/`varchar` on a non-Postgres backend.
       }
   }
   ```
-- [ ] Regen + confirm the generated record's getter returns `UUID` (not `String`).
+- [x] Regen + confirm the generated record's getter returns `UUID` (not `String`).
 - [ ] Our internal call sites use `String` (`JdbcDucklakeCatalog.newCatalogUuid()`
   returns a `String` representation of a UUIDv7). On the boundary between our code and
   jOOQ, convert with `UUID.fromString(str)` / `uuid.toString()`. Since every catalog

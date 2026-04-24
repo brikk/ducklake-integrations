@@ -15,6 +15,12 @@ package dev.brikk.ducklake.catalog;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSchemaRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSnapshotChangesRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeSnapshotRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeTableRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeTableStatsRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeViewRecord;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.conf.RenderQuotedNames;
@@ -44,6 +50,14 @@ import java.util.stream.Collectors;
 import com.fasterxml.uuid.Generators;
 import com.fasterxml.uuid.impl.TimeBasedEpochGenerator;
 
+import static dev.brikk.ducklake.catalog.SnapshotRange.activeAt;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT_CHANGES;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE_STATS;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_VIEW;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
@@ -73,6 +87,7 @@ public class JdbcDucklakeCatalog
     private final HikariDataSource hikariDataSource;
     private final boolean isPostgresql;
     private final SQLDialect dialect;
+    private final Settings jooqSettings;
     private final DSLContext dsl;
 
     public JdbcDucklakeCatalog(DucklakeCatalogConfig config)
@@ -99,7 +114,7 @@ public class JdbcDucklakeCatalog
         // Infer dialect from the JDBC URL. JDBCUtils.dialect() returns SQLDialect.DEFAULT for
         // backends jOOQ OSS doesn't recognize, which keeps query rendering portable.
         this.dialect = JDBCUtils.dialect(config.getCatalogDatabaseUrl());
-        Settings jooqSettings = new Settings()
+        this.jooqSettings = new Settings()
                 // The generated DuckLake tables use lowercase unquoted identifiers. Quoting is
                 // only needed on identifiers that collide with reserved words (none in the
                 // ducklake_* schema today) — leaving it off keeps queries readable in logs.
@@ -111,290 +126,119 @@ public class JdbcDucklakeCatalog
                 config.getCatalogDatabaseUrl(), dialect);
     }
 
+    /**
+     * Returns a {@link DSLContext} scoped to a caller-supplied {@link Connection}.
+     * Writes routed through this context run on the caller's transaction rather
+     * than checking out a fresh pool connection, so commits and rollbacks on the
+     * caller's connection apply to every jOOQ-issued statement.
+     *
+     * <p>Used by {@link DucklakeWriteTransaction} to keep all mutations on a
+     * single transactional connection.
+     */
+    DSLContext forConnection(Connection connection)
+    {
+        return DSL.using(connection, dialect, jooqSettings);
+    }
+
     @Override
     public long getCurrentSnapshotId()
     {
-        String sql = "SELECT snapshot_id FROM ducklake_snapshot WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            if (rs.next()) {
-                return rs.getLong("snapshot_id");
-            }
+        Long maxId = dsl.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
+                .from(DUCKLAKE_SNAPSHOT)
+                .fetchOne(0, Long.class);
+        if (maxId == null) {
             throw new IllegalStateException("No snapshots found in ducklake_snapshot table");
         }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get current snapshot", e);
-        }
+        return maxId;
     }
 
     @Override
     public Optional<DucklakeSnapshot> getSnapshot(long snapshotId)
     {
-        String sql = "SELECT snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id " +
-                     "FROM ducklake_snapshot WHERE snapshot_id = ?";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(readSnapshot(rs));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get snapshot: " + snapshotId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
+                .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(snapshotId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeSnapshot);
     }
 
     @Override
     public Optional<DucklakeSnapshot> getSnapshotAtOrBefore(Instant timestamp)
     {
-        String sql = "SELECT snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id " +
-                     "FROM ducklake_snapshot " +
-                     "ORDER BY snapshot_id DESC";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    DucklakeSnapshot snapshot = readSnapshot(rs);
-                    if (!snapshot.snapshotTime().isAfter(timestamp)) {
-                        return Optional.of(snapshot);
-                    }
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get snapshot at or before timestamp: " + timestamp, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
+                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+                .fetch(JdbcDucklakeCatalog::toDucklakeSnapshot)
+                .stream()
+                .filter(snapshot -> !snapshot.snapshotTime().isAfter(timestamp))
+                .findFirst();
     }
 
     @Override
     public List<DucklakeSnapshot> listSnapshots()
     {
-        String sql = "SELECT snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id " +
-                     "FROM ducklake_snapshot " +
-                     "ORDER BY snapshot_id DESC";
-
-        List<DucklakeSnapshot> snapshots = new ArrayList<>();
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            while (rs.next()) {
-                snapshots.add(readSnapshot(rs));
-            }
-            return snapshots;
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to list snapshots", e);
-        }
+        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
+                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+                .fetch(JdbcDucklakeCatalog::toDucklakeSnapshot);
     }
 
     @Override
     public List<DucklakeSnapshotChange> listSnapshotChanges()
     {
-        String sql = "SELECT snapshot_id, changes_made, author, commit_message, commit_extra_info " +
-                     "FROM ducklake_snapshot_changes " +
-                     "ORDER BY snapshot_id DESC";
-
-        List<DucklakeSnapshotChange> changes = new ArrayList<>();
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            while (rs.next()) {
-                changes.add(new DucklakeSnapshotChange(
-                        rs.getLong("snapshot_id"),
-                        getStringOptional(rs, "changes_made"),
-                        getStringOptional(rs, "author"),
-                        getStringOptional(rs, "commit_message"),
-                        getStringOptional(rs, "commit_extra_info")));
-            }
-            return changes;
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to list snapshot changes", e);
-        }
+        return dsl.selectFrom(DUCKLAKE_SNAPSHOT_CHANGES)
+                .orderBy(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.desc())
+                .fetch(JdbcDucklakeCatalog::toDucklakeSnapshotChange);
     }
 
     @Override
     public List<DucklakeSchema> listSchemas(long snapshotId)
     {
-        String sql = "SELECT schema_id, schema_uuid, begin_snapshot, end_snapshot, schema_name, path, path_is_relative " +
-                     "FROM ducklake_schema " +
-                     "WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        List<DucklakeSchema> schemas = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, snapshotId);
-            stmt.setLong(2, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    schemas.add(new DucklakeSchema(
-                            rs.getLong("schema_id"),
-                            UUID.fromString(rs.getString("schema_uuid")),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getString("schema_name"),
-                            getStringOptional(rs, "path"),
-                            getBooleanOptional(rs, "path_is_relative")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to list schemas at snapshot: " + snapshotId, e);
-        }
-
-        return schemas;
+        return dsl.selectFrom(DUCKLAKE_SCHEMA)
+                .where(activeAt(DUCKLAKE_SCHEMA, snapshotId))
+                .fetch(JdbcDucklakeCatalog::toDucklakeSchema);
     }
 
     @Override
     public Optional<DucklakeSchema> getSchema(String schemaName, long snapshotId)
     {
-        String sql = "SELECT schema_id, schema_uuid, begin_snapshot, end_snapshot, schema_name, path, path_is_relative " +
-                     "FROM ducklake_schema " +
-                     "WHERE schema_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, schemaName);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new DucklakeSchema(
-                            rs.getLong("schema_id"),
-                            UUID.fromString(rs.getString("schema_uuid")),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getString("schema_name"),
-                            getStringOptional(rs, "path"),
-                            getBooleanOptional(rs, "path_is_relative")));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get schema: " + schemaName + " at snapshot: " + snapshotId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_SCHEMA)
+                .where(DUCKLAKE_SCHEMA.SCHEMA_NAME.eq(schemaName))
+                .and(activeAt(DUCKLAKE_SCHEMA, snapshotId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeSchema);
     }
 
     @Override
     public List<DucklakeTable> listTables(long schemaId, long snapshotId)
     {
-        String sql = "SELECT table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative " +
-                     "FROM ducklake_table " +
-                     "WHERE schema_id = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        List<DucklakeTable> tables = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, schemaId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    tables.add(new DucklakeTable(
-                            rs.getLong("table_id"),
-                            UUID.fromString(rs.getString("table_uuid")),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("schema_id"),
-                            rs.getString("table_name"),
-                            getStringOptional(rs, "path"),
-                            getBooleanOptional(rs, "path_is_relative")));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to list tables for schema: " + schemaId + " at snapshot: " + snapshotId, e);
-        }
-
-        return tables;
+        return dsl.selectFrom(DUCKLAKE_TABLE)
+                .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schemaId))
+                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+                .fetch(JdbcDucklakeCatalog::toDucklakeTable);
     }
 
     @Override
     public Optional<DucklakeTable> getTable(String schemaName, String tableName, long snapshotId)
     {
-        // First get the schema
         Optional<DucklakeSchema> schema = getSchema(schemaName, snapshotId);
         if (schema.isEmpty()) {
             return Optional.empty();
         }
 
-        String sql = "SELECT table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative " +
-                     "FROM ducklake_table " +
-                     "WHERE schema_id = ? AND table_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, schema.get().schemaId());
-            stmt.setString(2, tableName);
-            stmt.setLong(3, snapshotId);
-            stmt.setLong(4, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new DucklakeTable(
-                            rs.getLong("table_id"),
-                            UUID.fromString(rs.getString("table_uuid")),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("schema_id"),
-                            rs.getString("table_name"),
-                            getStringOptional(rs, "path"),
-                            getBooleanOptional(rs, "path_is_relative")));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get table: " + tableName + " at snapshot: " + snapshotId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_TABLE)
+                .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schema.get().schemaId()))
+                .and(DUCKLAKE_TABLE.TABLE_NAME.eq(tableName))
+                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeTable);
     }
 
     @Override
     public Optional<DucklakeTable> getTableById(long tableId, long snapshotId)
     {
-        String sql = "SELECT table_id, table_uuid, begin_snapshot, end_snapshot, schema_id, table_name, path, path_is_relative " +
-                     "FROM ducklake_table " +
-                     "WHERE table_id = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new DucklakeTable(
-                            rs.getLong("table_id"),
-                            UUID.fromString(rs.getString("table_uuid")),
-                            rs.getLong("begin_snapshot"),
-                            getLongOptional(rs, "end_snapshot"),
-                            rs.getLong("schema_id"),
-                            rs.getString("table_name"),
-                            getStringOptional(rs, "path"),
-                            getBooleanOptional(rs, "path_is_relative")));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get table by ID: " + tableId + " at snapshot: " + snapshotId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_TABLE)
+                .where(DUCKLAKE_TABLE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeTable);
     }
 
     @Override
@@ -601,25 +445,10 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<DucklakeTableStats> getTableStats(long tableId)
     {
-        String sql = "SELECT table_id, record_count, file_size_bytes FROM ducklake_table_stats WHERE table_id = ?";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, tableId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new DucklakeTableStats(
-                            rs.getLong("table_id"),
-                            rs.getLong("record_count"),
-                            rs.getLong("file_size_bytes")));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get table stats for table: " + tableId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_TABLE_STATS)
+                .where(DUCKLAKE_TABLE_STATS.TABLE_ID.eq(tableId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeTableStats);
     }
 
     @Override
@@ -1018,19 +847,10 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<String> getDataPath()
     {
-        String sql = "SELECT value FROM ducklake_metadata WHERE key = 'data_path'";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql);
-                ResultSet rs = stmt.executeQuery()) {
-            if (rs.next()) {
-                return Optional.of(rs.getString("value"));
-            }
-            return Optional.empty();
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get data path from ducklake_metadata", e);
-        }
+        return dsl.select(DUCKLAKE_METADATA.VALUE)
+                .from(DUCKLAKE_METADATA)
+                .where(DUCKLAKE_METADATA.KEY.eq("data_path"))
+                .fetchOptional(DUCKLAKE_METADATA.VALUE);
     }
 
     // ==================== View operations ====================
@@ -1038,29 +858,10 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeView> listViews(long schemaId, long snapshotId)
     {
-        String sql = "SELECT view_id, view_uuid, begin_snapshot, end_snapshot, schema_id, view_name, dialect, sql, column_aliases " +
-                     "FROM ducklake_view " +
-                     "WHERE schema_id = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        List<DucklakeView> views = new ArrayList<>();
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, schemaId);
-            stmt.setLong(2, snapshotId);
-            stmt.setLong(3, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    views.add(readView(rs));
-                }
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to list views for schema: " + schemaId + " at snapshot: " + snapshotId, e);
-        }
-
-        return views;
+        return dsl.selectFrom(DUCKLAKE_VIEW)
+                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
+                .and(activeAt(DUCKLAKE_VIEW, snapshotId))
+                .fetch(JdbcDucklakeCatalog::toDucklakeView);
     }
 
     @Override
@@ -1071,27 +872,12 @@ public class JdbcDucklakeCatalog
             return Optional.empty();
         }
 
-        String sql = "SELECT view_id, view_uuid, begin_snapshot, end_snapshot, schema_id, view_name, dialect, sql, column_aliases " +
-                     "FROM ducklake_view " +
-                     "WHERE schema_id = ? AND view_name = ? AND ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)";
-
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setLong(1, schema.get().schemaId());
-            stmt.setString(2, viewName);
-            stmt.setLong(3, snapshotId);
-            stmt.setLong(4, snapshotId);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(readView(rs));
-                }
-                return Optional.empty();
-            }
-        }
-        catch (SQLException e) {
-            throw new RuntimeException("Failed to get view: " + schemaName + "." + viewName + " at snapshot: " + snapshotId, e);
-        }
+        return dsl.selectFrom(DUCKLAKE_VIEW)
+                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schema.get().schemaId()))
+                .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
+                .and(activeAt(DUCKLAKE_VIEW, snapshotId))
+                .fetchOptional()
+                .map(JdbcDucklakeCatalog::toDucklakeView);
     }
 
     // Write transaction infrastructure
@@ -2214,21 +2000,73 @@ public class JdbcDucklakeCatalog
         }
     }
 
-    private DucklakeView readView(ResultSet rs)
-            throws SQLException
+    private static DucklakeSnapshot toDucklakeSnapshot(DucklakeSnapshotRecord r)
     {
-        long endSnapshotRaw = rs.getLong("end_snapshot");
-        OptionalLong endSnapshot = rs.wasNull() ? OptionalLong.empty() : OptionalLong.of(endSnapshotRaw);
+        return new DucklakeSnapshot(
+                r.getSnapshotId(),
+                r.getSnapshotTime().toInstant(),
+                r.getSchemaVersion(),
+                r.getNextCatalogId(),
+                r.getNextFileId());
+    }
 
+    private static DucklakeSnapshotChange toDucklakeSnapshotChange(DucklakeSnapshotChangesRecord r)
+    {
+        return new DucklakeSnapshotChange(
+                r.getSnapshotId(),
+                Optional.ofNullable(r.getChangesMade()),
+                Optional.ofNullable(r.getAuthor()),
+                Optional.ofNullable(r.getCommitMessage()),
+                Optional.ofNullable(r.getCommitExtraInfo()));
+    }
+
+    private static DucklakeSchema toDucklakeSchema(DucklakeSchemaRecord r)
+    {
+        return new DucklakeSchema(
+                r.getSchemaId(),
+                r.getSchemaUuid(),
+                r.getBeginSnapshot(),
+                Optional.ofNullable(r.getEndSnapshot()),
+                r.getSchemaName(),
+                Optional.ofNullable(r.getPath()),
+                Optional.ofNullable(r.getPathIsRelative()));
+    }
+
+    private static DucklakeTable toDucklakeTable(DucklakeTableRecord r)
+    {
+        return new DucklakeTable(
+                r.getTableId(),
+                r.getTableUuid(),
+                r.getBeginSnapshot(),
+                Optional.ofNullable(r.getEndSnapshot()),
+                r.getSchemaId(),
+                r.getTableName(),
+                Optional.ofNullable(r.getPath()),
+                Optional.ofNullable(r.getPathIsRelative()));
+    }
+
+    private static DucklakeTableStats toDucklakeTableStats(DucklakeTableStatsRecord r)
+    {
+        return new DucklakeTableStats(
+                r.getTableId(),
+                r.getRecordCount(),
+                r.getFileSizeBytes());
+    }
+
+    private static DucklakeView toDucklakeView(DucklakeViewRecord r)
+    {
+        Long endRaw = r.getEndSnapshot();
+        OptionalLong endSnapshot = endRaw == null ? OptionalLong.empty() : OptionalLong.of(endRaw);
+        UUID viewUuid = r.getViewUuid();
         return new DucklakeView(
-                rs.getLong("view_id"),
-                rs.getString("view_uuid"),
-                rs.getLong("schema_id"),
-                rs.getString("view_name"),
-                rs.getString("sql"),
-                rs.getString("dialect"),
-                getStringOptional(rs, "column_aliases"),
-                rs.getLong("begin_snapshot"),
+                r.getViewId(),
+                viewUuid == null ? null : viewUuid.toString(),
+                r.getSchemaId(),
+                r.getViewName(),
+                r.getSql(),
+                r.getDialect(),
+                Optional.ofNullable(r.getColumnAliases()),
+                r.getBeginSnapshot(),
                 endSnapshot);
     }
 
@@ -2261,42 +2099,6 @@ public class JdbcDucklakeCatalog
     {
         boolean value = rs.getBoolean(columnName);
         return rs.wasNull() ? Optional.empty() : Optional.of(value);
-    }
-
-    private DucklakeSnapshot readSnapshot(ResultSet rs)
-            throws SQLException
-    {
-        return new DucklakeSnapshot(
-                rs.getLong("snapshot_id"),
-                parseSnapshotTime(rs.getString("snapshot_time")),
-                rs.getLong("schema_version"),
-                rs.getLong("next_catalog_id"),
-                rs.getLong("next_file_id"));
-    }
-
-    private static Instant parseSnapshotTime(String snapshotTime)
-    {
-        if (snapshotTime == null) {
-            throw new IllegalStateException("DuckLake snapshot_time is null");
-        }
-
-        String normalized = snapshotTime.trim().replace(' ', 'T');
-        if (normalized.matches(".*[+-][0-9]{2}$")) {
-            normalized = normalized + ":00";
-        }
-        if (normalized.matches(".*[+-][0-9]{4}$")) {
-            normalized = normalized.substring(0, normalized.length() - 5)
-                    + normalized.substring(normalized.length() - 5, normalized.length() - 2)
-                    + ":"
-                    + normalized.substring(normalized.length() - 2);
-        }
-
-        // SQLite CURRENT_TIMESTAMP produces no timezone offset (e.g. "2026-04-03T17:45:02");
-        // DuckDB-generated snapshots include timezone. Handle both.
-        if (!normalized.contains("+") && !normalized.contains("Z") && !normalized.matches(".*-[0-9]{2}:[0-9]{2}$")) {
-            return java.time.LocalDateTime.parse(normalized).toInstant(java.time.ZoneOffset.UTC);
-        }
-        return java.time.OffsetDateTime.parse(normalized).toInstant();
     }
 
     private String resolveColumnType(DucklakeColumn column, Map<Long, List<DucklakeColumn>> childrenByParent)

@@ -57,6 +57,18 @@ jooq {
                 isUnsignedTypes = false
                 isForceIntegerTypesOnZeroScaleDecimals = true
                 isIntegerDisplayWidths = false
+
+                // Pin every *_uuid column to java.util.UUID. Postgres maps its native
+                // `uuid` column to UUID by default, so this is a no-op on the current
+                // backend — but it keeps the binding stable if DuckLake ever widens
+                // the column to text/varchar on a non-Postgres catalog.
+                forcedTypes {
+                    forcedType {
+                        name = "UUID"
+                        includeExpression = ".*\\.(?:schema|table|view)_uuid"
+                        includeTypes = ".*"
+                    }
+                }
             }
 
             generate {
