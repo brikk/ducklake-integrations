@@ -822,6 +822,17 @@ public class JdbcDucklakeCatalog
     }
 
     /**
+     * Test seam: invoked once per attempt, after this attempt has read the
+     * current snapshot but before any of its mutations run. Tests assign a
+     * barrier-aware Runnable here to deterministically park one writer while
+     * a competing writer commits, so the parked writer's lineage check fails
+     * on resume and triggers retry. Positioned pre-mutation so the parked
+     * transaction holds no row locks and can't deadlock with the competitor.
+     * No-op in production.
+     */
+    volatile Runnable beforeWriteTransactionAction = () -> {};
+
+    /**
      * Executes a write operation within an atomic snapshot transaction.
      * Handles connection management, snapshot creation, change tracking,
      * and commit/rollback. The caller provides a callback that performs
@@ -836,30 +847,13 @@ public class JdbcDucklakeCatalog
      */
     private void executeWriteTransaction(String operationDescription, WriteTransactionAction action)
     {
-        TransactionConflictException lastConflict = null;
-        long waitMs = INITIAL_RETRY_WAIT_MS;
-        for (int attempt = 0; attempt <= MAX_RETRY_COUNT; attempt++) {
-            try {
-                attemptWriteTransaction(operationDescription, action);
-                return;
-            }
-            catch (TransactionConflictException e) {
-                lastConflict = e;
-                if (attempt == MAX_RETRY_COUNT) {
-                    break;
-                }
-                log.log(System.Logger.Level.DEBUG,
-                        "Retrying {0} after conflict (attempt {1}/{2}, waiting {3}ms): {4}",
-                        operationDescription, attempt + 1, MAX_RETRY_COUNT, waitMs, e.getMessage());
-                sleepBeforeRetry(waitMs, operationDescription);
-                waitMs = (long) Math.ceil(waitMs * RETRY_BACKOFF_MULTIPLIER);
-            }
-        }
-        throw new TransactionConflictException(
-                "Failed to " + operationDescription + ": exceeded the maximum retry count of "
-                        + MAX_RETRY_COUNT + " due to concurrent commits. Last conflict: "
-                        + lastConflict.getMessage(),
-                lastConflict);
+        WriteTransactionRetry.retryOnConflict(
+                MAX_RETRY_COUNT,
+                INITIAL_RETRY_WAIT_MS,
+                RETRY_BACKOFF_MULTIPLIER,
+                Thread::sleep,
+                operationDescription,
+                () -> attemptWriteTransaction(operationDescription, action));
     }
 
     private void attemptWriteTransaction(String operationDescription, WriteTransactionAction action)
@@ -886,6 +880,12 @@ public class JdbcDucklakeCatalog
                 // 2. Execute the caller's mutations
                 DucklakeWriteTransaction tx = new DucklakeWriteTransaction(
                         conn, txDsl, currentSnapshotId, schemaVersion, nextCatalogId, nextFileId);
+
+                // Test seam: lets concurrency tests park this attempt before it
+                // does any writes, so a competing committer can advance the
+                // snapshot without deadlocking on row locks this tx would hold.
+                beforeWriteTransactionAction.run();
+
                 action.execute(tx);
 
                 // 3. Strict optimistic conflict check: if snapshot lineage advanced, abort.
@@ -930,17 +930,6 @@ public class JdbcDucklakeCatalog
         }
         catch (SQLException e) {
             throw new RuntimeException("Failed to " + operationDescription, e);
-        }
-    }
-
-    private static void sleepBeforeRetry(long millis, String operationDescription)
-    {
-        try {
-            Thread.sleep(millis);
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while waiting to retry " + operationDescription, e);
         }
     }
 
