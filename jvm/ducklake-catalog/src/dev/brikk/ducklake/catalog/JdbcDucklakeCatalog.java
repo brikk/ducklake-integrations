@@ -92,13 +92,9 @@ public class JdbcDucklakeCatalog
     private static final System.Logger log = System.getLogger(JdbcDucklakeCatalog.class.getName());
     private static final int CONFLICT_CHANGE_SUMMARY_LIMIT = 10;
 
-    // Matches the upstream DuckDB ducklake extension, which uses UUIDv7 for catalog-identity
-    // UUIDs (schema_uuid, table_uuid, view_uuid). v7 embeds a millisecond timestamp in the high
-    // bits, giving better B-tree locality on the catalog's PK indexes than v4.
     private static final TimeBasedEpochGenerator V7_UUIDS = Generators.timeBasedEpochGenerator();
 
-    // Allocates a fresh catalog-identity UUID (schema_uuid / table_uuid / view_uuid). Always
-    // UUIDv7. Exposed package-private so tests can pin the version without reflection.
+    // Package-private so tests can pin the version without reflection.
     static String newCatalogUuid()
     {
         return V7_UUIDS.generate().toString();

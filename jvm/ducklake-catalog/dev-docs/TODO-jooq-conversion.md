@@ -379,10 +379,28 @@ widens to `text`/`varchar` on a non-Postgres backend.
   conversions wired at the write-path call sites; read-path records hold
   `java.util.UUID` directly where they weren't already `String` for
   legacy-compat reasons.
-- [ ] If we ever want a UUIDv7-typed wrapper (e.g. to enforce "only v7 goes into these
-  columns"), write a custom `Converter<UUID, UuidV7>` and add a `converter` entry
-  alongside the `forcedType`. Not needed today — `UUID.version() == 7` is a one-line
-  runtime assertion at the `newCatalogUuid` call site.
+- [x] **Resolved: write v7, read version-agnostic.** A `Converter<UUID, UuidV7>` was
+  attempted and reverted — the catalog is realistically mixed-version, so binding-layer
+  enforcement breaks cross-engine reads. Findings from upstream:
+    - **DuckLake spec** (`docs/stable/specification/data_types.md:39`): `uuid` is just
+      "Universally unique identifier", no version mandate. Example happens to be v4.
+    - **pg_ducklake's vendored DuckDB ducklake extension (HEAD):** `schema_uuid` and
+      `table_uuid` use `GenerateUUIDv7()` (`ducklake_transaction.cpp:3107`), but
+      `view_uuid` uses plain `UUID::GenerateRandomUUID()` (`ducklake_schema_entry.cpp:159`)
+      → v4. Inconsistent within upstream itself.
+    - **DuckDB 1.5.2 shipped extension** (what our test container uses): writes v4
+      across the board — pre-dates the v7 switch. Verified empirically: a
+      `schema_uuid` minted by the test setup came back as
+      `aa71b8bd-82d0-43dc-b177-f02cccab056d` (version nibble = 4).
+    - **datafusion-ducklake:** doesn't use UUID columns at all — uses integer
+      auto-increment IDs. Irrelevant to this decision.
+    - **Read-side validation:** none of the implementations check the version
+      nibble. Postgres treats `uuid` as opaque 128 bits.
+  Our policy: continue minting v7 via `Generators.timeBasedEpochGenerator()` for the
+  catalog-identity UUIDs we write (modest B-tree locality benefit on the subset we
+  own, even though it's diluted by other writers' v4 rows). On read, the
+  `name = "UUID"` `forcedType` surfaces a plain `java.util.UUID` with no version
+  check, so any catalog the spec accepts, we accept.
 
 ### Inlined data dynamic tables
 
