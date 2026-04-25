@@ -92,6 +92,14 @@ public class JdbcDucklakeCatalog
     private static final System.Logger log = System.getLogger(JdbcDucklakeCatalog.class.getName());
     private static final int CONFLICT_CHANGE_SUMMARY_LIMIT = 10;
 
+    // Optimistic-retry tuning. Defaults match the upstream DuckLake C++ extension
+    // (`ducklake_max_retry_count` / `retry_wait_ms` / `retry_backoff` in
+    // src/storage/ducklake_transaction.cpp), so behavior under contention matches
+    // what callers familiar with upstream expect.
+    private static final int MAX_RETRY_COUNT = 10;
+    private static final long INITIAL_RETRY_WAIT_MS = 100;
+    private static final double RETRY_BACKOFF_MULTIPLIER = 1.5;
+
     private static final TimeBasedEpochGenerator V7_UUIDS = Generators.timeBasedEpochGenerator();
 
     // Package-private so tests can pin the version without reflection.
@@ -818,8 +826,43 @@ public class JdbcDucklakeCatalog
      * Handles connection management, snapshot creation, change tracking,
      * and commit/rollback. The caller provides a callback that performs
      * its mutations using the transaction context.
+     *
+     * <p>On a {@link TransactionConflictException} (PK collision on
+     * {@code ducklake_snapshot} or detected lineage advance), the operation
+     * is retried with exponential backoff up to {@link #MAX_RETRY_COUNT}
+     * times. After exhaustion, the most recent conflict is rethrown wrapped
+     * with an "exceeded retry count" message. This matches upstream DuckLake's
+     * retry semantics so that low-rate contention is absorbed transparently.
      */
     private void executeWriteTransaction(String operationDescription, WriteTransactionAction action)
+    {
+        TransactionConflictException lastConflict = null;
+        long waitMs = INITIAL_RETRY_WAIT_MS;
+        for (int attempt = 0; attempt <= MAX_RETRY_COUNT; attempt++) {
+            try {
+                attemptWriteTransaction(operationDescription, action);
+                return;
+            }
+            catch (TransactionConflictException e) {
+                lastConflict = e;
+                if (attempt == MAX_RETRY_COUNT) {
+                    break;
+                }
+                log.log(System.Logger.Level.DEBUG,
+                        "Retrying {0} after conflict (attempt {1}/{2}, waiting {3}ms): {4}",
+                        operationDescription, attempt + 1, MAX_RETRY_COUNT, waitMs, e.getMessage());
+                sleepBeforeRetry(waitMs, operationDescription);
+                waitMs = (long) Math.ceil(waitMs * RETRY_BACKOFF_MULTIPLIER);
+            }
+        }
+        throw new TransactionConflictException(
+                "Failed to " + operationDescription + ": exceeded the maximum retry count of "
+                        + MAX_RETRY_COUNT + " due to concurrent commits. Last conflict: "
+                        + lastConflict.getMessage(),
+                lastConflict);
+    }
+
+    private void attemptWriteTransaction(String operationDescription, WriteTransactionAction action)
     {
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
@@ -887,6 +930,17 @@ public class JdbcDucklakeCatalog
         }
         catch (SQLException e) {
             throw new RuntimeException("Failed to " + operationDescription, e);
+        }
+    }
+
+    private static void sleepBeforeRetry(long millis, String operationDescription)
+    {
+        try {
+            Thread.sleep(millis);
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting to retry " + operationDescription, e);
         }
     }
 

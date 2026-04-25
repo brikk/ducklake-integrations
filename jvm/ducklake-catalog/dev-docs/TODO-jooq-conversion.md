@@ -448,12 +448,14 @@ at `duckdb/ducklake@main`:
 **Decision: keep the bespoke loop** — it's the same model upstream uses, not a
 custom invention. But note two behaviors we don't yet implement and should track:
 
-- [ ] **Follow-up: internal retry with backoff.** We surface
-  `TransactionConflictException` on the first PK collision. Upstream retries 10×
-  with exponential backoff before surfacing. Low-contention workloads don't care;
-  high-concurrency writers will see spurious failures we could absorb. Pick up
-  after the jOOQ migration lands — it's an orthogonal change and rides on the
-  same loop.
+- [x] **Follow-up: internal retry with backoff.** ~~We surface
+  `TransactionConflictException` on the first PK collision.~~ Now retries up to
+  10× with exponential backoff (100ms × 1.5^n), matching upstream's
+  `ducklake_max_retry_count` / `retry_wait_ms` / `retry_backoff` defaults. Both
+  PK conflicts and lineage-advance detections feed the same retry loop. After
+  exhaustion, the latest `TransactionConflictException` is rewrapped with an
+  "exceeded the maximum retry count" message. See
+  `JdbcDucklakeCatalog.executeWriteTransaction`.
 - [ ] **Follow-up: logical `CheckForConflicts` pass.** Our current conflict check
   is "did `max(snapshot_id)` advance while I was working" — purely lineage-based.
   Upstream additionally scans `ducklake_snapshot_changes` for incompatible
