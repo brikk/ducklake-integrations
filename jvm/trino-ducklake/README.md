@@ -27,6 +27,11 @@ Build the plugin:
 
 The assembled plugin is at `trino-ducklake/build/trino-plugin/trino-ducklake-<version>/`.
 
+### Local dev stack (Docker Compose)
+
+For interactive hacking against a real Trino + Postgres + MinIO + DuckLake
+stack with optional TPC-H seed data, see [compose/README.md](compose/README.md).
+
 ### Running Tests
 
 Tests require Docker or Podman (PostgreSQL runs via TestContainers).

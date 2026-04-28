@@ -1,0 +1,108 @@
+name: trino-ducklake-dev
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    container_name: trino-ducklake-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "9432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:${MINIO_TAG}
+    container_name: trino-ducklake-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  create-bucket:
+    image: minio/mc:${MC_TAG}
+    container_name: trino-ducklake-create-bucket
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/${MINIO_BUCKET} &&
+        echo 'bucket ${MINIO_BUCKET} ready'
+      "
+    restart: "no"
+
+  bootstrap:
+    image: python:3.12-slim
+    container_name: trino-ducklake-bootstrap
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DB: ${POSTGRES_DB}
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      S3_ENDPOINT: minio:9000
+      S3_KEY_ID: ${MINIO_ROOT_USER}
+      S3_SECRET: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${MINIO_BUCKET}
+      S3_DATA_PREFIX: data/
+      DUCKDB_VERSION: ${DUCKDB_VERSION}
+      TPCH_SCALE_FACTOR: ${TPCH_SCALE_FACTOR}
+      TPCH_SCHEMA: ${TPCH_SCHEMA}
+    volumes:
+      - ./bootstrap:/bootstrap:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        pip install --quiet --no-cache-dir "duckdb==${DUCKDB_VERSION}"
+        exec python /bootstrap/init_ducklake.py
+    restart: "no"
+
+  trino:
+    image: trinodb/trino:${TRINO_VERSION}
+    container_name: trino-ducklake-trino
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "9080:8080"
+    volumes:
+      - ./trino/etc/catalog/ducklake.properties:/etc/trino/catalog/ducklake.properties:ro
+      - ../build/trino-plugin/trino-ducklake-${PLUGIN_VERSION}:/usr/lib/trino/plugin/ducklake:ro
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  minio-data:
