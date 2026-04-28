@@ -82,6 +82,27 @@ ORDER BY orders DESC
 LIMIT 5;
 ```
 
+### Trino over JDBC (DBeaver, IntelliJ, JDBC apps)
+
+There is no authentication on this stack, but Trino still requires a user
+identity on every request. The JDBC driver does not auto-fill one, so include
+`sessionUser` in the URL (or set it as a connection property):
+
+```
+jdbc:trino://localhost:9080?sessionUser=trino
+```
+
+Without `sessionUser`, the driver throws "Username property (`user`) must be
+set" or the server rejects the request. The user value is arbitrary — Trino
+accepts any string when authentication is disabled.
+
+To default the catalog and schema so you don't have to fully-qualify table
+names:
+
+```
+jdbc:trino://localhost:9080?sessionUser=trino&catalog=ducklake&schema=tpch
+```
+
 ### PostgreSQL (catalog metadata)
 
 ```bash
