@@ -174,6 +174,12 @@ The cache row in `ducklake_cached_duckdb_files` records both `local_hint_path` (
 
 **Cleanup:** local files are owned by the connector and should be GC'd when the corresponding row in `ducklake_cached_duckdb_files` is deleted (or its `last_used_at` ages out). A periodic sweep on each worker reads the table, deletes any local files not referenced. S3 copies are GC'd by the same mechanism, but with a delay (e.g. 24h) to absorb in-flight queries that have already started using the path.
 
+**Open: warm-on-write vs warm-on-first-read.** Trino's `CacheFileSystem` doesn't auto-populate the page cache on writes (§2.2), so a `.db` written via `TrinoFileSystem` only becomes locally fast after the first read materializes it. Two design choices for the conversion path:
+- *Durability-first:* write to S3 via `TrinoFileSystem`, let the first read populate the page cache. Simpler, gets the durable copy out the door faster, no local-disk bookkeeping at write time.
+- *Locality-first:* write to the local cache directory directly (as a real file) *and* upload to S3 in parallel. Eliminates the first-read penalty on the home node and makes the local file available to `ATTACH` immediately. Costs: explicit local-disk management at write time, two-target write semantics.
+
+We don't have to pick now. Phase 2 can start with durability-first and add locality-first if measurements show the first-read penalty matters on the home node specifically.
+
 **Future variant — non-home nodes pull and pin a local copy.** If telemetry shows a meaningful fraction of splits running on non-home nodes (e.g. due to skew or affinity overrides), we could add a worker-side daemon that fetches "near-hot" `.db` files from S3 and pins them locally. Out of scope for the first cut.
 
 ### 3.6 Hot-file detection
@@ -208,6 +214,12 @@ Open question: one-parquet-per-db-file vs grouped (N parquets → 1 db with N ta
 5. **Where conversion actually runs.** A scheduled job on the coordinator? A worker-side daemon triggered by access-log thresholds? An ad-hoc user-invoked procedure for explicit pinning? All three can coexist; cheapest first-cut is an explicit procedure (`CALL ducklake.system.cache_data_file(...)`) so we can validate the split + page-source plumbing without the hot-detection loop.
 6. **Cross-node coordination of conversion.** If two splits on two different nodes both decide to convert the same parquet file at roughly the same time, we want exactly one to win. The catalog table can serve as a lock (insert-or-fail on `(data_file_id, snapshot_id)` with a `pending` status). Not hard, but it needs to be designed in from the start, not bolted on.
 
+7. **Partition-scoped `.db` files (idea, not a plan).** When we get to cache work, the unit of conversion does not have to be one parquet → one `.db`. A whole partition's worth of parquet (potentially across multiple tables — fact + relevant dim slices) collapsed into a single `.db` opens up things that DuckDB is *good at* and that are structurally hard at the global multi-file scope:
+    - Predicates bounded by the partition key can prune more aggressively inside DuckDB than parquet row-group skipping does across files.
+    - Joins whose rows are colocated by the partition key happen entirely inside one DuckDB instance — hash join, no shuffle, possibly indexed.
+    - Aggregations within a partition can use DuckDB's vectorized executor end-to-end.
+    DuckDB excels at partition scope; it's less differentiated at global scope where Trino's planner is doing the heavy lifting anyway. This is the part of the design that could plausibly justify the whole feature on perf grounds, not just on "first read penalty avoidance." Splits would need to encode "partition P, predicate ⊆ P-bounds, projection cols" rather than "file F, byte range R" — that's a real change to the split shape, but only for splits that route to a partition-`.db`. Park this; revisit when the 1:1 read path is proven.
+
 ---
 
 ## 6. Rollout plan sketch
@@ -223,6 +235,8 @@ Everything through Phase 2 is additive and reversible: drop the table, remove th
 ---
 
 ## 7. Phase 1: DuckDB as a first-class data file format
+
+**Scope: brutal and basic.** Make `.db` a valid `data_file_format` value alongside `parquet`, write it on insert, read it on query. No caching, no auto-conversion, no soft affinity placement, no smart routing. We control both the writer and the reader, so the experiment doesn't depend on anything outside trino-ducklake. Once this works end-to-end on a real query, the caching story in Sections 3–5 has a foundation to build on.
 
 This phase is the precondition for everything in Sections 3–5. It is also independently useful: tables that benefit from DuckDB's native on-disk format (point lookups, repeated scans of small hot working sets, indexed columns) can opt in directly without any caching layer.
 
