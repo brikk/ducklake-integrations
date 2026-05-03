@@ -20,6 +20,12 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 
+/**
+ * Shared Testcontainer wrapper for the PostgreSQL-backed DuckLake catalog. Exposed via
+ * {@code java-test-fixtures} so both {@code ducklake-catalog} and {@code trino-ducklake}
+ * test suites use the same container image, credentials, and JDBC URL shape — drift in
+ * one used to silently leave the other stale.
+ */
 public class TestingDucklakePostgreSqlCatalogServer
         implements AutoCloseable
 {
@@ -47,6 +53,8 @@ public class TestingDucklakePostgreSqlCatalogServer
 
     public String getJdbcUrl(String databaseName)
     {
+        // Testcontainers JDBC URL format: jdbc:postgresql://host:port/database
+        // Replace the default database name with the requested one
         return container.getJdbcUrl().replace("/" + DEFAULT_DATABASE, "/" + databaseName);
     }
 
@@ -60,6 +68,11 @@ public class TestingDucklakePostgreSqlCatalogServer
         return PASSWORD;
     }
 
+    public String getDuckDbAttachUri()
+    {
+        return getDuckDbAttachUri(DEFAULT_DATABASE);
+    }
+
     public String getDuckDbAttachUri(String databaseName)
     {
         return "ducklake:postgres:dbname=" + databaseName +
@@ -69,6 +82,10 @@ public class TestingDucklakePostgreSqlCatalogServer
                 " password=" + PASSWORD;
     }
 
+    /**
+     * Creates a new database in the PostgreSQL container.
+     * Used for test isolation — each test class gets its own database.
+     */
     public void createDatabase(String databaseName)
             throws Exception
     {

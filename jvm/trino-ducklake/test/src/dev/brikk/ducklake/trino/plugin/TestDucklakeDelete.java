@@ -13,9 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
-import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -23,21 +21,25 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for DuckLake DELETE support (M6).
- * Tests row-level deletes via the merge-on-read pattern:
- * Trino writes Parquet delete files, subsequent reads filter deleted rows.
+ * Trino DELETE coverage over the merge-on-read pattern: Trino writes Parquet delete files
+ * and subsequent reads filter the deleted rows. Walks the predicate space (full table,
+ * WHERE, single row, NULL filter, multi-file scans, partitioned tables, subquery
+ * predicates), the data-shape space (single row, all primitive types, no-match), and the
+ * lifecycle interactions (delete-then-insert, multi-delete on same table, snapshot
+ * tracking, multi-table isolation, post-delete aggregation).
+ *
+ * <p>UPDATE and MERGE are in {@link TestDucklakeUpdate} and {@link TestDucklakeMerge}
+ * respectively — both flow through the same merge-on-read primitive but with their own
+ * SQL surface and assertions.
  */
 @Execution(ExecutionMode.SAME_THREAD)
-public class TestDucklakeDeleteIntegration
-        extends AbstractTestQueryFramework
+public class TestDucklakeDelete
+        extends AbstractDucklakeIntegrationTest
 {
     @Override
-    protected QueryRunner createQueryRunner()
-            throws Exception
+    protected String isolatedCatalogName()
     {
-        return DucklakeQueryRunner.builder()
-                .useIsolatedCatalog("delete-integration")
-                .build();
+        return "delete-integration";
     }
 
     @Test
@@ -54,7 +56,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_all")).isEqualTo(0L);
         }
         finally {
-            tryDropTable("delete_all");
+            tryDropTable("test_schema.delete_all");
         }
     }
 
@@ -80,7 +82,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(2).getField(1)).isEqualTo("Eve");
         }
         finally {
-            tryDropTable("delete_where");
+            tryDropTable("test_schema.delete_where");
         }
     }
 
@@ -101,7 +103,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo("keep");
         }
         finally {
-            tryDropTable("delete_single");
+            tryDropTable("test_schema.delete_single");
         }
     }
 
@@ -127,7 +129,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo("Diana");
         }
         finally {
-            tryDropTable("delete_insert");
+            tryDropTable("test_schema.delete_insert");
         }
     }
 
@@ -149,7 +151,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo("Charlie");
         }
         finally {
-            tryDropTable("delete_nulls");
+            tryDropTable("test_schema.delete_nulls");
         }
     }
 
@@ -177,7 +179,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo(5);
         }
         finally {
-            tryDropTable("delete_multi");
+            tryDropTable("test_schema.delete_multi");
         }
     }
 
@@ -195,7 +197,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_nomatch")).isEqualTo(2L);
         }
         finally {
-            tryDropTable("delete_nomatch");
+            tryDropTable("test_schema.delete_nomatch");
         }
     }
 
@@ -222,7 +224,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo(50.0);
         }
         finally {
-            tryDropTable("delete_agg");
+            tryDropTable("test_schema.delete_agg");
         }
     }
 
@@ -253,7 +255,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(hasDeleteChange).isTrue();
         }
         finally {
-            tryDropTable("delete_snap");
+            tryDropTable("test_schema.delete_snap");
         }
     }
 
@@ -282,7 +284,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo("Charlie");
         }
         finally {
-            tryDropTable("delete_types");
+            tryDropTable("test_schema.delete_types");
         }
     }
 
@@ -308,7 +310,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
         }
         finally {
-            tryDropTable("multi_delete");
+            tryDropTable("test_schema.multi_delete");
         }
     }
 
@@ -333,7 +335,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(2).getField(1)).isEqualTo("APAC");
         }
         finally {
-            tryDropTable("delete_part");
+            tryDropTable("test_schema.delete_part");
         }
     }
 
@@ -358,7 +360,7 @@ public class TestDucklakeDeleteIntegration
             assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo("Eve");
         }
         finally {
-            tryDropTable("delete_subq");
+            tryDropTable("test_schema.delete_subq");
         }
     }
 
@@ -380,258 +382,8 @@ public class TestDucklakeDeleteIntegration
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_t2")).isEqualTo(2L);
         }
         finally {
-            tryDropTable("delete_t1");
-            tryDropTable("delete_t2");
-        }
-    }
-
-    // ==================== UPDATE tests ====================
-
-    @Test
-    public void testUpdateSingleColumn()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.update_single (id INTEGER, name VARCHAR, amount DOUBLE)");
-            computeActual("INSERT INTO test_schema.update_single VALUES (1, 'Alice', 100.0), (2, 'Bob', 200.0), (3, 'Charlie', 300.0)");
-
-            computeActual("UPDATE test_schema.update_single SET amount = 999.0 WHERE id = 2");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.update_single")).isEqualTo(3L);
-
-            MaterializedResult result = computeActual("SELECT id, name, amount FROM test_schema.update_single ORDER BY id");
-            assertThat(result.getRowCount()).isEqualTo(3);
-            assertThat(result.getMaterializedRows().get(0).getField(2)).isEqualTo(100.0);
-            assertThat(result.getMaterializedRows().get(1).getField(2)).isEqualTo(999.0);
-            assertThat(result.getMaterializedRows().get(2).getField(2)).isEqualTo(300.0);
-        }
-        finally {
-            tryDropTable("update_single");
-        }
-    }
-
-    @Test
-    public void testUpdateMultipleRows()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.update_multi (id INTEGER, status VARCHAR, score INTEGER)");
-            computeActual("INSERT INTO test_schema.update_multi VALUES " +
-                    "(1, 'pending', 50), (2, 'pending', 60), (3, 'complete', 90), (4, 'pending', 70)");
-
-            computeActual("UPDATE test_schema.update_multi SET status = 'processed' WHERE status = 'pending'");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi")).isEqualTo(4L);
-
-            // All former 'pending' rows should now be 'processed'
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi WHERE status = 'processed'")).isEqualTo(3L);
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi WHERE status = 'complete'")).isEqualTo(1L);
-
-            // Scores should be unchanged
-            assertThat(computeScalar("SELECT sum(score) FROM test_schema.update_multi")).isEqualTo(270L);
-        }
-        finally {
-            tryDropTable("update_multi");
-        }
-    }
-
-    @Test
-    public void testUpdateWithExpression()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.update_expr (id INTEGER, price DOUBLE)");
-            computeActual("INSERT INTO test_schema.update_expr VALUES (1, 10.0), (2, 20.0), (3, 30.0)");
-
-            // Double the price for all items
-            computeActual("UPDATE test_schema.update_expr SET price = price * 2");
-
-            MaterializedResult result = computeActual("SELECT id, price FROM test_schema.update_expr ORDER BY id");
-            assertThat(result.getRowCount()).isEqualTo(3);
-            assertThat(result.getMaterializedRows().get(0).getField(1)).isEqualTo(20.0);
-            assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo(40.0);
-            assertThat(result.getMaterializedRows().get(2).getField(1)).isEqualTo(60.0);
-        }
-        finally {
-            tryDropTable("update_expr");
-        }
-    }
-
-    @Test
-    public void testUpdateNoMatchingRows()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.update_nomatch (id INTEGER, name VARCHAR)");
-            computeActual("INSERT INTO test_schema.update_nomatch VALUES (1, 'Alice'), (2, 'Bob')");
-
-            computeActual("UPDATE test_schema.update_nomatch SET name = 'Unknown' WHERE id > 100");
-
-            // No rows should have changed
-            MaterializedResult result = computeActual("SELECT name FROM test_schema.update_nomatch ORDER BY id");
-            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo("Alice");
-            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo("Bob");
-        }
-        finally {
-            tryDropTable("update_nomatch");
-        }
-    }
-
-    @Test
-    public void testUpdateThenSelect()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.update_select (id INTEGER, category VARCHAR, value INTEGER)");
-            computeActual("INSERT INTO test_schema.update_select VALUES " +
-                    "(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'B', 40)");
-
-            // Update category A values
-            computeActual("UPDATE test_schema.update_select SET value = value + 100 WHERE category = 'A'");
-
-            MaterializedResult result = computeActual(
-                    "SELECT category, sum(value) AS total FROM test_schema.update_select GROUP BY category ORDER BY category");
-            assertThat(result.getRowCount()).isEqualTo(2);
-            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo("A");
-            assertThat(result.getMaterializedRows().get(0).getField(1)).isEqualTo(240L); // (10+100) + (30+100) = 240
-            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo("B");
-            assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo(60L); // 20 + 40 = 60
-        }
-        finally {
-            tryDropTable("update_select");
-        }
-    }
-
-    // ==================== MERGE tests ====================
-
-    @Test
-    public void testMergeInsertOnly()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.merge_target (id INTEGER, name VARCHAR, value INTEGER)");
-            computeActual("INSERT INTO test_schema.merge_target VALUES (1, 'Alice', 100), (2, 'Bob', 200)");
-
-            // MERGE that only inserts (no matches)
-            computeActual("MERGE INTO test_schema.merge_target t " +
-                    "USING (VALUES (3, 'Charlie', 300), (4, 'Diana', 400)) AS s(id, name, value) " +
-                    "ON t.id = s.id " +
-                    "WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.name, s.value)");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.merge_target")).isEqualTo(4L);
-
-            MaterializedResult result = computeActual("SELECT name FROM test_schema.merge_target ORDER BY id");
-            assertThat(result.getRowCount()).isEqualTo(4);
-            assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo("Charlie");
-            assertThat(result.getMaterializedRows().get(3).getField(0)).isEqualTo("Diana");
-        }
-        finally {
-            tryDropTable("merge_target");
-        }
-    }
-
-    @Test
-    public void testMergeDeleteOnly()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.merge_del (id INTEGER, name VARCHAR)");
-            computeActual("INSERT INTO test_schema.merge_del VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
-
-            // MERGE that only deletes
-            computeActual("MERGE INTO test_schema.merge_del t " +
-                    "USING (VALUES 1, 3) AS s(id) " +
-                    "ON t.id = s.id " +
-                    "WHEN MATCHED THEN DELETE");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.merge_del")).isEqualTo(1L);
-            assertThat(computeScalar("SELECT name FROM test_schema.merge_del")).isEqualTo("Bob");
-        }
-        finally {
-            tryDropTable("merge_del");
-        }
-    }
-
-    @Test
-    public void testMergeUpdateOnly()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.merge_upd (id INTEGER, name VARCHAR, amount DOUBLE)");
-            computeActual("INSERT INTO test_schema.merge_upd VALUES (1, 'Alice', 100.0), (2, 'Bob', 200.0), (3, 'Charlie', 300.0)");
-
-            // MERGE that updates matching rows
-            computeActual("MERGE INTO test_schema.merge_upd t " +
-                    "USING (VALUES (2, 999.0)) AS s(id, amount) " +
-                    "ON t.id = s.id " +
-                    "WHEN MATCHED THEN UPDATE SET amount = s.amount");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.merge_upd")).isEqualTo(3L);
-
-            MaterializedResult result = computeActual("SELECT amount FROM test_schema.merge_upd ORDER BY id");
-            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(100.0);
-            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(999.0);
-            assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo(300.0);
-        }
-        finally {
-            tryDropTable("merge_upd");
-        }
-    }
-
-    @Test
-    public void testMergeUpsert()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.merge_upsert (id INTEGER, name VARCHAR, value INTEGER)");
-            computeActual("INSERT INTO test_schema.merge_upsert VALUES (1, 'Alice', 100), (2, 'Bob', 200)");
-
-            // Classic upsert: update existing, insert new
-            computeActual("MERGE INTO test_schema.merge_upsert t " +
-                    "USING (VALUES (2, 'Bob_updated', 999), (3, 'Charlie', 300)) AS s(id, name, value) " +
-                    "ON t.id = s.id " +
-                    "WHEN MATCHED THEN UPDATE SET name = s.name, value = s.value " +
-                    "WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.name, s.value)");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.merge_upsert")).isEqualTo(3L);
-
-            MaterializedResult result = computeActual("SELECT id, name, value FROM test_schema.merge_upsert ORDER BY id");
-            assertThat(result.getMaterializedRows().get(0).getField(1)).isEqualTo("Alice");
-            assertThat(result.getMaterializedRows().get(0).getField(2)).isEqualTo(100);
-            assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo("Bob_updated");
-            assertThat(result.getMaterializedRows().get(1).getField(2)).isEqualTo(999);
-            assertThat(result.getMaterializedRows().get(2).getField(1)).isEqualTo("Charlie");
-            assertThat(result.getMaterializedRows().get(2).getField(2)).isEqualTo(300);
-        }
-        finally {
-            tryDropTable("merge_upsert");
-        }
-    }
-
-    @Test
-    public void testMergeDeleteAndInsert()
-    {
-        try {
-            computeActual("CREATE TABLE test_schema.merge_delinst (id INTEGER, name VARCHAR)");
-            computeActual("INSERT INTO test_schema.merge_delinst VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
-
-            // MERGE: delete matches, insert non-matches
-            computeActual("MERGE INTO test_schema.merge_delinst t " +
-                    "USING (VALUES (2, 'Bob_replaced'), (4, 'Diana')) AS s(id, name) " +
-                    "ON t.id = s.id " +
-                    "WHEN MATCHED THEN DELETE " +
-                    "WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.name)");
-
-            assertThat(computeScalar("SELECT count(*) FROM test_schema.merge_delinst")).isEqualTo(3L);
-
-            MaterializedResult result = computeActual("SELECT name FROM test_schema.merge_delinst ORDER BY id");
-            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo("Alice");
-            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo("Charlie");
-            assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo("Diana");
-        }
-        finally {
-            tryDropTable("merge_delinst");
-        }
-    }
-
-    private void tryDropTable(String tableName)
-    {
-        try {
-            computeActual("DROP TABLE test_schema." + tableName);
-        }
-        catch (RuntimeException _) {
-            // ignore cleanup failures
+            tryDropTable("test_schema.delete_t1");
+            tryDropTable("test_schema.delete_t2");
         }
     }
 }

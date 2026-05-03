@@ -115,7 +115,7 @@ public final class DucklakeInlinedValueConverter
         if (elementType instanceof ArrayType || elementType instanceof MapType || elementType instanceof RowType) {
             throw new UnsupportedOperationException(
                     "Inlined data reads for nested list/struct/map element types are not yet supported " +
-                            "(see TODO-compatibility.md B2); element type: " + elementType.getDisplayName());
+                            "(see dev-docs/COMPARE-pg_ducklake.md B2); element type: " + elementType.getDisplayName());
         }
 
         Object[] elements = extractArrayElements(jdbcValue);

@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import com.google.common.collect.ImmutableMap;
+import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
 
 import java.util.Map;
 

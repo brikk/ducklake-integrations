@@ -21,6 +21,7 @@ import dev.brikk.ducklake.catalog.DucklakeDataFile;
 import dev.brikk.ducklake.catalog.DucklakeSchema;
 import dev.brikk.ducklake.catalog.DucklakeTable;
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog;
+import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSplit;

@@ -7,9 +7,19 @@ import org.jooq.meta.jaxb.VisibilityModifier
 plugins {
     id("buildlogic.kotlin.library")
     alias(libs.plugins.jooq)
+    `java-test-fixtures`
 }
 
 version = "0.0.1"
+
+// Match the project's flat layout (see buildlogic.kotlin.common). Default would
+// look for src/testFixtures/{java,kotlin}; we keep things at testFixtures/src/.
+sourceSets {
+    named("testFixtures") {
+        java.setSrcDirs(listOf("testFixtures/src"))
+        resources.setSrcDirs(listOf("testFixtures/resources"))
+    }
+}
 
 dependencies {
     implementation(enforcedPlatform(libs.kotlin.bom))
@@ -21,9 +31,14 @@ dependencies {
     jooqCodegen(libs.postgres.jdbc)
     jooqCodegen(project(":jooq-custom-naming"))
 
+    // Testcontainers types appear on the public API of the test-fixture classes
+    // (e.g. TestingDucklakePostgreSqlCatalogServer wraps PostgreSQLContainer), so
+    // they're exposed via testFixturesApi rather than testFixturesImplementation —
+    // consumers shouldn't need to redeclare them.
+    testFixturesApi(libs.testcontainers.core)
+    testFixturesApi(libs.testcontainers.postgresql)
+
     testImplementation(libs.duckdb.jdbc)
-    testImplementation(libs.testcontainers.core)
-    testImplementation(libs.testcontainers.postgresql)
     testRuntimeOnly(libs.postgres.jdbc)
 }
 

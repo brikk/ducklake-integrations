@@ -37,8 +37,8 @@ import static java.util.Objects.requireNonNull;
  * Trino type on read (uint8 → SMALLINT, uint16 → INTEGER, uint32 → BIGINT, uint64 →
  * DECIMAL(20, 0)); without this checker, a write of e.g. SMALLINT 300 into a uint8 column
  * would silently wrap to 44 inside DuckDB because Parquet carries only the physical
- * primitive type, not the logical unsigned bound. See TODO-compatibility.md and
- * COMPARE-pg_ducklake.md B5.
+ * primitive type, not the logical unsigned bound. See
+ * dev-docs/COMPARE-pg_ducklake.md B5.
  *
  * <p>Built once per page sink and short-circuits to a no-op when no column in the table
  * is unsigned (the overwhelmingly common case). When unsigned columns are present, only

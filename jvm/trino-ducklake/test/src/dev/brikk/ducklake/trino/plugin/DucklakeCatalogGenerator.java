@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;

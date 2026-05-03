@@ -147,8 +147,18 @@ public class DucklakeConfig
         return temporalPartitionEncoding;
     }
 
+    /**
+     * @deprecated DuckLake 1.0 settled on calendar encoding for {@code
+     * ducklake_file_partition_value.partition_value} (spec PR
+     * <a href="https://github.com/duckdb/ducklake-web/pull/349">duckdb/ducklake-web#349</a>);
+     * the epoch path is retained but no longer expected. Leave on the default
+     * ({@code calendar}) for spec-conformant catalogs. Will be removed once a future
+     * spec revision either confirms calendar permanently or formally reintroduces
+     * epoch as an alternate.
+     */
+    @Deprecated
     @Config("ducklake.temporal-partition-encoding")
-    @ConfigDescription("Temporal partition encoding used for writes and strict reads: calendar or epoch")
+    @ConfigDescription("Deprecated. DuckLake 1.0 settled on calendar; epoch path retained for compatibility with pre-resolution catalogs. Values: calendar (default, spec-conformant) or epoch.")
     public DucklakeConfig setTemporalPartitionEncoding(String temporalPartitionEncoding)
     {
         if (temporalPartitionEncoding == null) {
@@ -170,8 +180,15 @@ public class DucklakeConfig
         return temporalPartitionEncodingReadLeniency;
     }
 
+    /**
+     * @deprecated Companion to {@link #setTemporalPartitionEncoding(String)}; see that
+     * setter's note for the DuckLake 1.0 spec resolution. Leniency only matters when
+     * epoch and calendar interpretations diverge, which a v1-conformant catalog never
+     * triggers.
+     */
+    @Deprecated
     @Config("ducklake.temporal-partition-encoding-read-leniency")
-    @ConfigDescription("If true, temporal partition pruning keeps files unless both calendar and epoch interpretations exclude them")
+    @ConfigDescription("Deprecated. If true, temporal partition pruning keeps files unless both calendar and epoch interpretations exclude them. Only relevant when reading mixed-encoding catalogs from before the DuckLake 1.0 calendar-only resolution.")
     public DucklakeConfig setTemporalPartitionEncodingReadLeniency(boolean temporalPartitionEncodingReadLeniency)
     {
         this.temporalPartitionEncodingReadLeniency = temporalPartitionEncodingReadLeniency;

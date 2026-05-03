@@ -60,7 +60,9 @@ public class TestDucklakeTypeConverter
     @Test
     public void testUnsignedIntegersWiden()
     {
-        // Documents the current mapping. No range validation on writes — see TODO-compatibility.md.
+        // Documents the read-side widening; write-side range validation lives in
+        // DucklakeUnsignedRangeChecker (covered by TestDucklakeUnsignedRangeChecker
+        // and TestDucklakeCrossEngineWriteGuards).
         assertThat(converter.toTrinoType("uint8")).isEqualTo(SmallintType.SMALLINT);
         assertThat(converter.toTrinoType("uint16")).isEqualTo(IntegerType.INTEGER);
         assertThat(converter.toTrinoType("uint32")).isEqualTo(BigintType.BIGINT);

@@ -68,6 +68,10 @@ dependencies {
     testImplementation(libs.testcontainers.core)
     testImplementation(libs.testcontainers.postgresql)
 
+    // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
+    // ducklake-catalog's java-test-fixtures source set.
+    testImplementation(testFixtures(project(":ducklake-catalog")))
+
     testImplementation(libs.duckdb.jdbc)
 
     // compileOnly deps also needed at test time
