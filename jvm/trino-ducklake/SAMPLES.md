@@ -21,10 +21,6 @@ ducklake.data-path=s3://my-bucket/ducklake-data/
 # Optional tuning
 ducklake.catalog.max-connections=10
 
-# Temporal partition encoding (defaults shown)
-ducklake.temporal-partition-encoding=calendar
-ducklake.temporal-partition-encoding-read-leniency=true
-
 # S3 access (if using object storage)
 fs.native-s3.enabled=true
 s3.region=us-east-1

@@ -24,7 +24,7 @@ read-only, but its code has started a write path (`metadata_writer*`, `table_wri
 | Interval type | Arrow `IntervalUnit::MonthDayNano` | VARCHAR passthrough | Rust richer; we already admit "degraded" |
 | Decimal with `p > 38` | Auto-promotes to `Decimal256` | Capped at 38 | Rust ahead |
 | Complex types (struct, map) | Explicitly errors | Full support | JVM ahead |
-| Partitioning (identity + temporal year/month/day/hour) | None — no `ducklake_partition_*` reads | Full, with calendar/epoch encoding + read leniency | JVM way ahead |
+| Partitioning (identity + temporal year/month/day/hour) | None — no `ducklake_partition_*` reads | Full, calendar (spec-conformant); deprecated epoch path retained for legacy catalogs | JVM way ahead |
 | Inlined data (small tables in catalog) | Zero support | Full read + mixed-with-parquet unions | JVM way ahead |
 | Time travel (`FOR VERSION`/`FOR TIMESTAMP AS OF`) | Latest-only | Full (query / session / catalog precedence) | JVM way ahead |
 | Snapshot conflict detection on commit | None in writer | `ensureSnapshotLineageUnchanged()` — aborts on stale base | JVM way ahead |
@@ -84,8 +84,9 @@ multi-snapshot deletes actually live) is still not read by either implementation
 
 - Writes: full DDL, DML, MERGE, atomic UPDATE-as-delete+insert.
 - Optimistic concurrency with snapshot-lineage check at commit. Rust's writer commits blind.
-- Temporal partition encoding (calendar vs epoch, read leniency) — a DuckLake 1.0 concern
-  the Rust side has not touched.
+- Temporal partition encoding handled per the DuckLake 1.0 calendar contract — a concern
+  the Rust side has not touched. (We also keep a deprecated epoch path for pre-spec-resolution
+  catalogs.)
 - Time travel with documented precedence (query clause > session > catalog > current).
 - Inlined data + mixed inline/parquet snapshots.
 - Cross-engine compatibility harness against DuckDB is production-grade.
@@ -109,7 +110,8 @@ Still open:
   implementation reads it today. When a DuckDB compaction rewrites a delete file as partial,
   we need to not mis-attribute deletes to older snapshots.
 - ~~Consider adopting the footer-size hint on the read path.~~ Adopted — see "Ideas worth
-  stealing" #1 above and `TODO-compatibility.md`.
+  stealing" #1 above; `FooterPrefetchingParquetDataSource` wraps reads using the
+  `ducklake_data_file.footer_size` / `ducklake_delete_file.footer_size` hints.
 - **Evaluate the `.slt` corpus** as a portable regression suite for the catalog library.
 
 ## Test coverage, at a glance

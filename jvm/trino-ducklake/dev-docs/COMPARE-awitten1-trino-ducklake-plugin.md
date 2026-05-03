@@ -43,7 +43,7 @@ brikk plugin is the main implementation in this repository.
 | CREATE/DROP TABLE | Yes | Yes | |
 | CREATE/DROP VIEW | **No** | Yes | |
 | ALTER TABLE (ADD/DROP/RENAME COLUMN) | **No** | Yes | brikk implements full schema evolution via snapshot-versioned column metadata |
-| Partitioned writes | **No** | Yes | brikk supports identity + temporal transforms (YEAR/MONTH/DAY/HOUR), calendar and epoch encoding |
+| Partitioned writes | **No** | Yes | brikk supports identity + temporal transforms (YEAR/MONTH/DAY/HOUR) per the DuckLake 1.0 calendar contract |
 | Cross-engine Parquet field_id | Yes | Yes | Both annotate Parquet files with field_id matching DuckLake column_id |
 | Concurrent conflict detection | **No** | Yes | brikk enforces snapshot lineage checks; aborts on stale-base conflicts with diagnostic messages |
 | **Partitioning** | | | |
@@ -128,7 +128,7 @@ workloads with concurrent queries.
 | Connection management | 7 tests | N/A (HikariCP handles this) |
 | Client API unit tests | 18 tests | Covered in catalog tests |
 | Cross-engine (Trino writes → DuckDB reads) | 6 tests (SQLite backend) | 12 tests (PostgreSQL backend) |
-| Partition computation | 0 | 18 tests (calendar + epoch) |
+| Partition computation | 0 | 18 tests (calendar default + deprecated epoch path) |
 | Schema evolution | 0 | 8 tests (ADD/DROP/RENAME) |
 | Delete/Update/Merge | 2 tests (basic) | 25 tests (15 DELETE, 5 UPDATE, 5 MERGE) |
 | Write path | ~4 tests | 25 tests + 5 fragment tests |
@@ -202,54 +202,66 @@ performance characteristics and maintenance preferences.
 
 ## Developer Experience & DevOps
 
-awitten1 has a polished local-dev setup that's worth noting. We don't have any of this yet.
+Both projects ship a Docker Compose dev stack; the shapes differ.
 
-### run-trino.sh
+### What awitten1 ships
 
-Shell script that downloads Trino 479 (if not cached), builds the plugin, installs it, generates
-`etc/` config files, and starts a single-node Trino server on port 8080. Supports 4 modes:
-`sqlite` (default), `postgres`, `s3`, `gcs`. One command to go from checkout to running server.
+- **`run-trino.sh`** — shell script that downloads Trino 479 (cached), builds the plugin,
+  installs it, generates `etc/` config files, and starts a single-node Trino server on
+  port 8080. Supports 4 modes: `sqlite` (default), `postgres`, `s3`, `gcs`. One command
+  from checkout to running server, no Docker required.
+- **`docker-compose.yml`** with three profiles selectable via
+  `docker compose --profile [sqlite|postgres|minio] up`:
+  - `sqlite` — DuckDB init container creates SQLite metadata + checkpoint → Trino with
+    local FS. Shared volume for data.
+  - `postgres` — PostgreSQL 16 + DuckDB init container (loads ducklake extension,
+    attaches to PG) → Trino. Shared volumes for data.
+  - `minio` — PostgreSQL + MinIO (web console on 9001) + DuckDB init with AWS extensions
+    → Trino with S3 FS mode.
+- **2-stage Dockerfile** — OpenJDK 25 + Maven build → Trino 479 base image with the
+  plugin baked in. `docker-entrypoint.sh` generates catalog properties at runtime from
+  env vars (`METADATA_CONNECTION_STRING`, `FS_MODE`, `S3_REGION`, etc.).
+- **`generate-ducklake-database.sh`** — creates a test DuckLake catalog with sample data
+  (2000 rows, 100 deletes) via the DuckDB CLI. Supports sqlite/postgres/s3 modes.
+- **CI** — GitHub Actions: Java 21, build + full test suite on Ubuntu.
 
-### docker-compose.yml (multi-profile)
+### What we ship today (`jvm/trino-ducklake/compose/`)
 
-Three Docker Compose profiles:
+Single profile, postgres + minio + trino, polished for end-to-end testing of the
+connector against real S3:
 
-- **`sqlite`**: DuckDB init container creates SQLite metadata + checkpoint → Trino container
-  with local FS. Shared volume for data.
-- **`postgres`**: PostgreSQL 16 + DuckDB init container (loads ducklake extension, attaches to
-  PG) → Trino. Shared volumes for data.
-- **`minio`**: PostgreSQL + MinIO (S3-compatible, web console on 9001) + DuckDB init with AWS
-  extensions → Trino with S3 FS mode. Full lakehouse-on-laptop setup.
+- **PostgreSQL 18** as the DuckLake metadata catalog (host port `9432` to avoid collision
+  with local PG installs).
+- **MinIO** as the S3-compatible object store (host ports `9000` API, `9001` console).
+- **Trino 480** mounting the assembled plugin from `build/trino-plugin/` — no
+  Trino-specific Dockerfile, just the upstream `trinodb/trino` image with a bind mount
+  and a custom `etc/` directory. Host port `9080` for the same anti-collision reason.
+- **Bootstrap container** (Python + duckdb pip package, one-shot): installs the
+  `ducklake` extension, creates the S3 secret pointing at the in-network MinIO endpoint,
+  `ATTACH`es the catalog (which writes ~28 metadata tables into Postgres on first
+  attach), and optionally seeds TPC-H via `CALL dbgen(sf = ?)` + CTAS. Idempotent —
+  re-running `docker compose up` skips both attach setup and TPC-H generation if the
+  lake is already initialized.
+- **`.env` knobs** — Trino/Postgres/MinIO/DuckDB versions, credentials, MinIO bucket,
+  TPC-H scale factor and target schema.
+- **`compose/README.md`** — usage walk-through covering Trino CLI from host, JDBC
+  (DBeaver / IntelliJ — calls out the `sessionUser=trino` URL trick the JDBC driver
+  needs when auth is disabled), `psql` against the catalog DB, and DuckDB-on-host
+  attaching to the same lake (so cross-engine workflows that the test suite exercises
+  also work interactively).
 
-Usage: `docker compose --profile [sqlite|postgres|minio] up`
+The bootstrap pattern matches what the test suite does in
+`DucklakeCatalogGenerator.java` — same DuckDB-driven `ATTACH`, same TPC-H seed shape —
+so what `docker compose up` gives you is the layout the tests exercise.
 
-### Dockerfile (2-stage)
+### Where we still differ from awitten1
 
-Stage 1: OpenJDK 25 → Maven build with dependency caching.
-Stage 2: Trino 479 base image → copy plugin. `docker-entrypoint.sh` generates catalog
-properties at runtime from environment variables (`METADATA_CONNECTION_STRING`, `FS_MODE`,
-`S3_REGION`, etc.).
-
-### generate-ducklake-database.sh
-
-Creates a test DuckLake catalog with sample data (2000 rows, 100 deletes) using DuckDB CLI.
-Supports sqlite/postgres/s3 modes.
-
-### CI
-
-GitHub Actions: Java 21, build + full test suite on Ubuntu.
-
-### What we should consider for our own dev setup
-
-We should eventually build a docker-compose that sets up:
-- PostgreSQL (our catalog backend)
-- Trino (with our plugin installed)
-- Optionally MinIO (for S3 testing)
-
-Their compose setup is a reasonable reference for the structure. The DuckDB init container
-pattern (use DuckDB to bootstrap the DuckLake schema in PostgreSQL, then hand off to Trino)
-is the right approach since we don't maintain our own schema DDL — we let the ducklake
-extension create the tables.
-
-Not urgent — Testcontainers handles this for tests today. But useful for manual dev/demo
-workflows and for anyone wanting to try the connector without building from source.
+- **No `sqlite` quick-start.** Their `sqlite` profile + `run-trino.sh sqlite` mode is a
+  single-binary, no-Postgres, no-S3 path; ours always brings up the full Postgres + MinIO
+  stack. Fine if you're working on the connector itself (which is the intended audience),
+  less convenient for someone who just wants to try DuckLake-via-Trino on their laptop.
+- **No host-side `run-trino.sh` equivalent.** We expect Docker; they support both.
+- **No baked-image Dockerfile.** Ours mounts `build/trino-plugin/` into the upstream
+  Trino image. Faster iteration loop (rebuild plugin with `./gradlew :trino-ducklake:pluginAssemble`,
+  `docker compose restart trino`), but not a redistributable image.
+- **No CI workflow yet.** Their GitHub Actions setup runs the full test suite per push.

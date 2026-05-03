@@ -23,7 +23,7 @@ Goal: maximize reuse of public Trino/Iceberg/Hive reader infrastructure and keep
 - SQL catalog access layer (`JdbcDucklakeCatalog`).
 - Ducklake metadata models and path resolution.
 - Ducklake type string parsing and mapping.
-- Partition value computation for DuckLake transforms with calendar/epoch encoding (`DucklakePartitionComputer`).
+- Partition value computation for DuckLake temporal transforms (`DucklakePartitionComputer`). Calendar is the spec contract; epoch path is deprecated. See [REPORT_DUCKLAKE_PARTITION_PROB.md](REPORT_DUCKLAKE_PARTITION_PROB.md) for the resolution history.
 - Parquet `field_id` annotation from DuckLake `column_id` (`DucklakeParquetSchemaBuilder`).
 
 ## P2.1 Reuse Evaluation (Completed)

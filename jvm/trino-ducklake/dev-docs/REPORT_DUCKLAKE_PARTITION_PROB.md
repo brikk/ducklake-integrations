@@ -1,8 +1,24 @@
 ## DuckDB Ducklake Extension: Temporal partition values in catalog metadata are literal calendar values, not epoch-based
 
-### Problem
+**Status: RESOLVED.** DuckLake spec PR
+[duckdb/ducklake-web#349](https://github.com/duckdb/ducklake-web/pull/349) merged the
+calendar interpretation into the v1 spec — the implementation behavior is now the
+spec. This report is preserved as historical context for why the connector still
+carries dual-encoding read/write paths.
 
-The [Ducklake spec](https://ducklake.select/) describes temporal partition transforms (`year`, `month`, `day`, `hour`) using Iceberg-style epoch-based semantics:
+**Connector posture going forward:**
+- The default and spec-conformant path is calendar.
+- The epoch path is preserved (deprecated) so a future spec amendment that revives
+  epoch — or a sister implementation that picked epoch before the resolution — can
+  still be read/written without re-shipping the connector. The
+  `ducklake.temporal-partition-encoding` setting and its read-side leniency knob
+  remain, marked `@Deprecated`.
+- See `DucklakeConfig`, `DucklakePartitionComputer`, `DucklakeTemporalPartitionMatcher`
+  for the implementation.
+
+### Original Problem (pre-resolution)
+
+The [Ducklake spec](https://ducklake.select/) described temporal partition transforms (`year`, `month`, `day`, `hour`) using Iceberg-style epoch-based semantics:
 
 - `year(date)` → years since 1970
 - `month(date)` → months since 1970-01-01
@@ -117,8 +133,12 @@ Results identical — literal calendar values in `partition_value`:
 | 5 | 0 (year) | **2024** | `year=2024/month=3/...parquet` |
 | 5 | 1 (month) | **3** | `year=2024/month=3/...parquet` |
 
-### Impact
+### Original Impact (pre-resolution)
 
-- Any consumer implementing the spec literally (epoch-based transforms for `partition_value`) will compute **wrong partition pruning predicates** against catalogs created by the DuckDB extension
-- The monotonic ordering benefit of epoch-based values is lost, requiring compound multi-column predicates for temporal range scans
-- Either the spec should be updated to match the implementation, or the extension should be updated to match the spec
+- Any consumer implementing the spec literally (epoch-based transforms for `partition_value`) would compute **wrong partition pruning predicates** against catalogs created by the DuckDB extension.
+- The monotonic ordering benefit of epoch-based values is lost, requiring compound multi-column predicates for temporal range scans.
+- Either the spec needed to be updated to match the implementation, or the extension needed to be updated to match the spec.
+
+### Resolution
+
+The spec was updated. PR [duckdb/ducklake-web#349](https://github.com/duckdb/ducklake-web/pull/349) confirmed calendar values as the v1 contract, aligning the spec with the long-standing implementation. The monotonic-ordering objection is acknowledged but not in scope for v1; if epoch becomes spec-supported in a later version, the deprecated code path in this connector is the starting point.

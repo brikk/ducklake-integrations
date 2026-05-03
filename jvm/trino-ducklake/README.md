@@ -71,10 +71,6 @@ ducklake.data-path=s3://<bucket>/<prefix>/
 
 # Optional tuning
 ducklake.catalog.max-connections=10
-
-# Temporal partition behavior (defaults shown)
-ducklake.temporal-partition-encoding=calendar
-ducklake.temporal-partition-encoding-read-leniency=true
 ```
 
 For S3 storage, add to the same catalog properties file:
@@ -212,9 +208,11 @@ operators and functions are not available through Trino.
 | `hour(col)` | Yes | Yes | Timestamp column |
 | `bucket(N, col)` | No | No | Planned — Murmur3 hash partitioning |
 
-Temporal partition encoding supports both calendar (DuckDB default) and epoch (spec-defined)
-modes, configurable via `ducklake.temporal-partition-encoding`. The read path is lenient by
-default and handles both encodings transparently.
+Temporal partition values follow the DuckLake 1.0 calendar encoding (the default; spec
+PR [duckdb/ducklake-web#349](https://github.com/duckdb/ducklake-web/pull/349) settled
+this). A deprecated epoch path is preserved behind
+`ducklake.temporal-partition-encoding=epoch` for compatibility with pre-resolution
+catalogs; it should not be needed against any v1-conformant catalog.
 
 ## Statistics
 
@@ -251,8 +249,8 @@ The connector is tested for bidirectional compatibility with DuckDB:
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
 | `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
-| `ducklake.temporal-partition-encoding` | No | `calendar` | `calendar` or `epoch` |
-| `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | Accept both encodings on read |
+| `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
+| `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
 
 Session properties: `read_snapshot_id`, `read_snapshot_timestamp`
 
@@ -335,8 +333,7 @@ for single-user, local development, and testing workflows.
 ## Additional Documentation
 
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
-- [dev-docs/STATUS.md](dev-docs/STATUS.md) — Detailed implementation status and test coverage
-  - [TODO for READ side](dev-docs/TODO-READ-MODE.md) - Read mode issue and ideas/notes
-  - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) - Write mode issue and ideas/notes
+- [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
+- [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
+- [dev-docs/DUCKLAKE_1_0_IMPACT.md](dev-docs/DUCKLAKE_1_0_IMPACT.md) — DuckLake 1.0 spec impact reference (linked from the TODOs above for spec context)
 - [dev-docs/REUSE.md](dev-docs/REUSE.md) — What is reused from Trino/Iceberg and what is custom
-- [dev-docs/DUCKLAKE_1_0_IMPACT.md](dev-docs/DUCKLAKE_1_0_IMPACT.md) — DuckLake 1.0 impact assessment
