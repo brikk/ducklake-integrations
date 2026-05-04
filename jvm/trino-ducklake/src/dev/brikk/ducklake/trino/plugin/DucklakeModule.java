@@ -102,5 +102,8 @@ public class DucklakeModule
 
         // Table properties
         binder.bind(DucklakeTableProperties.class).in(Scopes.SINGLETON);
+
+        // DuckDB-format read cache (per-JVM)
+        binder.bind(DucklakeMaterializedFileCache.class).in(Scopes.SINGLETON);
     }
 }

@@ -142,6 +142,7 @@ public class DucklakeConfig
     }
 
     @NotNull
+    @Deprecated
     public DucklakeTemporalPartitionEncoding getTemporalPartitionEncoding()
     {
         return temporalPartitionEncoding;
@@ -175,6 +176,7 @@ public class DucklakeConfig
         return this;
     }
 
+    @Deprecated
     public boolean isTemporalPartitionEncodingReadLeniency()
     {
         return temporalPartitionEncodingReadLeniency;

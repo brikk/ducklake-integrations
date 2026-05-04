@@ -1575,7 +1575,7 @@ public class JdbcDucklakeCatalog
             // file_order: NULL matches DuckDB convention
             dataFile.setPath(fragment.path());
             dataFile.setPathIsRelative(true);
-            dataFile.setFileFormat("parquet");
+            dataFile.setFileFormat(fragment.fileFormat());
             dataFile.setRecordCount(fragment.recordCount());
             dataFile.setFileSizeBytes(fragment.fileSizeBytes());
             dataFile.setFooterSize(fragment.footerSize());

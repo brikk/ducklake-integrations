@@ -33,7 +33,8 @@ public record DucklakeWritableTableHandle(
         @JsonProperty("allCatalogColumns") List<DucklakeColumn> allCatalogColumns,
         @JsonProperty("tableDataPath") String tableDataPath,
         @JsonProperty("partitionSpec") Optional<DucklakePartitionSpec> partitionSpec,
-        @JsonProperty("temporalPartitionEncoding") DucklakeTemporalPartitionEncoding temporalPartitionEncoding)
+        @JsonProperty("temporalPartitionEncoding") DucklakeTemporalPartitionEncoding temporalPartitionEncoding,
+        @JsonProperty("fileFormat") String fileFormat)
         implements ConnectorInsertTableHandle, ConnectorOutputTableHandle
 {
     @JsonCreator
@@ -48,6 +49,7 @@ public record DucklakeWritableTableHandle(
         requireNonNull(tableDataPath, "tableDataPath is null");
         requireNonNull(partitionSpec, "partitionSpec is null");
         requireNonNull(temporalPartitionEncoding, "temporalPartitionEncoding is null");
+        requireNonNull(fileFormat, "fileFormat is null");
     }
 
     @Override

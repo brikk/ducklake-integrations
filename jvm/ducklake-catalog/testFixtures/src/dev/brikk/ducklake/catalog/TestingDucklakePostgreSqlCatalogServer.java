@@ -42,7 +42,11 @@ public class TestingDucklakePostgreSqlCatalogServer
                 .withDatabaseName(DEFAULT_DATABASE)
                 .withUsername(USER)
                 .withPassword(PASSWORD)
-                .withStartupAttempts(3);
+                .withStartupAttempts(3)
+                // Default 100 is too low for parallel test classes — each test JVM-internal
+                // worker opens a few PG connections via DuckDB's postgres extension, and we
+                // run many test classes concurrently. 500 is empirical headroom.
+                .withCommand("postgres", "-c", "max_connections=500");
         container.start();
     }
 

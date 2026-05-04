@@ -70,7 +70,8 @@ public class TestDucklakePageSourceProvider
                 new LocalFileSystemFactory(Path.of("/")),
                 new FileFormatDataSourceStats(),
                 new ParquetReaderConfig().toParquetReaderOptions(),
-                catalog);
+                catalog,
+                new DucklakeMaterializedFileCache());
     }
 
     @AfterEach

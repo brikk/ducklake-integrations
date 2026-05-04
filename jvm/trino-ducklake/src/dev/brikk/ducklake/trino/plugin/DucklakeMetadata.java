@@ -931,7 +931,8 @@ public class DucklakeMetadata
                 allCatalogColumns,
                 tableDataPath,
                 activePartitionSpec,
-                temporalPartitionEncoding);
+                temporalPartitionEncoding,
+                DucklakeSessionProperties.getDataFileFormat(session));
     }
 
     @Override
@@ -1014,7 +1015,8 @@ public class DucklakeMetadata
                 allCatalogColumns,
                 tableDataPath,
                 activePartitionSpec,
-                temporalPartitionEncoding);
+                temporalPartitionEncoding,
+                DucklakeSessionProperties.getDataFileFormat(session));
     }
 
     @Override
@@ -1103,7 +1105,8 @@ public class DucklakeMetadata
                 allCatalogColumns,
                 tableDataPath,
                 activePartitionSpec,
-                temporalPartitionEncoding);
+                temporalPartitionEncoding,
+                DucklakeSessionProperties.getDataFileFormat(session));
 
         // Build data file ranges for row ID → data file resolution
         List<DucklakeDataFile> dataFiles = catalog.getDataFiles(handle.tableId(), handle.snapshotId());

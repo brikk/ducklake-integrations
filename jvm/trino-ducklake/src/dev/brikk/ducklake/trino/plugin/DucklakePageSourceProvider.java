@@ -111,18 +111,21 @@ public class DucklakePageSourceProvider
     private final FileFormatDataSourceStats fileFormatDataSourceStats;
     private final ParquetReaderOptions parquetReaderOptions;
     private final DucklakeCatalog catalog;
+    private final DucklakeMaterializedFileCache duckDbReadCache;
 
     @Inject
     public DucklakePageSourceProvider(
             TrinoFileSystemFactory fileSystemFactory,
             FileFormatDataSourceStats fileFormatDataSourceStats,
             ParquetReaderOptions parquetReaderOptions,
-            DucklakeCatalog catalog)
+            DucklakeCatalog catalog,
+            DucklakeMaterializedFileCache duckDbReadCache)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.parquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null");
         this.catalog = requireNonNull(catalog, "catalog is null");
+        this.duckDbReadCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null");
     }
 
     @Override
@@ -172,18 +175,24 @@ public class DucklakePageSourceProvider
             Location dataFileLocation = toLocation(ducklakeSplit.dataFilePath());
             TrinoInputFile inputFile = fileSystem.newInputFile(dataFileLocation);
 
-            // Verify file format
-            if (!"parquet".equalsIgnoreCase(ducklakeSplit.fileFormat())) {
-                throw new IllegalArgumentException("Unsupported file format: " + ducklakeSplit.fileFormat());
+            // Dispatch on file format
+            String format = ducklakeSplit.fileFormat();
+            if (DucklakeSessionProperties.FORMAT_PARQUET.equalsIgnoreCase(format)) {
+                return createParquetPageSource(
+                        inputFile,
+                        ducklakeColumns,
+                        ducklakeSplit,
+                        effectivePredicate,
+                        fileSystem);
             }
-
-            // Create Parquet page source using Trino's infrastructure
-            return createParquetPageSource(
-                    inputFile,
-                    ducklakeColumns,
-                    ducklakeSplit,
-                    effectivePredicate,
-                    fileSystem);
+            if (DucklakeSessionProperties.FORMAT_DUCKDB.equalsIgnoreCase(format)) {
+                return createDuckDbPageSource(
+                        dataFileLocation,
+                        ducklakeColumns,
+                        ducklakeSplit,
+                        fileSystem);
+            }
+            throw new TrinoException(NOT_SUPPORTED, "Unsupported file format: " + format);
         }
         catch (IOException e) {
             throw new RuntimeException("Failed to create page source for file: " + ducklakeSplit.dataFilePath(), e);
@@ -518,6 +527,56 @@ public class DucklakePageSourceProvider
             }
             throw new RuntimeException("Failed to create Parquet page source for file: " + split.dataFilePath(), e);
         }
+    }
+
+    private ConnectorPageSource createDuckDbPageSource(
+            Location dataFileLocation,
+            List<DucklakeColumnHandle> columns,
+            DucklakeSplit split,
+            TrinoFileSystem fileSystem)
+            throws IOException
+    {
+        // Separate $row_id from file-resident columns. The .db file does not store row IDs;
+        // they are injected after the data page source returns its rows, exactly as on the
+        // parquet path.
+        int rowIdOutputPosition = -1;
+        List<DucklakeColumnHandle> fileColumns = new ArrayList<>();
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).isRowIdColumn()) {
+                rowIdOutputPosition = i;
+            }
+            else {
+                fileColumns.add(columns.get(i));
+            }
+        }
+
+        if (fileColumns.isEmpty()) {
+            // Phase 1: empty projection (e.g. COUNT(*) with only $row_id requested) needs a
+            // dedicated row-counting path that doesn't go through the Arrow stream. Defer
+            // until measurements show it matters.
+            throw new TrinoException(
+                    NOT_SUPPORTED,
+                    "Empty projection over 'duckdb' format data files is not yet supported");
+        }
+
+        java.nio.file.Path localPath = duckDbReadCache.materialize(
+                fileSystem, dataFileLocation, split.fileSizeBytes());
+
+        List<Type> fileColumnTypes = fileColumns.stream()
+                .map(DucklakeColumnHandle::columnType)
+                .collect(toImmutableList());
+
+        ConnectorPageSource pageSource = new DuckDbFilePageSource(localPath, fileColumns, fileColumnTypes);
+
+        if (rowIdOutputPosition >= 0) {
+            pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());
+        }
+
+        pageSource = applyDeleteFile(fileSystem, split, pageSource);
+
+        log.debug("Created DuckDB page source for %d columns from file: %s",
+                columns.size(), split.dataFilePath());
+        return pageSource;
     }
 
     private ConnectorPageSource applyDeleteFile(TrinoFileSystem fileSystem, DucklakeSplit split, ConnectorPageSource dataSource)

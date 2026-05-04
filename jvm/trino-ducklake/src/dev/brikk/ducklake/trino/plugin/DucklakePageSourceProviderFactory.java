@@ -29,23 +29,26 @@ public class DucklakePageSourceProviderFactory
     private final FileFormatDataSourceStats fileFormatDataSourceStats;
     private final ParquetReaderOptions parquetReaderOptions;
     private final DucklakeCatalog catalog;
+    private final DucklakeMaterializedFileCache duckDbReadCache;
 
     @Inject
     public DucklakePageSourceProviderFactory(
             DucklakeFileSystemFactory fileSystemFactory,
             FileFormatDataSourceStats fileFormatDataSourceStats,
             ParquetReaderConfig parquetReaderConfig,
-            DucklakeCatalog catalog)
+            DucklakeCatalog catalog,
+            DucklakeMaterializedFileCache duckDbReadCache)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.parquetReaderOptions = parquetReaderConfig.toParquetReaderOptions();
         this.catalog = requireNonNull(catalog, "catalog is null");
+        this.duckDbReadCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null");
     }
 
     @Override
     public DucklakePageSourceProvider createPageSourceProvider()
     {
-        return new DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog);
+        return new DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache);
     }
 }

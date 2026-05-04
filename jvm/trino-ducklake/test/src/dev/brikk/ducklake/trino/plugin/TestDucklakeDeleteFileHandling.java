@@ -68,7 +68,8 @@ public class TestDucklakeDeleteFileHandling
                     new LocalFileSystemFactory(Path.of("/")),
                     new FileFormatDataSourceStats(),
                     new ParquetReaderConfig().toParquetReaderOptions(),
-                    catalog);
+                    catalog,
+                    new DucklakeMaterializedFileCache());
 
             long snapshotId = catalog.getCurrentSnapshotId();
             DucklakeTable table = getTable(catalog, "test_schema", "simple_table", snapshotId);

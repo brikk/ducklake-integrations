@@ -24,6 +24,7 @@ import static java.util.Objects.requireNonNull;
 
 public record DucklakeWriteFragment(
         @JsonProperty("path") String path,
+        @JsonProperty("fileFormat") String fileFormat,
         @JsonProperty("fileSizeBytes") long fileSizeBytes,
         @JsonProperty("footerSize") long footerSize,
         @JsonProperty("recordCount") long recordCount,
@@ -35,6 +36,9 @@ public record DucklakeWriteFragment(
     public DucklakeWriteFragment
     {
         requireNonNull(path, "path is null");
+        if (fileFormat == null) {
+            fileFormat = "parquet";
+        }
         requireNonNull(columnStats, "columnStats is null");
         columnStats = List.copyOf(columnStats);
         if (partitionValues == null) {
@@ -49,10 +53,25 @@ public record DucklakeWriteFragment(
     }
 
     /**
-     * Convenience constructor for unpartitioned fragments.
+     * Convenience constructor for unpartitioned parquet fragments.
      */
     public DucklakeWriteFragment(String path, long fileSizeBytes, long footerSize, long recordCount, List<DucklakeFileColumnStats> columnStats)
     {
-        this(path, fileSizeBytes, footerSize, recordCount, columnStats, Map.of(), OptionalLong.empty());
+        this(path, "parquet", fileSizeBytes, footerSize, recordCount, columnStats, Map.of(), OptionalLong.empty());
+    }
+
+    /**
+     * Convenience constructor for partitioned parquet fragments.
+     */
+    public DucklakeWriteFragment(
+            String path,
+            long fileSizeBytes,
+            long footerSize,
+            long recordCount,
+            List<DucklakeFileColumnStats> columnStats,
+            Map<Integer, String> partitionValues,
+            OptionalLong partitionId)
+    {
+        this(path, "parquet", fileSizeBytes, footerSize, recordCount, columnStats, partitionValues, partitionId);
     }
 }

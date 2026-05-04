@@ -42,6 +42,12 @@ dependencies {
         exclude(group = "javax.annotation", module = "javax.annotation-api")
     }
     implementation("org.weakref:jmxutils")
+    implementation(libs.duckdb.jdbc)
+    implementation(platform(libs.arrow.bom))
+    implementation(libs.arrow.vector)
+    implementation(libs.arrow.memory.core)
+    implementation(libs.arrow.data)
+    runtimeOnly(libs.arrow.memory.netty)
 
     // SPI dependencies — provided by Trino at runtime (compileOnly = Maven provided)
     compileOnly("com.fasterxml.jackson.core:jackson-annotations")
@@ -71,8 +77,6 @@ dependencies {
     // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
     // ducklake-catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
-
-    testImplementation(libs.duckdb.jdbc)
 
     // compileOnly deps also needed at test time
     testCompileOnly("com.fasterxml.jackson.core:jackson-annotations")
@@ -109,6 +113,10 @@ tasks.test {
         "--add-modules=jdk.incubator.vector",
         "--sun-misc-unsafe-memory-access=allow",
         "--enable-native-access=ALL-UNNAMED",
+        // Arrow's MemoryUtil reaches into private DirectByteBuffer constructor for
+        // off-heap interop with DuckDB's Arrow C-data export.
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
     )
 }
 

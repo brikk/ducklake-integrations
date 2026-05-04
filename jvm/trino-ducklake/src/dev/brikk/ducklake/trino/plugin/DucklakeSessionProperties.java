@@ -33,6 +33,10 @@ public class DucklakeSessionProperties
 {
     public static final String READ_SNAPSHOT_ID = "read_snapshot_id";
     public static final String READ_SNAPSHOT_TIMESTAMP = "read_snapshot_timestamp";
+    public static final String DATA_FILE_FORMAT = "data_file_format";
+
+    public static final String FORMAT_PARQUET = "parquet";
+    public static final String FORMAT_DUCKDB = "duckdb";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -55,6 +59,12 @@ public class DucklakeSessionProperties
                         "Optional DuckLake snapshot timestamp (ISO-8601 instant) to pin reads in this session",
                         null,
                         value -> parseSnapshotTimestamp(value),
+                        false),
+                stringProperty(
+                        DATA_FILE_FORMAT,
+                        "Data file format for new writes in this session: 'parquet' (default) or 'duckdb'",
+                        FORMAT_PARQUET,
+                        DucklakeSessionProperties::validateDataFileFormat,
                         false));
     }
 
@@ -85,6 +95,20 @@ public class DucklakeSessionProperties
         }
         catch (DateTimeParseException e) {
             throw new TrinoException(INVALID_SESSION_PROPERTY, READ_SNAPSHOT_TIMESTAMP + " must be an ISO-8601 instant (example: 2024-01-01T00:00:00Z)");
+        }
+    }
+
+    public static String getDataFileFormat(ConnectorSession session)
+    {
+        return session.getProperty(DATA_FILE_FORMAT, String.class);
+    }
+
+    private static void validateDataFileFormat(String value)
+    {
+        if (!FORMAT_PARQUET.equalsIgnoreCase(value) && !FORMAT_DUCKDB.equalsIgnoreCase(value)) {
+            throw new TrinoException(
+                    INVALID_SESSION_PROPERTY,
+                    DATA_FILE_FORMAT + " must be one of: '" + FORMAT_PARQUET + "', '" + FORMAT_DUCKDB + "'");
         }
     }
 }
