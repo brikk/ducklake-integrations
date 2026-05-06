@@ -190,6 +190,7 @@ public class DucklakePageSourceProvider
                         dataFileLocation,
                         ducklakeColumns,
                         ducklakeSplit,
+                        effectivePredicate,
                         fileSystem);
             }
             throw new TrinoException(NOT_SUPPORTED, "Unsupported file format: " + format);
@@ -533,6 +534,7 @@ public class DucklakePageSourceProvider
             Location dataFileLocation,
             List<DucklakeColumnHandle> columns,
             DucklakeSplit split,
+            TupleDomain<DucklakeColumnHandle> effectivePredicate,
             TrinoFileSystem fileSystem)
             throws IOException
     {
@@ -550,14 +552,9 @@ public class DucklakePageSourceProvider
             }
         }
 
-        if (fileColumns.isEmpty()) {
-            // Phase 1: empty projection (e.g. COUNT(*) with only $row_id requested) needs a
-            // dedicated row-counting path that doesn't go through the Arrow stream. Defer
-            // until measurements show it matters.
-            throw new TrinoException(
-                    NOT_SUPPORTED,
-                    "Empty projection over 'duckdb' format data files is not yet supported");
-        }
+        // Empty projection (e.g. COUNT(*)) is handled inside DuckDbFilePageSource by
+        // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
+        // row count.
 
         java.nio.file.Path localPath = duckDbReadCache.materialize(
                 fileSystem, dataFileLocation, split.fileSizeBytes());
@@ -566,7 +563,12 @@ public class DucklakePageSourceProvider
                 .map(DucklakeColumnHandle::columnType)
                 .collect(toImmutableList());
 
-        ConnectorPageSource pageSource = new DuckDbFilePageSource(localPath, fileColumns, fileColumnTypes);
+        // Restrict the pushed-down predicate to columns we actually project (filter
+        // pipeline still applies any not-pushed-down or non-projected predicates above).
+        TupleDomain<DucklakeColumnHandle> filePredicate = effectivePredicate.filter(
+                (col, _) -> fileColumns.contains(col));
+
+        ConnectorPageSource pageSource = new DuckDbFilePageSource(localPath, fileColumns, fileColumnTypes, filePredicate);
 
         if (rowIdOutputPosition >= 0) {
             pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());

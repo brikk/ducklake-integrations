@@ -42,6 +42,48 @@ Startup order is enforced by `depends_on` health gates:
 Re-running `docker compose up` is safe — the bootstrap detects an
 already-initialized catalog and skips both `ATTACH` setup and TPC-H generation.
 
+### JVM `--add-opens` for the DuckDB-format path
+
+Reading or writing tables with `data_file_format = 'duckdb'` goes through Apache
+Arrow's C-data export, which requires the JVM module flags:
+
+```
+--add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/java.lang=ALL-UNNAMED
+```
+
+The compose stack injects these into the Trino container via `JAVA_TOOL_OPTIONS`
+(see `docker-compose.yml`). **Production Trino deployments using this connector
+need the same flags in `etc/jvm.config`** — without them every duckdb-format
+read/write fails with `UnsupportedOperationException: sun.misc.Unsafe or
+java.nio.DirectByteBuffer.<init>(long, int) not available`.
+
+Plain parquet workloads are unaffected; only the duckdb-format path uses Arrow.
+
+### Cross-engine caveat for `data_file_format = 'duckdb'`
+
+Tables written with `data_file_format = 'duckdb'` are visible only to this
+connector. The DuckLake spec field `'duckdb'` is not a recognized format value
+in the upstream DuckLake DuckDB extension, and the connector currently writes
+empty `column_stats` for these files (Phase 1 deferral). As a result, queries
+through DuckDB itself that touch the catalog's stats path — including
+`duckdb_tables()` and several `SHOW`/introspection commands — will error with
+`INTERNAL Error: Calling GetValueInternal on a value that is NULL` once any
+duckdb-format table exists.
+
+The bootstrap script (`bootstrap/init_ducklake.py`) is defensive about this:
+its informational stats-count is wrapped in try/except, and the TPC-H seed
+falls back to `information_schema.tables` if `duckdb_tables()` fails. If you
+hit a sticky state, wipe it:
+
+```bash
+docker compose down -v        # drops postgres + minio volumes
+docker compose up -d
+```
+
+Plain parquet tables are unaffected and remain readable from any DuckLake
+client.
+
 ## Exposed ports
 
 | Service           | Host port | Container port | Notes                                         |

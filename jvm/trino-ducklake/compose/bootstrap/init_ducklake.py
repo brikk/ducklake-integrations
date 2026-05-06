@@ -21,6 +21,11 @@ S3_KEY_ID = os.environ["S3_KEY_ID"]
 S3_SECRET = os.environ["S3_SECRET"]
 S3_BUCKET = os.environ["S3_BUCKET"]
 S3_DATA_PREFIX = os.environ.get("S3_DATA_PREFIX", "data/")
+# These default to the MinIO local-dev profile. Override per-environment for
+# real S3 / S3-compatible providers (OVH, AWS, R2, etc.).
+S3_USE_SSL = os.environ.get("S3_USE_SSL", "false").lower() in ("1", "true", "yes")
+S3_URL_STYLE = os.environ.get("S3_URL_STYLE", "path")
+S3_REGION = os.environ.get("S3_REGION", "")
 
 TPCH_SCALE_FACTOR = float(os.environ.get("TPCH_SCALE_FACTOR", "0") or "0")
 TPCH_SCHEMA = os.environ.get("TPCH_SCHEMA", "tpch")
@@ -54,19 +59,18 @@ def main() -> int:
     con.execute("INSTALL httpfs")
     con.execute("LOAD httpfs")
 
-    con.execute(
-        """
-        CREATE SECRET minio_s3 (
+    secret_sql = f"""
+        CREATE SECRET lake_s3 (
             TYPE S3,
             KEY_ID ?,
             SECRET ?,
             ENDPOINT ?,
-            URL_STYLE 'path',
-            USE_SSL false
+            URL_STYLE '{S3_URL_STYLE}',
+            USE_SSL {'true' if S3_USE_SSL else 'false'}
+            {", REGION '" + S3_REGION + "'" if S3_REGION else ""}
         )
-        """,
-        [S3_KEY_ID, S3_SECRET, S3_ENDPOINT],
-    )
+    """
+    con.execute(secret_sql, [S3_KEY_ID, S3_SECRET, S3_ENDPOINT])
 
     last_err: Exception | None = None
     for attempt in range(1, 31):
@@ -81,10 +85,21 @@ def main() -> int:
         print(f"ATTACH never succeeded: {last_err}", file=sys.stderr, flush=True)
         return 1
 
-    rows = con.execute(
-        "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'"
-    ).fetchone()
-    print(f"DuckLake catalog ready ({rows[0]} catalog tables visible).", flush=True)
+    # `duckdb_tables()` eagerly loads per-table stats through the DuckLake extension.
+    # As of DuckDB 1.5.2 the extension errors out on any data file row whose stats are
+    # incomplete (e.g. tables written by trino-ducklake's `data_file_format = 'duckdb'`
+    # path, which intentionally skips column-stats extraction in Phase 1). Treat this
+    # status banner as best-effort so a partially-populated lake doesn't break bootstrap.
+    try:
+        rows = con.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'"
+        ).fetchone()
+        print(f"DuckLake catalog ready ({rows[0]} catalog tables visible).", flush=True)
+    except Exception as exc:
+        print(
+            f"DuckLake catalog attached. Stats query failed (non-fatal): {exc}",
+            flush=True,
+        )
 
     if TPCH_SCALE_FACTOR > 0:
         seed_tpch(con)
@@ -96,14 +111,32 @@ def main() -> int:
 
 
 def seed_tpch(con: duckdb.DuckDBPyConnection) -> None:
-    existing = {
-        row[0]
-        for row in con.execute(
-            "SELECT table_name FROM duckdb_tables() "
-            "WHERE database_name = 'lake' AND schema_name = ?",
-            [TPCH_SCHEMA],
-        ).fetchall()
-    }
+    # See note above on `duckdb_tables()` and incomplete stats in
+    # connector-written duckdb-format files. Fall back to information_schema if
+    # the function-form query fails — that path uses Postgres metadata directly
+    # and doesn't trigger the DuckLake extension's stats path.
+    try:
+        existing = {
+            row[0]
+            for row in con.execute(
+                "SELECT table_name FROM duckdb_tables() "
+                "WHERE database_name = 'lake' AND schema_name = ?",
+                [TPCH_SCHEMA],
+            ).fetchall()
+        }
+    except Exception as exc:
+        print(
+            f"duckdb_tables() failed ({exc}); falling back to information_schema.",
+            flush=True,
+        )
+        existing = {
+            row[0]
+            for row in con.execute(
+                "SELECT table_name FROM lake.information_schema.tables "
+                "WHERE table_schema = ?",
+                [TPCH_SCHEMA],
+            ).fetchall()
+        }
     missing = [t for t in TPCH_TABLES if t not in existing]
     if not missing:
         print(

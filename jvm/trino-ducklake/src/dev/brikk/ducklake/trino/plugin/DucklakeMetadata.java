@@ -1007,6 +1007,14 @@ public class DucklakeMetadata
 
         String tableDataPath = resolveTableDataPath(tableName.getSchemaName(), tableName.getTableName(), snapshotId);
 
+        // CREATE TABLE WITH (data_file_format = 'duckdb') overrides the session-level
+        // default for this single CTAS. INSERTs into the table later still pick up
+        // the session property (no per-table persistence in Phase 1).
+        String tablePropertyFormat = DucklakeTableProperties.getDataFileFormat(tableMetadata.getProperties());
+        String fileFormat = tablePropertyFormat != null
+                ? tablePropertyFormat
+                : DucklakeSessionProperties.getDataFileFormat(session);
+
         return new DucklakeWritableTableHandle(
                 tableName.getSchemaName(),
                 tableName.getTableName(),
@@ -1016,7 +1024,7 @@ public class DucklakeMetadata
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                DucklakeSessionProperties.getDataFileFormat(session));
+                fileFormat);
     }
 
     @Override

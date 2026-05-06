@@ -24,10 +24,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT;
@@ -220,6 +223,126 @@ public class TestDucklakeDuckDbFormatWrite
         finally {
             tryDropTable("test_schema.duck_readback");
         }
+    }
+
+    @Test
+    public void testColumnStatsWrittenForDuckDbFormat()
+            throws Exception
+    {
+        // Per-column min/max/null_count rows must be persisted in
+        // ducklake_column_stats. The DuckLake DuckDB extension's
+        // duckdb_tables() / TransformGlobalStats path crashes if any data file
+        // has missing stats — so this is a cross-engine compatibility guard,
+        // not just a Trino-side optimization.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.duck_stats AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, CAST('alpha' AS VARCHAR), 100), " +
+                        "  (2, CAST('beta'  AS VARCHAR), 200), " +
+                        "  (3, CAST(NULL    AS VARCHAR), 300), " +
+                        "  (4, CAST('delta' AS VARCHAR), NULL)" +
+                        ") AS t(id, label, amount)");
+        try (Connection conn = openCatalogConnection();
+                PreparedStatement stmt = conn.prepareStatement(
+                        "SELECT c.column_name, s.value_count, s.null_count, s.min_value, s.max_value " +
+                                "FROM ducklake_file_column_stats s " +
+                                "JOIN ducklake_column c " +
+                                "  ON c.column_id = s.column_id AND c.end_snapshot IS NULL " +
+                                "JOIN ducklake_data_file f ON f.data_file_id = s.data_file_id " +
+                                "WHERE f.file_format = 'duckdb' AND c.table_id = ( " +
+                                "  SELECT table_id FROM ducklake_table " +
+                                "  WHERE table_name = 'duck_stats' AND end_snapshot IS NULL )");
+                ResultSet rs = stmt.executeQuery()) {
+            Map<String, StatsRow> rows = new HashMap<>();
+            while (rs.next()) {
+                rows.put(rs.getString(1), new StatsRow(
+                        rs.getLong(2),
+                        rs.getLong(3),
+                        rs.getString(4),
+                        rs.getString(5)));
+            }
+            assertThat(rows).containsKeys("id", "label", "amount");
+
+            // id: 1..4, no nulls
+            assertThat(rows.get("id").valueCount).isEqualTo(4L);
+            assertThat(rows.get("id").nullCount).isEqualTo(0L);
+            assertThat(rows.get("id").minValue).isEqualTo("1");
+            assertThat(rows.get("id").maxValue).isEqualTo("4");
+
+            // label: alpha/beta/delta + 1 null
+            assertThat(rows.get("label").valueCount).isEqualTo(3L);
+            assertThat(rows.get("label").nullCount).isEqualTo(1L);
+            assertThat(rows.get("label").minValue).isEqualTo("alpha");
+            assertThat(rows.get("label").maxValue).isEqualTo("delta");
+
+            // amount: 100/200/300 + 1 null
+            assertThat(rows.get("amount").valueCount).isEqualTo(3L);
+            assertThat(rows.get("amount").nullCount).isEqualTo(1L);
+            assertThat(rows.get("amount").minValue).isEqualTo("100");
+            assertThat(rows.get("amount").maxValue).isEqualTo("300");
+        }
+        finally {
+            tryDropTable("test_schema.duck_stats");
+        }
+    }
+
+    private record StatsRow(long valueCount, long nullCount, String minValue, String maxValue) {}
+
+    @Test
+    public void testTablePropertyOverridesSessionToDuckDb()
+            throws Exception
+    {
+        // Default session is parquet. The CREATE TABLE WITH override should still
+        // produce a duckdb-format file.
+        computeActual("CREATE TABLE test_schema.tp_duckdb (id INTEGER, label VARCHAR) WITH (data_file_format = 'duckdb')");
+        try {
+            computeActual("INSERT INTO test_schema.tp_duckdb VALUES (1, 'a'), (2, 'b')");
+            // INSERTs use the session default (parquet), so this row goes to a parquet file.
+            // But CREATE TABLE AS would use the property — let's verify with a CTAS instead.
+        }
+        finally {
+            tryDropTable("test_schema.tp_duckdb");
+        }
+
+        // CTAS form: property drives the writer for the materialized rows.
+        computeActual("CREATE TABLE test_schema.tp_duckdb_ctas WITH (data_file_format = 'duckdb') AS " +
+                "SELECT * FROM (VALUES (1, CAST('alpha' AS VARCHAR)), (2, CAST('beta' AS VARCHAR))) AS t(id, label)");
+        try {
+            MaterializedResult files = computeActual(
+                    "SELECT file_format, record_count FROM \"tp_duckdb_ctas$files\"");
+            assertThat(files.getRowCount()).isEqualTo(1);
+            assertThat(files.getMaterializedRows().getFirst().getField(0)).isEqualTo("duckdb");
+            assertThat(files.getMaterializedRows().getFirst().getField(1)).isEqualTo(2L);
+        }
+        finally {
+            tryDropTable("test_schema.tp_duckdb_ctas");
+        }
+    }
+
+    @Test
+    public void testTablePropertyOverridesSessionToParquet()
+    {
+        // Session set to duckdb, but the CREATE TABLE WITH override forces parquet.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.tp_parquet_override WITH (data_file_format = 'parquet') AS " +
+                        "SELECT 1 AS id, CAST('hello' AS VARCHAR) AS label");
+        try {
+            MaterializedResult files = computeActual(
+                    "SELECT file_format FROM \"tp_parquet_override$files\"");
+            assertThat(files.getMaterializedRows().getFirst().getField(0)).isEqualTo("parquet");
+        }
+        finally {
+            tryDropTable("test_schema.tp_parquet_override");
+        }
+    }
+
+    @Test
+    public void testInvalidTablePropertyRejected()
+    {
+        assertThatThrownBy(() -> computeActual(
+                "CREATE TABLE test_schema.tp_bad WITH (data_file_format = 'vortex') AS SELECT 1 AS id"))
+                .hasMessageContaining("data_file_format must be one of");
+        tryDropTable("test_schema.tp_bad");
     }
 
     @Test

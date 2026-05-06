@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.DucklakeFileColumnStats;
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment;
 import io.airlift.log.Logger;
 import io.trino.filesystem.Location;
@@ -40,6 +41,7 @@ import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
@@ -51,6 +53,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 
@@ -244,6 +247,10 @@ final class DuckDbFileWriter
                 }
                 appender.endRow();
             }
+            // Bound memory: without this the appender buffers every row of the
+            // CTAS until close(), which OOMs on large loads. Flushing per-Page is
+            // cheap (Pages are ~1024–65536 rows) and lets DuckDB persist as we go.
+            appender.flush();
             rowCount += positionCount;
         }
         catch (SQLException e) {
@@ -372,8 +379,12 @@ final class DuckDbFileWriter
         }
         closed = true;
 
+        List<DucklakeFileColumnStats> columnStats;
         try {
             appender.close();
+            // Stats must be queried while the database is still attached (after appender
+            // close so all rows are flushed, before DETACH).
+            columnStats = extractColumnStats();
             try (Statement stmt = connection.createStatement()) {
                 stmt.execute("DETACH " + ATTACHED_DB);
             }
@@ -401,9 +412,151 @@ final class DuckDbFileWriter
                 fileSize,
                 0L,
                 rowCount,
-                List.of(),
+                columnStats,
                 partitionValues,
                 partitionId);
+    }
+
+    /**
+     * Run a single aggregate query against the freshly-written table to collect
+     * per-column min/max/value_count, then derive null_count from the total row
+     * count. The DuckLake DuckDB extension's introspection paths
+     * (e.g. {@code duckdb_tables()}, {@code TransformGlobalStats}) crash on data
+     * file rows whose {@code ducklake_column_stats} entries are missing or NULL,
+     * so we always emit a row per column — even if no min/max can be computed
+     * (e.g. for VARBINARY) — to keep cross-engine introspection working.
+     */
+    private List<DucklakeFileColumnStats> extractColumnStats()
+            throws SQLException
+    {
+        if (columns.isEmpty()) {
+            return List.of();
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*)");
+        List<Integer> minMaxColumns = new java.util.ArrayList<>();
+        for (int i = 0; i < columns.size(); i++) {
+            DucklakeColumnHandle col = columns.get(i);
+            String name = '"' + col.columnName().replace("\"", "\"\"") + '"';
+            // Always emit a per-column COUNT(col) so we can derive null_count.
+            sql.append(", COUNT(").append(name).append(")");
+            if (supportsMinMax(col.columnType())) {
+                sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")");
+                minMaxColumns.add(i);
+            }
+        }
+        sql.append(" FROM ").append(ATTACHED_DB).append('.').append(ATTACHED_SCHEMA).append('.').append(ATTACHED_TABLE);
+
+        long totalCount;
+        long[] valueCounts = new long[columns.size()];
+        Object[] minValues = new Object[columns.size()];
+        Object[] maxValues = new Object[columns.size()];
+
+        try (Statement stmt = connection.createStatement();
+                ResultSet rs = stmt.executeQuery(sql.toString())) {
+            if (!rs.next()) {
+                throw new SQLException("Stats query returned no rows for " + remoteLocation);
+            }
+            int colIdx = 1;
+            totalCount = rs.getLong(colIdx++);
+            int minMaxCursor = 0;
+            for (int i = 0; i < columns.size(); i++) {
+                valueCounts[i] = rs.getLong(colIdx++);
+                if (minMaxCursor < minMaxColumns.size() && minMaxColumns.get(minMaxCursor) == i) {
+                    minValues[i] = rs.getObject(colIdx++);
+                    maxValues[i] = rs.getObject(colIdx++);
+                    minMaxCursor++;
+                }
+            }
+        }
+
+        List<DucklakeFileColumnStats> result = new java.util.ArrayList<>(columns.size());
+        for (int i = 0; i < columns.size(); i++) {
+            DucklakeColumnHandle col = columns.get(i);
+            long valueCount = valueCounts[i];
+            long nullCount = Math.max(0, totalCount - valueCount);
+            Optional<String> min = formatStatValue(col.columnType(), minValues[i]);
+            Optional<String> max = formatStatValue(col.columnType(), maxValues[i]);
+            result.add(new DucklakeFileColumnStats(
+                    col.columnId(),
+                    0L, // column_size_bytes — not readily available without per-block scan; safe at 0
+                    valueCount,
+                    nullCount,
+                    min,
+                    max,
+                    false));
+        }
+        return result;
+    }
+
+    private static boolean supportsMinMax(Type type)
+    {
+        if (type.equals(VARBINARY) || type.equals(UUID)) {
+            return false;
+        }
+        // Nested types are already rejected at write time.
+        return true;
+    }
+
+    /**
+     * Format a JDBC-returned stat value into the DuckLake-string form the parquet
+     * writer uses, so the catalog stays consistent across formats. See
+     * {@link DucklakeStatsExtractor#convertStatValue}.
+     */
+    private static Optional<String> formatStatValue(Type type, Object value)
+    {
+        if (value == null) {
+            return Optional.empty();
+        }
+        if (type.equals(BOOLEAN)) {
+            return Optional.of(((Boolean) value) ? "true" : "false");
+        }
+        if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
+            return Optional.of(((Number) value).longValue() + "");
+        }
+        if (type.equals(REAL)) {
+            float f = ((Number) value).floatValue();
+            return Float.isNaN(f) ? Optional.empty() : Optional.of(String.valueOf(f));
+        }
+        if (type.equals(DOUBLE)) {
+            double d = ((Number) value).doubleValue();
+            return Double.isNaN(d) ? Optional.empty() : Optional.of(String.valueOf(d));
+        }
+        if (type instanceof DecimalType) {
+            BigDecimal bd = (value instanceof BigDecimal b) ? b : new BigDecimal(value.toString());
+            return Optional.of(bd.toPlainString());
+        }
+        if (type.equals(DATE)) {
+            if (value instanceof java.sql.Date d) {
+                return Optional.of(d.toLocalDate().toString());
+            }
+            if (value instanceof LocalDate ld) {
+                return Optional.of(ld.toString());
+            }
+            return Optional.of(value.toString());
+        }
+        if (type instanceof TimestampType) {
+            if (value instanceof LocalDateTime ldt) {
+                return Optional.of(ldt.toString());
+            }
+            if (value instanceof java.sql.Timestamp ts) {
+                return Optional.of(ts.toLocalDateTime().toString());
+            }
+            return Optional.of(value.toString());
+        }
+        if (type instanceof TimestampWithTimeZoneType) {
+            if (value instanceof OffsetDateTime odt) {
+                return Optional.of(odt.toInstant().toString());
+            }
+            if (value instanceof java.sql.Timestamp ts) {
+                return Optional.of(ts.toInstant().toString());
+            }
+            return Optional.of(value.toString());
+        }
+        if (type instanceof VarcharType) {
+            return Optional.of(value.toString());
+        }
+        return Optional.empty();
     }
 
     private void uploadToRemote()

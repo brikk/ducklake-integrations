@@ -18,6 +18,7 @@ import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.SourcePage;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -31,6 +32,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Optional;
 
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
@@ -62,6 +64,8 @@ final class DuckDbFilePageSource
     private final Path localFilePath;
     private final List<DucklakeColumnHandle> columns;
     private final DucklakeArrowToPageConverter converter;
+    private final TupleDomain<DucklakeColumnHandle> effectivePredicate;
+    private final boolean emptyProjection;
 
     private DuckDBConnection connection;
     private Statement statement;
@@ -75,11 +79,17 @@ final class DuckDbFilePageSource
     private long completedPositions;
     private long readTimeNanos;
 
-    DuckDbFilePageSource(Path localFilePath, List<DucklakeColumnHandle> columns, List<Type> columnTypes)
+    DuckDbFilePageSource(
+            Path localFilePath,
+            List<DucklakeColumnHandle> columns,
+            List<Type> columnTypes,
+            TupleDomain<DucklakeColumnHandle> effectivePredicate)
     {
         this.localFilePath = requireNonNull(localFilePath, "localFilePath is null");
         this.columns = List.copyOf(requireNonNull(columns, "columns is null"));
         this.converter = new DucklakeArrowToPageConverter(columnTypes);
+        this.effectivePredicate = requireNonNull(effectivePredicate, "effectivePredicate is null");
+        this.emptyProjection = this.columns.isEmpty();
     }
 
     @Override
@@ -116,7 +126,16 @@ final class DuckDbFilePageSource
                 finished = true;
                 return null;
             }
-            Page page = converter.convert(arrowReader.getVectorSchemaRoot());
+            Page page;
+            if (emptyProjection) {
+                // The synthetic SELECT 1 column is ignored; we just need the row count
+                // so downstream operators (count/aggregations, delete-file filtering)
+                // see the right position count.
+                page = new Page(arrowReader.getVectorSchemaRoot().getRowCount());
+            }
+            else {
+                page = converter.convert(arrowReader.getVectorSchemaRoot());
+            }
             completedPositions += page.getPositionCount();
             completedBytes += page.getSizeInBytes();
             return SourcePage.create(page);
@@ -150,14 +169,28 @@ final class DuckDbFilePageSource
     private String buildSelectSql()
     {
         StringBuilder sql = new StringBuilder("SELECT ");
-        for (int i = 0; i < columns.size(); i++) {
-            if (i > 0) {
-                sql.append(", ");
+        if (emptyProjection) {
+            // COUNT(*) and similar collapse to no projected columns. We still need a
+            // SELECT clause that yields one row per file row (so deletes can be applied
+            // by row position downstream), but the value is never read. Emit a constant
+            // and skip Arrow conversion for these batches.
+            sql.append("1");
+        }
+        else {
+            for (int i = 0; i < columns.size(); i++) {
+                if (i > 0) {
+                    sql.append(", ");
+                }
+                String name = columns.get(i).columnName().replace("\"", "\"\"");
+                sql.append('"').append(name).append('"');
             }
-            String name = columns.get(i).columnName().replace("\"", "\"\"");
-            sql.append('"').append(name).append('"');
         }
         sql.append(" FROM ").append(ATTACHED_DB).append(".main.").append(ATTACHED_TABLE);
+
+        // Best-effort predicate pushdown. Anything we can't translate stays in the
+        // Trino filter pipeline, so partial pushdown remains correct.
+        Optional<String> whereClause = DuckDbWhereClauseTranslator.toWhereClause(effectivePredicate);
+        whereClause.ifPresent(w -> sql.append(" WHERE ").append(w));
         return sql.toString();
     }
 

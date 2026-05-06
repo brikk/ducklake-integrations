@@ -93,8 +93,17 @@ services:
         condition: service_completed_successfully
     ports:
       - "9080:8080"
+    environment:
+      # Apache Arrow's MemoryUtil reaches into private DirectByteBuffer constructors
+      # for off-heap interop with DuckDB's Arrow C-data export. Required for any
+      # data_file_format = 'duckdb' read or write. Production Trino installs that
+      # use this connector need the same opens in their etc/jvm.config.
+      JAVA_TOOL_OPTIONS: >-
+        --add-opens=java.base/java.nio=ALL-UNNAMED
+        --add-opens=java.base/java.lang=ALL-UNNAMED
     volumes:
       - ./trino/etc/catalog/ducklake.properties:/etc/trino/catalog/ducklake.properties:ro
+      - ./trino/etc/catalog/ducklake_ovh.properties:/etc/trino/catalog/ducklake_ovh.properties:ro
       - ../build/trino-plugin/trino-ducklake-${PLUGIN_VERSION}:/usr/lib/trino/plugin/ducklake:ro
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]

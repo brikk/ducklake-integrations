@@ -26,12 +26,16 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
+import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_PARQUET;
 import static io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
+import static io.trino.spi.session.PropertyMetadata.stringProperty;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 
 public class DucklakeTableProperties
 {
     public static final String PARTITIONED_BY_PROPERTY = "partitioned_by";
+    public static final String DATA_FILE_FORMAT_PROPERTY = "data_file_format";
 
     private static final Pattern TRANSFORM_PATTERN = Pattern.compile("(year|month|day|hour)\\((.+)\\)");
 
@@ -49,7 +53,35 @@ public class DucklakeTableProperties
                         ImmutableList.of(),
                         false,
                         value -> (List<?>) value,
-                        value -> value));
+                        value -> value),
+                stringProperty(
+                        DATA_FILE_FORMAT_PROPERTY,
+                        "Data file format for this table's CTAS payload: 'parquet' (default) or 'duckdb'. Overrides the session-level data_file_format for this CREATE only.",
+                        null,
+                        DucklakeTableProperties::validateDataFileFormat,
+                        false));
+    }
+
+    private static void validateDataFileFormat(String value)
+    {
+        if (value == null) {
+            return;
+        }
+        if (!FORMAT_PARQUET.equalsIgnoreCase(value) && !FORMAT_DUCKDB.equalsIgnoreCase(value)) {
+            throw new TrinoException(
+                    INVALID_TABLE_PROPERTY,
+                    DATA_FILE_FORMAT_PROPERTY + " must be one of: '" + FORMAT_PARQUET + "', '" + FORMAT_DUCKDB + "'");
+        }
+    }
+
+    /**
+     * Returns the table property value if set, otherwise null. Callers should
+     * fall back to {@link DucklakeSessionProperties#getDataFileFormat} when this
+     * returns null.
+     */
+    public static String getDataFileFormat(Map<String, Object> tableProperties)
+    {
+        return (String) tableProperties.get(DATA_FILE_FORMAT_PROPERTY);
     }
 
     public List<PropertyMetadata<?>> getTableProperties()

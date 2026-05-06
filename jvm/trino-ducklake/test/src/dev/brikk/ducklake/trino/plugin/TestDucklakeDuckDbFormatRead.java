@@ -160,24 +160,135 @@ public class TestDucklakeDuckDbFormatRead
     }
 
     @Test
-    public void testTrinoSidePredicateFilter()
+    public void testPredicatePushdownEquality()
     {
-        // Predicate pushdown into DuckDB SQL is Step 4. For now Trino's filter pipeline
-        // applies the WHERE after rows leave the page source. Either way the result
-        // should be correct.
         computeActual(duckDbSession(),
-                "CREATE TABLE test_schema.pred AS " +
+                "CREATE TABLE test_schema.pred_eq AS " +
                         "SELECT * FROM (VALUES (1, 100), (2, 200), (3, 300), (4, 400)) AS t(id, amount)");
         try {
             MaterializedResult result = computeActual(
-                    "SELECT id FROM test_schema.pred WHERE amount > 150 ORDER BY id");
+                    "SELECT id FROM test_schema.pred_eq WHERE amount = 300");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(3);
+        }
+        finally {
+            tryDropTable("test_schema.pred_eq");
+        }
+    }
+
+    @Test
+    public void testPredicatePushdownRange()
+    {
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.pred_range AS " +
+                        "SELECT * FROM (VALUES (1, 100), (2, 200), (3, 300), (4, 400)) AS t(id, amount)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT id FROM test_schema.pred_range WHERE amount > 150 ORDER BY id");
             assertThat(result.getRowCount()).isEqualTo(3);
             assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
             assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
             assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo(4);
         }
         finally {
-            tryDropTable("test_schema.pred");
+            tryDropTable("test_schema.pred_range");
+        }
+    }
+
+    @Test
+    public void testPredicatePushdownInList()
+    {
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.pred_in AS " +
+                        "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')) AS t(id, label)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT id FROM test_schema.pred_in WHERE label IN ('b', 'd') ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(4);
+        }
+        finally {
+            tryDropTable("test_schema.pred_in");
+        }
+    }
+
+    @Test
+    public void testPredicatePushdownIsNullAndIsNotNull()
+    {
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.pred_nulls AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, CAST('a' AS VARCHAR)), " +
+                        "  (2, CAST(NULL AS VARCHAR)), " +
+                        "  (3, CAST('c' AS VARCHAR)), " +
+                        "  (4, CAST(NULL AS VARCHAR))" +
+                        ") AS t(id, opt)");
+        try {
+            MaterializedResult onlyNull = computeActual(
+                    "SELECT id FROM test_schema.pred_nulls WHERE opt IS NULL ORDER BY id");
+            assertThat(onlyNull.getRowCount()).isEqualTo(2);
+            assertThat(onlyNull.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
+            assertThat(onlyNull.getMaterializedRows().get(1).getField(0)).isEqualTo(4);
+
+            MaterializedResult notNull = computeActual(
+                    "SELECT id FROM test_schema.pred_nulls WHERE opt IS NOT NULL ORDER BY id");
+            assertThat(notNull.getRowCount()).isEqualTo(2);
+            assertThat(notNull.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(notNull.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
+        }
+        finally {
+            tryDropTable("test_schema.pred_nulls");
+        }
+    }
+
+    @Test
+    public void testPredicatePushdownDateAndDecimal()
+    {
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.pred_typed AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, DATE '2026-01-01', CAST('100.50' AS DECIMAL(10,2))), " +
+                        "  (2, DATE '2026-06-15', CAST('200.75' AS DECIMAL(10,2))), " +
+                        "  (3, DATE '2026-12-31', CAST('300.00' AS DECIMAL(10,2)))" +
+                        ") AS t(id, d, amt)");
+        try {
+            MaterializedResult byDate = computeActual(
+                    "SELECT id FROM test_schema.pred_typed WHERE d >= DATE '2026-06-01' ORDER BY id");
+            assertThat(byDate.getRowCount()).isEqualTo(2);
+            assertThat(byDate.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
+            assertThat(byDate.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
+
+            MaterializedResult byDecimal = computeActual(
+                    "SELECT id FROM test_schema.pred_typed WHERE amt = CAST('200.75' AS DECIMAL(10,2))");
+            assertThat(byDecimal.getRowCount()).isEqualTo(1);
+            assertThat(byDecimal.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.pred_typed");
+        }
+    }
+
+    @Test
+    public void testPredicateOnUnpushedColumnStillCorrect()
+    {
+        // VARBINARY isn't pushed down (the translator skips it), but Trino's filter
+        // operator above still applies. Result must remain correct.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.pred_unpushed AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, X'AABB'), " +
+                        "  (2, X'CCDD'), " +
+                        "  (3, X'EEFF')" +
+                        ") AS t(id, payload)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT id FROM test_schema.pred_unpushed WHERE payload = X'CCDD'");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.pred_unpushed");
         }
     }
 
@@ -198,6 +309,109 @@ public class TestDucklakeDuckDbFormatRead
         }
         finally {
             tryDropTable("test_schema.agg");
+        }
+    }
+
+    @Test
+    public void testCountStarNoPredicate()
+    {
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.cnt_all AS " +
+                        "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')) AS t(id, label)");
+        try {
+            MaterializedResult result = computeActual("SELECT count(*) FROM test_schema.cnt_all");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(5L);
+        }
+        finally {
+            tryDropTable("test_schema.cnt_all");
+        }
+    }
+
+    @Test
+    public void testCountStarWithPushedPredicate()
+    {
+        // The predicate pushes into the DuckDB SELECT, so the row count comes back
+        // pre-filtered. The empty-projection path still needs to honor it.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.cnt_pred AS " +
+                        "SELECT * FROM (VALUES (1, 100), (2, 200), (3, 300), (4, 400)) AS t(id, amount)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT count(*) FROM test_schema.cnt_pred WHERE amount > 150");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(3L);
+        }
+        finally {
+            tryDropTable("test_schema.cnt_pred");
+        }
+    }
+
+    @Test
+    public void testCountColumnWithEqualityPredicate()
+    {
+        // Mirrors a TPC-H lookup: COUNT of a specific column with an equality on the
+        // same column. Non-empty projection (because of the named column) plus a
+        // pushed-down predicate.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.cnt_col AS " +
+                        "SELECT * FROM (VALUES (1, 100), (2, 200), (12345, 300), (4, 400)) AS t(orderkey, amount)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT count(orderkey) FROM test_schema.cnt_col WHERE orderkey = 12345");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1L);
+        }
+        finally {
+            tryDropTable("test_schema.cnt_col");
+        }
+    }
+
+    @Test
+    public void testTpchQ1Shape()
+    {
+        // Replicates the shape of TPC-H Q1: GROUP BY on two columns, multiple
+        // aggregates including one over a derived expression, with a date predicate
+        // that should push into DuckDB SQL. Exercises the side-by-side pattern from
+        // the compose/sql/tpch-duckdb-format.sql test script.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.q1 AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (DATE '1998-08-01', CAST('A' AS VARCHAR), CAST('F' AS VARCHAR), CAST(10 AS DOUBLE), CAST(100 AS DOUBLE), CAST(0.05 AS DOUBLE)), " +
+                        "  (DATE '1998-08-15', CAST('A' AS VARCHAR), CAST('F' AS VARCHAR), CAST(20 AS DOUBLE), CAST(200 AS DOUBLE), CAST(0.10 AS DOUBLE)), " +
+                        "  (DATE '1998-09-01', CAST('N' AS VARCHAR), CAST('O' AS VARCHAR), CAST(30 AS DOUBLE), CAST(300 AS DOUBLE), CAST(0.00 AS DOUBLE)), " +
+                        "  (DATE '1998-12-01', CAST('R' AS VARCHAR), CAST('F' AS VARCHAR), CAST(40 AS DOUBLE), CAST(400 AS DOUBLE), CAST(0.20 AS DOUBLE))" +
+                        ") AS t(shipdate, returnflag, linestatus, qty, extprice, discount)");
+        try {
+            MaterializedResult result = computeActual(
+                    "SELECT returnflag, linestatus, " +
+                            "  sum(qty) AS sum_qty, " +
+                            "  sum(extprice * (1 - discount)) AS sum_disc_price, " +
+                            "  count(*) AS cnt " +
+                            "FROM test_schema.q1 " +
+                            "WHERE shipdate <= DATE '1998-09-02' " +
+                            "GROUP BY returnflag, linestatus " +
+                            "ORDER BY returnflag, linestatus");
+            assertThat(result.getRowCount()).isEqualTo(2);
+
+            // Group ('A', 'F'): 2 rows, qty 10+20=30, disc_price 100*0.95 + 200*0.90 = 95 + 180 = 275
+            MaterializedRow groupAF = result.getMaterializedRows().get(0);
+            assertThat(groupAF.getField(0)).isEqualTo("A");
+            assertThat(groupAF.getField(1)).isEqualTo("F");
+            assertThat(((Number) groupAF.getField(2)).doubleValue()).isEqualTo(30.0);
+            assertThat(((Number) groupAF.getField(3)).doubleValue()).isEqualTo(275.0);
+            assertThat(groupAF.getField(4)).isEqualTo(2L);
+
+            // Group ('N', 'O'): 1 row, qty 30, disc_price 300*1.00 = 300
+            MaterializedRow groupNO = result.getMaterializedRows().get(1);
+            assertThat(groupNO.getField(0)).isEqualTo("N");
+            assertThat(groupNO.getField(1)).isEqualTo("O");
+            assertThat(((Number) groupNO.getField(2)).doubleValue()).isEqualTo(30.0);
+            assertThat(((Number) groupNO.getField(3)).doubleValue()).isEqualTo(300.0);
+            assertThat(groupNO.getField(4)).isEqualTo(1L);
+        }
+        finally {
+            tryDropTable("test_schema.q1");
         }
     }
 
