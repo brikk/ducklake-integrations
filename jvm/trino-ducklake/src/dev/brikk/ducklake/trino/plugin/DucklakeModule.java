@@ -16,6 +16,8 @@ package dev.brikk.ducklake.trino.plugin;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+
+import java.util.Map;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSinkProvider;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProviderFactory;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorSplitManager;
@@ -37,6 +39,13 @@ import static org.weakref.jmx.guice.ExportBinder.newExporter;
 public class DucklakeModule
         implements Module
 {
+    private final Map<String, String> catalogConfig;
+
+    public DucklakeModule(Map<String, String> catalogConfig)
+    {
+        this.catalogConfig = Map.copyOf(catalogConfig);
+    }
+
     @Override
     public void configure(Binder binder)
     {
@@ -44,6 +53,11 @@ public class DucklakeModule
         configBinder(binder).bindConfig(DucklakeConfig.class);
         configBinder(binder).bindConfig(ParquetReaderConfig.class);
         configBinder(binder).bindConfig(ParquetWriterConfig.class);
+
+        // Snapshot of the S3 settings the user gave the FileSystemModule, also needed for
+        // DuckDB's httpfs extension (N2). Bound from the raw catalog map rather than via
+        // a parallel @Config class so the user only configures s3 once.
+        binder.bind(DuckDbS3Config.class).toInstance(DuckDbS3Config.fromCatalogConfig(catalogConfig));
 
         // Core connector components
         binder.bind(DucklakeConnector.class).in(Scopes.SINGLETON);

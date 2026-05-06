@@ -30,6 +30,8 @@ public class DucklakePageSourceProviderFactory
     private final ParquetReaderOptions parquetReaderOptions;
     private final DucklakeCatalog catalog;
     private final DucklakeMaterializedFileCache duckDbReadCache;
+    private final DuckDbS3Config duckDbS3Config;
+    private final DucklakeConfig ducklakeConfig;
 
     @Inject
     public DucklakePageSourceProviderFactory(
@@ -37,18 +39,22 @@ public class DucklakePageSourceProviderFactory
             FileFormatDataSourceStats fileFormatDataSourceStats,
             ParquetReaderConfig parquetReaderConfig,
             DucklakeCatalog catalog,
-            DucklakeMaterializedFileCache duckDbReadCache)
+            DucklakeMaterializedFileCache duckDbReadCache,
+            DuckDbS3Config duckDbS3Config,
+            DucklakeConfig ducklakeConfig)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.parquetReaderOptions = parquetReaderConfig.toParquetReaderOptions();
         this.catalog = requireNonNull(catalog, "catalog is null");
         this.duckDbReadCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null");
+        this.duckDbS3Config = requireNonNull(duckDbS3Config, "duckDbS3Config is null");
+        this.ducklakeConfig = requireNonNull(ducklakeConfig, "ducklakeConfig is null");
     }
 
     @Override
     public DucklakePageSourceProvider createPageSourceProvider()
     {
-        return new DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache);
+        return new DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache, duckDbS3Config, ducklakeConfig);
     }
 }

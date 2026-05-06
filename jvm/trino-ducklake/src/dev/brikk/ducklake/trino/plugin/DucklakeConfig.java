@@ -19,6 +19,9 @@ import dev.brikk.ducklake.catalog.DucklakeCatalogConfig;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotNull;
 
+import io.airlift.units.DataSize;
+import io.airlift.units.MinDataSize;
+
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Optional;
@@ -38,6 +41,7 @@ public class DucklakeConfig
     private Optional<Instant> defaultSnapshotTimestamp = Optional.empty();
     private DucklakeTemporalPartitionEncoding temporalPartitionEncoding = DucklakeTemporalPartitionEncoding.CALENDAR;
     private boolean temporalPartitionEncodingReadLeniency = true;
+    private DataSize duckdbAutoHttpfsThreshold = DataSize.ofBytes(64L * 1024 * 1024);
 
     @NotNull
     public String getCatalogDatabaseUrl()
@@ -201,6 +205,21 @@ public class DucklakeConfig
     public boolean isSnapshotDefaultsValid()
     {
         return defaultSnapshotId.isEmpty() || defaultSnapshotTimestamp.isEmpty();
+    }
+
+    @NotNull
+    @MinDataSize("0B")
+    public DataSize getDuckdbAutoHttpfsThreshold()
+    {
+        return duckdbAutoHttpfsThreshold;
+    }
+
+    @Config("ducklake.duckdb.auto-httpfs-threshold")
+    @ConfigDescription("Size threshold for the 'auto' duckdb_read_mode: data files at or above this size stream via DuckDB's httpfs extension; smaller files materialize to local tmp first. Ignored when duckdb_read_mode is set explicitly to 'materialize' or 'httpfs'.")
+    public DucklakeConfig setDuckdbAutoHttpfsThreshold(DataSize duckdbAutoHttpfsThreshold)
+    {
+        this.duckdbAutoHttpfsThreshold = duckdbAutoHttpfsThreshold;
+        return this;
     }
 
     public DucklakeCatalogConfig toCatalogConfig()

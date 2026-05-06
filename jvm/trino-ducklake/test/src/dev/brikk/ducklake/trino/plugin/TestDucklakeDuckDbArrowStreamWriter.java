@@ -32,6 +32,7 @@ import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FIL
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_WRITER_MODE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM;
+import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -218,4 +219,103 @@ public class TestDucklakeDuckDbArrowStreamWriter
     }
 
     private record StatsRow(long valueCount, long nullCount, String minValue, String maxValue) {}
+
+    /**
+     * Regression test for a writer-side bug in {@link DuckDbArrowStreamFileWriter}.
+     *
+     * <p>Repro shape: a table read from a real connector page source (here: parquet
+     * via this very catalog) feeds a CTAS into duckdb format with the arrow-stream
+     * writer. The arrow-stream writer queues {@link io.trino.spi.Page} instances
+     * and reads block values asynchronously on a consumer thread. Trino's read
+     * path can hand pages whose block contents are not stable past the
+     * {@code write()} call (e.g. {@code LazyBlock} backed by reader-internal
+     * buffers that get reused once the producer thread moves on). When that
+     * happens the consumer reads stale or zero data, and the catalog ends up
+     * with rows whose values are wrong.
+     *
+     * <p>Symptoms in production were exactly this:
+     * <ul>
+     *   <li>{@code count(*)} correct (queued atomically per page)</li>
+     *   <li>{@code count(DISTINCT)} of a high-cardinality BIGINT column drops
+     *       below the source value (~5-12% on the user's repro)</li>
+     *   <li>{@code min(custkey)} becomes 0 even when the source has no zero
+     *       values — Arrow buffer freshly allocated by {@code allocateNew} stays
+     *       at zero for positions whose source data was clobbered</li>
+     *   <li>Non-deterministic: distinct count varies between writes</li>
+     * </ul>
+     *
+     * <p>This test reads a parquet source table into a duckdb target via the
+     * arrow-stream writer and asserts that all distinct values survive. The
+     * existing {@link #testBulkInsertThroughArrowStream} doesn't catch the bug
+     * because its source is {@code UNNEST(sequence(...))} — inline values, no
+     * read-side block lifecycle. The bug only surfaces when the source pages
+     * come from a real {@code ConnectorPageSource}.
+     */
+    @Test
+    public void testArrowStreamPreservesAllDistinctValuesFromConnectorSource()
+    {
+        // Source: 100K distinct BIGINT values written as parquet (the default
+        // format on this catalog). Reading this back through Trino's parquet
+        // page source is what produces the LazyBlock-shaped pages the writer
+        // bug feeds on. Cross-join two sequences because Trino caps a single
+        // sequence() call at 10K entries — and we need >10K so the source
+        // produces multiple pages, which is the precondition for the
+        // multi-batch race in the arrow-stream writer.
+        int outer = 1000;
+        int inner = 100;
+        int numRows = outer * inner;
+        computeActual(format(
+                "CREATE TABLE test_schema.arrow_repro_src AS " +
+                        "SELECT CAST(a * %d + b AS BIGINT) AS k " +
+                        "FROM UNNEST(sequence(1, %d)) AS t1(a) " +
+                        "CROSS JOIN UNNEST(sequence(0, %d)) AS t2(b)",
+                inner, outer, inner - 1));
+        // k = a*inner + b where a ∈ [1..outer], b ∈ [0..inner-1] → k ∈ [inner .. outer*inner + (inner-1)]
+        long expectedMin = inner;
+        long expectedMax = (long) outer * inner + (inner - 1);
+        try {
+            // Sanity: source itself is right (so any failure below is the writer,
+            // not a flaky source).
+            MaterializedResult srcStats = computeActual(
+                    "SELECT count(*), count(DISTINCT k), min(k), max(k) FROM test_schema.arrow_repro_src");
+            MaterializedRow s = srcStats.getMaterializedRows().getFirst();
+            assertThat(s.getField(0)).as("source count(*)").isEqualTo((long) numRows);
+            assertThat(s.getField(1)).as("source count(DISTINCT)").isEqualTo((long) numRows);
+            assertThat(s.getField(2)).as("source min").isEqualTo(expectedMin);
+            assertThat(s.getField(3)).as("source max").isEqualTo(expectedMax);
+
+            // Target: same data, but written through the arrow-stream writer.
+            computeActual(arrowStreamSession(),
+                    "CREATE TABLE test_schema.arrow_repro_tgt AS SELECT * FROM test_schema.arrow_repro_src");
+            try {
+                // Sanity: confirm the target was actually written in duckdb format
+                // (not parquet) so we know we exercised the arrow-stream path.
+                MaterializedResult files = computeActual(
+                        "SELECT file_format FROM \"arrow_repro_tgt$files\"");
+                assertThat(files.getMaterializedRows()).isNotEmpty();
+                assertThat(files.getMaterializedRows().getFirst().getField(0))
+                        .as("target file_format must be 'duckdb' for this test to mean anything")
+                        .isEqualTo("duckdb");
+
+                // The actual assertions: every value preserved.
+                MaterializedResult tgtStats = computeActual(
+                        "SELECT count(*), count(DISTINCT k), min(k), max(k) FROM test_schema.arrow_repro_tgt");
+                MaterializedRow t = tgtStats.getMaterializedRows().getFirst();
+                assertThat(t.getField(0)).as("target count(*)").isEqualTo((long) numRows);
+                assertThat(t.getField(1))
+                        .as("target count(DISTINCT k) — if < %d, arrow-stream writer dropped values", numRows)
+                        .isEqualTo((long) numRows);
+                assertThat(t.getField(2))
+                        .as("target min(k) — if < %d (source has no smaller values), arrow-stream writer wrote stale zeros", expectedMin)
+                        .isEqualTo(expectedMin);
+                assertThat(t.getField(3)).as("target max(k)").isEqualTo(expectedMax);
+            }
+            finally {
+                tryDropTable("test_schema.arrow_repro_tgt");
+            }
+        }
+        finally {
+            tryDropTable("test_schema.arrow_repro_src");
+        }
+    }
 }

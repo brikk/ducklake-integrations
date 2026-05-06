@@ -112,6 +112,8 @@ public class DucklakePageSourceProvider
     private final ParquetReaderOptions parquetReaderOptions;
     private final DucklakeCatalog catalog;
     private final DucklakeMaterializedFileCache duckDbReadCache;
+    private final DuckDbS3Config duckDbS3Config;
+    private final long autoHttpfsThresholdBytes;
 
     @Inject
     public DucklakePageSourceProvider(
@@ -119,13 +121,18 @@ public class DucklakePageSourceProvider
             FileFormatDataSourceStats fileFormatDataSourceStats,
             ParquetReaderOptions parquetReaderOptions,
             DucklakeCatalog catalog,
-            DucklakeMaterializedFileCache duckDbReadCache)
+            DucklakeMaterializedFileCache duckDbReadCache,
+            DuckDbS3Config duckDbS3Config,
+            DucklakeConfig ducklakeConfig)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.parquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null");
         this.catalog = requireNonNull(catalog, "catalog is null");
         this.duckDbReadCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null");
+        this.duckDbS3Config = requireNonNull(duckDbS3Config, "duckDbS3Config is null");
+        this.autoHttpfsThresholdBytes = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
+                .getDuckdbAutoHttpfsThreshold().toBytes();
     }
 
     @Override
@@ -191,7 +198,8 @@ public class DucklakePageSourceProvider
                         ducklakeColumns,
                         ducklakeSplit,
                         effectivePredicate,
-                        fileSystem);
+                        fileSystem,
+                        session);
             }
             throw new TrinoException(NOT_SUPPORTED, "Unsupported file format: " + format);
         }
@@ -535,7 +543,8 @@ public class DucklakePageSourceProvider
             List<DucklakeColumnHandle> columns,
             DucklakeSplit split,
             TupleDomain<DucklakeColumnHandle> effectivePredicate,
-            TrinoFileSystem fileSystem)
+            TrinoFileSystem fileSystem,
+            ConnectorSession session)
             throws IOException
     {
         // Separate $row_id from file-resident columns. The .db file does not store row IDs;
@@ -556,8 +565,8 @@ public class DucklakePageSourceProvider
         // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
         // row count.
 
-        java.nio.file.Path localPath = duckDbReadCache.materialize(
-                fileSystem, dataFileLocation, split.fileSizeBytes());
+        DuckDbAttachTarget attachTarget = resolveDuckDbAttachTarget(
+                session, dataFileLocation, fileSystem, split);
 
         List<Type> fileColumnTypes = fileColumns.stream()
                 .map(DucklakeColumnHandle::columnType)
@@ -568,7 +577,7 @@ public class DucklakePageSourceProvider
         TupleDomain<DucklakeColumnHandle> filePredicate = effectivePredicate.filter(
                 (col, _) -> fileColumns.contains(col));
 
-        ConnectorPageSource pageSource = new DuckDbFilePageSource(localPath, fileColumns, fileColumnTypes, filePredicate);
+        ConnectorPageSource pageSource = new DuckDbFilePageSource(attachTarget, fileColumns, fileColumnTypes, filePredicate);
 
         if (rowIdOutputPosition >= 0) {
             pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());
@@ -579,6 +588,48 @@ public class DucklakePageSourceProvider
         log.debug("Created DuckDB page source for %d columns from file: %s",
                 columns.size(), split.dataFilePath());
         return pageSource;
+    }
+
+    /**
+     * Decide whether to materialize the {@code .db} file to local tmp and ATTACH that
+     * path, or load DuckDB's httpfs extension and ATTACH the remote {@code s3://} URL
+     * directly. Driven by the {@code duckdb_read_mode} session property; {@code auto}
+     * (the default) consults the {@code ducklake.duckdb.auto-httpfs-threshold} config.
+     */
+    private DuckDbAttachTarget resolveDuckDbAttachTarget(
+            ConnectorSession session,
+            Location dataFileLocation,
+            TrinoFileSystem fileSystem,
+            DucklakeSplit split)
+            throws IOException
+    {
+        String mode = DucklakeSessionProperties.getDuckDbReadMode(session);
+        boolean useHttpfs = switch (mode.toLowerCase(Locale.ROOT)) {
+            case DucklakeSessionProperties.READ_MODE_MATERIALIZE -> false;
+            case DucklakeSessionProperties.READ_MODE_HTTPFS -> true;
+            // 'auto' picks per-file. Below the threshold the materialize cache wins
+            // (small files are cheap to download and warm reads are then local). At or
+            // above the threshold we stream blocks via httpfs to avoid the full pull.
+            case DucklakeSessionProperties.READ_MODE_AUTO -> split.fileSizeBytes() >= autoHttpfsThresholdBytes;
+            default -> throw new TrinoException(NOT_SUPPORTED, "Unsupported duckdb_read_mode: " + mode);
+        };
+
+        if (useHttpfs) {
+            String url = dataFileLocation.toString();
+            if (!url.startsWith("s3://") && !url.startsWith("s3a://") && !url.startsWith("s3n://")) {
+                // Local-FS targets cannot be reached via httpfs. This is unreachable in
+                // production (the connector requires an s3 data path) but defensive in
+                // case a future codepath ever produces a local Location for a duckdb file.
+                throw new TrinoException(
+                        NOT_SUPPORTED,
+                        "duckdb_read_mode=httpfs requires an s3:// data file path; got " + url);
+            }
+            return new DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config);
+        }
+
+        java.nio.file.Path localPath = duckDbReadCache.materialize(
+                fileSystem, dataFileLocation, split.fileSizeBytes());
+        return new DuckDbAttachTarget.LocalPath(localPath);
     }
 
     private ConnectorPageSource applyDeleteFile(TrinoFileSystem fileSystem, DucklakeSplit split, ConnectorPageSource dataSource)

@@ -71,7 +71,9 @@ public class TestDucklakePageSourceProvider
                 new FileFormatDataSourceStats(),
                 new ParquetReaderConfig().toParquetReaderOptions(),
                 catalog,
-                new DucklakeMaterializedFileCache());
+                new DucklakeMaterializedFileCache(),
+                DuckDbS3Config.fromCatalogConfig(java.util.Map.of()),
+                config);
     }
 
     @AfterEach

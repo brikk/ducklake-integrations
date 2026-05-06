@@ -56,7 +56,7 @@ public class DucklakeConnectorFactory
                     new MBeanModule(),
                     new ConnectorObjectNameGeneratorModule("io.trino.plugin.ducklake", "trino.plugin.ducklake"),
                     new JsonModule(),
-                    new DucklakeModule(),
+                    new DucklakeModule(config),
                     new MBeanServerModule(),
                     new FileSystemModule(catalogName, context, false), // no metadata cache initially
                     new ConnectorContextModule(catalogName, context),

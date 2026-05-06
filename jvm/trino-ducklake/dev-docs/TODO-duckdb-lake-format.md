@@ -7,30 +7,120 @@ point.
 
 ---
 
-## Phase 1 + 1.5 — Done ✅
+## Phases 1 + 1.5 + N1 + N2 — Done ✅
 
 End-to-end working: write `.db` files via Trino CTAS / INSERT, read them back
 through Trino, mix with parquet tables in the same query, predicate +
 projection pushdown into DuckDB SQL, column stats persisted to the DuckLake
 catalog (cross-engine introspection works), Arrow-stream writer (default) for
-columnar bulk loads.
+columnar bulk loads, INSERT inherits format from existing data files, and
+DuckDB httpfs read path for cold one-shot reads of large remote files.
 
 **User-facing surface:**
 
-- `SET SESSION ducklake.data_file_format = 'duckdb'` (default `'parquet'`)
+- `SET SESSION ducklake.data_file_format = 'duckdb' | 'parquet'` (default: unset → inherits from latest existing data file in the table; falls through to `'parquet'` for empty tables)
 - `CREATE TABLE foo (...) WITH (data_file_format = 'duckdb')` overrides per-CREATE
-- `SET SESSION ducklake.duckdb_writer_mode = 'arrow_stream'` (default; `'appender'` available as fallback)
+- `SET SESSION ducklake.duckdb_writer_mode = 'arrow_stream' | 'appender'` (default `'arrow_stream'`)
+- `SET SESSION ducklake.duckdb_read_mode = 'auto' | 'materialize' | 'httpfs'` (default `'auto'`; threshold via `ducklake.duckdb.auto-httpfs-threshold` connector config, default 64 MiB)
 - Partitioned tables work on the duckdb path (`partitioned_by` table property, identity transforms).
 
-**Known runtime requirement (production deploys):**
+**Practical perf shape (verified on real OVH-backed bench, sf=0.5 scale, post-fix):**
+
+| Workload | parquet | duckdb materialize (warm) | duckdb httpfs |
+|----------|---------|---------------------------|---------------|
+| TPC-H Q1-shape lineitem scan | ~5 s | ~1–2.5 s | ~7–10 s |
+| lineitem ⨝ orders aggregate join | ~5–11 s | ~2–10 s | ~8–15 s |
+
+Materialize wins repeat reads (DuckDB's columnar reads from local disk are the floor). httpfs is currently a *cold one-shot* mode only — every query opens a fresh in-process DuckDB instance, so there's no cross-query block cache. Per-JVM instance pooling (open question B) would change that calculus; until then, `auto`'s 64 MiB threshold keeps typical workloads on the materialize path.
+
+**Known runtime requirements (production deploys):**
 
 - Trino worker JVMs need `--add-opens=java.base/java.nio=ALL-UNNAMED` and `--add-opens=java.base/java.lang=ALL-UNNAMED` for Apache Arrow's C-data interface. Documented in `compose/README.md`; injected via `JAVA_TOOL_OPTIONS` in the dev `docker-compose.yml`.
+- For the httpfs read path the connector reuses the same `s3.endpoint` / `s3.region` / `s3.aws-access-key` / `s3.aws-secret-key` / `s3.path-style-access` keys the FileSystemModule already consumes — no separate S3 config to maintain.
 
 See the **Status log** for per-step detail.
 
 ---
 
-## Phase NEXT — open work, not yet started
+## Phase NEXT — open work
+
+### N3. Out-of-process DuckDB workers via Swanlake (Arrow Flight)
+
+(Still open — see below. The big architectural shift; design first, then a separate epic.)
+
+### N4. Per-JVM DuckDB instance pool (was open question B; now load-bearing)
+
+**Why this got promoted.** With N2 landed, httpfs is functionally "cold one-shot" only — the live OVH benchmark (in the table at the top) shows httpfs is consistently 2–5× slower than materialize on warm reads, and never improves across queries because each query opens a fresh in-process DuckDB instance. There's no cross-query httpfs block cache, no reused secret/extension load, no warm catalog metadata.
+
+**Proposal.**
+- Per-JVM `DuckDbInstanceRegistry` (singleton). Holds a small pool of `DuckDBConnection` instances, each long-lived (`INSTALL httpfs; LOAD httpfs; CREATE SECRET ...` runs once per instance).
+- `DuckDbFilePageSource.initialize()` borrows a connection via `connection.duplicate()` (DuckDB-native concept that gives an independent connection sharing the same instance), runs `ATTACH '<path>' AS s_<uuid> (READ_ONLY)` against it, runs the query, `DETACH`-es and returns the connection.
+- For the writer, same pattern with READ_WRITE attach against a temp file.
+- Pool sizing follows `node-scheduler.max-splits-per-node` or similar; TTL after N reuses to keep memory predictable.
+- Critical: enable DuckDB's `enable_external_file_cache=true` (or current equivalent) so per-instance httpfs block reads are cached across queries on that instance.
+
+**What we need to verify before/while building this.**
+- DuckDB JDBC's `DuckDBConnection.duplicate()` semantics for safety across query lifecycles (especially with concurrent ATTACH/DETACH from different splits).
+- That `ATTACH ... (READ_ONLY)` and DETACH are cheap relative to instance creation (cold instance setup is ~hundreds of ms; ATTACH is supposed to be milliseconds).
+- Memory accounting: a long-lived DuckDB instance consumes a baseline of native memory; pool size × baseline must fit alongside Trino heap inside the container.
+
+**What this gets us.** httpfs becomes useful for repeat queries on the same large remote file. Materialize stays the right call for hot small-to-medium files. Cold-start cost amortizes across queries. Removes the only real argument for picking N3 over the simpler in-process model for many deployments.
+
+**Sequencing.** Less invasive than N3 (no out-of-process boundary, no Flight client refactor, no sidecar deployment changes). Worth landing before N3 because it likely closes the perf gap that N3 was partly justified by.
+
+### N5. Diagnostic logging around read mode + materialize cache
+
+**Why.** The first thing we needed when debugging the join hang was "what mode did this query actually pick, and was the materialize cache hit?" Today the answer requires `docker exec ... ls /tmp/ducklake-read/` plus inferring from query timing. Trivial code, big debug-time win.
+
+**Proposal.**
+- INFO-level log line per duckdb-format split: chosen mode (materialize/httpfs), file path, file size bytes, threshold value (when mode was `auto`), cache hit/miss (materialize), ATTACH ms, total read ms.
+- A `$duckdb_read_mode` system table or column on `$files` so users can inspect mode-decision history retrospectively.
+
+Tiny scope. Pair with N4 if we add metrics on instance pool checkout times.
+
+### N6. (Stretch, do after N4) Per-table or SQL-hint override of read mode
+
+Originally listed in the N2 proposal; deferred so we have N4's instance-pooled httpfs first. Once httpfs is competitive for repeated reads, the table-property or SQL-hint override becomes meaningful:
+
+- `SET SESSION` override per query (already have via `duckdb_read_mode`).
+- `CREATE TABLE foo WITH (duckdb_read_mode = 'materialize')` for hot tables.
+- A future cache manager could populate this automatically based on access patterns.
+
+---
+
+## Done in Phase NEXT (kept here briefly; full detail in Status log)
+
+### N1 — DONE (committed `9c4c595`, 2026-05-05)
+
+INSERT inherits format from existing data files. Precedence chain:
+1. CTAS-only `WITH (data_file_format = ...)` clause
+2. Session property `ducklake.data_file_format` if explicitly set
+3. Format of the most recent active data file in the table
+4. Connector default (`parquet`)
+
+Implementation: session-property default flipped to `null`, getter returns `Optional<String>`; new `DucklakeCatalog.getLatestDataFileFormat(tableId, snapshotId)`; `resolveWriteFormat` helper in `DucklakeMetadata` runs the chain for `beginInsert` and `beginMerge` (CTAS keeps its WITH-clause-first chain since rule 3 doesn't apply to a fresh table).
+
+Test: `TestDucklakeFileFormatPrecedence` (17 tests covering the matrix + cross-table isolation + invalid-value rejection).
+
+### N2 — DONE (uncommitted; 2026-05-06)
+
+httpfs read path + auto/materialize/httpfs read mode. Implementation: new `DuckDbS3Config` reads same `s3.*` keys the FileSystemModule consumes; new `DuckDbAttachTarget` sealed interface (LocalPath | HttpfsS3); `DuckDbFilePageSource.initialize()` switches on it and runs `INSTALL httpfs; LOAD httpfs; CREATE SECRET ...; ATTACH 's3://...'` for the httpfs branch; `DucklakePageSourceProvider` decides per-split based on `duckdb_read_mode` session property + `ducklake.duckdb.auto-httpfs-threshold` connector config (default 64 MiB).
+
+Tests: `TestDuckDbS3Config` (8 unit tests for SQL rendering / parsing); `TestDucklakeConfig` extended with threshold defaults + parsing; `TestDucklakeDuckDbReadMode` (5 integration tests for routing — explicit-httpfs on local FS hits a clean error, auto with low threshold routes to httpfs, parquet tables ignore the property).
+
+Out of scope (deferred): real httpfs e2e against MinIO testcontainers (manual verification works via the compose stack); per-table / SQL-hint override (now N6 above).
+
+### Arrow-stream writer correctness fix — DONE (uncommitted; 2026-05-06)
+
+**The bug.** `DuckDbArrowStreamFileWriter.populateRoot()` was calling `vector.reset()` per batch. Arrow Java's `BaseFixedWidthVector.reset()` does `setZero(0, capacity)` on the existing buffer's memory in place. The previous batch's exported Arrow C-data still held pointers to those buffers (Apache Arrow Java's retain/release refcount keeps them alive); DuckDB's INSERT pipeline can be reading batch N when we begin populating batch N+1. Result: in-place memory zero corrupted batch N's data DuckDB was still reading. Symptom: non-deterministic `count(DISTINCT)` reduction (~5–60% of values zeroed), `min(custkey) = 0` even when source had no zeros, `count(*)` correct (queued atomically before reads happen).
+
+**The fix.** Drop `vector.reset()`. `populateVector` already calls `allocateNew(rowCount)` which calls `clear()` (decrement buffer refs without touching the underlying memory) and then allocates fresh buffers. Old buffers stay readable for DuckDB until DuckDB calls release. That's the lifecycle Apache Arrow's C-data interface is built for.
+
+Test: `TestDucklakeDuckDbArrowStreamWriter.testArrowStreamPreservesAllDistinctValuesFromConnectorSource`. Reproduces by CTAS-from-parquet with 100K distinct BIGINTs and asserting all distinct values survive. Failed reliably pre-fix (88174, 82157, 80481, 38999 across runs); passes 3 runs in a row post-fix. Also caught by the production OVH bench query.
+
+---
+
+## Historical N1/N2 design notes (kept for reference; superseded by Done sections above)
 
 ### N1. INSERT inherits format from existing data files
 
@@ -216,11 +306,12 @@ talk to via a standard Flight client.
 - New connector config: pool sizing, TTL, worker launcher (path to Swanlake
   binary, or sidecar mode), transport (TCP/UDS), per-worker resource limits.
 
-**Sequencing.** Land N1 and N2 first (they're cheap and pay off independently),
-then take this on. N3 is a real architectural shift — probably its own design
-document and a separate epic. Write it as an additive layer (Flight worker
-mode behind a session/connector flag) so we can A/B against the in-process
-path the same way we did with the Arrow-stream writer.
+**Sequencing.** N1 and N2 are landed. **N4 first** (per-JVM instance pool) — closes
+the perf gap that's part of the justification for N3 and is a much smaller change.
+Then N3 if isolation/cancellation/resource-accounting drive the case for going
+out-of-process. Write N3 as an additive layer (Flight worker mode behind a
+session/connector flag) so we can A/B against the in-process path the same way
+we did with the Arrow-stream writer.
 
 ---
 
@@ -237,7 +328,7 @@ path the same way we did with the Arrow-stream writer.
 
 ## Open questions still on the table
 
-**B. Per-JVM DuckDB instance scope.** Step 3 ships per-split independent DuckDB instances (one `jdbc:duckdb:` per page source). Trade-off: highest spinup cost but trivial lifecycle and full isolation. If profiling later shows native-instance init is hot, introduce a per-JVM `DuckDbInstanceRegistry` that hands out duplicated connections via `DuckDBConnection.duplicate()`. Same trade-off applies to the writer side. No interface change required.
+**B. ~~Per-JVM DuckDB instance scope.~~** **Promoted to N4 (above)** after the OVH bench made the perf cost concrete: httpfs has no shared state across queries because each query gets a fresh in-process DuckDB.
 
 **F. Footer size.** Set to 0 in the fragment / catalog row for `.db` files (parquet-specific concept). Confirm DuckLake spec doesn't reject 0 here, and decide whether to populate something meaningful (e.g. DuckDB's metadata block size).
 

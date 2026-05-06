@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import io.airlift.units.DataSize;
 import org.junit.jupiter.api.Test;
 
 import static dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.CALENDAR;
@@ -50,5 +51,27 @@ public class TestDucklakeConfig
         assertThatThrownBy(() -> config.setTemporalPartitionEncoding("invalid-encoding"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("ducklake.temporal-partition-encoding");
+    }
+
+    @Test
+    public void testDuckdbAutoHttpfsThresholdDefault()
+    {
+        // 64 MiB — files smaller than this materialize, larger ones stream via httpfs.
+        // The default is small enough to keep typical tests on the materialize path
+        // (test files are kilobytes) while large enough that real production scans hit
+        // httpfs without any tuning. If a future change moves this default, the tests
+        // that rely on threshold-based routing in TestDucklakeDuckDbReadMode will need
+        // updating too.
+        assertThat(new DucklakeConfig().getDuckdbAutoHttpfsThreshold())
+                .isEqualTo(DataSize.ofBytes(64L * 1024 * 1024));
+    }
+
+    @Test
+    public void testDuckdbAutoHttpfsThresholdParsing()
+    {
+        DucklakeConfig config = new DucklakeConfig()
+                .setDuckdbAutoHttpfsThreshold(DataSize.valueOf("128MB"));
+
+        assertThat(config.getDuckdbAutoHttpfsThreshold().toBytes()).isEqualTo(128L * 1024 * 1024);
     }
 }

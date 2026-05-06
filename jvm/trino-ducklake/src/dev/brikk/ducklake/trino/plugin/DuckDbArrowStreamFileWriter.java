@@ -749,7 +749,18 @@ final class DuckDbArrowStreamFileWriter
         List<FieldVector> vectors = root.getFieldVectors();
         for (int channel = 0; channel < columnTypes.size(); channel++) {
             FieldVector vector = vectors.get(channel);
-            vector.reset();
+            // Do NOT call vector.reset() here. reset() zeros the existing buffer's
+            // memory in place. The previous batch's exported Arrow C-data still
+            // holds pointers to those buffers via Apache Arrow Java's retain/release
+            // refcount machinery — DuckDB hasn't necessarily called release on the
+            // prior batch by the time the next loadNextBatch runs (parallel scan,
+            // pipelined consumption). Zeroing in place corrupts the prior batch's
+            // data DuckDB is still reading. allocateNew() inside populateVector
+            // does its own clear() which DECREMENTS refs (without zeroing the
+            // memory the now-detached buffer points to) and then allocates fresh
+            // buffers — so the old buffers stay readable for DuckDB until DuckDB
+            // releases. Covered by
+            // TestDucklakeDuckDbArrowStreamWriter.testArrowStreamPreservesAllDistinctValuesFromConnectorSource.
             populateVector(vector, columnTypes.get(channel), page.getBlock(channel), rowCount);
             vector.setValueCount(rowCount);
         }

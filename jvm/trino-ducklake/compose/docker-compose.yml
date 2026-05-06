@@ -93,6 +93,10 @@ services:
         condition: service_completed_successfully
     ports:
       - "9080:8080"
+    # Container memory cap. Trino's image jvm.config uses MaxRAMPercentage to size
+    # the heap relative to this — at 3G that's roughly 2.4G heap, leaving room for
+    # native (DuckDB JNI, Arrow off-heap), metaspace, and code cache.
+    mem_limit: 4g
     environment:
       # Apache Arrow's MemoryUtil reaches into private DirectByteBuffer constructors
       # for off-heap interop with DuckDB's Arrow C-data export. Required for any

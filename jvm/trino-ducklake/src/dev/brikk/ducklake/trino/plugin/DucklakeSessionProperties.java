@@ -43,6 +43,12 @@ public class DucklakeSessionProperties
     public static final String WRITER_MODE_APPENDER = "appender";
     public static final String WRITER_MODE_ARROW_STREAM = "arrow_stream";
 
+    public static final String DUCKDB_READ_MODE = "duckdb_read_mode";
+
+    public static final String READ_MODE_MATERIALIZE = "materialize";
+    public static final String READ_MODE_HTTPFS = "httpfs";
+    public static final String READ_MODE_AUTO = "auto";
+
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
@@ -79,6 +85,12 @@ public class DucklakeSessionProperties
                         "Writer implementation for the duckdb format: 'arrow_stream' (default — Page → Arrow → INSERT FROM registered stream, columnar) or 'appender' (JDBC Appender, per-cell JNI; kept for comparison). No effect when data_file_format is 'parquet'.",
                         WRITER_MODE_ARROW_STREAM,
                         DucklakeSessionProperties::validateDuckDbWriterMode,
+                        false),
+                stringProperty(
+                        DUCKDB_READ_MODE,
+                        "Read strategy for duckdb-format data files: 'materialize' (download whole .db file to local tmp then ATTACH; warm reads are local), 'httpfs' (DuckDB streams blocks from S3 directly via the httpfs extension; no local copy — wins on cold one-shot reads of large files), or 'auto' (default; picks per-file based on the ducklake.duckdb.auto-httpfs-threshold config). No effect when data_file_format is 'parquet'.",
+                        READ_MODE_AUTO,
+                        DucklakeSessionProperties::validateDuckDbReadMode,
                         false));
     }
 
@@ -138,6 +150,22 @@ public class DucklakeSessionProperties
             throw new TrinoException(
                     INVALID_SESSION_PROPERTY,
                     DUCKDB_WRITER_MODE + " must be one of: '" + WRITER_MODE_APPENDER + "', '" + WRITER_MODE_ARROW_STREAM + "'");
+        }
+    }
+
+    public static String getDuckDbReadMode(ConnectorSession session)
+    {
+        return session.getProperty(DUCKDB_READ_MODE, String.class);
+    }
+
+    private static void validateDuckDbReadMode(String value)
+    {
+        if (!READ_MODE_MATERIALIZE.equalsIgnoreCase(value)
+                && !READ_MODE_HTTPFS.equalsIgnoreCase(value)
+                && !READ_MODE_AUTO.equalsIgnoreCase(value)) {
+            throw new TrinoException(
+                    INVALID_SESSION_PROPERTY,
+                    DUCKDB_READ_MODE + " must be one of: '" + READ_MODE_MATERIALIZE + "', '" + READ_MODE_HTTPFS + "', '" + READ_MODE_AUTO + "'");
         }
     }
 }

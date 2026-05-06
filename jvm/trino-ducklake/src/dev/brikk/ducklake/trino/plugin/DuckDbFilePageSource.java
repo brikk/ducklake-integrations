@@ -27,7 +27,6 @@ import org.duckdb.DuckDBConnection;
 import org.duckdb.DuckDBResultSet;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -40,17 +39,18 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * Reads rows from a single DuckDB-format data file via a per-split DuckDB JDBC
- * connection. The file is materialized to a known local path by
- * {@link DucklakeMaterializedFileCache}, then {@code ATTACH}ed READ_ONLY into a
- * fresh in-memory DuckDB instance. Results stream out via DuckDB's Arrow C-data
- * export ({@code arrowExportStream}) and are converted batch-by-batch by
- * {@link DucklakeArrowToPageConverter}.
+ * connection. The file is reached either as a {@link DuckDbAttachTarget.LocalPath}
+ * (materialize cache pulled the {@code .db} to local tmp first) or a
+ * {@link DuckDbAttachTarget.HttpfsS3} (the page source loads DuckDB's httpfs
+ * extension and ATTACHes the {@code s3://...} URL directly — no local copy). In
+ * both cases ATTACH is READ_ONLY into a fresh in-memory DuckDB instance, then
+ * results stream out via DuckDB's Arrow C-data export ({@code arrowExportStream})
+ * and are converted batch-by-batch by {@link DucklakeArrowToPageConverter}.
  *
- * <p>Phase 1 scope: SELECT all projected columns by name; predicates flow only as
- * the file-stats / dynamic-filter intersection that the split manager already
- * computed (no DuckDB-side pushdown yet — Step 4). Schema evolution (column rename,
- * new column added after the file was written) is not supported on the duckdb path
- * yet.
+ * <p>Predicates flow as the file-stats / dynamic-filter intersection from the split
+ * manager plus best-effort {@code WHERE} translation in
+ * {@link DuckDbWhereClauseTranslator}. Schema evolution (column rename, new column
+ * added after the file was written) is not supported on the duckdb path yet.
  */
 final class DuckDbFilePageSource
         implements ConnectorPageSource
@@ -61,7 +61,7 @@ final class DuckDbFilePageSource
     private static final String ATTACHED_DB = "ducklake_in";
     private static final String ATTACHED_TABLE = "t";
 
-    private final Path localFilePath;
+    private final DuckDbAttachTarget attachTarget;
     private final List<DucklakeColumnHandle> columns;
     private final DucklakeArrowToPageConverter converter;
     private final TupleDomain<DucklakeColumnHandle> effectivePredicate;
@@ -80,12 +80,12 @@ final class DuckDbFilePageSource
     private long readTimeNanos;
 
     DuckDbFilePageSource(
-            Path localFilePath,
+            DuckDbAttachTarget attachTarget,
             List<DucklakeColumnHandle> columns,
             List<Type> columnTypes,
             TupleDomain<DucklakeColumnHandle> effectivePredicate)
     {
-        this.localFilePath = requireNonNull(localFilePath, "localFilePath is null");
+        this.attachTarget = requireNonNull(attachTarget, "attachTarget is null");
         this.columns = List.copyOf(requireNonNull(columns, "columns is null"));
         this.converter = new DucklakeArrowToPageConverter(columnTypes);
         this.effectivePredicate = requireNonNull(effectivePredicate, "effectivePredicate is null");
@@ -141,7 +141,7 @@ final class DuckDbFilePageSource
             return SourcePage.create(page);
         }
         catch (IOException | SQLException e) {
-            throw new TrinoException(NOT_SUPPORTED, "Failed to read DuckDB file " + localFilePath, e);
+            throw new TrinoException(NOT_SUPPORTED, "Failed to read DuckDB file " + describeAttachTarget(), e);
         }
         finally {
             readTimeNanos += System.nanoTime() - start;
@@ -152,11 +152,27 @@ final class DuckDbFilePageSource
             throws SQLException
     {
         connection = (DuckDBConnection) DriverManager.getConnection("jdbc:duckdb:");
-        try (Statement attachStmt = connection.createStatement()) {
-            attachStmt.execute(format(
-                    "ATTACH '%s' AS %s (READ_ONLY)",
-                    localFilePath.toAbsolutePath().toString().replace("'", "''"),
-                    ATTACHED_DB));
+        try (Statement stmt = connection.createStatement()) {
+            String attachSql = switch (attachTarget) {
+                case DuckDbAttachTarget.LocalPath local -> format(
+                        "ATTACH '%s' AS %s (READ_ONLY)",
+                        local.path().toAbsolutePath().toString().replace("'", "''"),
+                        ATTACHED_DB);
+                case DuckDbAttachTarget.HttpfsS3 remote -> {
+                    // INSTALL is idempotent and cached on disk per-DuckDB-version. LOAD
+                    // is required per-instance. CREATE SECRET supplies S3 credentials
+                    // for the ATTACH that follows; we use a fixed name so re-creation
+                    // on a fresh in-memory instance always succeeds (no DROP needed).
+                    stmt.execute("INSTALL httpfs");
+                    stmt.execute("LOAD httpfs");
+                    stmt.execute(remote.s3Config().renderCreateSecretSql());
+                    yield format(
+                            "ATTACH '%s' AS %s (READ_ONLY)",
+                            remote.s3Url().replace("'", "''"),
+                            ATTACHED_DB);
+                }
+            };
+            stmt.execute(attachSql);
         }
 
         String selectSql = buildSelectSql();
@@ -164,6 +180,14 @@ final class DuckDbFilePageSource
         resultSet = (DuckDBResultSet) statement.executeQuery(selectSql);
         allocator = new RootAllocator();
         arrowReader = (ArrowReader) resultSet.arrowExportStream(allocator, ARROW_BATCH_SIZE);
+    }
+
+    private String describeAttachTarget()
+    {
+        return switch (attachTarget) {
+            case DuckDbAttachTarget.LocalPath local -> local.path().toString();
+            case DuckDbAttachTarget.HttpfsS3 remote -> remote.s3Url();
+        };
     }
 
     private String buildSelectSql()
@@ -262,7 +286,7 @@ final class DuckDbFilePageSource
             }
         }
         if (suppressed != null) {
-            log.warn(suppressed, "Error while closing DuckDB page source for %s", localFilePath);
+            log.warn(suppressed, "Error while closing DuckDB page source for %s", describeAttachTarget());
         }
     }
 }
