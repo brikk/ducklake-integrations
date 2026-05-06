@@ -346,6 +346,63 @@ public class TestDucklakeDuckDbFormatWrite
     }
 
     @Test
+    public void testPartitionedCtasInDuckDbFormat()
+    {
+        // CTAS into a duckdb-format table partitioned by an identity column.
+        // The page sink routes positions per partition into separate writers — should
+        // produce one .db file per partition and the data should round-trip correctly.
+        computeActual(duckDbSession(),
+                "CREATE TABLE test_schema.duck_part " +
+                        "WITH (partitioned_by = ARRAY['region']) AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, CAST('us' AS VARCHAR), 100), " +
+                        "  (2, CAST('eu' AS VARCHAR), 200), " +
+                        "  (3, CAST('us' AS VARCHAR), 300), " +
+                        "  (4, CAST('jp' AS VARCHAR), 400), " +
+                        "  (5, CAST('eu' AS VARCHAR), 500)" +
+                        ") AS t(id, region, amount)");
+        try {
+            MaterializedResult files = computeActual(
+                    "SELECT path, file_format, record_count FROM \"duck_part$files\" ORDER BY path");
+            // Three distinct region values → three .db files.
+            assertThat(files.getRowCount()).isEqualTo(3);
+            for (MaterializedRow row : files.getMaterializedRows()) {
+                String path = (String) row.getField(0);
+                assertThat(path).endsWith(".db");
+                assertThat(path).matches(".*region=(us|eu|jp)/ducklake-.+\\.db");
+                assertThat(row.getField(1)).isEqualTo("duckdb");
+            }
+
+            MaterializedResult all = computeActual(
+                    "SELECT id, region, amount FROM test_schema.duck_part ORDER BY id");
+            assertThat(all.getRowCount()).isEqualTo(5);
+
+            // Predicate on the partition column — should prune to a single .db file.
+            MaterializedResult pruned = computeActual(
+                    "SELECT id, amount FROM test_schema.duck_part WHERE region = 'us' ORDER BY id");
+            assertThat(pruned.getRowCount()).isEqualTo(2);
+            assertThat(pruned.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(pruned.getMaterializedRows().get(0).getField(1)).isEqualTo(100);
+            assertThat(pruned.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
+            assertThat(pruned.getMaterializedRows().get(1).getField(1)).isEqualTo(300);
+
+            // GROUP BY across partitions — exercises both readers in one query.
+            MaterializedResult agg = computeActual(
+                    "SELECT region, sum(amount) FROM test_schema.duck_part GROUP BY region ORDER BY region");
+            assertThat(agg.getRowCount()).isEqualTo(3);
+            assertThat(agg.getMaterializedRows().get(0).getField(0)).isEqualTo("eu");
+            assertThat(agg.getMaterializedRows().get(0).getField(1)).isEqualTo(700L);
+            assertThat(agg.getMaterializedRows().get(1).getField(0)).isEqualTo("jp");
+            assertThat(agg.getMaterializedRows().get(1).getField(1)).isEqualTo(400L);
+            assertThat(agg.getMaterializedRows().get(2).getField(0)).isEqualTo("us");
+            assertThat(agg.getMaterializedRows().get(2).getField(1)).isEqualTo(400L);
+        }
+        finally {
+            tryDropTable("test_schema.duck_part");
+        }
+    }
+
+    @Test
     public void testParquetPathUnchangedAtDefaultSession()
     {
         // No session override — parquet baseline.
