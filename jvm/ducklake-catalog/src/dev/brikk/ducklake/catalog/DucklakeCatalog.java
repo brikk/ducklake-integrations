@@ -91,6 +91,14 @@ public interface DucklakeCatalog
     List<DucklakeDataFile> getDataFiles(long tableId, long snapshotId);
 
     /**
+     * Get the {@code file_format} of the most recent active data file for this table at the given
+     * snapshot. Used by INSERT (and the insert leg of MERGE/UPDATE) to inherit the format of the
+     * existing data when neither a session property nor a statement-level override is in play.
+     * Returns empty when the table has no data files yet.
+     */
+    Optional<String> getLatestDataFileFormat(long tableId, long snapshotId);
+
+    /**
      * Find data file IDs whose column statistics overlap with the given range.
      * Used for predicate pushdown — files outside the range are pruned.
      */

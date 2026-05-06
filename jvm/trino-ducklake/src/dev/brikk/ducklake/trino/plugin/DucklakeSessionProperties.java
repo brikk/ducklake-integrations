@@ -67,8 +67,11 @@ public class DucklakeSessionProperties
                         false),
                 stringProperty(
                         DATA_FILE_FORMAT,
-                        "Data file format for new writes in this session: 'parquet' (default) or 'duckdb'",
-                        FORMAT_PARQUET,
+                        "Data file format for new writes in this session: 'parquet' or 'duckdb'. " +
+                                "When unset (default), writes inherit the format of the most recent existing data file " +
+                                "in the table (or fall back to 'parquet' for an empty table). An explicit set on this " +
+                                "property overrides that inheritance.",
+                        null,
                         DucklakeSessionProperties::validateDataFileFormat,
                         false),
                 stringProperty(
@@ -109,13 +112,14 @@ public class DucklakeSessionProperties
         }
     }
 
-    public static String getDataFileFormat(ConnectorSession session)
+    public static Optional<String> getDataFileFormat(ConnectorSession session)
     {
-        return session.getProperty(DATA_FILE_FORMAT, String.class);
+        return Optional.ofNullable(session.getProperty(DATA_FILE_FORMAT, String.class));
     }
 
     private static void validateDataFileFormat(String value)
     {
+        // Validator only fires on explicit SET — null (unset) never reaches this method.
         if (!FORMAT_PARQUET.equalsIgnoreCase(value) && !FORMAT_DUCKDB.equalsIgnoreCase(value)) {
             throw new TrinoException(
                     INVALID_SESSION_PROPERTY,

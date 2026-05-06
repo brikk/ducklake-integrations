@@ -67,6 +67,67 @@ INSERT INTO foo VALUES (2);
 - `beginMerge` follows the same pattern (it does an internal insert).
 - No change to `beginCreateTable` — the WITH clause + session property already govern that. Same null-default change applies to the empty-CTAS case naturally.
 
+**Test coverage (precedence matrix — must be exhaustive; correctness here is load-bearing for every later phase).**
+
+The four precedence inputs are: (a) explicit `WITH (data_file_format = ...)` on CTAS, (b) session property explicitly set (parquet | duckdb), (c) latest existing data file format in the table (parquet | duckdb | none), (d) connector default (parquet). Each test below asserts both the *written* file extension/format and the row in `ducklake_data_file.file_format`.
+
+*CTAS resolution (no existing files; only WITH + session + default apply):*
+
+1. Session unset, no WITH → parquet file. (Connector default; baseline.)
+2. Session unset, `WITH (duckdb)` → `.db` file.
+3. Session unset, `WITH (parquet)` → parquet file. (Explicit WITH = default; behaves identically but exercises WITH plumbing for the explicit-parquet case.)
+4. Session = parquet, no WITH → parquet.
+5. Session = duckdb, no WITH → `.db`.
+6. Session = parquet, `WITH (duckdb)` → `.db`. (WITH overrides session.)
+7. Session = duckdb, `WITH (parquet)` → parquet. (WITH overrides session — both directions matter.)
+8. Empty CTAS (`AS SELECT * FROM src WHERE 1=0`) writes zero data files; subsequent INSERT must fall to session/default since rule (c) has no input. Cover with: empty CTAS WITH duckdb, then INSERT with no session/no WITH → parquet (edge case called out in the proposal — assert and document).
+
+*INSERT resolution (the meat of N1; rule (c) "match latest data file" is the new behavior):*
+
+9. CTAS duckdb (rule a), then plain INSERT with session unset → `.db`. (Rule c picks up duckdb.)
+10. CTAS parquet, plain INSERT, session unset → parquet. (Rule c picks up parquet; verifies the new code path is symmetric.)
+11. CTAS duckdb, INSERT with session = parquet → parquet. (Rule b beats rule c; this is the override-the-table case.)
+12. CTAS parquet, INSERT with session = duckdb → `.db`. (Same, opposite direction.)
+13. CTAS duckdb, two consecutive plain INSERTs, session unset for both → both `.db`. (Rule c stays stable across multiple inserts.)
+14. CTAS duckdb, INSERT session = parquet (now table has 1×.db + 1×parquet), then plain INSERT session unset → must pick **most recent** (parquet). Asserts the "latest by `data_file_id` desc" tie-break is what's specified. **Then** plain INSERT again, session unset → parquet again (compounds: once flipped, stays flipped until the user flips back).
+15. Inverse of 14: CTAS parquet, INSERT session = duckdb, plain INSERT → `.db` (latest).
+16. CREATE TABLE (no AS), then plain INSERT with no session, no WITH → parquet. (Empty-table fallback to default; edge case from proposal.)
+17. Same as 16 but session = duckdb on first INSERT → `.db`. (Establishes format from session when no files exist yet.)
+18. CREATE TABLE empty, INSERT session = duckdb (writes `.db`), then plain INSERT session unset → `.db` (rule c took over once the first file existed).
+
+*MERGE / UPDATE / DELETE resolution (`beginMerge` path; same precedence chain expected):*
+
+19. MERGE on a duckdb-only table with session unset → new files `.db`.
+20. MERGE on a parquet-only table with session unset → new files parquet.
+21. MERGE on a duckdb-only table with session = parquet → new files parquet (rule b beats c on merge too).
+22. UPDATE/DELETE that produces new data files (not just position deletes) follows the same chain — repeat 19–21 with UPDATE.
+
+*Cross-table isolation (no leakage between tables in same session):*
+
+23. Two tables `t_duck` (CTAS duckdb) and `t_parq` (CTAS parquet) coexist; plain INSERTs into each with session unset → each table keeps its own format independently. (Guards against accidental "global last format" state.)
+24. Same session, INSERT into `t_duck` then into `t_parq` (no overrides on either) — neither contaminates the other.
+
+*Partitioned tables (rule c needs to look across all partitions for "latest"):*
+
+25. CTAS partitioned duckdb, INSERT new partition with no overrides → `.db` in the new partition.
+26. Mixed-format on a partitioned table (CTAS duckdb, INSERT WITH session = parquet adds parquet files in some partitions), then plain INSERT — picks up format of the globally-latest data file regardless of partition. Document this; if we want per-partition inheritance later, it's a separate enhancement.
+
+*Catalog-row assertions (cross-engine introspection — DuckDB extension reads these):*
+
+For every test above that writes a file, additionally assert the `ducklake_data_file.file_format` value in the catalog matches the on-disk format. A bug where the fragment says `duckdb` but the writer wrote parquet (or vice versa) would break the read path silently — these assertions are the early-warning canary.
+
+*Negative / validation tests:*
+
+27. `SET SESSION ducklake.data_file_format = 'orc'` → session-property validator rejects (already in place; pin the behavior).
+28. `WITH (data_file_format = 'orc')` on CTAS → table-property validator rejects.
+29. `WITH (data_file_format = 'duckdb')` on a non-CTAS statement (if Trino allows it syntactically anywhere we don't expect) → rejected or ignored cleanly; do not silently apply to subsequent INSERTs.
+
+*Read-side smoke (mixed-format tables must still SELECT correctly — exercises that rule c didn't break the reader):*
+
+30. After test 14 (mixed `.db` + parquet in one table), `SELECT *` returns the union with correct row counts; predicates push down correctly into both file types; `COUNT(*)` matches. Already covered by existing read tests for homogeneous tables — extend one to the heterogeneous case.
+
+Tests live alongside `TestDucklakeDuckDbFormatWrite` (write-side precedence) and `TestDucklakeDuckDbFormatRead` (mixed-format read smoke). Use distinct table names per test to avoid catalog state leakage; don't rely on `@BeforeEach` cleanup alone for these — the bugs we're guarding against are exactly the ones that mis-attribute state across tables.
+
 ### N2. httpfs read path + writer-time choice
 
 **Problem.** Cold reads materialize the entire `.db` file to local tmp before

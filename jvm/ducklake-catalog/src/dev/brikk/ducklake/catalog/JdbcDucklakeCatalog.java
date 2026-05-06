@@ -356,6 +356,21 @@ public class JdbcDucklakeCatalog
     }
 
     @Override
+    public Optional<String> getLatestDataFileFormat(long tableId, long snapshotId)
+    {
+        // "Latest" = highest data_file_id among rows still active at the requested snapshot.
+        // data_file_id is allocated from a monotonic catalog sequence at insert time, so DESC
+        // order on it picks the most recently committed file (cross-snapshot, cross-partition).
+        return Optional.ofNullable(dsl.select(DUCKLAKE_DATA_FILE.FILE_FORMAT)
+                .from(DUCKLAKE_DATA_FILE)
+                .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
+                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                .orderBy(DUCKLAKE_DATA_FILE.DATA_FILE_ID.desc())
+                .limit(1)
+                .fetchOne(DUCKLAKE_DATA_FILE.FILE_FORMAT));
+    }
+
+    @Override
     public List<Long> findDataFileIdsInRange(long tableId, long snapshotId, ColumnRangePredicate predicate)
     {
         long columnId = predicate.columnId();

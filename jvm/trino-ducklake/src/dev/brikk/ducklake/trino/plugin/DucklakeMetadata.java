@@ -932,7 +932,7 @@ public class DucklakeMetadata
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                DucklakeSessionProperties.getDataFileFormat(session),
+                resolveWriteFormat(session, handle.tableId(), handle.snapshotId()),
                 DucklakeSessionProperties.getDuckDbWriterMode(session));
     }
 
@@ -1008,13 +1008,15 @@ public class DucklakeMetadata
 
         String tableDataPath = resolveTableDataPath(tableName.getSchemaName(), tableName.getTableName(), snapshotId);
 
-        // CREATE TABLE WITH (data_file_format = 'duckdb') overrides the session-level
-        // default for this single CTAS. INSERTs into the table later still pick up
-        // the session property (no per-table persistence in Phase 1).
+        // CTAS precedence: WITH clause > session property > connector default. The
+        // "match latest existing data file" rule that drives INSERT inheritance can't
+        // apply here because the table is fresh — there are no prior data files.
+        // (See N1 in TODO-duckdb-lake-format.md.)
         String tablePropertyFormat = DucklakeTableProperties.getDataFileFormat(tableMetadata.getProperties());
         String fileFormat = tablePropertyFormat != null
                 ? tablePropertyFormat
-                : DucklakeSessionProperties.getDataFileFormat(session);
+                : DucklakeSessionProperties.getDataFileFormat(session)
+                        .orElse(DucklakeSessionProperties.FORMAT_PARQUET);
 
         return new DucklakeWritableTableHandle(
                 tableName.getSchemaName(),
@@ -1051,6 +1053,32 @@ public class DucklakeMetadata
         return fragments.stream()
                 .map(fragment -> fragmentCodec.fromJson(fragment.getBytes()))
                 .collect(toImmutableList());
+    }
+
+    /**
+     * Resolve the data file format for an INSERT (or the insert leg of a MERGE/UPDATE).
+     * <p>Precedence (N1):
+     * <ol>
+     *   <li>Session property {@code ducklake.data_file_format}, when explicitly set.</li>
+     *   <li>Format of the most recent active data file already in the table.</li>
+     *   <li>Connector default ({@code parquet}).</li>
+     * </ol>
+     * The CTAS-time {@code WITH (data_file_format = ...)} clause is not in this chain — it
+     * applies only to the materialization that creates the table. There is no per-table
+     * persistence of the format yet (no schema-level extensible properties in DuckLake spec),
+     * so rule 2 is what makes the natural CTAS-then-INSERT workflow keep a consistent format.
+     */
+    private String resolveWriteFormat(ConnectorSession session, long tableId, long snapshotId)
+    {
+        Optional<String> sessionFormat = DucklakeSessionProperties.getDataFileFormat(session);
+        if (sessionFormat.isPresent()) {
+            return sessionFormat.get();
+        }
+        Optional<String> latestFormat = catalog.getLatestDataFileFormat(tableId, snapshotId);
+        if (latestFormat.isPresent()) {
+            return latestFormat.get();
+        }
+        return DucklakeSessionProperties.FORMAT_PARQUET;
     }
 
     private String resolveTableDataPath(String schemaName, String tableName, long snapshotId)
@@ -1116,7 +1144,7 @@ public class DucklakeMetadata
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                DucklakeSessionProperties.getDataFileFormat(session),
+                resolveWriteFormat(session, handle.tableId(), handle.snapshotId()),
                 DucklakeSessionProperties.getDuckDbWriterMode(session));
 
         // Build data file ranges for row ID → data file resolution
