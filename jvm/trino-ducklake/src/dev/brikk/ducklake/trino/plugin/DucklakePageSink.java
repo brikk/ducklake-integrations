@@ -312,7 +312,7 @@ public class DucklakePageSink
         return new ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns());
     }
 
-    private DuckDbFileWriter openDuckDbWriter(Map<Integer, String> partitionValues)
+    private DucklakeFileWriter openDuckDbWriter(Map<Integer, String> partitionValues)
             throws IOException
     {
         String fileName = "ducklake-" + UUID.randomUUID() + ".db";
@@ -322,6 +322,18 @@ public class DucklakePageSink
         writtenFilePaths.add(filePath);
 
         OptionalLong partitionId = partitioner != null ? OptionalLong.of(partitioner.getPartitionId()) : OptionalLong.empty();
+
+        // Pick the writer impl based on the session-driven duckdb_writer_mode on the handle.
+        if (DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM.equalsIgnoreCase(handle.duckDbWriterMode())) {
+            return new DuckDbArrowStreamFileWriter(
+                    fileSystem,
+                    filePath,
+                    relativePath,
+                    partitionValues,
+                    partitionId,
+                    handle.columns(),
+                    duckDbLocalTempDir());
+        }
         return new DuckDbFileWriter(
                 fileSystem,
                 filePath,

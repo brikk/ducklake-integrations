@@ -38,6 +38,11 @@ public class DucklakeSessionProperties
     public static final String FORMAT_PARQUET = "parquet";
     public static final String FORMAT_DUCKDB = "duckdb";
 
+    public static final String DUCKDB_WRITER_MODE = "duckdb_writer_mode";
+
+    public static final String WRITER_MODE_APPENDER = "appender";
+    public static final String WRITER_MODE_ARROW_STREAM = "arrow_stream";
+
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
@@ -65,6 +70,12 @@ public class DucklakeSessionProperties
                         "Data file format for new writes in this session: 'parquet' (default) or 'duckdb'",
                         FORMAT_PARQUET,
                         DucklakeSessionProperties::validateDataFileFormat,
+                        false),
+                stringProperty(
+                        DUCKDB_WRITER_MODE,
+                        "Writer implementation for the duckdb format: 'arrow_stream' (default — Page → Arrow → INSERT FROM registered stream, columnar) or 'appender' (JDBC Appender, per-cell JNI; kept for comparison). No effect when data_file_format is 'parquet'.",
+                        WRITER_MODE_ARROW_STREAM,
+                        DucklakeSessionProperties::validateDuckDbWriterMode,
                         false));
     }
 
@@ -109,6 +120,20 @@ public class DucklakeSessionProperties
             throw new TrinoException(
                     INVALID_SESSION_PROPERTY,
                     DATA_FILE_FORMAT + " must be one of: '" + FORMAT_PARQUET + "', '" + FORMAT_DUCKDB + "'");
+        }
+    }
+
+    public static String getDuckDbWriterMode(ConnectorSession session)
+    {
+        return session.getProperty(DUCKDB_WRITER_MODE, String.class);
+    }
+
+    private static void validateDuckDbWriterMode(String value)
+    {
+        if (!WRITER_MODE_APPENDER.equalsIgnoreCase(value) && !WRITER_MODE_ARROW_STREAM.equalsIgnoreCase(value)) {
+            throw new TrinoException(
+                    INVALID_SESSION_PROPERTY,
+                    DUCKDB_WRITER_MODE + " must be one of: '" + WRITER_MODE_APPENDER + "', '" + WRITER_MODE_ARROW_STREAM + "'");
         }
     }
 }
