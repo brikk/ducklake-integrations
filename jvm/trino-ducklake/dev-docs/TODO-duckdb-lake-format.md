@@ -44,6 +44,47 @@ See the **Status log** for per-step detail.
 
 ## Phase NEXT — open work
 
+### Test-gap categories — T1..T4
+
+These came out of the 2026-05-06 audit: most of the connector's operations are
+format-agnostic in code, but the existing UPDATE/DELETE/MERGE/ALTER/time-travel
+test suites only run with the parquet default. The duckdb path is exercised
+correctly only by tests that explicitly opt in via `data_file_format = 'duckdb'`
+or `arrowStreamSession()`. We've already been bitten twice by this (the
+arrow-stream writer's in-place reset, and UUID being silently broken in both
+writer + reader). The categories below are the cheap-mostly-mechanical sweep to
+close the matrix — each is "take the existing parquet test, parameterize or
+fork it for duckdb format, assert the same shape works."
+
+**T1. UPDATE / DELETE / MERGE on duckdb-format tables.** New data files written by
+the merge insert leg should be duckdb (per N1's precedence chain). Position-delete
+files stay parquet (DuckLake spec). End-to-end: rows actually disappear / change
+on subsequent reads. Cover both `arrow_stream` and `appender` writer modes.
+
+**T2. Schema evolution on duckdb-format tables.** Pre-existing `.db` file written
+under one schema version, then ADD/DROP/RENAME COLUMN, then SELECT — does the
+read path still produce sensible results? Critical for DuckLake's
+schema-version-on-data-file model. Also cover ADD COLUMN followed by INSERT —
+new files should have the new column populated; old files should null-fill.
+
+**T3. Partition pruning + time travel + system tables on duckdb-format tables.**
+- Partition pruning: identity + temporal transforms, both with all-duckdb files
+  and with mixed parquet + duckdb (rule 26 from N1's matrix lives here too).
+- Time travel: `FOR VERSION AS OF` against a snapshot where the table had
+  duckdb files; same against a snapshot where ADD COLUMN happened.
+- `$snapshots`, `$partitions`, `$file_modifications` system tables — verify
+  they return the right rows when the underlying table has duckdb files.
+
+**T4. Type round-trip matrix on duckdb-format reads + writes.** Covers the gap
+that hid the UUID bug for so long. One test per supported scalar type that does
+the full round trip (CTAS via arrow_stream → SELECT, CTAS via appender → SELECT,
+INSERT into pre-existing table via both writers → SELECT). Includes NULL
+handling per type. Excludes complex types (ROW/ARRAY/MAP — those are N9 below).
+
+These are the test-gap items. None are blockers in code; all are blockers for
+"we know it works." Sequence them however; T4 is the most likely to surface
+another UUID-shaped silent bug, so probably worth doing first.
+
 ### N3. Out-of-process DuckDB workers via Swanlake (Arrow Flight)
 
 (Still open — see below. The big architectural shift; design first, then a separate epic.)
@@ -374,3 +415,4 @@ These belong in their own design + tracking document when work starts.
 - **2026-05-06** — Arrow-stream writer correctness fix (uncommitted). Removed in-place `vector.reset()` zeroing in `populateRoot`; was corrupting the previous batch's data DuckDB still held C-data pointers to. Reproduced with non-deterministic distinct counts (88174 / 82157 / 80481 / 38999 across runs of `TestDucklakeDuckDbArrowStreamWriter.testArrowStreamPreservesAllDistinctValuesFromConnectorSource`); 3 runs in a row green post-fix; full sweep 605 tests / 0 failures.
 - **2026-05-06** — Compose Trino container `mem_limit: 3g` set explicitly (was using daemon defaults); JVM heap continues to auto-size via image's `MaxRAMPercentage` (~2.4 GiB), leaving headroom for native (DuckDB JNI, Arrow off-heap), metaspace, and code cache.
 - **2026-05-06** — OVH-backed perf characterization captured in the table at the top: materialize wins repeat reads (1–2.5s); parquet flat ~5s; httpfs 7–11s and never improves due to no cross-query DuckDB state. Promoted "open question B" to N4 as a result.
+- **2026-05-06** — UUID end-to-end fix on the duckdb path. Three problems compounded: (a) `DuckDbArrowStreamFileWriter` had no UUID branch in `toArrowType`/`populateVector` (silent regression vs the appender writer when arrow_stream became default); (b) `DucklakeArrowToPageConverter` had no UUID converter case at all (so even appender-written UUID files were unreadable through Trino); (c) `DucklakePageSink` was building the parquet schema unconditionally in its constructor, so `ParquetSchemaConverter` rejected UUID before our writer dispatch ran — fix: build parquet schema only when `fileFormat == parquet`. Empirically discovered while testing that DuckDB's Arrow exchange for UUID uses Utf8 (the printed hex form), not FixedSizeBinary(16) — both directions now use Utf8 and parse via `UuidType.javaUuidToTrinoUuid`/`trinoUuidToJavaUuid`. Tests: `TestDucklakeDuckDbArrowStreamWriter.testUuidRoundTripThroughArrowStream` and `TestDucklakeDuckDbFormatWrite.testUuidRoundTripThroughAppender`. Full sweep 607 / 0 / 0.

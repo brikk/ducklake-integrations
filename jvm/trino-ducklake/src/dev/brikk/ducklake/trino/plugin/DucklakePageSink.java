@@ -115,14 +115,23 @@ public class DucklakePageSink
         this.unsignedRangeChecker = DucklakeUnsignedRangeChecker.build(
                 handle.columns(), handle.allCatalogColumns());
 
-        // Build Parquet schema with field_id annotations for DuckDB compatibility
-        ParquetSchemaConverter schemaConverter = new ParquetSchemaConverter(
-                columnTypes, columnNames, false, false);
-        this.primitiveTypes = schemaConverter.getPrimitiveTypes();
-        this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                handle.columns(),
-                handle.allCatalogColumns(),
-                schemaConverter.getMessageType());
+        // Build the Parquet schema only when we're actually writing Parquet.
+        // The DuckDB-format path doesn't use these fields, and ParquetSchemaConverter
+        // rejects column types it doesn't recognize (UUID, future types) — building it
+        // unconditionally would block those types from ever reaching the duckdb writer.
+        if (FORMAT_PARQUET.equalsIgnoreCase(fileFormat)) {
+            ParquetSchemaConverter schemaConverter = new ParquetSchemaConverter(
+                    columnTypes, columnNames, false, false);
+            this.primitiveTypes = schemaConverter.getPrimitiveTypes();
+            this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
+                    handle.columns(),
+                    handle.allCatalogColumns(),
+                    schemaConverter.getMessageType());
+        }
+        else {
+            this.primitiveTypes = null;
+            this.messageType = null;
+        }
 
         // Set up partitioner if table is partitioned
         if (handle.partitionSpec().isPresent()) {

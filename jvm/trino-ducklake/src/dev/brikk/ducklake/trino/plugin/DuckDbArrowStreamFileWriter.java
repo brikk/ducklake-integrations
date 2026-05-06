@@ -30,6 +30,7 @@ import io.trino.spi.type.LongTimestampWithTimeZone;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.UuidType;
 import io.trino.spi.type.VarcharType;
 import org.apache.arrow.c.ArrowArrayStream;
 import org.apache.arrow.c.Data;
@@ -314,6 +315,9 @@ final class DuckDbArrowStreamFileWriter
         if (type instanceof VarcharType) {
             return "VARCHAR";
         }
+        if (type.equals(UuidType.UUID)) {
+            return "UUID";
+        }
         throw new TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: " + type);
     }
 
@@ -380,6 +384,15 @@ final class DuckDbArrowStreamFileWriter
             return new ArrowType.Timestamp(unit, "UTC");
         }
         if (type instanceof VarcharType) {
+            return new ArrowType.Utf8();
+        }
+        if (type.equals(UuidType.UUID)) {
+            // DuckDB's Arrow integration represents UUID columns as Utf8 (the printed
+            // hex form: 'aabbccdd-eeff-0011-2233-445566778899'), not FixedSizeBinary(16)
+            // as the spec might suggest. DuckDB casts the string back to UUID on its
+            // side. Empirically verified — using FixedSizeBinary(16) here results in
+            // the consumer getting a VarCharVector anyway, which is the type-system
+            // shape of DuckDB's Arrow exchange for UUID.
             return new ArrowType.Utf8();
         }
         throw new TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: " + type);
@@ -499,7 +512,7 @@ final class DuckDbArrowStreamFileWriter
             DucklakeColumnHandle col = columns.get(i);
             String name = '"' + col.columnName().replace("\"", "\"\"") + '"';
             sql.append(", COUNT(").append(name).append(")");
-            if (!(col.columnType().equals(VARBINARY) || col.columnType().equals(io.trino.spi.type.UuidType.UUID))) {
+            if (!(col.columnType().equals(VARBINARY) || col.columnType().equals(UuidType.UUID))) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")");
                 minMaxColumns.add(i);
             }
@@ -912,6 +925,20 @@ final class DuckDbArrowStreamFileWriter
                 else {
                     byte[] bytes = varcharType.getSlice(block, i).toStringUtf8().getBytes(StandardCharsets.UTF_8);
                     v.setSafe(i, bytes);
+                }
+            }
+        }
+        else if (type.equals(UuidType.UUID)) {
+            // See toArrowType: UUID rides as Utf8 over the Arrow exchange.
+            VarCharVector v = (VarCharVector) vector;
+            v.allocateNew(rowCount);
+            for (int i = 0; i < rowCount; i++) {
+                if (block.isNull(i)) {
+                    v.setNull(i);
+                }
+                else {
+                    java.util.UUID uuid = UuidType.trinoUuidToJavaUuid(UuidType.UUID.getSlice(block, i));
+                    v.setSafe(i, uuid.toString().getBytes(StandardCharsets.UTF_8));
                 }
             }
         }

@@ -25,6 +25,7 @@ import io.trino.spi.type.LongTimestampWithTimeZone;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.UuidType;
 import io.trino.spi.type.VarcharType;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
@@ -220,6 +221,22 @@ final class DucklakeArrowToPageConverter
         }
         else if (type instanceof TimestampWithTimeZoneType tzType) {
             writeTimestampTzColumn(tzType, vector, builder, rowCount);
+        }
+        else if (type.equals(UuidType.UUID)) {
+            // DuckDB exports UUID columns as Utf8 (the printed hex form), not
+            // FixedSizeBinary(16) — verified empirically against the in-process
+            // DuckDB JDBC driver. Parse the string and convert to Trino's
+            // 16-byte big-endian UUID Slice.
+            VarCharVector v = (VarCharVector) vector;
+            for (int i = 0; i < rowCount; i++) {
+                if (v.isNull(i)) {
+                    builder.appendNull();
+                }
+                else {
+                    String s = new String(v.get(i), java.nio.charset.StandardCharsets.UTF_8);
+                    UuidType.UUID.writeSlice(builder, UuidType.javaUuidToTrinoUuid(java.util.UUID.fromString(s)));
+                }
+            }
         }
         else {
             throw new TrinoException(

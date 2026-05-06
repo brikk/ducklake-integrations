@@ -221,6 +221,63 @@ public class TestDucklakeDuckDbArrowStreamWriter
     private record StatsRow(long valueCount, long nullCount, String minValue, String maxValue) {}
 
     /**
+     * UUID round-trip through the arrow-stream writer + duckdb-format reader.
+     * Pre-fix: arrow-stream writer threw NOT_SUPPORTED for UUID (missing branch
+     * in {@code toArrowType}), and the reader had no UUID converter case at all.
+     * The pair was a silent regression after arrow_stream became the default
+     * writer mode — appender supported UUID, arrow_stream silently rejected it,
+     * and even if you wrote via appender you couldn't read back. Both ends now
+     * exchange UUIDs as Arrow {@code FixedSizeBinary(16)}; bytes flow byte-for-byte
+     * (Trino's UUID Slice and DuckDB's UUID storage are both big-endian 16 bytes).
+     */
+    @Test
+    public void testUuidRoundTripThroughArrowStream()
+    {
+        computeActual(arrowStreamSession(),
+                "CREATE TABLE test_schema.arrow_uuids AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, CAST('00000000-0000-0000-0000-000000000001' AS UUID)), " +
+                        "  (2, CAST('aabbccdd-eeff-0011-2233-445566778899' AS UUID)), " +
+                        "  (3, CAST('ffffffff-ffff-ffff-ffff-ffffffffffff' AS UUID)), " +
+                        "  (4, CAST(NULL AS UUID))" +
+                        ") AS t(id, u)");
+        try {
+            // File format check — confirms we exercised the arrow_stream path,
+            // not the appender (which would have worked even before the fix).
+            MaterializedResult files = computeActual("SELECT file_format FROM \"arrow_uuids$files\"");
+            assertThat(files.getMaterializedRows().getFirst().getField(0)).isEqualTo("duckdb");
+
+            MaterializedResult result = computeActual(
+                    "SELECT id, u FROM test_schema.arrow_uuids ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(4);
+
+            assertThat(result.getMaterializedRows().get(0).getField(1).toString())
+                    .as("UUID at id=1 round-trips bit-exactly")
+                    .isEqualTo("00000000-0000-0000-0000-000000000001");
+            assertThat(result.getMaterializedRows().get(1).getField(1).toString())
+                    .as("UUID at id=2 round-trips bit-exactly (mixed bytes catch endian flips)")
+                    .isEqualTo("aabbccdd-eeff-0011-2233-445566778899");
+            assertThat(result.getMaterializedRows().get(2).getField(1).toString())
+                    .as("UUID at id=3 round-trips (all-bits-set catches sign-extension bugs)")
+                    .isEqualTo("ffffffff-ffff-ffff-ffff-ffffffffffff");
+            assertThat(result.getMaterializedRows().get(3).getField(1))
+                    .as("NULL UUID stays NULL")
+                    .isNull();
+
+            // Predicate round-trip: equality on UUID should also work end-to-end
+            // (Trino-side filter; DuckDB-side pushdown for UUID isn't wired yet).
+            MaterializedResult filtered = computeActual(
+                    "SELECT id FROM test_schema.arrow_uuids " +
+                            "WHERE u = CAST('aabbccdd-eeff-0011-2233-445566778899' AS UUID)");
+            assertThat(filtered.getRowCount()).isEqualTo(1);
+            assertThat(filtered.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.arrow_uuids");
+        }
+    }
+
+    /**
      * Regression test for a writer-side bug in {@link DuckDbArrowStreamFileWriter}.
      *
      * <p>Repro shape: a table read from a real connector page source (here: parquet

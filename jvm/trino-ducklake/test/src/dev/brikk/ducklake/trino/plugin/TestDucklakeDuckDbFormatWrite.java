@@ -34,7 +34,9 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT;
+import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_WRITER_MODE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
+import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.WRITER_MODE_APPENDER;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -399,6 +401,44 @@ public class TestDucklakeDuckDbFormatWrite
         }
         finally {
             tryDropTable("test_schema.duck_part");
+        }
+    }
+
+    @Test
+    public void testUuidRoundTripThroughAppender()
+    {
+        // The legacy {@code DuckDbFileWriter} (Appender API) supported UUID since
+        // Phase 1 (DuckDB JDBC's appender takes a {@code java.util.UUID} natively).
+        // The reader, however, had no UUID converter case until the same fix that
+        // added it for the arrow_stream writer landed — so even appender-written
+        // UUID files were unreadable through Trino. This test pins both halves.
+        Session appenderSession = Session.builder(getSession())
+                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
+                .setCatalogSessionProperty("ducklake", DUCKDB_WRITER_MODE, WRITER_MODE_APPENDER)
+                .build();
+
+        computeActual(appenderSession,
+                "CREATE TABLE test_schema.appender_uuids AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, CAST('00000000-0000-0000-0000-000000000001' AS UUID)), " +
+                        "  (2, CAST('aabbccdd-eeff-0011-2233-445566778899' AS UUID)), " +
+                        "  (3, CAST(NULL AS UUID))" +
+                        ") AS t(id, u)");
+        try {
+            MaterializedResult files = computeActual("SELECT file_format FROM \"appender_uuids$files\"");
+            assertThat(files.getMaterializedRows().getFirst().getField(0)).isEqualTo("duckdb");
+
+            MaterializedResult result = computeActual(
+                    "SELECT id, u FROM test_schema.appender_uuids ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(3);
+            assertThat(result.getMaterializedRows().get(0).getField(1).toString())
+                    .isEqualTo("00000000-0000-0000-0000-000000000001");
+            assertThat(result.getMaterializedRows().get(1).getField(1).toString())
+                    .isEqualTo("aabbccdd-eeff-0011-2233-445566778899");
+            assertThat(result.getMaterializedRows().get(2).getField(1)).isNull();
+        }
+        finally {
+            tryDropTable("test_schema.appender_uuids");
         }
     }
 
