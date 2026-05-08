@@ -18,7 +18,6 @@ import org.jooq.Condition;
 import org.jooq.Field;
 import org.jooq.Table;
 
-import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE;
 import static java.util.Objects.requireNonNull;
 import static org.jooq.impl.DSL.name;
 
@@ -76,14 +75,17 @@ public final class CatalogPredicates
     }
 
     /**
-     * {@code ducklake_table.table_name = ? AND ducklake_table.end_snapshot IS NULL} — the
-     * canonical "find the currently-active row for a table by name" predicate. Combine with
-     * {@link DucklakeTableTable#TABLE_ID} in a SELECT to get the table id.
+     * {@code <tab>.table_name = ? AND <tab>.end_snapshot IS NULL} — the canonical "find the
+     * currently-active row for a table by name" predicate. The caller supplies the (possibly
+     * aliased) {@link DucklakeTableTable} so this composes with the standard
+     * {@code var tab = DUCKLAKE_TABLE.as("tab")} pattern at call sites without leaking
+     * unaliased column references into the rendered SQL.
      */
-    public static Condition activeTableNamed(String tableName)
+    public static Condition activeTableNamed(DucklakeTableTable tab, String tableName)
     {
+        requireNonNull(tab, "tab is null");
         requireNonNull(tableName, "tableName is null");
-        return DUCKLAKE_TABLE.TABLE_NAME.eq(tableName)
-                .and(currentlyActive(DUCKLAKE_TABLE.END_SNAPSHOT));
+        return tab.TABLE_NAME.eq(tableName)
+                .and(currentlyActive(tab.END_SNAPSHOT));
     }
 }

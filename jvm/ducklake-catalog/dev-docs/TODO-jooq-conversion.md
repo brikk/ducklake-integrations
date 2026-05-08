@@ -105,8 +105,15 @@ Build wiring: `testFixturesApi(libs.bundles.jooq)` in `ducklake-catalog/build.gr
 - `TestDucklakeSnapshotAndSchemaVersion` — `getActiveTableId`, `getSchemaVersionRows`, `getCurrentSchemaVersion`, `assertSchemaVersionRowConsistent`. The local `SchemaVersionRow` record was removed in favor of `CatalogQueries.SchemaVersionRow`.
 - `TestDucklakeDuckDbFormatWrite.testColumnStatsWrittenForDuckDbFormat` — three-table join (`ducklake_file_column_stats` ⋈ `ducklake_column` ⋈ `ducklake_data_file`) with active-row filter and table-id lookup. Composed inline against the generated columns; the subquery on `ducklake_table` was hoisted to a prior `activeTableId(...)` lookup for readability.
 
-### Remaining T2/T3 candidates
-- Phase T2 has no further high-value targets in the trino-ducklake suite. T3 remains "migrate opportunistically when other edits touch a file with raw catalog SQL."
+### Phase T3: Remaining candidates worth doing
+
+- **`TestDucklakeDuckDbArrowStreamWriter.testColumnStatsWrittenForArrowStreamFormat`** (lines 165-196) — same 3-table join shape as the already-migrated `TestDucklakeDuckDbFormatWrite.testColumnStatsWrittenForDuckDbFormat`; near-mechanical copy. The duplicate local `StatsRow` record across both files suggests a shared helper-side record, but that's a separate cleanup.
+- **`TestDucklakeCrossEngineCatalogMetadata`** (lines 247-269) — `ducklake_column ⋈ ducklake_table USING (table_id)` with active-row filter on both sides. Sits in a file already partially migrated; finishing it is consistency cleanup. Asserts on `default_value_dialect` SQL-NULL semantics, where compile-time detection of column renames matters.
+- **`TestDucklakeDeleteFileHandling.insertDeleteFileRow`** (lines 201-227) — catalog *write* path (`INSERT INTO ducklake_delete_file` with `MAX(delete_file_id) + 1`). Would establish the precedent for jOOQ-based catalog writes in tests, not just reads. Inserts are where schema drift bites hardest because new NOT NULL columns appear.
+
+### Phase T3: Skip
+
+- **`TestDucklakeCrossEngineRoundTrip` lines 266-307** — diagnostic dump used only to build an `assertThat(...).as(...)` failure message. Three sequential lookups, no joins. Migrating adds ceremony without buying meaningful schema-drift detection.
 
 ### Phase T3: Expand opportunistically
 

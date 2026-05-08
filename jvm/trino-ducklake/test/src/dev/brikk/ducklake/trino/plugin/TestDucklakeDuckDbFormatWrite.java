@@ -257,28 +257,31 @@ public class TestDucklakeDuckDbFormatWrite
             // Three-table join: file_column_stats → column (active rows only) → data_file,
             // restricted to the duckdb-format files of the currently-active "duck_stats" table.
             // No canned helper covers the shape; the predicates compose cleanly inline.
+            var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
+            var col = DUCKLAKE_COLUMN.as("col");
+            var file = DUCKLAKE_DATA_FILE.as("file");
             Map<String, StatsRow> rows = new HashMap<>();
             dsl.select(
-                            DUCKLAKE_COLUMN.COLUMN_NAME,
-                            DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT,
-                            DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT,
-                            DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
-                            DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
-                    .from(DUCKLAKE_FILE_COLUMN_STATS)
-                    .join(DUCKLAKE_COLUMN)
-                            .on(DUCKLAKE_COLUMN.COLUMN_ID.eq(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID)
-                                    .and(currentlyActive(DUCKLAKE_COLUMN.END_SNAPSHOT)))
-                    .join(DUCKLAKE_DATA_FILE)
-                            .on(DUCKLAKE_DATA_FILE.DATA_FILE_ID.eq(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID))
-                    .where(DUCKLAKE_DATA_FILE.FILE_FORMAT.eq("duckdb")
-                            .and(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId)))
+                            col.COLUMN_NAME,
+                            colstats.VALUE_COUNT,
+                            colstats.NULL_COUNT,
+                            colstats.MIN_VALUE,
+                            colstats.MAX_VALUE)
+                    .from(colstats)
+                    .join(col)
+                            .on(col.COLUMN_ID.eq(colstats.COLUMN_ID)
+                                    .and(currentlyActive(col.END_SNAPSHOT)))
+                    .join(file)
+                            .on(file.DATA_FILE_ID.eq(colstats.DATA_FILE_ID))
+                    .where(file.FILE_FORMAT.eq("duckdb")
+                            .and(col.TABLE_ID.eq(tableId)))
                     .forEach(r -> rows.put(
-                            r.get(DUCKLAKE_COLUMN.COLUMN_NAME),
+                            r.get(col.COLUMN_NAME),
                             new StatsRow(
-                                    orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT)),
-                                    orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT)),
-                                    r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE),
-                                    r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE))));
+                                    orZero(r.get(colstats.VALUE_COUNT)),
+                                    orZero(r.get(colstats.NULL_COUNT)),
+                                    r.get(colstats.MIN_VALUE),
+                                    r.get(colstats.MAX_VALUE))));
             assertThat(rows).containsKeys("id", "label", "amount");
 
             // id: 1..4, no nulls

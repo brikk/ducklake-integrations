@@ -15,7 +15,6 @@ package dev.brikk.ducklake.catalog;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import dev.brikk.ducklake.catalog.schema.tables.DucklakeDeleteFileTable;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeDataFileRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeDeleteFileRecord;
@@ -165,8 +164,9 @@ public class JdbcDucklakeCatalog
     @Override
     public long getCurrentSnapshotId()
     {
-        Long maxId = dsl.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
-                .from(DUCKLAKE_SNAPSHOT)
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long maxId = dsl.select(DSL.max(snap.SNAPSHOT_ID))
+                .from(snap)
                 .fetchOne(0, Long.class);
         if (maxId == null) {
             throw new IllegalStateException("No snapshots found in ducklake_snapshot table");
@@ -177,8 +177,9 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<DucklakeSnapshot> getSnapshot(long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
-                .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(snapshotId))
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        return dsl.selectFrom(snap)
+                .where(snap.SNAPSHOT_ID.eq(snapshotId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeSnapshot);
     }
@@ -186,8 +187,9 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<DucklakeSnapshot> getSnapshotAtOrBefore(Instant timestamp)
     {
-        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
-                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        return dsl.selectFrom(snap)
+                .orderBy(snap.SNAPSHOT_ID.desc())
                 .fetch(JdbcDucklakeCatalog::toDucklakeSnapshot)
                 .stream()
                 .filter(snapshot -> !snapshot.snapshotTime().isAfter(timestamp))
@@ -197,33 +199,37 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeSnapshot> listSnapshots()
     {
-        return dsl.selectFrom(DUCKLAKE_SNAPSHOT)
-                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        return dsl.selectFrom(snap)
+                .orderBy(snap.SNAPSHOT_ID.desc())
                 .fetch(JdbcDucklakeCatalog::toDucklakeSnapshot);
     }
 
     @Override
     public List<DucklakeSnapshotChange> listSnapshotChanges()
     {
-        return dsl.selectFrom(DUCKLAKE_SNAPSHOT_CHANGES)
-                .orderBy(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.desc())
+        var snapchg = DUCKLAKE_SNAPSHOT_CHANGES.as("snapchg");
+        return dsl.selectFrom(snapchg)
+                .orderBy(snapchg.SNAPSHOT_ID.desc())
                 .fetch(JdbcDucklakeCatalog::toDucklakeSnapshotChange);
     }
 
     @Override
     public List<DucklakeSchema> listSchemas(long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_SCHEMA)
-                .where(activeAt(DUCKLAKE_SCHEMA, snapshotId))
+        var sch = DUCKLAKE_SCHEMA.as("sch");
+        return dsl.selectFrom(sch)
+                .where(activeAt(sch, snapshotId))
                 .fetch(JdbcDucklakeCatalog::toDucklakeSchema);
     }
 
     @Override
     public Optional<DucklakeSchema> getSchema(String schemaName, long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_SCHEMA)
-                .where(DUCKLAKE_SCHEMA.SCHEMA_NAME.eq(schemaName))
-                .and(activeAt(DUCKLAKE_SCHEMA, snapshotId))
+        var sch = DUCKLAKE_SCHEMA.as("sch");
+        return dsl.selectFrom(sch)
+                .where(sch.SCHEMA_NAME.eq(schemaName))
+                .and(activeAt(sch, snapshotId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeSchema);
     }
@@ -231,9 +237,10 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeTable> listTables(long schemaId, long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_TABLE)
-                .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schemaId))
-                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+        var tab = DUCKLAKE_TABLE.as("tab");
+        return dsl.selectFrom(tab)
+                .where(tab.SCHEMA_ID.eq(schemaId))
+                .and(activeAt(tab, snapshotId))
                 .fetch(JdbcDucklakeCatalog::toDucklakeTable);
     }
 
@@ -245,10 +252,11 @@ public class JdbcDucklakeCatalog
             return Optional.empty();
         }
 
-        return dsl.selectFrom(DUCKLAKE_TABLE)
-                .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schema.get().schemaId()))
-                .and(DUCKLAKE_TABLE.TABLE_NAME.eq(tableName))
-                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+        var tab = DUCKLAKE_TABLE.as("tab");
+        return dsl.selectFrom(tab)
+                .where(tab.SCHEMA_ID.eq(schema.get().schemaId()))
+                .and(tab.TABLE_NAME.eq(tableName))
+                .and(activeAt(tab, snapshotId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeTable);
     }
@@ -256,9 +264,10 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<DucklakeTable> getTableById(long tableId, long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_TABLE)
-                .where(DUCKLAKE_TABLE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_TABLE, snapshotId))
+        var tab = DUCKLAKE_TABLE.as("tab");
+        return dsl.selectFrom(tab)
+                .where(tab.TABLE_ID.eq(tableId))
+                .and(activeAt(tab, snapshotId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeTable);
     }
@@ -301,58 +310,60 @@ public class JdbcDucklakeCatalog
 
     private List<DucklakeColumn> fetchTableColumns(long tableId, long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_COLUMN)
-                .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_COLUMN, snapshotId))
-                .orderBy(DUCKLAKE_COLUMN.COLUMN_ORDER, DUCKLAKE_COLUMN.COLUMN_ID)
+        var col = DUCKLAKE_COLUMN.as("col");
+        return dsl.selectFrom(col)
+                .where(col.TABLE_ID.eq(tableId))
+                .and(activeAt(col, snapshotId))
+                .orderBy(col.COLUMN_ORDER, col.COLUMN_ID)
                 .fetch(JdbcDucklakeCatalog::toDucklakeColumn);
     }
 
     @Override
     public List<DucklakeDataFile> getDataFiles(long tableId, long snapshotId)
     {
-        DucklakeDeleteFileTable del = DUCKLAKE_DELETE_FILE.as("del");
+        var file = DUCKLAKE_DATA_FILE.as("file");
+        var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
         return dsl.select(
-                        DUCKLAKE_DATA_FILE.DATA_FILE_ID,
-                        DUCKLAKE_DATA_FILE.TABLE_ID,
-                        DUCKLAKE_DATA_FILE.BEGIN_SNAPSHOT,
-                        DUCKLAKE_DATA_FILE.END_SNAPSHOT,
-                        DUCKLAKE_DATA_FILE.FILE_ORDER,
-                        DUCKLAKE_DATA_FILE.PATH,
-                        DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE,
-                        DUCKLAKE_DATA_FILE.FILE_FORMAT,
-                        DUCKLAKE_DATA_FILE.RECORD_COUNT,
-                        DUCKLAKE_DATA_FILE.FILE_SIZE_BYTES,
-                        DUCKLAKE_DATA_FILE.FOOTER_SIZE,
-                        DUCKLAKE_DATA_FILE.ROW_ID_START,
-                        DUCKLAKE_DATA_FILE.PARTITION_ID,
-                        del.PATH,
-                        del.PATH_IS_RELATIVE,
-                        del.FOOTER_SIZE)
-                .from(DUCKLAKE_DATA_FILE)
-                .leftJoin(del)
-                .on(DUCKLAKE_DATA_FILE.DATA_FILE_ID.eq(del.DATA_FILE_ID))
-                .and(activeAt(del, snapshotId))
-                .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
-                .orderBy(DUCKLAKE_DATA_FILE.FILE_ORDER)
+                        file.DATA_FILE_ID,
+                        file.TABLE_ID,
+                        file.BEGIN_SNAPSHOT,
+                        file.END_SNAPSHOT,
+                        file.FILE_ORDER,
+                        file.PATH,
+                        file.PATH_IS_RELATIVE,
+                        file.FILE_FORMAT,
+                        file.RECORD_COUNT,
+                        file.FILE_SIZE_BYTES,
+                        file.FOOTER_SIZE,
+                        file.ROW_ID_START,
+                        file.PARTITION_ID,
+                        delfile.PATH,
+                        delfile.PATH_IS_RELATIVE,
+                        delfile.FOOTER_SIZE)
+                .from(file)
+                .leftJoin(delfile)
+                .on(file.DATA_FILE_ID.eq(delfile.DATA_FILE_ID))
+                .and(activeAt(delfile, snapshotId))
+                .where(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
+                .orderBy(file.FILE_ORDER)
                 .fetch(r -> new DucklakeDataFile(
-                        orZero(r.get(DUCKLAKE_DATA_FILE.DATA_FILE_ID)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.TABLE_ID)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.BEGIN_SNAPSHOT)),
-                        Optional.ofNullable(r.get(DUCKLAKE_DATA_FILE.END_SNAPSHOT)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.FILE_ORDER)),
-                        r.get(DUCKLAKE_DATA_FILE.PATH),
-                        Boolean.TRUE.equals(r.get(DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE)),
-                        r.get(DUCKLAKE_DATA_FILE.FILE_FORMAT),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.RECORD_COUNT)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.FILE_SIZE_BYTES)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.FOOTER_SIZE)),
-                        orZero(r.get(DUCKLAKE_DATA_FILE.ROW_ID_START)),
-                        Optional.ofNullable(r.get(DUCKLAKE_DATA_FILE.PARTITION_ID)),
-                        Optional.ofNullable(r.get(del.PATH)),
-                        Optional.ofNullable(r.get(del.PATH_IS_RELATIVE)),
-                        Optional.ofNullable(r.get(del.FOOTER_SIZE))));
+                        orZero(r.get(file.DATA_FILE_ID)),
+                        orZero(r.get(file.TABLE_ID)),
+                        orZero(r.get(file.BEGIN_SNAPSHOT)),
+                        Optional.ofNullable(r.get(file.END_SNAPSHOT)),
+                        orZero(r.get(file.FILE_ORDER)),
+                        r.get(file.PATH),
+                        Boolean.TRUE.equals(r.get(file.PATH_IS_RELATIVE)),
+                        r.get(file.FILE_FORMAT),
+                        orZero(r.get(file.RECORD_COUNT)),
+                        orZero(r.get(file.FILE_SIZE_BYTES)),
+                        orZero(r.get(file.FOOTER_SIZE)),
+                        orZero(r.get(file.ROW_ID_START)),
+                        Optional.ofNullable(r.get(file.PARTITION_ID)),
+                        Optional.ofNullable(r.get(delfile.PATH)),
+                        Optional.ofNullable(r.get(delfile.PATH_IS_RELATIVE)),
+                        Optional.ofNullable(r.get(delfile.FOOTER_SIZE))));
     }
 
     @Override
@@ -361,13 +372,14 @@ public class JdbcDucklakeCatalog
         // "Latest" = highest data_file_id among rows still active at the requested snapshot.
         // data_file_id is allocated from a monotonic catalog sequence at insert time, so DESC
         // order on it picks the most recently committed file (cross-snapshot, cross-partition).
-        return Optional.ofNullable(dsl.select(DUCKLAKE_DATA_FILE.FILE_FORMAT)
-                .from(DUCKLAKE_DATA_FILE)
-                .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
-                .orderBy(DUCKLAKE_DATA_FILE.DATA_FILE_ID.desc())
+        var file = DUCKLAKE_DATA_FILE.as("file");
+        return Optional.ofNullable(dsl.select(file.FILE_FORMAT)
+                .from(file)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
+                .orderBy(file.DATA_FILE_ID.desc())
                 .limit(1)
-                .fetchOne(DUCKLAKE_DATA_FILE.FILE_FORMAT));
+                .fetchOne(file.FILE_FORMAT));
     }
 
     @Override
@@ -375,12 +387,13 @@ public class JdbcDucklakeCatalog
     {
         long columnId = predicate.columnId();
 
-        String columnType = dsl.select(DUCKLAKE_COLUMN.COLUMN_TYPE)
-                .from(DUCKLAKE_COLUMN)
-                .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
-                .and(activeAt(DUCKLAKE_COLUMN, snapshotId))
-                .fetchOne(DUCKLAKE_COLUMN.COLUMN_TYPE);
+        var col = DUCKLAKE_COLUMN.as("col");
+        String columnType = dsl.select(col.COLUMN_TYPE)
+                .from(col)
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.eq(columnId))
+                .and(activeAt(col, snapshotId))
+                .fetchOne(col.COLUMN_TYPE);
         if (columnType == null) {
             return List.of();
         }
@@ -388,33 +401,36 @@ public class JdbcDucklakeCatalog
         Comparable<?> lowerBound = parseStatValue(columnType, predicate.minValue());
         Comparable<?> upperBound = parseStatValue(columnType, predicate.maxValue());
 
+        var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
+        var file = DUCKLAKE_DATA_FILE.as("file");
         return dsl.select(
-                        DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID,
-                        DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
-                        DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
-                .from(DUCKLAKE_FILE_COLUMN_STATS)
-                .innerJoin(DUCKLAKE_DATA_FILE)
-                .on(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
-                .where(DUCKLAKE_FILE_COLUMN_STATS.TABLE_ID.eq(tableId))
-                .and(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID.eq(columnId))
-                .and(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                        colstats.DATA_FILE_ID,
+                        colstats.MIN_VALUE,
+                        colstats.MAX_VALUE)
+                .from(colstats)
+                .innerJoin(file)
+                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                .where(colstats.TABLE_ID.eq(tableId))
+                .and(colstats.COLUMN_ID.eq(columnId))
+                .and(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
                 .fetch()
                 .stream()
                 .filter(r -> isWithinBounds(
                         lowerBound,
                         upperBound,
-                        parseStatValue(columnType, r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE)),
-                        parseStatValue(columnType, r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE))))
-                .map(r -> r.get(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID))
+                        parseStatValue(columnType, r.get(colstats.MIN_VALUE)),
+                        parseStatValue(columnType, r.get(colstats.MAX_VALUE))))
+                .map(r -> r.get(colstats.DATA_FILE_ID))
                 .collect(Collectors.toList());
     }
 
     @Override
     public Optional<DucklakeTableStats> getTableStats(long tableId)
     {
-        return dsl.selectFrom(DUCKLAKE_TABLE_STATS)
-                .where(DUCKLAKE_TABLE_STATS.TABLE_ID.eq(tableId))
+        var tabstats = DUCKLAKE_TABLE_STATS.as("tabstats");
+        return dsl.selectFrom(tabstats)
+                .where(tabstats.TABLE_ID.eq(tableId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeTableStats);
     }
@@ -429,29 +445,31 @@ public class JdbcDucklakeCatalog
         Map<Long, String> minAccumulators = new HashMap<>();
         Map<Long, String> maxAccumulators = new HashMap<>();
 
+        var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
+        var file = DUCKLAKE_DATA_FILE.as("file");
         dsl.select(
-                        DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID,
-                        DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT,
-                        DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT,
-                        DUCKLAKE_FILE_COLUMN_STATS.COLUMN_SIZE_BYTES,
-                        DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
-                        DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
-                .from(DUCKLAKE_FILE_COLUMN_STATS)
-                .innerJoin(DUCKLAKE_DATA_FILE)
-                .on(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
-                .where(DUCKLAKE_FILE_COLUMN_STATS.TABLE_ID.eq(tableId))
-                .and(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                        colstats.COLUMN_ID,
+                        colstats.VALUE_COUNT,
+                        colstats.NULL_COUNT,
+                        colstats.COLUMN_SIZE_BYTES,
+                        colstats.MIN_VALUE,
+                        colstats.MAX_VALUE)
+                .from(colstats)
+                .innerJoin(file)
+                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                .where(colstats.TABLE_ID.eq(tableId))
+                .and(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
                 .forEach(r -> {
-                    long columnId = orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID));
+                    long columnId = orZero(r.get(colstats.COLUMN_ID));
                     long[] counts = countAccumulators.computeIfAbsent(columnId, _ -> new long[3]);
-                    counts[0] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT));
-                    counts[1] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT));
-                    counts[2] += orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_SIZE_BYTES));
+                    counts[0] += orZero(r.get(colstats.VALUE_COUNT));
+                    counts[1] += orZero(r.get(colstats.NULL_COUNT));
+                    counts[2] += orZero(r.get(colstats.COLUMN_SIZE_BYTES));
 
                     String columnType = columnTypes.getOrDefault(columnId, "");
-                    String minValue = r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE);
-                    String maxValue = r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE);
+                    String minValue = r.get(colstats.MIN_VALUE);
+                    String maxValue = r.get(colstats.MAX_VALUE);
                     if (minValue != null) {
                         minAccumulators.merge(columnId, minValue, (a, b) -> typedMin(a, b, columnType));
                     }
@@ -511,27 +529,29 @@ public class JdbcDucklakeCatalog
         Map<Long, List<DucklakePartitionField>> fieldsByPartition = new LinkedHashMap<>();
         Map<Long, Long> tableIdByPartition = new HashMap<>();
 
+        var partinfo = DUCKLAKE_PARTITION_INFO.as("partinfo");
+        var partcol = DUCKLAKE_PARTITION_COLUMN.as("partcol");
         dsl.select(
-                        DUCKLAKE_PARTITION_INFO.PARTITION_ID,
-                        DUCKLAKE_PARTITION_INFO.TABLE_ID,
-                        DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX,
-                        DUCKLAKE_PARTITION_COLUMN.COLUMN_ID,
-                        DUCKLAKE_PARTITION_COLUMN.TRANSFORM)
-                .from(DUCKLAKE_PARTITION_INFO)
-                .innerJoin(DUCKLAKE_PARTITION_COLUMN)
-                .on(DUCKLAKE_PARTITION_INFO.PARTITION_ID.eq(DUCKLAKE_PARTITION_COLUMN.PARTITION_ID))
-                .and(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(DUCKLAKE_PARTITION_COLUMN.TABLE_ID))
-                .where(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_PARTITION_INFO, snapshotId))
-                .orderBy(DUCKLAKE_PARTITION_INFO.PARTITION_ID, DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX)
+                        partinfo.PARTITION_ID,
+                        partinfo.TABLE_ID,
+                        partcol.PARTITION_KEY_INDEX,
+                        partcol.COLUMN_ID,
+                        partcol.TRANSFORM)
+                .from(partinfo)
+                .innerJoin(partcol)
+                .on(partinfo.PARTITION_ID.eq(partcol.PARTITION_ID))
+                .and(partinfo.TABLE_ID.eq(partcol.TABLE_ID))
+                .where(partinfo.TABLE_ID.eq(tableId))
+                .and(activeAt(partinfo, snapshotId))
+                .orderBy(partinfo.PARTITION_ID, partcol.PARTITION_KEY_INDEX)
                 .forEach(r -> {
-                    long partitionId = orZero(r.get(DUCKLAKE_PARTITION_INFO.PARTITION_ID));
-                    tableIdByPartition.put(partitionId, orZero(r.get(DUCKLAKE_PARTITION_INFO.TABLE_ID)));
+                    long partitionId = orZero(r.get(partinfo.PARTITION_ID));
+                    tableIdByPartition.put(partitionId, orZero(r.get(partinfo.TABLE_ID)));
                     fieldsByPartition.computeIfAbsent(partitionId, _ -> new ArrayList<>())
                             .add(new DucklakePartitionField(
-                                    (int) orZero(r.get(DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX)),
-                                    orZero(r.get(DUCKLAKE_PARTITION_COLUMN.COLUMN_ID)),
-                                    DucklakePartitionTransform.fromString(r.get(DUCKLAKE_PARTITION_COLUMN.TRANSFORM))));
+                                    (int) orZero(r.get(partcol.PARTITION_KEY_INDEX)),
+                                    orZero(r.get(partcol.COLUMN_ID)),
+                                    DucklakePartitionTransform.fromString(r.get(partcol.TRANSFORM))));
                 });
 
         List<DucklakePartitionSpec> specs = new ArrayList<>();
@@ -546,23 +566,25 @@ public class JdbcDucklakeCatalog
     {
         Map<Long, List<DucklakeFilePartitionValue>> result = new HashMap<>();
 
+        var partval = DUCKLAKE_FILE_PARTITION_VALUE.as("partval");
+        var file = DUCKLAKE_DATA_FILE.as("file");
         dsl.select(
-                        DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID,
-                        DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_KEY_INDEX,
-                        DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_VALUE)
-                .from(DUCKLAKE_FILE_PARTITION_VALUE)
-                .innerJoin(DUCKLAKE_DATA_FILE)
-                .on(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.eq(DUCKLAKE_DATA_FILE.DATA_FILE_ID))
-                .and(DUCKLAKE_FILE_PARTITION_VALUE.TABLE_ID.eq(DUCKLAKE_DATA_FILE.TABLE_ID))
-                .where(DUCKLAKE_FILE_PARTITION_VALUE.TABLE_ID.eq(tableId))
-                .and(activeAt(DUCKLAKE_DATA_FILE, snapshotId))
+                        partval.DATA_FILE_ID,
+                        partval.PARTITION_KEY_INDEX,
+                        partval.PARTITION_VALUE)
+                .from(partval)
+                .innerJoin(file)
+                .on(partval.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                .and(partval.TABLE_ID.eq(file.TABLE_ID))
+                .where(partval.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
                 .forEach(r -> {
-                    long dataFileId = orZero(r.get(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID));
+                    long dataFileId = orZero(r.get(partval.DATA_FILE_ID));
                     result.computeIfAbsent(dataFileId, _ -> new ArrayList<>())
                             .add(new DucklakeFilePartitionValue(
                                     dataFileId,
-                                    (int) orZero(r.get(DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_KEY_INDEX)),
-                                    r.get(DUCKLAKE_FILE_PARTITION_VALUE.PARTITION_VALUE)));
+                                    (int) orZero(r.get(partval.PARTITION_KEY_INDEX)),
+                                    r.get(partval.PARTITION_VALUE)));
                 });
 
         return result;
@@ -572,36 +594,38 @@ public class JdbcDucklakeCatalog
     public List<DucklakeInlinedDataInfo> getInlinedDataInfos(long tableId, long snapshotId)
     {
         // A table can have multiple inlined data tables (one per schema version).
+        var inlined = DUCKLAKE_INLINED_DATA_TABLES.as("inlined");
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
         try {
             return dsl.select(
-                            DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID,
-                            DUCKLAKE_INLINED_DATA_TABLES.TABLE_NAME,
-                            DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)
-                    .from(DUCKLAKE_INLINED_DATA_TABLES)
-                    .where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION.le(
-                            DSL.select(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION)
-                                    .from(DUCKLAKE_SNAPSHOT)
-                                    .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(snapshotId))))
-                    .orderBy(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)
+                            inlined.TABLE_ID,
+                            inlined.TABLE_NAME,
+                            inlined.SCHEMA_VERSION)
+                    .from(inlined)
+                    .where(inlined.TABLE_ID.eq(tableId))
+                    .and(inlined.SCHEMA_VERSION.le(
+                            DSL.select(snap.SCHEMA_VERSION)
+                                    .from(snap)
+                                    .where(snap.SNAPSHOT_ID.eq(snapshotId))))
+                    .orderBy(inlined.SCHEMA_VERSION)
                     .fetch()
                     .stream()
                     .filter(r -> {
-                        InlinedDataTable inlined = InlinedDataTable.of(
-                                orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID)),
-                                orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)));
-                        if (!inlined.existsAsTable(dsl)) {
+                        InlinedDataTable inlinedTable = InlinedDataTable.of(
+                                orZero(r.get(inlined.TABLE_ID)),
+                                orZero(r.get(inlined.SCHEMA_VERSION)));
+                        if (!inlinedTable.existsAsTable(dsl)) {
                             // Catalog metadata can point to a dropped/non-materialized inlined table.
                             // Treat this as "no inlined data" so scan planning does not emit a dead split.
-                            log.log(System.Logger.Level.DEBUG, "Inlined data table {0} not available for table {1}", inlined.name, tableId);
+                            log.log(System.Logger.Level.DEBUG, "Inlined data table {0} not available for table {1}", inlinedTable.name, tableId);
                             return false;
                         }
                         return true;
                     })
                     .map(r -> new DucklakeInlinedDataInfo(
-                            orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID)),
-                            r.get(DUCKLAKE_INLINED_DATA_TABLES.TABLE_NAME),
-                            orZero(r.get(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION))))
+                            orZero(r.get(inlined.TABLE_ID)),
+                            r.get(inlined.TABLE_NAME),
+                            orZero(r.get(inlined.SCHEMA_VERSION))))
                     .collect(Collectors.toList());
         }
         catch (DataAccessException e) {
@@ -684,15 +708,16 @@ public class JdbcDucklakeCatalog
         // Prefer table-scoped schema version rows when available.
         // Some catalogs include ducklake_schema_versions.table_id (DuckDB behavior),
         // which gives an unambiguous snapshot where this table's schema version was introduced.
+        var schver = DUCKLAKE_SCHEMA_VERSIONS.as("schver");
         try {
-            Long tableScoped = dsl.select(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT)
-                    .from(DUCKLAKE_SCHEMA_VERSIONS)
-                    .where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION.eq(schemaVersion))
-                    .and(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT.le(snapshotId))
-                    .orderBy(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT.desc())
+            Long tableScoped = dsl.select(schver.BEGIN_SNAPSHOT)
+                    .from(schver)
+                    .where(schver.TABLE_ID.eq(tableId))
+                    .and(schver.SCHEMA_VERSION.eq(schemaVersion))
+                    .and(schver.BEGIN_SNAPSHOT.le(snapshotId))
+                    .orderBy(schver.BEGIN_SNAPSHOT.desc())
                     .limit(1)
-                    .fetchOne(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT);
+                    .fetchOne(schver.BEGIN_SNAPSHOT);
             if (tableScoped != null) {
                 return OptionalLong.of(tableScoped);
             }
@@ -703,13 +728,14 @@ public class JdbcDucklakeCatalog
         }
 
         // Backward-compatible fallback: resolve by snapshot.schema_version only.
-        Long fallback = dsl.select(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID)
-                .from(DUCKLAKE_SNAPSHOT)
-                .where(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION.eq(schemaVersion))
-                .and(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.le(snapshotId))
-                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long fallback = dsl.select(snap.SNAPSHOT_ID)
+                .from(snap)
+                .where(snap.SCHEMA_VERSION.eq(schemaVersion))
+                .and(snap.SNAPSHOT_ID.le(snapshotId))
+                .orderBy(snap.SNAPSHOT_ID.desc())
                 .limit(1)
-                .fetchOne(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID);
+                .fetchOne(snap.SNAPSHOT_ID);
         return fallback == null ? OptionalLong.empty() : OptionalLong.of(fallback);
     }
 
@@ -794,10 +820,11 @@ public class JdbcDucklakeCatalog
     @Override
     public Optional<String> getDataPath()
     {
-        return dsl.select(DUCKLAKE_METADATA.VALUE)
-                .from(DUCKLAKE_METADATA)
-                .where(DUCKLAKE_METADATA.KEY.eq("data_path"))
-                .fetchOptional(DUCKLAKE_METADATA.VALUE);
+        var meta = DUCKLAKE_METADATA.as("meta");
+        return dsl.select(meta.VALUE)
+                .from(meta)
+                .where(meta.KEY.eq("data_path"))
+                .fetchOptional(meta.VALUE);
     }
 
     // ==================== View operations ====================
@@ -805,9 +832,10 @@ public class JdbcDucklakeCatalog
     @Override
     public List<DucklakeView> listViews(long schemaId, long snapshotId)
     {
-        return dsl.selectFrom(DUCKLAKE_VIEW)
-                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
-                .and(activeAt(DUCKLAKE_VIEW, snapshotId))
+        var view = DUCKLAKE_VIEW.as("view");
+        return dsl.selectFrom(view)
+                .where(view.SCHEMA_ID.eq(schemaId))
+                .and(activeAt(view, snapshotId))
                 .fetch(JdbcDucklakeCatalog::toDucklakeView);
     }
 
@@ -819,10 +847,11 @@ public class JdbcDucklakeCatalog
             return Optional.empty();
         }
 
-        return dsl.selectFrom(DUCKLAKE_VIEW)
-                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schema.get().schemaId()))
-                .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
-                .and(activeAt(DUCKLAKE_VIEW, snapshotId))
+        var view = DUCKLAKE_VIEW.as("view");
+        return dsl.selectFrom(view)
+                .where(view.SCHEMA_ID.eq(schema.get().schemaId()))
+                .and(view.VIEW_NAME.eq(viewName))
+                .and(activeAt(view, snapshotId))
                 .fetchOptional()
                 .map(JdbcDucklakeCatalog::toDucklakeView);
     }
@@ -873,15 +902,18 @@ public class JdbcDucklakeCatalog
 
     private void attemptWriteTransaction(String operationDescription, WriteTransactionAction action)
     {
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        var schver = DUCKLAKE_SCHEMA_VERSIONS.as("schver");
+        var snapchg = DUCKLAKE_SNAPSHOT_CHANGES.as("snapchg");
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
             DSLContext txDsl = forConnection(conn);
             long baseSnapshotId = -1;
             try {
                 // 1. Read current snapshot state
-                DucklakeSnapshotRecord snapshotRow = txDsl.selectFrom(DUCKLAKE_SNAPSHOT)
-                        .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(
-                                DSL.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID)).from(DUCKLAKE_SNAPSHOT)))
+                DucklakeSnapshotRecord snapshotRow = txDsl.selectFrom(snap)
+                        .where(snap.SNAPSHOT_ID.eq(
+                                DSL.select(DSL.max(snap.SNAPSHOT_ID)).from(snap)))
                         .fetchOne();
                 if (snapshotRow == null) {
                     throw new IllegalStateException("No snapshots found");
@@ -914,18 +946,18 @@ public class JdbcDucklakeCatalog
                     Long schemaVersionTableId = tx.getSchemaVersionTableId() >= 0
                             ? tx.getSchemaVersionTableId()
                             : null;
-                    txDsl.insertInto(DUCKLAKE_SCHEMA_VERSIONS)
-                            .set(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                            .set(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION, tx.getSchemaVersion())
-                            .set(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID, schemaVersionTableId)
+                    txDsl.insertInto(schver)
+                            .set(schver.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                            .set(schver.SCHEMA_VERSION, tx.getSchemaVersion())
+                            .set(schver.TABLE_ID, schemaVersionTableId)
                             .execute();
                 }
 
                 // 6. Insert snapshot changes (comma-separated per spec, one row per snapshot)
                 if (!tx.getChanges().isEmpty()) {
-                    txDsl.insertInto(DUCKLAKE_SNAPSHOT_CHANGES)
-                            .set(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID, tx.getNewSnapshotId())
-                            .set(DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE, formatChangesMade(tx.getChanges()))
+                    txDsl.insertInto(snapchg)
+                            .set(snapchg.SNAPSHOT_ID, tx.getNewSnapshotId())
+                            .set(snapchg.CHANGES_MADE, formatChangesMade(tx.getChanges()))
                             .execute();
                 }
 
@@ -958,13 +990,14 @@ public class JdbcDucklakeCatalog
 
     private void insertSnapshotRow(DSLContext ctx, DucklakeWriteTransaction tx, String operationDescription)
     {
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
         try {
-            ctx.insertInto(DUCKLAKE_SNAPSHOT)
-                    .set(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID, tx.getNewSnapshotId())
-                    .set(DUCKLAKE_SNAPSHOT.SNAPSHOT_TIME, DSL.currentOffsetDateTime())
-                    .set(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION, tx.getSchemaVersion())
-                    .set(DUCKLAKE_SNAPSHOT.NEXT_CATALOG_ID, tx.getFinalNextCatalogId())
-                    .set(DUCKLAKE_SNAPSHOT.NEXT_FILE_ID, tx.getFinalNextFileId())
+            ctx.insertInto(snap)
+                    .set(snap.SNAPSHOT_ID, tx.getNewSnapshotId())
+                    .set(snap.SNAPSHOT_TIME, DSL.currentOffsetDateTime())
+                    .set(snap.SCHEMA_VERSION, tx.getSchemaVersion())
+                    .set(snap.NEXT_CATALOG_ID, tx.getFinalNextCatalogId())
+                    .set(snap.NEXT_FILE_ID, tx.getFinalNextFileId())
                     .execute();
         }
         catch (DataAccessException e) {
@@ -998,18 +1031,19 @@ public class JdbcDucklakeCatalog
             return "none";
         }
 
+        var snapchg = DUCKLAKE_SNAPSHOT_CHANGES.as("snapchg");
         List<String> changes = ctx.select(
-                        DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID,
-                        DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE)
-                .from(DUCKLAKE_SNAPSHOT_CHANGES)
-                .where(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.gt(fromSnapshotExclusive))
-                .and(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.le(toSnapshotInclusive))
-                .orderBy(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID)
+                        snapchg.SNAPSHOT_ID,
+                        snapchg.CHANGES_MADE)
+                .from(snapchg)
+                .where(snapchg.SNAPSHOT_ID.gt(fromSnapshotExclusive))
+                .and(snapchg.SNAPSHOT_ID.le(toSnapshotInclusive))
+                .orderBy(snapchg.SNAPSHOT_ID)
                 .limit(CONFLICT_CHANGE_SUMMARY_LIMIT)
                 .fetch()
                 .stream()
-                .map(r -> r.get(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID)
-                        + ":" + r.get(DUCKLAKE_SNAPSHOT_CHANGES.CHANGES_MADE))
+                .map(r -> r.get(snapchg.SNAPSHOT_ID)
+                        + ":" + r.get(snapchg.CHANGES_MADE))
                 .collect(Collectors.toList());
 
         if (changes.isEmpty()) {
@@ -1020,8 +1054,9 @@ public class JdbcDucklakeCatalog
 
     private long readLatestSnapshotId(DSLContext ctx)
     {
-        Long maxId = ctx.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
-                .from(DUCKLAKE_SNAPSHOT)
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long maxId = ctx.select(DSL.max(snap.SNAPSHOT_ID))
+                .from(snap)
                 .fetchOne(0, Long.class);
         if (maxId == null) {
             throw new IllegalStateException("No snapshots found");
@@ -1174,30 +1209,31 @@ public class JdbcDucklakeCatalog
 
     private ActiveViewRow resolveActiveViewRow(DucklakeWriteTransaction tx, long schemaId, String viewName)
     {
+        var view = DUCKLAKE_VIEW.as("view");
         Record row = tx.dsl().select(
-                        DUCKLAKE_VIEW.VIEW_ID,
-                        DUCKLAKE_VIEW.VIEW_UUID,
-                        DUCKLAKE_VIEW.SCHEMA_ID,
-                        DUCKLAKE_VIEW.VIEW_NAME,
-                        DUCKLAKE_VIEW.DIALECT,
-                        DUCKLAKE_VIEW.SQL,
-                        DUCKLAKE_VIEW.COLUMN_ALIASES)
-                .from(DUCKLAKE_VIEW)
-                .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
-                .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
-                .and(activeAt(DUCKLAKE_VIEW, tx.getCurrentSnapshotId()))
+                        view.VIEW_ID,
+                        view.VIEW_UUID,
+                        view.SCHEMA_ID,
+                        view.VIEW_NAME,
+                        view.DIALECT,
+                        view.SQL,
+                        view.COLUMN_ALIASES)
+                .from(view)
+                .where(view.SCHEMA_ID.eq(schemaId))
+                .and(view.VIEW_NAME.eq(viewName))
+                .and(activeAt(view, tx.getCurrentSnapshotId()))
                 .fetchOne();
         if (row == null) {
             throw new RuntimeException("View not found: schema_id=" + schemaId + ", view_name=" + viewName);
         }
         return new ActiveViewRow(
-                orZero(row.get(DUCKLAKE_VIEW.VIEW_ID)),
-                row.get(DUCKLAKE_VIEW.VIEW_UUID),
-                orZero(row.get(DUCKLAKE_VIEW.SCHEMA_ID)),
-                row.get(DUCKLAKE_VIEW.VIEW_NAME),
-                row.get(DUCKLAKE_VIEW.DIALECT),
-                row.get(DUCKLAKE_VIEW.SQL),
-                Optional.ofNullable(row.get(DUCKLAKE_VIEW.COLUMN_ALIASES)));
+                orZero(row.get(view.VIEW_ID)),
+                row.get(view.VIEW_UUID),
+                orZero(row.get(view.SCHEMA_ID)),
+                row.get(view.VIEW_NAME),
+                row.get(view.DIALECT),
+                row.get(view.SQL),
+                Optional.ofNullable(row.get(view.COLUMN_ALIASES)));
     }
 
     private void insertViewRow(
@@ -1210,24 +1246,26 @@ public class JdbcDucklakeCatalog
             String viewSql,
             String viewMetadata)
     {
-        tx.dsl().insertInto(DUCKLAKE_VIEW)
-                .set(DUCKLAKE_VIEW.VIEW_ID, viewId)
-                .set(DUCKLAKE_VIEW.VIEW_UUID, viewUuid)
-                .set(DUCKLAKE_VIEW.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                .set(DUCKLAKE_VIEW.SCHEMA_ID, schemaId)
-                .set(DUCKLAKE_VIEW.VIEW_NAME, viewName)
-                .set(DUCKLAKE_VIEW.DIALECT, dialect)
-                .set(DUCKLAKE_VIEW.SQL, viewSql)
-                .set(DUCKLAKE_VIEW.COLUMN_ALIASES, viewMetadata)
+        var view = DUCKLAKE_VIEW.as("view");
+        tx.dsl().insertInto(view)
+                .set(view.VIEW_ID, viewId)
+                .set(view.VIEW_UUID, viewUuid)
+                .set(view.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(view.SCHEMA_ID, schemaId)
+                .set(view.VIEW_NAME, viewName)
+                .set(view.DIALECT, dialect)
+                .set(view.SQL, viewSql)
+                .set(view.COLUMN_ALIASES, viewMetadata)
                 .execute();
     }
 
     private void endSnapshotActiveView(DucklakeWriteTransaction tx, long viewId)
     {
-        int updatedRows = tx.dsl().update(DUCKLAKE_VIEW)
-                .set(DUCKLAKE_VIEW.END_SNAPSHOT, tx.getNewSnapshotId())
-                .where(DUCKLAKE_VIEW.VIEW_ID.eq(viewId))
-                .and(DUCKLAKE_VIEW.END_SNAPSHOT.isNull())
+        var view = DUCKLAKE_VIEW.as("view");
+        int updatedRows = tx.dsl().update(view)
+                .set(view.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(view.VIEW_ID.eq(viewId))
+                .and(view.END_SNAPSHOT.isNull())
                 .execute();
         if (updatedRows == 0) {
             throw new RuntimeException("View not found: " + viewId);
@@ -1236,22 +1274,24 @@ public class JdbcDucklakeCatalog
 
     private static boolean hasActiveView(DucklakeWriteTransaction tx, long schemaId, String viewName)
     {
+        var view = DUCKLAKE_VIEW.as("view");
         return tx.dsl().fetchExists(
                 DSL.selectOne()
-                        .from(DUCKLAKE_VIEW)
-                        .where(DUCKLAKE_VIEW.SCHEMA_ID.eq(schemaId))
-                        .and(DUCKLAKE_VIEW.VIEW_NAME.eq(viewName))
-                        .and(activeAt(DUCKLAKE_VIEW, tx.getCurrentSnapshotId())));
+                        .from(view)
+                        .where(view.SCHEMA_ID.eq(schemaId))
+                        .and(view.VIEW_NAME.eq(viewName))
+                        .and(activeAt(view, tx.getCurrentSnapshotId())));
     }
 
     private static boolean hasActiveTable(DucklakeWriteTransaction tx, long schemaId, String tableName)
     {
+        var tab = DUCKLAKE_TABLE.as("tab");
         return tx.dsl().fetchExists(
                 DSL.selectOne()
-                        .from(DUCKLAKE_TABLE)
-                        .where(DUCKLAKE_TABLE.SCHEMA_ID.eq(schemaId))
-                        .and(DUCKLAKE_TABLE.TABLE_NAME.eq(tableName))
-                        .and(activeAt(DUCKLAKE_TABLE, tx.getCurrentSnapshotId())));
+                        .from(tab)
+                        .where(tab.SCHEMA_ID.eq(schemaId))
+                        .and(tab.TABLE_NAME.eq(tableName))
+                        .and(activeAt(tab, tx.getCurrentSnapshotId())));
     }
 
     private record ActiveViewRow(
@@ -1268,17 +1308,18 @@ public class JdbcDucklakeCatalog
     @Override
     public void createSchema(String schemaName)
     {
+        var sch = DUCKLAKE_SCHEMA.as("sch");
         executeWriteTransaction("create schema " + schemaName, tx -> {
             long schemaId = tx.allocateCatalogId();
             tx.addChange(changeCreatedSchema(schemaName));
 
-            tx.dsl().insertInto(DUCKLAKE_SCHEMA)
-                    .set(DUCKLAKE_SCHEMA.SCHEMA_ID, schemaId)
-                    .set(DUCKLAKE_SCHEMA.SCHEMA_UUID, UUID.fromString(newCatalogUuid()))
-                    .set(DUCKLAKE_SCHEMA.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                    .set(DUCKLAKE_SCHEMA.SCHEMA_NAME, schemaName)
-                    .set(DUCKLAKE_SCHEMA.PATH, schemaName + "/")
-                    .set(DUCKLAKE_SCHEMA.PATH_IS_RELATIVE, true)
+            tx.dsl().insertInto(sch)
+                    .set(sch.SCHEMA_ID, schemaId)
+                    .set(sch.SCHEMA_UUID, UUID.fromString(newCatalogUuid()))
+                    .set(sch.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(sch.SCHEMA_NAME, schemaName)
+                    .set(sch.PATH, schemaName + "/")
+                    .set(sch.PATH_IS_RELATIVE, true)
                     .execute();
 
             tx.incrementSchemaVersion();
@@ -1288,6 +1329,7 @@ public class JdbcDucklakeCatalog
     @Override
     public void dropSchema(String schemaName)
     {
+        var sch = DUCKLAKE_SCHEMA.as("sch");
         executeWriteTransaction("drop schema " + schemaName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
 
@@ -1297,10 +1339,10 @@ public class JdbcDucklakeCatalog
 
             tx.addChange("dropped_schema:" + schemaId);
 
-            tx.dsl().update(DUCKLAKE_SCHEMA)
-                    .set(DUCKLAKE_SCHEMA.END_SNAPSHOT, tx.getNewSnapshotId())
-                    .where(DUCKLAKE_SCHEMA.SCHEMA_ID.eq(schemaId))
-                    .and(DUCKLAKE_SCHEMA.END_SNAPSHOT.isNull())
+            tx.dsl().update(sch)
+                    .set(sch.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(sch.SCHEMA_ID.eq(schemaId))
+                    .and(sch.END_SNAPSHOT.isNull())
                     .execute();
 
             tx.incrementSchemaVersion();
@@ -1314,20 +1356,23 @@ public class JdbcDucklakeCatalog
             List<TableColumnSpec> columns,
             Optional<List<PartitionFieldSpec>> partitionSpec)
     {
+        var tab = DUCKLAKE_TABLE.as("tab");
+        var partinfo = DUCKLAKE_PARTITION_INFO.as("partinfo");
+        var partcol = DUCKLAKE_PARTITION_COLUMN.as("partcol");
         executeWriteTransaction("create table " + schemaName + "." + tableName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long tableId = tx.allocateCatalogId();
             DSLContext ctx = tx.dsl();
 
             // 1. Insert table row
-            ctx.insertInto(DUCKLAKE_TABLE)
-                    .set(DUCKLAKE_TABLE.TABLE_ID, tableId)
-                    .set(DUCKLAKE_TABLE.TABLE_UUID, UUID.fromString(newCatalogUuid()))
-                    .set(DUCKLAKE_TABLE.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                    .set(DUCKLAKE_TABLE.SCHEMA_ID, schemaId)
-                    .set(DUCKLAKE_TABLE.TABLE_NAME, tableName)
-                    .set(DUCKLAKE_TABLE.PATH, tableName + "/")
-                    .set(DUCKLAKE_TABLE.PATH_IS_RELATIVE, true)
+            ctx.insertInto(tab)
+                    .set(tab.TABLE_ID, tableId)
+                    .set(tab.TABLE_UUID, UUID.fromString(newCatalogUuid()))
+                    .set(tab.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(tab.SCHEMA_ID, schemaId)
+                    .set(tab.TABLE_NAME, tableName)
+                    .set(tab.PATH, tableName + "/")
+                    .set(tab.PATH_IS_RELATIVE, true)
                     .execute();
 
             // 2. Insert column rows (flattening nested types with parent links)
@@ -1347,10 +1392,10 @@ public class JdbcDucklakeCatalog
             if (partitionSpec.isPresent() && !partitionSpec.get().isEmpty()) {
                 long partitionId = tx.allocateCatalogId();
 
-                ctx.insertInto(DUCKLAKE_PARTITION_INFO)
-                        .set(DUCKLAKE_PARTITION_INFO.PARTITION_ID, partitionId)
-                        .set(DUCKLAKE_PARTITION_INFO.TABLE_ID, tableId)
-                        .set(DUCKLAKE_PARTITION_INFO.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                ctx.insertInto(partinfo)
+                        .set(partinfo.PARTITION_ID, partitionId)
+                        .set(partinfo.TABLE_ID, tableId)
+                        .set(partinfo.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
                         .execute();
 
                 long keyIndex = 0;
@@ -1359,12 +1404,12 @@ public class JdbcDucklakeCatalog
                     if (columnId == null) {
                         throw new RuntimeException("Partition column not found: " + field.columnName());
                     }
-                    ctx.insertInto(DUCKLAKE_PARTITION_COLUMN)
-                            .set(DUCKLAKE_PARTITION_COLUMN.PARTITION_ID, partitionId)
-                            .set(DUCKLAKE_PARTITION_COLUMN.TABLE_ID, tableId)
-                            .set(DUCKLAKE_PARTITION_COLUMN.PARTITION_KEY_INDEX, keyIndex++)
-                            .set(DUCKLAKE_PARTITION_COLUMN.COLUMN_ID, columnId)
-                            .set(DUCKLAKE_PARTITION_COLUMN.TRANSFORM, field.transform().name().toLowerCase(ENGLISH))
+                    ctx.insertInto(partcol)
+                            .set(partcol.PARTITION_ID, partitionId)
+                            .set(partcol.TABLE_ID, tableId)
+                            .set(partcol.PARTITION_KEY_INDEX, keyIndex++)
+                            .set(partcol.COLUMN_ID, columnId)
+                            .set(partcol.TRANSFORM, field.transform().name().toLowerCase(ENGLISH))
                             .execute();
                 }
             }
@@ -1390,17 +1435,18 @@ public class JdbcDucklakeCatalog
         // and only meaningful when there's a real expression to interpret. If we ever wire up
         // user-written Trino DEFAULT expressions, set 'trino' here — the dialect names the SQL
         // syntax of the expression, which would be plain Trino SQL.
-        tx.dsl().insertInto(DUCKLAKE_COLUMN)
-                .set(DUCKLAKE_COLUMN.COLUMN_ID, columnId)
-                .set(DUCKLAKE_COLUMN.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                .set(DUCKLAKE_COLUMN.TABLE_ID, tableId)
-                .set(DUCKLAKE_COLUMN.COLUMN_ORDER, columnOrder)
-                .set(DUCKLAKE_COLUMN.COLUMN_NAME, column.name())
-                .set(DUCKLAKE_COLUMN.COLUMN_TYPE, column.ducklakeType())
-                .set(DUCKLAKE_COLUMN.DEFAULT_VALUE, "NULL")
-                .set(DUCKLAKE_COLUMN.NULLS_ALLOWED, column.nullable())
-                .set(DUCKLAKE_COLUMN.PARENT_COLUMN, parentColumnId.isPresent() ? parentColumnId.getAsLong() : null)
-                .set(DUCKLAKE_COLUMN.DEFAULT_VALUE_TYPE, "literal")
+        var col = DUCKLAKE_COLUMN.as("col");
+        tx.dsl().insertInto(col)
+                .set(col.COLUMN_ID, columnId)
+                .set(col.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(col.TABLE_ID, tableId)
+                .set(col.COLUMN_ORDER, columnOrder)
+                .set(col.COLUMN_NAME, column.name())
+                .set(col.COLUMN_TYPE, column.ducklakeType())
+                .set(col.DEFAULT_VALUE, "NULL")
+                .set(col.NULLS_ALLOWED, column.nullable())
+                .set(col.PARENT_COLUMN, parentColumnId.isPresent() ? parentColumnId.getAsLong() : null)
+                .set(col.DEFAULT_VALUE_TYPE, "literal")
                 .execute();
 
         // Insert children with their own column_order (0-based within parent)
@@ -1415,6 +1461,11 @@ public class JdbcDucklakeCatalog
     @Override
     public void dropTable(String schemaName, String tableName)
     {
+        var tab = DUCKLAKE_TABLE.as("tab");
+        var col = DUCKLAKE_COLUMN.as("col");
+        var file = DUCKLAKE_DATA_FILE.as("file");
+        var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
+        var partinfo = DUCKLAKE_PARTITION_INFO.as("partinfo");
         executeWriteTransaction("drop table " + schemaName + "." + tableName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long tableId = tx.resolveTableId(schemaId, tableName);
@@ -1422,41 +1473,41 @@ public class JdbcDucklakeCatalog
             long newSnapshotId = tx.getNewSnapshotId();
 
             // End-snapshot the table row
-            ctx.update(DUCKLAKE_TABLE)
-                    .set(DUCKLAKE_TABLE.END_SNAPSHOT, newSnapshotId)
-                    .where(DUCKLAKE_TABLE.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_TABLE.END_SNAPSHOT.isNull())
+            ctx.update(tab)
+                    .set(tab.END_SNAPSHOT, newSnapshotId)
+                    .where(tab.TABLE_ID.eq(tableId))
+                    .and(tab.END_SNAPSHOT.isNull())
                     .execute();
 
             // End-snapshot all active columns
-            ctx.update(DUCKLAKE_COLUMN)
-                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, newSnapshotId)
-                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
+            ctx.update(col)
+                    .set(col.END_SNAPSHOT, newSnapshotId)
+                    .where(col.TABLE_ID.eq(tableId))
+                    .and(col.END_SNAPSHOT.isNull())
                     .execute();
 
             // End-snapshot all active data files
-            ctx.update(DUCKLAKE_DATA_FILE)
-                    .set(DUCKLAKE_DATA_FILE.END_SNAPSHOT, newSnapshotId)
-                    .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_DATA_FILE.END_SNAPSHOT.isNull())
+            ctx.update(file)
+                    .set(file.END_SNAPSHOT, newSnapshotId)
+                    .where(file.TABLE_ID.eq(tableId))
+                    .and(file.END_SNAPSHOT.isNull())
                     .execute();
 
             // End-snapshot all active delete files (matched via data_file subquery)
-            ctx.update(DUCKLAKE_DELETE_FILE)
-                    .set(DUCKLAKE_DELETE_FILE.END_SNAPSHOT, newSnapshotId)
-                    .where(DUCKLAKE_DELETE_FILE.DATA_FILE_ID.in(
-                            DSL.select(DUCKLAKE_DATA_FILE.DATA_FILE_ID)
-                                    .from(DUCKLAKE_DATA_FILE)
-                                    .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId))))
-                    .and(DUCKLAKE_DELETE_FILE.END_SNAPSHOT.isNull())
+            ctx.update(delfile)
+                    .set(delfile.END_SNAPSHOT, newSnapshotId)
+                    .where(delfile.DATA_FILE_ID.in(
+                            DSL.select(file.DATA_FILE_ID)
+                                    .from(file)
+                                    .where(file.TABLE_ID.eq(tableId))))
+                    .and(delfile.END_SNAPSHOT.isNull())
                     .execute();
 
             // End-snapshot partition info
-            ctx.update(DUCKLAKE_PARTITION_INFO)
-                    .set(DUCKLAKE_PARTITION_INFO.END_SNAPSHOT, newSnapshotId)
-                    .where(DUCKLAKE_PARTITION_INFO.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_PARTITION_INFO.END_SNAPSHOT.isNull())
+            ctx.update(partinfo)
+                    .set(partinfo.END_SNAPSHOT, newSnapshotId)
+                    .where(partinfo.TABLE_ID.eq(tableId))
+                    .and(partinfo.END_SNAPSHOT.isNull())
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
@@ -1467,13 +1518,14 @@ public class JdbcDucklakeCatalog
     @Override
     public void addColumn(long tableId, TableColumnSpec column)
     {
+        var col = DUCKLAKE_COLUMN.as("col");
         executeWriteTransaction("add column to table " + tableId, tx -> {
             // Find the current max column_order for top-level columns
-            Long maxOrder = tx.dsl().select(DSL.max(DUCKLAKE_COLUMN.COLUMN_ORDER))
-                    .from(DUCKLAKE_COLUMN)
-                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_COLUMN.PARENT_COLUMN.isNull())
-                    .and(activeAt(DUCKLAKE_COLUMN, tx.getCurrentSnapshotId()))
+            Long maxOrder = tx.dsl().select(DSL.max(col.COLUMN_ORDER))
+                    .from(col)
+                    .where(col.TABLE_ID.eq(tableId))
+                    .and(col.PARENT_COLUMN.isNull())
+                    .and(activeAt(col, tx.getCurrentSnapshotId()))
                     .fetchOne(0, Long.class);
 
             insertColumnTree(tx, tableId, column, orZero(maxOrder) + 1, OptionalLong.empty());
@@ -1485,14 +1537,15 @@ public class JdbcDucklakeCatalog
     @Override
     public void dropColumn(long tableId, long columnId)
     {
+        var col = DUCKLAKE_COLUMN.as("col");
         executeWriteTransaction("drop column from table " + tableId, tx -> {
             // End-snapshot the column and all its children (for nested types)
-            tx.dsl().update(DUCKLAKE_COLUMN)
-                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, tx.getNewSnapshotId())
-                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId)
-                            .or(DUCKLAKE_COLUMN.PARENT_COLUMN.eq(columnId)))
-                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
+            tx.dsl().update(col)
+                    .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(col.TABLE_ID.eq(tableId))
+                    .and(col.COLUMN_ID.eq(columnId)
+                            .or(col.PARENT_COLUMN.eq(columnId)))
+                    .and(col.END_SNAPSHOT.isNull())
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
@@ -1503,45 +1556,46 @@ public class JdbcDucklakeCatalog
     @Override
     public void renameColumn(long tableId, long columnId, String newName)
     {
+        var col = DUCKLAKE_COLUMN.as("col");
         executeWriteTransaction("rename column in table " + tableId, tx -> {
             DSLContext ctx = tx.dsl();
 
             // Read the current column metadata
-            Record existing = ctx.select(DUCKLAKE_COLUMN.COLUMN_ORDER, DUCKLAKE_COLUMN.COLUMN_TYPE, DUCKLAKE_COLUMN.NULLS_ALLOWED)
-                    .from(DUCKLAKE_COLUMN)
-                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
-                    .and(activeAt(DUCKLAKE_COLUMN, tx.getCurrentSnapshotId()))
+            Record existing = ctx.select(col.COLUMN_ORDER, col.COLUMN_TYPE, col.NULLS_ALLOWED)
+                    .from(col)
+                    .where(col.TABLE_ID.eq(tableId))
+                    .and(col.COLUMN_ID.eq(columnId))
+                    .and(activeAt(col, tx.getCurrentSnapshotId()))
                     .fetchOne();
             if (existing == null) {
                 throw new RuntimeException("Column not found: " + columnId);
             }
-            long columnOrder = orZero(existing.get(DUCKLAKE_COLUMN.COLUMN_ORDER));
-            String columnType = existing.get(DUCKLAKE_COLUMN.COLUMN_TYPE);
-            boolean nullsAllowed = Boolean.TRUE.equals(existing.get(DUCKLAKE_COLUMN.NULLS_ALLOWED));
+            long columnOrder = orZero(existing.get(col.COLUMN_ORDER));
+            String columnType = existing.get(col.COLUMN_TYPE);
+            boolean nullsAllowed = Boolean.TRUE.equals(existing.get(col.NULLS_ALLOWED));
 
             // End-snapshot the current version
-            ctx.update(DUCKLAKE_COLUMN)
-                    .set(DUCKLAKE_COLUMN.END_SNAPSHOT, tx.getNewSnapshotId())
-                    .where(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId))
-                    .and(DUCKLAKE_COLUMN.COLUMN_ID.eq(columnId))
-                    .and(DUCKLAKE_COLUMN.END_SNAPSHOT.isNull())
-                    .and(DUCKLAKE_COLUMN.PARENT_COLUMN.isNull())
+            ctx.update(col)
+                    .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(col.TABLE_ID.eq(tableId))
+                    .and(col.COLUMN_ID.eq(columnId))
+                    .and(col.END_SNAPSHOT.isNull())
+                    .and(col.PARENT_COLUMN.isNull())
                     .execute();
 
             // Insert new version with same column_id but new name. Default-value columns
             // preserve the "no default" sentinel (`'NULL'` string literal) and leave
             // `default_value_dialect` SQL NULL; same policy as insertColumnTree.
-            ctx.insertInto(DUCKLAKE_COLUMN)
-                    .set(DUCKLAKE_COLUMN.COLUMN_ID, columnId)
-                    .set(DUCKLAKE_COLUMN.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
-                    .set(DUCKLAKE_COLUMN.TABLE_ID, tableId)
-                    .set(DUCKLAKE_COLUMN.COLUMN_ORDER, columnOrder)
-                    .set(DUCKLAKE_COLUMN.COLUMN_NAME, newName)
-                    .set(DUCKLAKE_COLUMN.COLUMN_TYPE, columnType)
-                    .set(DUCKLAKE_COLUMN.DEFAULT_VALUE, "NULL")
-                    .set(DUCKLAKE_COLUMN.NULLS_ALLOWED, nullsAllowed)
-                    .set(DUCKLAKE_COLUMN.DEFAULT_VALUE_TYPE, "literal")
+            ctx.insertInto(col)
+                    .set(col.COLUMN_ID, columnId)
+                    .set(col.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(col.TABLE_ID, tableId)
+                    .set(col.COLUMN_ORDER, columnOrder)
+                    .set(col.COLUMN_NAME, newName)
+                    .set(col.COLUMN_TYPE, columnType)
+                    .set(col.DEFAULT_VALUE, "NULL")
+                    .set(col.NULLS_ALLOWED, nullsAllowed)
+                    .set(col.DEFAULT_VALUE_TYPE, "literal")
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
@@ -1565,12 +1619,17 @@ public class JdbcDucklakeCatalog
     private void applyInsertFragments(DucklakeWriteTransaction tx, long tableId, List<DucklakeWriteFragment> fragments)
     {
         DSLContext ctx = tx.dsl();
+        var tabstats = DUCKLAKE_TABLE_STATS.as("tabstats");
+        var file = DUCKLAKE_DATA_FILE.as("file");
+        var partval = DUCKLAKE_FILE_PARTITION_VALUE.as("partval");
+        var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
+        var tabcolst = DUCKLAKE_TABLE_COLUMN_STATS.as("tabcolst");
 
         // Read current table stats (may not exist yet — DuckDB creates them on first insert).
         // Note: ducklake_table_stats has no PK/UNIQUE on table_id, so Postgres `ON CONFLICT`
         // isn't usable here; we do an explicit existence probe + INSERT-or-UPDATE.
-        DucklakeTableStatsRecord existingStats = ctx.selectFrom(DUCKLAKE_TABLE_STATS)
-                .where(DUCKLAKE_TABLE_STATS.TABLE_ID.eq(tableId))
+        DucklakeTableStatsRecord existingStats = ctx.selectFrom(tabstats)
+                .where(tabstats.TABLE_ID.eq(tableId))
                 .fetchOne();
 
         long runningRowId = existingStats == null ? 0L : orZero(existingStats.getNextRowId());
@@ -1583,7 +1642,7 @@ public class JdbcDucklakeCatalog
         for (DucklakeWriteFragment fragment : fragments) {
             long dataFileId = tx.allocateFileId();
 
-            DucklakeDataFileRecord dataFile = ctx.newRecord(DUCKLAKE_DATA_FILE);
+            DucklakeDataFileRecord dataFile = ctx.newRecord(file);
             dataFile.setDataFileId(dataFileId);
             dataFile.setTableId(tableId);
             dataFile.setBeginSnapshot(tx.getNewSnapshotId());
@@ -1601,7 +1660,7 @@ public class JdbcDucklakeCatalog
             dataFileRecords.add(dataFile);
 
             for (Map.Entry<Integer, String> partitionValue : fragment.partitionValues().entrySet()) {
-                DucklakeFilePartitionValueRecord r = ctx.newRecord(DUCKLAKE_FILE_PARTITION_VALUE);
+                DucklakeFilePartitionValueRecord r = ctx.newRecord(partval);
                 r.setTableId(tableId);
                 r.setDataFileId(dataFileId);
                 r.setPartitionKeyIndex((long) partitionValue.getKey());
@@ -1610,7 +1669,7 @@ public class JdbcDucklakeCatalog
             }
 
             for (DucklakeFileColumnStats columnStats : fragment.columnStats()) {
-                DucklakeFileColumnStatsRecord r = ctx.newRecord(DUCKLAKE_FILE_COLUMN_STATS);
+                DucklakeFileColumnStatsRecord r = ctx.newRecord(colstats);
                 r.setDataFileId(dataFileId);
                 r.setTableId(tableId);
                 r.setColumnId(columnStats.columnId());
@@ -1641,19 +1700,19 @@ public class JdbcDucklakeCatalog
 
         // Insert or update ducklake_table_stats (no PK/UNIQUE → can't use ON CONFLICT)
         if (existingStats != null) {
-            ctx.update(DUCKLAKE_TABLE_STATS)
-                    .set(DUCKLAKE_TABLE_STATS.RECORD_COUNT, orZero(existingStats.getRecordCount()) + totalRecords)
-                    .set(DUCKLAKE_TABLE_STATS.NEXT_ROW_ID, orZero(existingStats.getNextRowId()) + totalRecords)
-                    .set(DUCKLAKE_TABLE_STATS.FILE_SIZE_BYTES, orZero(existingStats.getFileSizeBytes()) + totalFileSize)
-                    .where(DUCKLAKE_TABLE_STATS.TABLE_ID.eq(tableId))
+            ctx.update(tabstats)
+                    .set(tabstats.RECORD_COUNT, orZero(existingStats.getRecordCount()) + totalRecords)
+                    .set(tabstats.NEXT_ROW_ID, orZero(existingStats.getNextRowId()) + totalRecords)
+                    .set(tabstats.FILE_SIZE_BYTES, orZero(existingStats.getFileSizeBytes()) + totalFileSize)
+                    .where(tabstats.TABLE_ID.eq(tableId))
                     .execute();
         }
         else {
-            ctx.insertInto(DUCKLAKE_TABLE_STATS)
-                    .set(DUCKLAKE_TABLE_STATS.TABLE_ID, tableId)
-                    .set(DUCKLAKE_TABLE_STATS.RECORD_COUNT, totalRecords)
-                    .set(DUCKLAKE_TABLE_STATS.NEXT_ROW_ID, totalRecords)
-                    .set(DUCKLAKE_TABLE_STATS.FILE_SIZE_BYTES, totalFileSize)
+            ctx.insertInto(tabstats)
+                    .set(tabstats.TABLE_ID, tableId)
+                    .set(tabstats.RECORD_COUNT, totalRecords)
+                    .set(tabstats.NEXT_ROW_ID, totalRecords)
+                    .set(tabstats.FILE_SIZE_BYTES, totalFileSize)
                     .execute();
         }
 
@@ -1684,31 +1743,31 @@ public class JdbcDucklakeCatalog
                 // Postgres), so we only emit the SET when the flag is true — in which case
                 // the new value is unconditionally true. This sidesteps the missing
                 // `Field<Boolean>.or(Field<Boolean>)` overload in jOOQ.
-                Param<String> minParam = DSL.val(agg.minValue, DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE.getDataType());
-                Param<String> maxParam = DSL.val(agg.maxValue, DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE.getDataType());
-                var upd = ctx.update(DUCKLAKE_TABLE_COLUMN_STATS)
-                        .set(DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE,
-                                DSL.when(DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE.isNull(), minParam)
-                                        .when(minParam.isNull(), DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE)
-                                        .when(minParam.lt(DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE), minParam)
-                                        .otherwise(DUCKLAKE_TABLE_COLUMN_STATS.MIN_VALUE))
-                        .set(DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE,
-                                DSL.when(DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE.isNull(), maxParam)
-                                        .when(maxParam.isNull(), DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE)
-                                        .when(maxParam.gt(DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE), maxParam)
-                                        .otherwise(DUCKLAKE_TABLE_COLUMN_STATS.MAX_VALUE));
+                Param<String> minParam = DSL.val(agg.minValue, tabcolst.MIN_VALUE.getDataType());
+                Param<String> maxParam = DSL.val(agg.maxValue, tabcolst.MAX_VALUE.getDataType());
+                var upd = ctx.update(tabcolst)
+                        .set(tabcolst.MIN_VALUE,
+                                DSL.when(tabcolst.MIN_VALUE.isNull(), minParam)
+                                        .when(minParam.isNull(), tabcolst.MIN_VALUE)
+                                        .when(minParam.lt(tabcolst.MIN_VALUE), minParam)
+                                        .otherwise(tabcolst.MIN_VALUE))
+                        .set(tabcolst.MAX_VALUE,
+                                DSL.when(tabcolst.MAX_VALUE.isNull(), maxParam)
+                                        .when(maxParam.isNull(), tabcolst.MAX_VALUE)
+                                        .when(maxParam.gt(tabcolst.MAX_VALUE), maxParam)
+                                        .otherwise(tabcolst.MAX_VALUE));
                 if (agg.containsNull) {
-                    upd = upd.set(DUCKLAKE_TABLE_COLUMN_STATS.CONTAINS_NULL, true);
+                    upd = upd.set(tabcolst.CONTAINS_NULL, true);
                 }
                 if (agg.containsNan) {
-                    upd = upd.set(DUCKLAKE_TABLE_COLUMN_STATS.CONTAINS_NAN, true);
+                    upd = upd.set(tabcolst.CONTAINS_NAN, true);
                 }
-                upd.where(DUCKLAKE_TABLE_COLUMN_STATS.TABLE_ID.eq(tableId))
-                        .and(DUCKLAKE_TABLE_COLUMN_STATS.COLUMN_ID.eq(columnId))
+                upd.where(tabcolst.TABLE_ID.eq(tableId))
+                        .and(tabcolst.COLUMN_ID.eq(columnId))
                         .execute();
             }
             else {
-                DucklakeTableColumnStatsRecord r = ctx.newRecord(DUCKLAKE_TABLE_COLUMN_STATS);
+                DucklakeTableColumnStatsRecord r = ctx.newRecord(tabcolst);
                 r.setTableId(tableId);
                 r.setColumnId(columnId);
                 r.setContainsNull(agg.containsNull);
@@ -1730,11 +1789,12 @@ public class JdbcDucklakeCatalog
         if (candidateColumnIds.isEmpty()) {
             return Set.of();
         }
-        return tx.dsl().select(DUCKLAKE_TABLE_COLUMN_STATS.COLUMN_ID)
-                .from(DUCKLAKE_TABLE_COLUMN_STATS)
-                .where(DUCKLAKE_TABLE_COLUMN_STATS.TABLE_ID.eq(tableId))
-                .and(DUCKLAKE_TABLE_COLUMN_STATS.COLUMN_ID.in(candidateColumnIds))
-                .fetchSet(DUCKLAKE_TABLE_COLUMN_STATS.COLUMN_ID);
+        var tabcolst = DUCKLAKE_TABLE_COLUMN_STATS.as("tabcolst");
+        return tx.dsl().select(tabcolst.COLUMN_ID)
+                .from(tabcolst)
+                .where(tabcolst.TABLE_ID.eq(tableId))
+                .and(tabcolst.COLUMN_ID.in(candidateColumnIds))
+                .fetchSet(tabcolst.COLUMN_ID);
     }
 
     @Override
@@ -1773,13 +1833,15 @@ public class JdbcDucklakeCatalog
     private void applyDeleteFragments(DucklakeWriteTransaction tx, long tableId, List<DucklakeDeleteFragment> deleteFragments)
     {
         DSLContext ctx = tx.dsl();
+        var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
+        var tabstats = DUCKLAKE_TABLE_STATS.as("tabstats");
         long totalDeleteCount = 0;
         List<DucklakeDeleteFileRecord> deleteFileRecords = new ArrayList<>();
 
         for (DucklakeDeleteFragment fragment : deleteFragments) {
             long deleteFileId = tx.allocateFileId();
 
-            DucklakeDeleteFileRecord r = ctx.newRecord(DUCKLAKE_DELETE_FILE);
+            DucklakeDeleteFileRecord r = ctx.newRecord(delfile);
             r.setDeleteFileId(deleteFileId);
             r.setTableId(tableId);
             r.setBeginSnapshot(tx.getNewSnapshotId());
@@ -1800,10 +1862,10 @@ public class JdbcDucklakeCatalog
         }
 
         // Update table stats: decrement record count with GREATEST(0, record_count - ?)
-        ctx.update(DUCKLAKE_TABLE_STATS)
-                .set(DUCKLAKE_TABLE_STATS.RECORD_COUNT,
-                        DSL.greatest(DSL.inline(0L), DUCKLAKE_TABLE_STATS.RECORD_COUNT.minus(totalDeleteCount)))
-                .where(DUCKLAKE_TABLE_STATS.TABLE_ID.eq(tableId))
+        ctx.update(tabstats)
+                .set(tabstats.RECORD_COUNT,
+                        DSL.greatest(DSL.inline(0L), tabstats.RECORD_COUNT.minus(totalDeleteCount)))
+                .where(tabstats.TABLE_ID.eq(tableId))
                 .execute();
     }
 

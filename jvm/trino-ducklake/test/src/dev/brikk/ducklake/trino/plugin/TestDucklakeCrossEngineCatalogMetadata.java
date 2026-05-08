@@ -481,10 +481,11 @@ public class TestDucklakeCrossEngineCatalogMetadata
             // Schema-version rows with table_id IS NULL track view/schema-level DDL events
             // (CREATE VIEW, DROP SCHEMA, etc.) — the predicate isn't generic enough to live
             // in CatalogQueries, so it's expressed inline against the generated columns.
+            var schver = DUCKLAKE_SCHEMA_VERSIONS.as("schver");
             Integer count = dsl.selectCount()
-                    .from(DUCKLAKE_SCHEMA_VERSIONS)
-                    .where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.isNull()
-                            .and(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION.gt(sinceExclusiveSchemaVersion)))
+                    .from(schver)
+                    .where(schver.TABLE_ID.isNull()
+                            .and(schver.SCHEMA_VERSION.gt(sinceExclusiveSchemaVersion)))
                     .fetchOne(0, Integer.class);
             return count == null ? 0L : count.longValue();
         }

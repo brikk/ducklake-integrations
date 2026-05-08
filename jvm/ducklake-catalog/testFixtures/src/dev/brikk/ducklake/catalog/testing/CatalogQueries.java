@@ -78,8 +78,9 @@ public final class CatalogQueries
     public static OptionalLong latestSnapshotIdOrEmpty(DSLContext dsl)
     {
         requireNonNull(dsl, "dsl is null");
-        Long id = dsl.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
-                .from(DUCKLAKE_SNAPSHOT)
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long id = dsl.select(DSL.max(snap.SNAPSHOT_ID))
+                .from(snap)
                 .fetchOne(0, Long.class);
         return id == null ? OptionalLong.empty() : OptionalLong.of(id);
     }
@@ -91,8 +92,9 @@ public final class CatalogQueries
     public static Select<Record1<Long>> latestSnapshotIdSubquery(DSLContext dsl)
     {
         requireNonNull(dsl, "dsl is null");
-        return dsl.select(DSL.max(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID))
-                .from(DUCKLAKE_SNAPSHOT);
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        return dsl.select(DSL.max(snap.SNAPSHOT_ID))
+                .from(snap);
     }
 
     /**
@@ -102,9 +104,10 @@ public final class CatalogQueries
     public static long currentSchemaVersion(DSLContext dsl)
     {
         requireNonNull(dsl, "dsl is null");
-        Long version = dsl.select(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION)
-                .from(DUCKLAKE_SNAPSHOT)
-                .orderBy(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.desc())
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long version = dsl.select(snap.SCHEMA_VERSION)
+                .from(snap)
+                .orderBy(snap.SNAPSHOT_ID.desc())
                 .limit(1)
                 .fetchOne(0, Long.class);
         if (version == null) {
@@ -120,9 +123,10 @@ public final class CatalogQueries
     public static OptionalLong snapshotSchemaVersion(DSLContext dsl, long snapshotId)
     {
         requireNonNull(dsl, "dsl is null");
-        Long version = dsl.select(DUCKLAKE_SNAPSHOT.SCHEMA_VERSION)
-                .from(DUCKLAKE_SNAPSHOT)
-                .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.eq(snapshotId))
+        var snap = DUCKLAKE_SNAPSHOT.as("snap");
+        Long version = dsl.select(snap.SCHEMA_VERSION)
+                .from(snap)
+                .where(snap.SNAPSHOT_ID.eq(snapshotId))
                 .fetchOne(0, Long.class);
         return version == null ? OptionalLong.empty() : OptionalLong.of(version);
     }
@@ -143,9 +147,10 @@ public final class CatalogQueries
     public static OptionalLong activeTableIdOrEmpty(DSLContext dsl, String tableName)
     {
         requireNonNull(dsl, "dsl is null");
-        Long id = dsl.select(DUCKLAKE_TABLE.TABLE_ID)
-                .from(DUCKLAKE_TABLE)
-                .where(activeTableNamed(tableName))
+        var tab = DUCKLAKE_TABLE.as("tab");
+        Long id = dsl.select(tab.TABLE_ID)
+                .from(tab)
+                .where(activeTableNamed(tab, tableName))
                 .fetchOne(0, Long.class);
         return id == null ? OptionalLong.empty() : OptionalLong.of(id);
     }
@@ -160,10 +165,11 @@ public final class CatalogQueries
     public static long activeDataFileCount(DSLContext dsl, long tableId)
     {
         requireNonNull(dsl, "dsl is null");
+        var file = DUCKLAKE_DATA_FILE.as("file");
         Integer count = dsl.selectCount()
-                .from(DUCKLAKE_DATA_FILE)
-                .where(DUCKLAKE_DATA_FILE.TABLE_ID.eq(tableId)
-                        .and(currentlyActive(DUCKLAKE_DATA_FILE.END_SNAPSHOT)))
+                .from(file)
+                .where(file.TABLE_ID.eq(tableId)
+                        .and(currentlyActive(file.END_SNAPSHOT)))
                 .fetchOne(0, Integer.class);
         return count == null ? 0L : count.longValue();
     }
@@ -178,13 +184,14 @@ public final class CatalogQueries
     public static List<SchemaVersionRow> schemaVersionsByTable(DSLContext dsl, long tableId)
     {
         requireNonNull(dsl, "dsl is null");
+        var schver = DUCKLAKE_SCHEMA_VERSIONS.as("schver");
         return dsl.select(
-                        DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT,
-                        DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION,
-                        DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID)
-                .from(DUCKLAKE_SCHEMA_VERSIONS)
-                .where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.eq(tableId))
-                .orderBy(DUCKLAKE_SCHEMA_VERSIONS.BEGIN_SNAPSHOT)
+                        schver.BEGIN_SNAPSHOT,
+                        schver.SCHEMA_VERSION,
+                        schver.TABLE_ID)
+                .from(schver)
+                .where(schver.TABLE_ID.eq(tableId))
+                .orderBy(schver.BEGIN_SNAPSHOT)
                 .fetch(r -> new SchemaVersionRow(
                         r.value1() == null ? 0L : r.value1(),
                         r.value2() == null ? 0L : r.value2(),
@@ -203,9 +210,10 @@ public final class CatalogQueries
     public static List<Long> inlinedDataSchemaVersions(DSLContext dsl, long tableId)
     {
         requireNonNull(dsl, "dsl is null");
-        return dsl.select(DUCKLAKE_INLINED_DATA_TABLES.SCHEMA_VERSION)
-                .from(DUCKLAKE_INLINED_DATA_TABLES)
-                .where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.eq(tableId))
+        var inlined = DUCKLAKE_INLINED_DATA_TABLES.as("inlined");
+        return dsl.select(inlined.SCHEMA_VERSION)
+                .from(inlined)
+                .where(inlined.TABLE_ID.eq(tableId))
                 .fetch(r -> r.value1());
     }
 
