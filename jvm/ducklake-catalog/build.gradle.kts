@@ -37,6 +37,11 @@ dependencies {
     // consumers shouldn't need to redeclare them.
     testFixturesApi(libs.testcontainers.core)
     testFixturesApi(libs.testcontainers.postgresql)
+    // jOOQ types (DSLContext, Condition, Field) appear on the public API of CatalogQueries
+    // and CatalogPredicates, so consumers (e.g. trino-ducklake test classpath) get them
+    // transitively. Main src declares jOOQ as `implementation`, which doesn't expose it
+    // to test-fixture consumers, so it has to be declared here too.
+    testFixturesApi(libs.bundles.jooq)
 
     testImplementation(libs.duckdb.jdbc)
     testRuntimeOnly(libs.postgres.jdbc)

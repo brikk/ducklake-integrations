@@ -13,15 +13,16 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogQueries.SchemaVersionRow;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.testing.MaterializedResult;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -189,69 +190,36 @@ public class TestDucklakeSnapshotAndSchemaVersion
     private long getActiveTableId(String tableName)
             throws Exception
     {
-        try (Connection connection = openCatalogConnection();
-                PreparedStatement statement = connection.prepareStatement(
-                        "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL")) {
-            statement.setString(1, tableName);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    throw new AssertionError("Missing active table: " + tableName);
-                }
-                return resultSet.getLong("table_id");
-            }
+        try (Connection connection = openCatalogConnection()) {
+            return CatalogQueries.activeTableId(CatalogTestSupport.dsl(connection), tableName);
         }
     }
 
     private List<SchemaVersionRow> getSchemaVersionRows(long tableId)
             throws Exception
     {
-        try (Connection connection = openCatalogConnection();
-                PreparedStatement statement = connection.prepareStatement(
-                        "SELECT begin_snapshot, schema_version, table_id " +
-                                "FROM ducklake_schema_versions WHERE table_id = ? ORDER BY begin_snapshot")) {
-            statement.setLong(1, tableId);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                List<SchemaVersionRow> rows = new ArrayList<>();
-                while (resultSet.next()) {
-                    rows.add(new SchemaVersionRow(
-                            resultSet.getLong("begin_snapshot"),
-                            resultSet.getLong("schema_version"),
-                            resultSet.getLong("table_id")));
-                }
-                return rows;
-            }
+        try (Connection connection = openCatalogConnection()) {
+            return CatalogQueries.schemaVersionsByTable(CatalogTestSupport.dsl(connection), tableId);
         }
     }
 
     private long getCurrentSchemaVersion()
             throws Exception
     {
-        try (Connection connection = openCatalogConnection();
-                PreparedStatement statement = connection.prepareStatement(
-                        "SELECT schema_version FROM ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1");
-                ResultSet resultSet = statement.executeQuery()) {
-            if (!resultSet.next()) {
-                throw new AssertionError("No snapshots in catalog");
-            }
-            return resultSet.getLong(1);
+        try (Connection connection = openCatalogConnection()) {
+            return CatalogQueries.currentSchemaVersion(CatalogTestSupport.dsl(connection));
         }
     }
 
     private void assertSchemaVersionRowConsistent(SchemaVersionRow row)
             throws Exception
     {
-        try (Connection connection = openCatalogConnection();
-                PreparedStatement statement = connection.prepareStatement(
-                        "SELECT schema_version FROM ducklake_snapshot WHERE snapshot_id = ?")) {
-            statement.setLong(1, row.beginSnapshot());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    throw new AssertionError("Missing snapshot for begin_snapshot=" + row.beginSnapshot());
-                }
-                assertThat(resultSet.getLong("schema_version")).isEqualTo(row.schemaVersion());
-            }
+        try (Connection connection = openCatalogConnection()) {
+            DSLContext dsl = CatalogTestSupport.dsl(connection);
+            long observed = CatalogQueries.snapshotSchemaVersion(dsl, row.beginSnapshot())
+                    .orElseThrow(() -> new AssertionError(
+                            "Missing snapshot for begin_snapshot=" + row.beginSnapshot()));
+            assertThat(observed).isEqualTo(row.schemaVersion());
         }
     }
-
-    private record SchemaVersionRow(long beginSnapshot, long schemaVersion, long tableId) {}
 }

@@ -14,13 +14,13 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 
 /**
  * Common harness for integration test suites that read from a fresh, fully-seeded DuckLake
@@ -121,13 +121,8 @@ abstract class AbstractDucklakeIntegrationTest
     protected long getCurrentSnapshotIdFromCatalog()
             throws Exception
     {
-        try (Connection connection = openCatalogConnection();
-                PreparedStatement statement = connection.prepareStatement("SELECT max(snapshot_id) FROM ducklake_snapshot");
-                ResultSet resultSet = statement.executeQuery()) {
-            if (!resultSet.next()) {
-                throw new AssertionError("No snapshots in catalog");
-            }
-            return resultSet.getLong(1);
+        try (Connection connection = openCatalogConnection()) {
+            return CatalogQueries.latestSnapshotId(CatalogTestSupport.dsl(connection));
         }
     }
 }

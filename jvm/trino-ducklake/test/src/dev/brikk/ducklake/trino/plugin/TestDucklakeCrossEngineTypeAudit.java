@@ -13,7 +13,10 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.testing.MaterializedResult;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -21,12 +24,10 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -101,38 +102,18 @@ public class TestDucklakeCrossEngineTypeAudit
 
             DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
             try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-                long snapshotId = queryLong(pgConn, "SELECT max(snapshot_id) FROM ducklake_snapshot");
-                long tableId = queryLong(pgConn,
-                        "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL",
-                        tableName);
+                DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+                long snapshotId = CatalogQueries.latestSnapshotId(dsl);
+                long tableId = CatalogQueries.activeTableId(dsl, tableName);
 
-                long activeDataFileCount = queryLong(pgConn,
-                        "SELECT count(*) FROM ducklake_data_file WHERE table_id = ? AND end_snapshot IS NULL",
-                        tableId);
-
-                Map<Long, Long> activeInlineRowsBySchemaVersion = new LinkedHashMap<>();
-                try (PreparedStatement stmt = pgConn.prepareStatement(
-                        "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id = ? ORDER BY schema_version")) {
-                    stmt.setLong(1, tableId);
-                    try (ResultSet rs = stmt.executeQuery()) {
-                        while (rs.next()) {
-                            long schemaVersion = rs.getLong("schema_version");
-                            long activeRows = queryLong(pgConn,
-                                    "SELECT count(*) FROM ducklake_inlined_data_" + tableId + "_" + schemaVersion +
-                                            " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)",
-                                    snapshotId,
-                                    snapshotId);
-                            activeInlineRowsBySchemaVersion.put(schemaVersion, activeRows);
-                        }
-                    }
-                }
-
+                Map<Long, Long> activeInlineRowsBySchemaVersion =
+                        CatalogQueries.activeInlinedRowCountsBySchemaVersion(dsl, tableId, snapshotId);
                 long totalActiveInlineRows = activeInlineRowsBySchemaVersion.values().stream()
                         .mapToLong(Long::longValue)
                         .sum();
 
                 // With 4 + 4 rows and limit 10, DuckDB should keep rows in metadata inlined tables.
-                assertThat(activeDataFileCount)
+                assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                         .as("DuckDB active Parquet data files after inline->alter->inline")
                         .isZero();
                 assertThat(activeInlineRowsBySchemaVersion.size())
@@ -192,38 +173,18 @@ public class TestDucklakeCrossEngineTypeAudit
 
             DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
             try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-                long snapshotId = queryLong(pgConn, "SELECT max(snapshot_id) FROM ducklake_snapshot");
-                long tableId = queryLong(pgConn,
-                        "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL",
-                        tableName);
+                DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+                long snapshotId = CatalogQueries.latestSnapshotId(dsl);
+                long tableId = CatalogQueries.activeTableId(dsl, tableName);
 
-                long activeDataFileCount = queryLong(pgConn,
-                        "SELECT count(*) FROM ducklake_data_file WHERE table_id = ? AND end_snapshot IS NULL",
-                        tableId);
-
-                Map<Long, Long> activeInlineRowsBySchemaVersion = new LinkedHashMap<>();
-                try (PreparedStatement stmt = pgConn.prepareStatement(
-                        "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id = ? ORDER BY schema_version")) {
-                    stmt.setLong(1, tableId);
-                    try (ResultSet rs = stmt.executeQuery()) {
-                        while (rs.next()) {
-                            long schemaVersion = rs.getLong("schema_version");
-                            long activeRows = queryLong(pgConn,
-                                    "SELECT count(*) FROM ducklake_inlined_data_" + tableId + "_" + schemaVersion +
-                                            " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)",
-                                    snapshotId,
-                                    snapshotId);
-                            activeInlineRowsBySchemaVersion.put(schemaVersion, activeRows);
-                        }
-                    }
-                }
-
+                Map<Long, Long> activeInlineRowsBySchemaVersion =
+                        CatalogQueries.activeInlinedRowCountsBySchemaVersion(dsl, tableId, snapshotId);
                 long totalActiveInlineRows = activeInlineRowsBySchemaVersion.values().stream()
                         .mapToLong(Long::longValue)
                         .sum();
 
                 // Even with 9 + 9 rows around ALTER, DuckDB keeps rows in inlined metadata tables.
-                assertThat(activeDataFileCount)
+                assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                         .as("DuckDB active Parquet data files after inline9->alter->inline9")
                         .isZero();
                 assertThat(activeInlineRowsBySchemaVersion.size())

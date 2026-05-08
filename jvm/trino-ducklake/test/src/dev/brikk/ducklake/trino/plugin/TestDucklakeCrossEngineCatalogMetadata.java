@@ -13,6 +13,9 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -25,6 +28,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA_VERSIONS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
@@ -463,8 +467,7 @@ public class TestDucklakeCrossEngineCatalogMetadata
             throws Exception
     {
         try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-            return queryLong(pgConn,
-                    "SELECT schema_version FROM ducklake_snapshot WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)");
+            return CatalogQueries.currentSchemaVersion(CatalogTestSupport.dsl(pgConn));
         }
     }
 
@@ -474,9 +477,16 @@ public class TestDucklakeCrossEngineCatalogMetadata
             throws Exception
     {
         try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-            return queryLong(pgConn,
-                    "SELECT count(*) FROM ducklake_schema_versions WHERE table_id IS NULL AND schema_version > ?",
-                    sinceExclusiveSchemaVersion);
+            DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+            // Schema-version rows with table_id IS NULL track view/schema-level DDL events
+            // (CREATE VIEW, DROP SCHEMA, etc.) — the predicate isn't generic enough to live
+            // in CatalogQueries, so it's expressed inline against the generated columns.
+            Integer count = dsl.selectCount()
+                    .from(DUCKLAKE_SCHEMA_VERSIONS)
+                    .where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.isNull()
+                            .and(DUCKLAKE_SCHEMA_VERSIONS.SCHEMA_VERSION.gt(sinceExclusiveSchemaVersion)))
+                    .fetchOne(0, Integer.class);
+            return count == null ? 0L : count.longValue();
         }
     }
 }

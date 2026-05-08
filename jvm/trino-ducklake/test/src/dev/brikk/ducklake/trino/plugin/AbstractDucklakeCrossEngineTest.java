@@ -14,14 +14,15 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
+import org.jooq.DSLContext;
 
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.Statement;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -116,34 +117,15 @@ abstract class AbstractDucklakeCrossEngineTest
     {
         DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
         try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-            long snapshotId = queryLong(pgConn, "SELECT max(snapshot_id) FROM ducklake_snapshot");
-            long tableId = queryLong(pgConn,
-                    "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL",
-                    tableName);
+            DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+            long snapshotId = CatalogQueries.latestSnapshotId(dsl);
+            long tableId = CatalogQueries.activeTableId(dsl, tableName);
 
-            long activeDataFiles = queryLong(pgConn,
-                    "SELECT count(*) FROM ducklake_data_file WHERE table_id = ? AND end_snapshot IS NULL",
-                    tableId);
-            assertThat(activeDataFiles)
+            assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                     .as("table %s should have no active Parquet files if rows are inlined", tableName)
                     .isZero();
 
-            long totalInlined = 0;
-            try (PreparedStatement stmt = pgConn.prepareStatement(
-                    "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id = ?")) {
-                stmt.setLong(1, tableId);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    while (rs.next()) {
-                        long schemaVersion = rs.getLong("schema_version");
-                        totalInlined += queryLong(pgConn,
-                                "SELECT count(*) FROM ducklake_inlined_data_" + tableId + "_" + schemaVersion +
-                                        " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)",
-                                snapshotId,
-                                snapshotId);
-                    }
-                }
-            }
-            assertThat(totalInlined)
+            assertThat(CatalogQueries.activeInlinedRowCount(dsl, tableId, snapshotId))
                     .as("table %s active inlined row count", tableName)
                     .isEqualTo(expectedRowCount);
         }
@@ -159,61 +141,17 @@ abstract class AbstractDucklakeCrossEngineTest
     {
         DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
         try (Connection pgConn = DriverManager.getConnection(catalog.jdbcUrl(), catalog.user(), catalog.password())) {
-            long snapshotId = queryLong(pgConn, "SELECT max(snapshot_id) FROM ducklake_snapshot");
-            long tableId = queryLong(pgConn,
-                    "SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL",
-                    tableName);
+            DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+            long snapshotId = CatalogQueries.latestSnapshotId(dsl);
+            long tableId = CatalogQueries.activeTableId(dsl, tableName);
 
-            long activeDataFiles = queryLong(pgConn,
-                    "SELECT count(*) FROM ducklake_data_file WHERE table_id = ? AND end_snapshot IS NULL",
-                    tableId);
-            assertThat(activeDataFiles)
+            assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                     .as("table %s should have at least one active Parquet file when inlining is off", tableName)
                     .isGreaterThanOrEqualTo(1);
 
-            long totalInlined = 0;
-            try (PreparedStatement stmt = pgConn.prepareStatement(
-                    "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id = ?")) {
-                stmt.setLong(1, tableId);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    while (rs.next()) {
-                        long schemaVersion = rs.getLong("schema_version");
-                        totalInlined += queryLong(pgConn,
-                                "SELECT count(*) FROM ducklake_inlined_data_" + tableId + "_" + schemaVersion +
-                                        " WHERE ? >= begin_snapshot AND (? < end_snapshot OR end_snapshot IS NULL)",
-                                snapshotId,
-                                snapshotId);
-                    }
-                }
-            }
-            assertThat(totalInlined)
+            assertThat(CatalogQueries.activeInlinedRowCount(dsl, tableId, snapshotId))
                     .as("table %s should have zero active inlined rows when inlining is off", tableName)
                     .isZero();
-        }
-    }
-
-    protected static long queryLong(Connection conn, String sql, Object... parameters)
-            throws Exception
-    {
-        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-            for (int i = 0; i < parameters.length; i++) {
-                Object parameter = parameters[i];
-                if (parameter instanceof String stringValue) {
-                    stmt.setString(i + 1, stringValue);
-                }
-                else if (parameter instanceof Long longValue) {
-                    stmt.setLong(i + 1, longValue);
-                }
-                else {
-                    stmt.setObject(i + 1, parameter);
-                }
-            }
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalStateException("No rows returned for query: " + sql);
-                }
-                return rs.getLong(1);
-            }
         }
     }
 }
