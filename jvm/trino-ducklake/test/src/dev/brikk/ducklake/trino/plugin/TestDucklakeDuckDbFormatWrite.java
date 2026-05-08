@@ -13,9 +13,12 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.Session;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -24,7 +27,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -33,6 +35,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS;
+import static dev.brikk.ducklake.catalog.testing.CatalogPredicates.currentlyActive;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_WRITER_MODE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
@@ -244,25 +250,35 @@ public class TestDucklakeDuckDbFormatWrite
                         "  (3, CAST(NULL    AS VARCHAR), 300), " +
                         "  (4, CAST('delta' AS VARCHAR), NULL)" +
                         ") AS t(id, label, amount)");
-        try (Connection conn = openCatalogConnection();
-                PreparedStatement stmt = conn.prepareStatement(
-                        "SELECT c.column_name, s.value_count, s.null_count, s.min_value, s.max_value " +
-                                "FROM ducklake_file_column_stats s " +
-                                "JOIN ducklake_column c " +
-                                "  ON c.column_id = s.column_id AND c.end_snapshot IS NULL " +
-                                "JOIN ducklake_data_file f ON f.data_file_id = s.data_file_id " +
-                                "WHERE f.file_format = 'duckdb' AND c.table_id = ( " +
-                                "  SELECT table_id FROM ducklake_table " +
-                                "  WHERE table_name = 'duck_stats' AND end_snapshot IS NULL )");
-                ResultSet rs = stmt.executeQuery()) {
+        try (Connection conn = openCatalogConnection()) {
+            DSLContext dsl = CatalogTestSupport.dsl(conn);
+            long tableId = CatalogQueries.activeTableId(dsl, "duck_stats");
+
+            // Three-table join: file_column_stats → column (active rows only) → data_file,
+            // restricted to the duckdb-format files of the currently-active "duck_stats" table.
+            // No canned helper covers the shape; the predicates compose cleanly inline.
             Map<String, StatsRow> rows = new HashMap<>();
-            while (rs.next()) {
-                rows.put(rs.getString(1), new StatsRow(
-                        rs.getLong(2),
-                        rs.getLong(3),
-                        rs.getString(4),
-                        rs.getString(5)));
-            }
+            dsl.select(
+                            DUCKLAKE_COLUMN.COLUMN_NAME,
+                            DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT,
+                            DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT,
+                            DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE,
+                            DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE)
+                    .from(DUCKLAKE_FILE_COLUMN_STATS)
+                    .join(DUCKLAKE_COLUMN)
+                            .on(DUCKLAKE_COLUMN.COLUMN_ID.eq(DUCKLAKE_FILE_COLUMN_STATS.COLUMN_ID)
+                                    .and(currentlyActive(DUCKLAKE_COLUMN.END_SNAPSHOT)))
+                    .join(DUCKLAKE_DATA_FILE)
+                            .on(DUCKLAKE_DATA_FILE.DATA_FILE_ID.eq(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID))
+                    .where(DUCKLAKE_DATA_FILE.FILE_FORMAT.eq("duckdb")
+                            .and(DUCKLAKE_COLUMN.TABLE_ID.eq(tableId)))
+                    .forEach(r -> rows.put(
+                            r.get(DUCKLAKE_COLUMN.COLUMN_NAME),
+                            new StatsRow(
+                                    orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.VALUE_COUNT)),
+                                    orZero(r.get(DUCKLAKE_FILE_COLUMN_STATS.NULL_COUNT)),
+                                    r.get(DUCKLAKE_FILE_COLUMN_STATS.MIN_VALUE),
+                                    r.get(DUCKLAKE_FILE_COLUMN_STATS.MAX_VALUE))));
             assertThat(rows).containsKeys("id", "label", "amount");
 
             // id: 1..4, no nulls
@@ -289,6 +305,14 @@ public class TestDucklakeDuckDbFormatWrite
     }
 
     private record StatsRow(long valueCount, long nullCount, String minValue, String maxValue) {}
+
+    private static long orZero(Long value)
+    {
+        // ducklake_file_column_stats columns are nullable in the schema; the original
+        // raw-SQL path used ResultSet#getLong which returns 0 on SQL NULL, and the
+        // assertions baked that in. Preserve that behavior here.
+        return value == null ? 0L : value;
+    }
 
     @Test
     public void testTablePropertyOverridesSessionToDuckDb()

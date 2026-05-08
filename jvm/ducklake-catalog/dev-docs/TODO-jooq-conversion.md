@@ -103,9 +103,10 @@ Build wiring: `testFixturesApi(libs.bundles.jooq)` in `ducklake-catalog/build.gr
 - `TestDucklakeCrossEngineCatalogMetadata` — `readCurrentSchemaVersion` (uses `currentSchemaVersion`), `countSchemaVersionRowsWithNullTableId` (composed inline against `DUCKLAKE_SCHEMA_VERSIONS` to demonstrate the no-canned-helper case).
 - `AbstractDucklakeIntegrationTest.getCurrentSnapshotIdFromCatalog` — one-liner using `latestSnapshotId(dsl)`.
 - `TestDucklakeSnapshotAndSchemaVersion` — `getActiveTableId`, `getSchemaVersionRows`, `getCurrentSchemaVersion`, `assertSchemaVersionRowConsistent`. The local `SchemaVersionRow` record was removed in favor of `CatalogQueries.SchemaVersionRow`.
+- `TestDucklakeDuckDbFormatWrite.testColumnStatsWrittenForDuckDbFormat` — three-table join (`ducklake_file_column_stats` ⋈ `ducklake_column` ⋈ `ducklake_data_file`) with active-row filter and table-id lookup. Composed inline against the generated columns; the subquery on `ducklake_table` was hoisted to a prior `activeTableId(...)` lookup for readability.
 
-### Remaining high-value migrations
-- `TestDucklakeDuckDbFormatWrite` — file-format/column-stats joins against `ducklake_file_column_stats` + `ducklake_column` + `ducklake_data_file`. No canned helper today; the predicates compose cleanly inline (see `countSchemaVersionRowsWithNullTableId` for the pattern).
+### Remaining T2/T3 candidates
+- Phase T2 has no further high-value targets in the trino-ducklake suite. T3 remains "migrate opportunistically when other edits touch a file with raw catalog SQL."
 
 ### Phase T3: Expand opportunistically
 
