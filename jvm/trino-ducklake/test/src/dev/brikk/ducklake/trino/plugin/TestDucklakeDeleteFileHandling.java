@@ -22,24 +22,26 @@ import dev.brikk.ducklake.catalog.DucklakeSchema;
 import dev.brikk.ducklake.catalog.DucklakeTable;
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog;
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
+import org.jooq.DSLContext;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
 
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.testing.connector.TestingConnectorSession.SESSION;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -199,30 +201,29 @@ public class TestDucklakeDeleteFileHandling
             throws Exception
     {
         try (Connection conn = DriverManager.getConnection(jdbcUrl, user, password)) {
-            long nextDeleteFileId;
-            try (Statement statement = conn.createStatement();
-                    ResultSet rs = statement.executeQuery("SELECT COALESCE(MAX(delete_file_id), 0) + 1 FROM ducklake_delete_file")) {
-                rs.next();
-                nextDeleteFileId = rs.getLong(1);
-            }
+            DSLContext dsl = CatalogTestSupport.dsl(conn);
+            var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
 
-            String sql = "INSERT INTO ducklake_delete_file (" +
-                    "delete_file_id, table_id, begin_snapshot, end_snapshot, data_file_id, path, path_is_relative, format, " +
-                    "delete_count, file_size_bytes, footer_size, encryption_key) " +
-                    "VALUES (?, ?, ?, NULL, ?, ?, ?, 'parquet', ?, ?, ?, NULL)";
+            // Allocate the next id manually because the test bypasses the runtime catalog write
+            // path (which owns sequencing). COALESCE handles the empty-table case on the first
+            // insert. Race-free for tests because they run serially against an isolated catalog.
+            Long nextDeleteFileId = dsl.select(DSL.coalesce(DSL.max(delfile.DELETE_FILE_ID), DSL.inline(0L)).plus(1))
+                    .from(delfile)
+                    .fetchOne(0, Long.class);
 
-            try (PreparedStatement statement = conn.prepareStatement(sql)) {
-                statement.setLong(1, nextDeleteFileId);
-                statement.setLong(2, tableId);
-                statement.setLong(3, snapshotId);
-                statement.setLong(4, dataFileId);
-                statement.setString(5, deletePath);
-                statement.setBoolean(6, pathIsRelative);
-                statement.setLong(7, 1);
-                statement.setLong(8, fileSizeBytes);
-                statement.setLong(9, 0);
-                statement.executeUpdate();
-            }
+            dsl.insertInto(delfile)
+                    .set(delfile.DELETE_FILE_ID, nextDeleteFileId)
+                    .set(delfile.TABLE_ID, tableId)
+                    .set(delfile.BEGIN_SNAPSHOT, snapshotId)
+                    // END_SNAPSHOT, ENCRYPTION_KEY: omitted → SQL NULL (nullable columns).
+                    .set(delfile.DATA_FILE_ID, dataFileId)
+                    .set(delfile.PATH, deletePath)
+                    .set(delfile.PATH_IS_RELATIVE, pathIsRelative)
+                    .set(delfile.FORMAT, "parquet")
+                    .set(delfile.DELETE_COUNT, 1L)
+                    .set(delfile.FILE_SIZE_BYTES, fileSizeBytes)
+                    .set(delfile.FOOTER_SIZE, 0L)
+                    .execute();
         }
     }
 

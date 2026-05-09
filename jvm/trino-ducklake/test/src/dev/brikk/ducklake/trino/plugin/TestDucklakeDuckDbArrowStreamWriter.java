@@ -13,21 +13,26 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.testing.CatalogQueries;
+import dev.brikk.ducklake.catalog.testing.CatalogTestSupport;
 import io.trino.Session;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.math.BigDecimal;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS;
+import static dev.brikk.ducklake.catalog.testing.CatalogPredicates.currentlyActive;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_WRITER_MODE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
@@ -162,22 +167,39 @@ public class TestDucklakeDuckDbArrowStreamWriter
                         "  (3, CAST(NULL    AS VARCHAR), 300), " +
                         "  (4, CAST('delta' AS VARCHAR), CAST(NULL AS INTEGER))" +
                         ") AS t(id, label, amount)");
-        try (Connection conn = openCatalogConnection();
-                PreparedStatement stmt = conn.prepareStatement(
-                        "SELECT c.column_name, s.value_count, s.null_count, s.min_value, s.max_value " +
-                                "FROM ducklake_file_column_stats s " +
-                                "JOIN ducklake_column c " +
-                                "  ON c.column_id = s.column_id AND c.end_snapshot IS NULL " +
-                                "JOIN ducklake_data_file f ON f.data_file_id = s.data_file_id " +
-                                "WHERE f.file_format = 'duckdb' AND c.table_id = ( " +
-                                "  SELECT table_id FROM ducklake_table " +
-                                "  WHERE table_name = 'arrow_stats' AND end_snapshot IS NULL )");
-                ResultSet rs = stmt.executeQuery()) {
+        try (Connection conn = openCatalogConnection()) {
+            DSLContext dsl = CatalogTestSupport.dsl(conn);
+            long tableId = CatalogQueries.activeTableId(dsl, "arrow_stats");
+
+            // Same 3-table join shape as TestDucklakeDuckDbFormatWrite.testColumnStatsWrittenForDuckDbFormat:
+            // file_column_stats → column (active rows only) → data_file, restricted to duckdb-format
+            // files of the currently-active table. The arrow-stream writer must produce stats with
+            // the same shape as the appender writer for cross-engine compatibility.
+            var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
+            var col = DUCKLAKE_COLUMN.as("col");
+            var file = DUCKLAKE_DATA_FILE.as("file");
             Map<String, StatsRow> rows = new HashMap<>();
-            while (rs.next()) {
-                rows.put(rs.getString(1), new StatsRow(
-                        rs.getLong(2), rs.getLong(3), rs.getString(4), rs.getString(5)));
-            }
+            dsl.select(
+                            col.COLUMN_NAME,
+                            colstats.VALUE_COUNT,
+                            colstats.NULL_COUNT,
+                            colstats.MIN_VALUE,
+                            colstats.MAX_VALUE)
+                    .from(colstats)
+                    .join(col)
+                            .on(col.COLUMN_ID.eq(colstats.COLUMN_ID)
+                                    .and(currentlyActive(col.END_SNAPSHOT)))
+                    .join(file)
+                            .on(file.DATA_FILE_ID.eq(colstats.DATA_FILE_ID))
+                    .where(file.FILE_FORMAT.eq("duckdb")
+                            .and(col.TABLE_ID.eq(tableId)))
+                    .forEach(r -> rows.put(
+                            r.get(col.COLUMN_NAME),
+                            new StatsRow(
+                                    orZero(r.get(colstats.VALUE_COUNT)),
+                                    orZero(r.get(colstats.NULL_COUNT)),
+                                    r.get(colstats.MIN_VALUE),
+                                    r.get(colstats.MAX_VALUE))));
             assertThat(rows).containsKeys("id", "label", "amount");
             assertThat(rows.get("id").valueCount).isEqualTo(4L);
             assertThat(rows.get("id").nullCount).isEqualTo(0L);
@@ -219,6 +241,14 @@ public class TestDucklakeDuckDbArrowStreamWriter
     }
 
     private record StatsRow(long valueCount, long nullCount, String minValue, String maxValue) {}
+
+    private static long orZero(Long value)
+    {
+        // ducklake_file_column_stats columns are nullable in the schema; the original
+        // raw-SQL path used ResultSet#getLong which returns 0 on SQL NULL, and the
+        // assertions baked that in. Preserve that behavior here.
+        return value == null ? 0L : value;
+    }
 
     /**
      * UUID round-trip through the arrow-stream writer + duckdb-format reader.

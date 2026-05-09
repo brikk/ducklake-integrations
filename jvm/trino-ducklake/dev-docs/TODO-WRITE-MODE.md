@@ -64,6 +64,20 @@ Optional convenience procedures:
 Source: pg_ducklake exposes `set_commit_message()` and it's a commonly-wanted
 feature.
 
+## Logical Conflict Checking in Commit Flow
+
+- [ ] **Add `checkForLogicalConflicts(...)` pass in `executeWriteTransaction`**,
+  after winning snapshot advancement but before final commit. Today's conflict
+  detection is primarily snapshot-lineage based; upstream DuckLake additionally
+  rejects semantic incompatibilities in intervening snapshot changes (e.g. ALTER
+  COLUMN that races with an INSERT against the old schema, DROP TABLE that races
+  with a write to it). Define the conflict matrix across schema/table/view/data-file
+  operations and reject incompatible interleavings. Conflict errors should include
+  intervening-change summaries at the same quality as today's retry-conflict text.
+  Acceptance: at least one concurrent-write test that hits a semantic conflict
+  lineage-only checking would miss (covered by the writer-vs-writer items below
+  if they're broadened to include a schema-vs-DML race).
+
 ## Concurrency Test Coverage
 
 - [ ] **Writer-vs-writer isolation test on the same table.** Two Trino sessions

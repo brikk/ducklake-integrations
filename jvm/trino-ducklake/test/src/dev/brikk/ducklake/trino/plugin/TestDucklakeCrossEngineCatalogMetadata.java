@@ -28,7 +28,11 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA_VERSIONS;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE;
+import static dev.brikk.ducklake.catalog.testing.CatalogPredicates.activeTableNamed;
+import static dev.brikk.ducklake.catalog.testing.CatalogPredicates.currentlyActive;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
@@ -245,28 +249,28 @@ public class TestDucklakeCrossEngineCatalogMetadata
             // Confirm we wrote SQL NULL (not the string 'NULL') to default_value_dialect.
             DucklakeCatalogGenerator.IsolatedCatalog catalog = getIsolatedCatalog();
             try (Connection pgConn = DriverManager.getConnection(
-                    catalog.jdbcUrl(), catalog.user(), catalog.password());
-                    Statement pgStmt = pgConn.createStatement();
-                    ResultSet rs = pgStmt.executeQuery(
-                            "SELECT default_value, default_value_type, default_value_dialect " +
-                                    "FROM ducklake_column c JOIN ducklake_table t USING (table_id) " +
-                                    "WHERE t.table_name = '" + tableName + "' AND t.end_snapshot IS NULL " +
-                                    "  AND c.end_snapshot IS NULL")) {
-                int columnCount = 0;
-                while (rs.next()) {
-                    columnCount++;
-                    assertThat(rs.getString("default_value"))
+                    catalog.jdbcUrl(), catalog.user(), catalog.password())) {
+                DSLContext dsl = CatalogTestSupport.dsl(pgConn);
+                var col = DUCKLAKE_COLUMN.as("col");
+                var tab = DUCKLAKE_TABLE.as("tab");
+                var defaults = dsl.select(col.DEFAULT_VALUE, col.DEFAULT_VALUE_TYPE, col.DEFAULT_VALUE_DIALECT)
+                        .from(col)
+                        .join(tab).on(col.TABLE_ID.eq(tab.TABLE_ID))
+                        .where(activeTableNamed(tab, tableName)
+                                .and(currentlyActive(col.END_SNAPSHOT)))
+                        .fetch();
+                assertThat(defaults).as("expected 3 active columns").hasSize(3);
+                for (var r : defaults) {
+                    assertThat(r.get(col.DEFAULT_VALUE))
                             .as("no-user-default column should carry the 'NULL' string sentinel")
                             .isEqualTo("NULL");
-                    assertThat(rs.getString("default_value_type"))
+                    assertThat(r.get(col.DEFAULT_VALUE_TYPE))
                             .as("default_value_type should remain 'literal' (spec-preferred)")
                             .isEqualTo("literal");
-                    rs.getString("default_value_dialect");
-                    assertThat(rs.wasNull())
+                    assertThat(r.get(col.DEFAULT_VALUE_DIALECT))
                             .as("default_value_dialect should be SQL NULL when we don't touch the default")
-                            .isTrue();
+                            .isNull();
                 }
-                assertThat(columnCount).as("expected 3 active columns").isEqualTo(3);
             }
 
             // Normal read — must survive the NULL dialect.
