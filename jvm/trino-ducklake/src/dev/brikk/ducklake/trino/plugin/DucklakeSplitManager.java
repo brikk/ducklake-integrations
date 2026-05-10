@@ -36,6 +36,7 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
@@ -43,6 +44,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 
 import java.time.LocalDate;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -53,6 +55,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -115,6 +118,8 @@ public class DucklakeSplitManager
 
         log.debug("Found %d data files for table %s", dataFiles.size(), tableHandle.tableName());
 
+        validateDeleteFileFormats(dataFiles, tableHandle);
+
         boolean tableHasNoDataFiles = dataFiles.isEmpty();
         List<DucklakeInlinedDataInfo> inlinedDataInfos = catalog.getInlinedDataInfos(tableHandle.tableId(), tableHandle.snapshotId());
         List<DucklakeInlinedSplit> inlinedSplits = inlinedDataInfos.stream()
@@ -176,6 +181,35 @@ public class DucklakeSplitManager
                 inlinedSplits.size());
 
         return new FixedSplitSource(allSplits);
+    }
+
+    /**
+     * Reject snapshots that reference delete files in formats this connector cannot read.
+     * Today only {@code parquet} positional delete files are supported. DuckDB writers can
+     * produce {@code puffin} (Roaring-bitmap deletion-vector) delete files when the
+     * {@code write_deletion_vectors} session setting is enabled — silently skipping them
+     * would return rows that should have been deleted, so we fail the query instead.
+     */
+    private static void validateDeleteFileFormats(List<DucklakeDataFile> dataFiles, DucklakeTableHandle tableHandle)
+    {
+        for (DucklakeDataFile dataFile : dataFiles) {
+            Optional<String> deleteFileFormat = dataFile.deleteFileFormat();
+            if (deleteFileFormat.isEmpty()) {
+                continue;
+            }
+            String normalized = deleteFileFormat.get().toLowerCase(Locale.ROOT);
+            if (normalized.equals("parquet")) {
+                continue;
+            }
+            throw new TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s references a delete file with format '%s', which this connector cannot read. " +
+                            "DuckDB produces puffin (Roaring-bitmap deletion vector) delete files when " +
+                            "'write_deletion_vectors' is enabled; disable that session setting on the writer " +
+                            "or compact the table to materialize deletes before reading from Trino.",
+                    tableHandle.schemaName(),
+                    tableHandle.tableName(),
+                    deleteFileFormat.get()));
+        }
     }
 
     private List<DucklakeDataFile> pruneDataFiles(List<DucklakeDataFile> dataFiles, DucklakeTableHandle tableHandle, Constraint constraint)

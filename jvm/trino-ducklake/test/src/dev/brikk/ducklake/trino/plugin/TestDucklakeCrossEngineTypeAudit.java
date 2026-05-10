@@ -429,14 +429,13 @@ public class TestDucklakeCrossEngineTypeAudit
                 });
     }
 
-    // ==================== Partial coverage: list<blob>, list<uuid> ====================
+    // ==================== Partial coverage: list<blob> ====================
     //
-    // Both types fail end-to-end on the inlined path today (see TODO-READ-MODE § Inlined-Read
-    // Type Gaps): blob because we do not decode DuckDB's `\xNN` text escapes back into bytes,
-    // uuid because the scalar converter has no UUID branch. They may work on the Parquet path
-    // (Trino's Parquet reader handles ARRAY<BINARY> and the UUID logical type), but we haven't
-    // confirmed until/unless the inlined-path fix lands. Kept `@Disabled` so the missing
-    // behavior stays tracked — don't delete.
+    // `list<blob>` still fails end-to-end on the inlined path (see TODO-READ-MODE § Inlined-Read
+    // Type Gaps): we do not decode DuckDB's `\xNN` text escapes back into bytes. May work on the
+    // Parquet path (Trino's Parquet reader handles ARRAY<BINARY>) but unconfirmed until the
+    // inlined-path fix lands. Kept `@Disabled` so the missing behavior stays tracked — don't
+    // delete.
 
     @Test
     @org.junit.jupiter.api.Disabled("TODO-READ-MODE: inlined `list<blob>` — DuckDB serializes bytes as "
@@ -460,8 +459,6 @@ public class TestDucklakeCrossEngineTypeAudit
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("TODO-READ-MODE: scalar inlined UUID reads do not decode the 36-char text "
-            + "form into Trino's 16-byte UuidType; the list path inherits the same gap. Parquet path not yet validated.")
     public void testDuckdbListUuidReadsInTrino()
             throws Exception
     {
@@ -512,6 +509,37 @@ public class TestDucklakeCrossEngineTypeAudit
             assertThat(result.getMaterializedRows().get(0).getField(2).toString()).contains("12:34:56.123456");
             assertThat(result.getMaterializedRows().get(1).getField(1)).isNull();
             assertThat(result.getMaterializedRows().get(1).getField(2)).isNull();
+        }
+        finally {
+            tryDropTable(fullTrino);
+        }
+    }
+
+    @Test
+    public void testDuckdbInlinedUuidReadsInTrino()
+            throws Exception
+    {
+        String tableName = "xengine_inlined_uuid";
+        String fullDuckdb = "ducklake_db.test_schema." + tableName;
+        String fullTrino = "test_schema." + tableName;
+        try {
+            try (Connection duck = createDuckdbConnection();
+                    Statement stmt = duck.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + fullDuckdb);
+                stmt.execute("CREATE TABLE " + fullDuckdb + " (id INTEGER, key UUID)");
+                stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, schema => 'test_schema', table_name => '" + tableName + "')");
+                stmt.execute("INSERT INTO " + fullDuckdb + " VALUES " +
+                        "(1, UUID '550e8400-e29b-41d4-a716-446655440000'), " +
+                        "(2, NULL)");
+            }
+            assertRowsStayedInlined(tableName, 2);
+
+            MaterializedResult result = computeActual("SELECT id, key FROM " + fullTrino + " ORDER BY id");
+            assertThat(result.getMaterializedRows()).hasSize(2);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1).toString())
+                    .isEqualTo("550e8400-e29b-41d4-a716-446655440000");
+            assertThat(result.getMaterializedRows().get(1).getField(1)).isNull();
         }
         finally {
             tryDropTable(fullTrino);

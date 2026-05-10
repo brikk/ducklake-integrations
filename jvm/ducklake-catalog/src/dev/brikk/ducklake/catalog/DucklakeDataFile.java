@@ -36,7 +36,8 @@ public record DucklakeDataFile(
         Optional<Long> partitionId,
         Optional<String> deleteFilePath,
         Optional<Boolean> deleteFilePathIsRelative,
-        Optional<Long> deleteFileFooterSize)
+        Optional<Long> deleteFileFooterSize,
+        Optional<String> deleteFileFormat)
 {
     public DucklakeDataFile
     {
@@ -47,5 +48,6 @@ public record DucklakeDataFile(
         requireNonNull(deleteFilePath, "deleteFilePath is null");
         requireNonNull(deleteFilePathIsRelative, "deleteFilePathIsRelative is null");
         requireNonNull(deleteFileFooterSize, "deleteFileFooterSize is null");
+        requireNonNull(deleteFileFormat, "deleteFileFormat is null");
     }
 }

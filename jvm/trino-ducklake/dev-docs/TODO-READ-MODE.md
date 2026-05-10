@@ -27,28 +27,35 @@ reference). Gaps surfaced from upstream and sister connectors live in the
   exact escape semantics.
   - Source: `COMPARE-pg_ducklake.md` B2 follow-up
 
-- [ ] **`uuid` scalar + `list<uuid>` inlined reads.** `DucklakeInlinedValueConverter`
-  has no `UuidType` branch, so a scalar UUID column falls through to the VARCHAR
-  fallback and `UuidType.writeSlice` rejects the resulting 36-byte Slice
-  ("Expected entry size to be exactly 16"). The list path inherits the same gap.
-  Pinned by `@Disabled testDuckdbListUuidReadsInTrino` in
-  `TestDucklakeCrossEngineTypeAudit` (covers both inlined and Parquet paths). Fix:
-  add a `UuidType` branch that parses the string with `java.util.UUID.fromString`
-  and packs the 16 bytes via
-  `io.trino.spi.type.UuidType.javaUuidToTrinoUuid`.
+- [x] **`uuid` scalar + `list<uuid>` inlined reads.** Done.
+  `DucklakeInlinedValueConverter` now has a `UuidType` branch
+  (`toUuidSlice`) that parses the 36-char text via `java.util.UUID.fromString`
+  and packs the 16 bytes through `UuidType.javaUuidToTrinoUuid`. Pinned by
+  `testDuckdbInlinedUuidReadsInTrino` (scalar) and `testDuckdbListUuidReadsInTrino`
+  (list, `@Disabled` lifted) in `TestDucklakeCrossEngineTypeAudit` — both run
+  inlined and Parquet paths, so this also confirms Trino's Parquet reader against
+  DuckDB's UUID layout.
 
 ## Puffin Deletion Vector Reads
 
-- [ ] **Detect or read DuckLake puffin delete files.** Today the connector only
-  writes and reads `parquet` delete files; if a DuckDB user enables
-  `write_deletion_vectors=true` we silently produce wrong results. Short term:
-  add a format guard in `DucklakeSplitManager` / `DucklakePageSourceProvider`
-  that throws `TrinoException` with a clear message when `format = 'puffin'`.
-  Long term: implement Roaring bitmap reads against DuckLake's puffin format.
+- [x] **Short-term guard: refuse to read snapshots that reference puffin delete
+  files.** `DucklakeSplitManager.validateDeleteFileFormats` throws
+  `TrinoException(NOT_SUPPORTED, ...)` naming the schema.table, the unsupported
+  format, and DuckDB's `write_deletion_vectors` setting. Catalog change:
+  `DucklakeDataFile` now carries `Optional<String> deleteFileFormat`, populated
+  from `ducklake_delete_file.format` in `JdbcDucklakeCatalog.getDataFiles`.
+  Pinned by `TestDucklakePuffinDeleteFileGuard` (metadata-only — injects a
+  `format='puffin'` row pointing at a non-existent path; the guard runs before
+  any IO so a real puffin file isn't required for this test).
+- [ ] **Long-term: read DuckLake puffin delete files (Roaring bitmaps).**
+  Implement on the Trino connector side (not in `ducklake-catalog`) using
+  Iceberg's `iceberg-core` puffin library + `org.roaringbitmap:RoaringBitmap`.
   See
   [DUCKLAKE_1_0_IMPACT.md § Existing Puffin Support in Trino](DUCKLAKE_1_0_IMPACT.md#existing-puffin-support-in-trino-reuse-analysis)
-  for reuse analysis (Iceberg's `iceberg-core` puffin library +
-  `org.roaringbitmap:RoaringBitmap`).
+  for reuse analysis. Lift the guard once the reader is in place; add a
+  round-trip test with a real puffin file (DuckDB writer with
+  `write_deletion_vectors=true` → Trino reader) alongside the existing
+  metadata-only guard test.
 
 ## Sorted-Table Awareness (Read)
 

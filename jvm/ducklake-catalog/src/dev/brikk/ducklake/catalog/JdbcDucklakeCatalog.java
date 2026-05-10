@@ -339,7 +339,8 @@ public class JdbcDucklakeCatalog
                         file.PARTITION_ID,
                         delfile.PATH,
                         delfile.PATH_IS_RELATIVE,
-                        delfile.FOOTER_SIZE)
+                        delfile.FOOTER_SIZE,
+                        delfile.FORMAT)
                 .from(file)
                 .leftJoin(delfile)
                 .on(file.DATA_FILE_ID.eq(delfile.DATA_FILE_ID))
@@ -363,7 +364,8 @@ public class JdbcDucklakeCatalog
                         Optional.ofNullable(r.get(file.PARTITION_ID)),
                         Optional.ofNullable(r.get(delfile.PATH)),
                         Optional.ofNullable(r.get(delfile.PATH_IS_RELATIVE)),
-                        Optional.ofNullable(r.get(delfile.FOOTER_SIZE))));
+                        Optional.ofNullable(r.get(delfile.FOOTER_SIZE)),
+                        Optional.ofNullable(r.get(delfile.FORMAT))));
     }
 
     @Override

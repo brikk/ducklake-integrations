@@ -29,6 +29,7 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeUtils;
+import io.trino.spi.type.UuidType;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 
@@ -91,6 +92,9 @@ public final class DucklakeInlinedValueConverter
         }
         if (trinoType instanceof TimestampWithTimeZoneType timestampWithTimeZoneType) {
             return toTimestampWithTimeZone(jdbcValue, timestampWithTimeZoneType);
+        }
+        if (trinoType instanceof UuidType) {
+            return toUuidSlice(jdbcValue);
         }
         if (trinoType instanceof VarcharType) {
             return Slices.utf8Slice(toStringValue(jdbcValue));
@@ -215,6 +219,17 @@ public final class DucklakeInlinedValueConverter
             }
         }
         return elements.toArray();
+    }
+
+    // DuckDB serializes UUID values as the canonical 36-character text form
+    // (e.g. "550e8400-e29b-41d4-a716-446655440000") in inlined data tables.
+    // Trino's UuidType expects a 16-byte little/big-endian-packed Slice; build it
+    // through the SPI-provided helper so endian handling stays consistent with
+    // Trino's other UUID write paths.
+    private static io.airlift.slice.Slice toUuidSlice(Object value)
+    {
+        java.util.UUID parsed = java.util.UUID.fromString(toStringValue(value).trim());
+        return UuidType.javaUuidToTrinoUuid(parsed);
     }
 
     private static Boolean toBoolean(Object value)
