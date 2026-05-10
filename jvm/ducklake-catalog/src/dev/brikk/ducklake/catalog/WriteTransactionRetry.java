@@ -59,6 +59,12 @@ final class WriteTransactionRetry
                 return;
             }
             catch (TransactionConflictException e) {
+                // Non-retryable conflicts (e.g. logical conflicts whose stale payload
+                // would feed the same broken references into another attempt) bail
+                // immediately rather than burning the retry budget on a guaranteed-fail.
+                if (!e.retryable()) {
+                    throw e;
+                }
                 lastConflict = e;
                 if (i == maxRetries) {
                     break;

@@ -39,7 +39,7 @@ class DucklakeWriteTransaction
     private long nextCatalogId;
     private long nextFileId;
     private long schemaVersionTableId = -1;
-    private final List<String> changes = new ArrayList<>();
+    private final List<WriteChange> changes = new ArrayList<>();
 
     DucklakeWriteTransaction(Connection connection, DSLContext dsl, long currentSnapshotId,
             long schemaVersion, long nextCatalogId, long nextFileId)
@@ -97,11 +97,13 @@ class DucklakeWriteTransaction
     }
 
     /**
-     * Records a snapshot change description (e.g. "created_view:my_view").
+     * Records a typed snapshot-change entry. Both the
+     * {@code ducklake_snapshot_changes.changes_made} text serializer and the
+     * logical conflict check read this list.
      */
-    public void addChange(String changeDescription)
+    public void recordChange(WriteChange change)
     {
-        changes.add(changeDescription);
+        changes.add(change);
     }
 
     /**
@@ -216,7 +218,7 @@ class DucklakeWriteTransaction
         return nextFileId;
     }
 
-    List<String> getChanges()
+    List<WriteChange> getChanges()
     {
         return changes;
     }

@@ -20,19 +20,22 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test proving that the catalog's optimistic-retry loop actually
- * re-runs the transaction against a real Postgres-backed catalog when a
- * competing commit advances the snapshot lineage between this transaction's
- * read and its INSERT.
+ * Pins the behavior for two writers concurrently adding distinct columns to
+ * the same table. Each {@code addColumn} re-resolves {@code maxOrder} per
+ * attempt, so the loser's retry sees the winner's column and allocates a
+ * non-colliding {@code column_order}. Both columns must land at the latest
+ * snapshot.
  *
- * <p>Determinism is provided by {@link ConcurrentWriterHarness}, which uses
- * the {@code beforeWriteTransactionAction} test seam in
- * {@link JdbcDucklakeCatalog} to park the loser before its first mutation.
+ * <p>This is the third-step counterpart to {@link TestConcurrentInsertVsDropColumn}:
+ * the {@code AlteredTable(tableId)} branch of {@link LogicalConflictCheck}
+ * fires only when the table itself was dropped — disjoint additions are
+ * compatible and must commit cleanly.
  */
-public class TestJdbcDucklakeCatalogConcurrentCommit
+public class TestConcurrentAlteredTableVsAlteredTable
 {
     private static TestingDucklakePostgreSqlCatalogServer server;
     private static JdbcDucklakeCatalog catalog;
+    private static long tableId;
 
     @BeforeAll
     public static void setUpClass()
@@ -40,7 +43,7 @@ public class TestJdbcDucklakeCatalogConcurrentCommit
     {
         server = new TestingDucklakePostgreSqlCatalogServer();
         JdbcDucklakeCatalogTestDataGenerator.IsolatedCatalog isolated =
-                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-commit");
+                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-altered-table-vs-altered-table");
 
         DucklakeCatalogConfig config = new DucklakeCatalogConfig()
                 .setCatalogDatabaseUrl(isolated.jdbcUrl())
@@ -49,6 +52,9 @@ public class TestJdbcDucklakeCatalogConcurrentCommit
                 .setDataPath(isolated.dataDir().toAbsolutePath().toString())
                 .setMaxCatalogConnections(5);
         catalog = new JdbcDucklakeCatalog(config);
+
+        long snapshotId = catalog.getCurrentSnapshotId();
+        tableId = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow().tableId();
     }
 
     @AfterAll
@@ -63,27 +69,28 @@ public class TestJdbcDucklakeCatalogConcurrentCommit
     }
 
     @Test
-    public void concurrentCommitTriggersRetryAndBothSchemasLand()
+    public void concurrentAddColumnsBothLand()
             throws Exception
     {
+        TableColumnSpec winnerColumn = TableColumnSpec.leaf("winner_col", "varchar", true);
+        TableColumnSpec loserColumn = TableColumnSpec.leaf("loser_col", "integer", true);
+
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
-                () -> catalog.createSchema("winner_schema"),
-                () -> catalog.createSchema("loser_schema"));
+                () -> catalog.addColumn(tableId, winnerColumn),
+                () -> catalog.addColumn(tableId, loserColumn));
 
         assertThat(result.loserException())
-                .as("loser must commit cleanly on retry; both schemas are non-conflicting")
+                .as("disjoint addColumn ops are compatible; loser must commit cleanly on retry")
                 .isNull();
         assertThat(result.loserAttemptCount())
                 .as("loser must hit the hook twice: first attempt (paused) + retry (no-op)")
                 .isEqualTo(2);
 
         long latestSnapshot = catalog.getCurrentSnapshotId();
-        assertThat(catalog.getSchema("winner_schema", latestSnapshot))
-                .as("winner_schema must be present at latest snapshot")
-                .isPresent();
-        assertThat(catalog.getSchema("loser_schema", latestSnapshot))
-                .as("loser_schema must be present at latest snapshot (proves retry committed)")
-                .isPresent();
+        assertThat(catalog.getTableColumns(tableId, latestSnapshot))
+                .extracting(DucklakeColumn::columnName)
+                .as("both columns must be visible at the latest snapshot")
+                .contains("winner_col", "loser_col");
     }
 }

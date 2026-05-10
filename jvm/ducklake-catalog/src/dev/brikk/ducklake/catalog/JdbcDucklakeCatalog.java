@@ -779,45 +779,11 @@ public class JdbcDucklakeCatalog
         }
     }
 
-    // Matches upstream's KeywordHelper::WriteQuoted (DuckDB) as consumed by
-    // DuckLakeUtil::ParseQuotedValue in third_party/ducklake/src/common/ducklake_util.cpp:
-    // wrap in double quotes and escape embedded " by doubling.
-    private static String writeQuotedValue(String value)
-    {
-        return "\"" + value.replace("\"", "\"\"") + "\"";
-    }
-
-    // Upstream's DuckLakeUtil::ParseCatalogEntry expects a fully-qualified "schema"."name" form,
-    // so `created_table` / `created_view` values must carry both parts.
-    static String changeCreatedTable(String schemaName, String tableName)
-    {
-        return "created_table:" + writeQuotedValue(schemaName) + "." + writeQuotedValue(tableName);
-    }
-
-    static String changeCreatedView(String schemaName, String viewName)
-    {
-        return "created_view:" + writeQuotedValue(schemaName) + "." + writeQuotedValue(viewName);
-    }
-
-    // `created_schema` is a single quoted value — see ducklake_transaction_changes.cpp:
-    // `ParseQuotedValue(entry.change_value, pos)`.
-    static String changeCreatedSchema(String schemaName)
-    {
-        return "created_schema:" + writeQuotedValue(schemaName);
-    }
-
-    // Serializes the list of change entries into the DuckLake `ducklake_snapshot_changes.changes_made`
-    // text column. Per upstream `ParseChangesList` (ducklake_transaction_changes.cpp) it's a
-    // comma-separated list of `<kind>:<value>` entries; `ParseChangeValue` tracks balanced double
-    // quotes so commas inside quoted values are literal. Entries are passed through verbatim —
-    // callers that carry user-supplied names (schema / table / view) must quote via
-    // {@link #changeCreatedTable} / {@link #changeCreatedView} / {@link #changeCreatedSchema}.
-    // Numeric-id entries (`dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table`)
-    // are unquoted per spec and can be joined with simple string concatenation at the call site.
-    static String formatChangesMade(List<String> changes)
-    {
-        return String.join(",", changes);
-    }
+    // Snapshot-change recording lives on the typed {@link WriteChange} hierarchy.
+    // Quoting and joining used to be local helpers here; they now live on
+    // {@code WriteChange} so that the conflict-checking machinery and the
+    // {@code ducklake_snapshot_changes.changes_made} serializer share one source
+    // of truth.
 
     @Override
     public Optional<String> getDataPath()
@@ -940,6 +906,16 @@ public class JdbcDucklakeCatalog
                 // 3. Strict optimistic conflict check: if snapshot lineage advanced, abort.
                 ensureSnapshotLineageUnchanged(txDsl, tx.getCurrentSnapshotId(), operationDescription);
 
+                // 3b. Logical conflict check: validate the action's payload still
+                // references entities that are active at the current snapshot. This
+                // catches the case the strict lineage check + retry alone misses:
+                // the retry's action re-runs with stale per-call args (table IDs,
+                // fragment column / data-file IDs) captured before any prior
+                // attempt. Throws non-retryable LogicalConflictException on a
+                // mismatch so the retry loop bails out instead of burning the
+                // retry budget on a guaranteed-fail.
+                LogicalConflictCheck.run(tx, operationDescription);
+
                 // 4. Create new snapshot row (with final allocated IDs)
                 insertSnapshotRow(txDsl, tx, operationDescription);
 
@@ -959,7 +935,7 @@ public class JdbcDucklakeCatalog
                 if (!tx.getChanges().isEmpty()) {
                     txDsl.insertInto(snapchg)
                             .set(snapchg.SNAPSHOT_ID, tx.getNewSnapshotId())
-                            .set(snapchg.CHANGES_MADE, formatChangesMade(tx.getChanges()))
+                            .set(snapchg.CHANGES_MADE, WriteChange.formatChangesMade(tx.getChanges()))
                             .execute();
                 }
 
@@ -1140,7 +1116,7 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("create view " + schemaName + "." + viewName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long viewId = tx.allocateCatalogId();
-            tx.addChange(changeCreatedView(schemaName, viewName));
+            tx.recordChange(new WriteChange.CreatedView(schemaName, viewName));
 
             insertViewRow(tx, viewId, UUID.fromString(newCatalogUuid()), schemaId, viewName, dialect, viewSql, viewMetadata);
             tx.incrementSchemaVersion();
@@ -1154,7 +1130,7 @@ public class JdbcDucklakeCatalog
             long schemaId = tx.resolveSchemaId(schemaName);
             ActiveViewRow view = resolveActiveViewRow(tx, schemaId, viewName);
             endSnapshotActiveView(tx, view.viewId());
-            tx.addChange("dropped_view:" + view.viewId());
+            tx.recordChange(new WriteChange.DroppedView(view.viewId()));
             tx.incrementSchemaVersion();
         });
     }
@@ -1190,7 +1166,7 @@ public class JdbcDucklakeCatalog
                     // Upstream's ParseChangeType does not recognize `renamed_view`; a rename is
                     // semantically a schema/name change, so emit `altered_view` to stay
                     // spec-conformant with DuckDB's ducklake_snapshots() parser.
-                    tx.addChange("altered_view:" + sourceView.viewId());
+                    tx.recordChange(new WriteChange.AlteredView(sourceView.viewId()));
                     tx.incrementSchemaVersion();
                 });
     }
@@ -1204,7 +1180,7 @@ public class JdbcDucklakeCatalog
 
             endSnapshotActiveView(tx, view.viewId());
             insertViewRow(tx, view.viewId(), view.viewUuid(), schemaId, viewName, dialect, viewSql, viewMetadata);
-            tx.addChange("altered_view:" + view.viewId());
+            tx.recordChange(new WriteChange.AlteredView(view.viewId()));
             tx.incrementSchemaVersion();
         });
     }
@@ -1313,7 +1289,7 @@ public class JdbcDucklakeCatalog
         var sch = DUCKLAKE_SCHEMA.as("sch");
         executeWriteTransaction("create schema " + schemaName, tx -> {
             long schemaId = tx.allocateCatalogId();
-            tx.addChange(changeCreatedSchema(schemaName));
+            tx.recordChange(new WriteChange.CreatedSchema(schemaName));
 
             tx.dsl().insertInto(sch)
                     .set(sch.SCHEMA_ID, schemaId)
@@ -1339,7 +1315,7 @@ public class JdbcDucklakeCatalog
                 throw new RuntimeException("Cannot drop schema " + schemaName + ": schema is not empty");
             }
 
-            tx.addChange("dropped_schema:" + schemaId);
+            tx.recordChange(new WriteChange.DroppedSchema(schemaId));
 
             tx.dsl().update(sch)
                     .set(sch.END_SNAPSHOT, tx.getNewSnapshotId())
@@ -1417,7 +1393,7 @@ public class JdbcDucklakeCatalog
             }
 
             tx.incrementSchemaVersion(tableId);
-            tx.addChange(changeCreatedTable(schemaName, tableName));
+            tx.recordChange(new WriteChange.CreatedTable(schemaName, tableName));
         });
     }
 
@@ -1513,7 +1489,7 @@ public class JdbcDucklakeCatalog
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
-            tx.addChange("dropped_table:" + tableId);
+            tx.recordChange(new WriteChange.DroppedTable(tableId));
         });
     }
 
@@ -1532,7 +1508,7 @@ public class JdbcDucklakeCatalog
 
             insertColumnTree(tx, tableId, column, orZero(maxOrder) + 1, OptionalLong.empty());
             tx.incrementSchemaVersion(tableId);
-            tx.addChange("altered_table:" + tableId);
+            tx.recordChange(new WriteChange.AlteredTable(tableId));
         });
     }
 
@@ -1551,7 +1527,7 @@ public class JdbcDucklakeCatalog
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
-            tx.addChange("altered_table:" + tableId);
+            tx.recordChange(new WriteChange.AlteredTable(tableId));
         });
     }
 
@@ -1601,7 +1577,7 @@ public class JdbcDucklakeCatalog
                     .execute();
 
             tx.incrementSchemaVersion(tableId);
-            tx.addChange("altered_table:" + tableId);
+            tx.recordChange(new WriteChange.AlteredTable(tableId));
         });
     }
 
@@ -1614,8 +1590,23 @@ public class JdbcDucklakeCatalog
 
         executeWriteTransaction("insert into table " + tableId, tx -> {
             applyInsertFragments(tx, tableId, fragments);
-            tx.addChange("inserted_into_table:" + tableId);
+            tx.recordChange(new WriteChange.InsertedIntoTable(tableId, referencedColumnIds(fragments)));
         });
+    }
+
+    private static Set<Long> referencedColumnIds(List<DucklakeWriteFragment> fragments)
+    {
+        return fragments.stream()
+                .flatMap(f -> f.columnStats().stream())
+                .map(DucklakeFileColumnStats::columnId)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Set<Long> referencedDataFileIds(List<DucklakeDeleteFragment> fragments)
+    {
+        return fragments.stream()
+                .map(DucklakeDeleteFragment::dataFileId)
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private void applyInsertFragments(DucklakeWriteTransaction tx, long tableId, List<DucklakeWriteFragment> fragments)
@@ -1808,7 +1799,7 @@ public class JdbcDucklakeCatalog
 
         executeWriteTransaction("delete from table " + tableId, tx -> {
             applyDeleteFragments(tx, tableId, deleteFragments);
-            tx.addChange("deleted_from_table:" + tableId);
+            tx.recordChange(new WriteChange.DeletedFromTable(tableId, referencedDataFileIds(deleteFragments)));
         });
     }
 
@@ -1823,11 +1814,11 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("merge into table " + tableId, tx -> {
             if (!deleteFragments.isEmpty()) {
                 applyDeleteFragments(tx, tableId, deleteFragments);
-                tx.addChange("deleted_from_table:" + tableId);
+                tx.recordChange(new WriteChange.DeletedFromTable(tableId, referencedDataFileIds(deleteFragments)));
             }
             if (!insertFragments.isEmpty()) {
                 applyInsertFragments(tx, tableId, insertFragments);
-                tx.addChange("inserted_into_table:" + tableId);
+                tx.recordChange(new WriteChange.InsertedIntoTable(tableId, referencedColumnIds(insertFragments)));
             }
         });
     }

@@ -16,23 +16,22 @@ package dev.brikk.ducklake.catalog;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Exercises the {@code ducklake_snapshot_changes.changes_made} serializer:
- * {@link JdbcDucklakeCatalog#formatChangesMade(List)} (joiner) plus the quoting builders
- * {@link JdbcDucklakeCatalog#changeCreatedTable(String, String)},
- * {@link JdbcDucklakeCatalog#changeCreatedView(String, String)}, and
- * {@link JdbcDucklakeCatalog#changeCreatedSchema(String)}.
- * <p>
- * Upstream DuckDB parses this column via {@code ParseChangesList} in
+ * {@link WriteChange#formatChangesMade(List)} (joiner) plus the per-variant
+ * {@code toChangesMadeEntry} renderers.
+ *
+ * <p>Upstream DuckDB parses this column via {@code ParseChangesList} in
  * {@code third_party/ducklake/src/storage/ducklake_transaction_changes.cpp}.
  * {@code created_table} / {@code created_view} values are read by
  * {@code DuckLakeUtil::ParseCatalogEntry} which requires the fully qualified
- * {@code "schema"."name"} form; {@code created_schema} is a single quoted value read by
- * {@code DuckLakeUtil::ParseQuotedValue}. Both forms wrap the value in {@code "..."} and escape
- * embedded {@code "} by doubling ({@code ""}).
+ * {@code "schema"."name"} form; {@code created_schema} is a single quoted value
+ * read by {@code DuckLakeUtil::ParseQuotedValue}. Both forms wrap the value in
+ * {@code "..."} and escape embedded {@code "} by doubling ({@code ""}).
  */
 public class TestJdbcDucklakeCatalogChangesMadeFormat
 {
@@ -41,23 +40,23 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     @Test
     public void testEmptyListProducesEmptyString()
     {
-        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of())).isEmpty();
+        assertThat(WriteChange.formatChangesMade(List.of())).isEmpty();
     }
 
     @Test
     public void testSingleEntryIsPassedThrough()
     {
-        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of("dropped_table:7")))
+        assertThat(WriteChange.formatChangesMade(List.of(new WriteChange.DroppedTable(7))))
                 .isEqualTo("dropped_table:7");
     }
 
     @Test
     public void testMultipleEntriesJoinedWithComma()
     {
-        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of(
-                JdbcDucklakeCatalog.changeCreatedSchema("sales"),
-                JdbcDucklakeCatalog.changeCreatedTable("sales", "orders"),
-                "inserted_into_table:7")))
+        assertThat(WriteChange.formatChangesMade(List.of(
+                new WriteChange.CreatedSchema("sales"),
+                new WriteChange.CreatedTable("sales", "orders"),
+                new WriteChange.InsertedIntoTable(7, Set.of()))))
                 .isEqualTo("created_schema:\"sales\",created_table:\"sales\".\"orders\",inserted_into_table:7");
     }
 
@@ -66,82 +65,82 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     {
         // Spec: `dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table` use raw
         // integers (parsed by StringUtil::ToUnsigned upstream), never quoted.
-        assertThat(JdbcDucklakeCatalog.formatChangesMade(List.of(
-                "dropped_schema:3",
-                "dropped_table:12",
-                "altered_table:42",
-                "inserted_into_table:100",
-                "deleted_from_table:100")))
+        assertThat(WriteChange.formatChangesMade(List.of(
+                new WriteChange.DroppedSchema(3),
+                new WriteChange.DroppedTable(12),
+                new WriteChange.AlteredTable(42),
+                new WriteChange.InsertedIntoTable(100, Set.of()),
+                new WriteChange.DeletedFromTable(100, Set.of()))))
                 .isEqualTo("dropped_schema:3,dropped_table:12,altered_table:42,inserted_into_table:100,deleted_from_table:100");
     }
 
-    // ==================== changeCreatedTable: "schema"."name" ====================
+    // ==================== CreatedTable: "schema"."name" ====================
 
     @Test
-    public void testChangeCreatedTableProducesFullyQualifiedQuotedForm()
+    public void testCreatedTableProducesFullyQualifiedQuotedForm()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "orders"))
+        assertThat(new WriteChange.CreatedTable("sales", "orders").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"orders\"");
     }
 
     @Test
-    public void testChangeCreatedTableQuotesCommaInName()
+    public void testCreatedTableQuotesCommaInName()
     {
         // Without quoting, ParseChangesList would see three entries instead of one.
-        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "bad,name"))
+        assertThat(new WriteChange.CreatedTable("sales", "bad,name").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"bad,name\"");
     }
 
     @Test
-    public void testChangeCreatedTableEscapesEmbeddedQuoteByDoubling()
+    public void testCreatedTableEscapesEmbeddedQuoteByDoubling()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedTable("sales", "weird\"name"))
+        assertThat(new WriteChange.CreatedTable("sales", "weird\"name").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"weird\"\"name\"");
     }
 
     @Test
-    public void testChangeCreatedTableQuotesBothSchemaAndTable()
+    public void testCreatedTableQuotesBothSchemaAndTable()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedTable("odd.schema", "odd.table"))
+        assertThat(new WriteChange.CreatedTable("odd.schema", "odd.table").toChangesMadeEntry())
                 .isEqualTo("created_table:\"odd.schema\".\"odd.table\"");
     }
 
-    // ==================== changeCreatedView: "schema"."name" ====================
+    // ==================== CreatedView: "schema"."name" ====================
 
     @Test
-    public void testChangeCreatedViewProducesFullyQualifiedQuotedForm()
+    public void testCreatedViewProducesFullyQualifiedQuotedForm()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedView("analytics", "daily_summary"))
+        assertThat(new WriteChange.CreatedView("analytics", "daily_summary").toChangesMadeEntry())
                 .isEqualTo("created_view:\"analytics\".\"daily_summary\"");
     }
 
     @Test
-    public void testChangeCreatedViewEscapesEmbeddedQuoteByDoubling()
+    public void testCreatedViewEscapesEmbeddedQuoteByDoubling()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedView("a\"b", "c\"d"))
+        assertThat(new WriteChange.CreatedView("a\"b", "c\"d").toChangesMadeEntry())
                 .isEqualTo("created_view:\"a\"\"b\".\"c\"\"d\"");
     }
 
-    // ==================== changeCreatedSchema: single quoted value ====================
+    // ==================== CreatedSchema: single quoted value ====================
 
     @Test
-    public void testChangeCreatedSchemaWrapsNameInQuotes()
+    public void testCreatedSchemaWrapsNameInQuotes()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("sales"))
+        assertThat(new WriteChange.CreatedSchema("sales").toChangesMadeEntry())
                 .isEqualTo("created_schema:\"sales\"");
     }
 
     @Test
-    public void testChangeCreatedSchemaEscapesEmbeddedQuoteByDoubling()
+    public void testCreatedSchemaEscapesEmbeddedQuoteByDoubling()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("weird\"name"))
+        assertThat(new WriteChange.CreatedSchema("weird\"name").toChangesMadeEntry())
                 .isEqualTo("created_schema:\"weird\"\"name\"");
     }
 
     @Test
-    public void testChangeCreatedSchemaQuotesCommaInName()
+    public void testCreatedSchemaQuotesCommaInName()
     {
-        assertThat(JdbcDucklakeCatalog.changeCreatedSchema("bad,name"))
+        assertThat(new WriteChange.CreatedSchema("bad,name").toChangesMadeEntry())
                 .isEqualTo("created_schema:\"bad,name\"");
     }
 }

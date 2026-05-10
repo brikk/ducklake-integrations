@@ -16,6 +16,13 @@ package dev.brikk.ducklake.catalog;
 /**
  * Thrown when a catalog operation fails due to a concurrent commit
  * (optimistic concurrency conflict on the snapshot sequence).
+ *
+ * <p>By default these are <em>retryable</em> — the optimistic-retry policy
+ * in {@link WriteTransactionRetry} will re-run the transaction. Subclasses
+ * can override {@link #retryable()} to mark the conflict terminal (e.g.
+ * the in-flight payload references catalog entities a concurrent commit
+ * already removed; re-running with the same payload would fail
+ * identically).
  */
 public class TransactionConflictException
         extends DucklakeException
@@ -23,5 +30,14 @@ public class TransactionConflictException
     public TransactionConflictException(String message, Throwable cause)
     {
         super(message, cause);
+    }
+
+    /**
+     * Whether the optimistic-retry policy should re-run the operation.
+     * Defaults to {@code true}; non-retryable subclasses override.
+     */
+    public boolean retryable()
+    {
+        return true;
     }
 }
