@@ -47,6 +47,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +55,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -859,16 +861,25 @@ public class JdbcDucklakeCatalog
      */
     private void executeWriteTransaction(String operationDescription, WriteTransactionAction action)
     {
+        // Captured once on attempt 1, propagated across retries so the
+        // change-vs-change conflict matrix on retry can ask "what committed
+        // since this transaction started?" — mirrors upstream's
+        // `transaction_snapshot` captured outside the retry loop in
+        // ducklake_transaction.cpp:2455.
+        long[] transactionStartSnapshotId = {-1L};
         WriteTransactionRetry.retryOnConflict(
                 MAX_RETRY_COUNT,
                 INITIAL_RETRY_WAIT_MS,
                 RETRY_BACKOFF_MULTIPLIER,
                 Thread::sleep,
                 operationDescription,
-                () -> attemptWriteTransaction(operationDescription, action));
+                () -> attemptWriteTransaction(operationDescription, action, transactionStartSnapshotId));
     }
 
-    private void attemptWriteTransaction(String operationDescription, WriteTransactionAction action)
+    private void attemptWriteTransaction(
+            String operationDescription,
+            WriteTransactionAction action,
+            long[] transactionStartSnapshotId)
     {
         var snap = DUCKLAKE_SNAPSHOT.as("snap");
         var schver = DUCKLAKE_SCHEMA_VERSIONS.as("schver");
@@ -888,6 +899,9 @@ public class JdbcDucklakeCatalog
                 }
                 long currentSnapshotId = snapshotRow.getSnapshotId();
                 baseSnapshotId = currentSnapshotId;
+                if (transactionStartSnapshotId[0] == -1L) {
+                    transactionStartSnapshotId[0] = currentSnapshotId;
+                }
                 long schemaVersion = orZero(snapshotRow.getSchemaVersion());
                 long nextCatalogId = orZero(snapshotRow.getNextCatalogId());
                 long nextFileId = orZero(snapshotRow.getNextFileId());
@@ -915,6 +929,19 @@ public class JdbcDucklakeCatalog
                 // mismatch so the retry loop bails out instead of burning the
                 // retry budget on a guaranteed-fail.
                 LogicalConflictCheck.run(tx, operationDescription);
+
+                // 3c. Change-vs-change conflict matrix (port of upstream
+                // CheckForConflicts at ducklake_transaction.cpp:1184-1314). Only
+                // runs when an earlier attempt of THIS transaction's retry loop
+                // saw an older snapshot — i.e. when other transactions committed
+                // between transactionStartSnapshotId (captured on attempt 1) and
+                // currentSnapshotId. Catches dueling-name commits the state-based
+                // check above can't see (no UNIQUE on (schema_id, name) — see
+                // ducklake_metadata_manager.cpp:198-200).
+                if (currentSnapshotId > transactionStartSnapshotId[0]) {
+                    runConflictMatrix(txDsl, tx.getChanges(),
+                            transactionStartSnapshotId[0], currentSnapshotId);
+                }
 
                 // 4. Create new snapshot row (with final allocated IDs)
                 insertSnapshotRow(txDsl, tx, operationDescription);
@@ -1030,6 +1057,72 @@ public class JdbcDucklakeCatalog
         return String.join("; ", changes);
     }
 
+    private static void runConflictMatrix(
+            DSLContext ctx,
+            List<WriteChange> myChanges,
+            long fromSnapshotExclusive,
+            long toSnapshotInclusive)
+    {
+        var snapchg = DUCKLAKE_SNAPSHOT_CHANGES.as("snapchg");
+        List<String> rows = ctx.select(snapchg.CHANGES_MADE)
+                .from(snapchg)
+                .where(snapchg.SNAPSHOT_ID.gt(fromSnapshotExclusive))
+                .and(snapchg.SNAPSHOT_ID.le(toSnapshotInclusive))
+                .orderBy(snapchg.SNAPSHOT_ID)
+                .fetch(snapchg.CHANGES_MADE);
+        InterveningChanges other = InterveningChanges.parseAll(rows);
+        ConflictMatrix.check(myChanges, other);
+
+        // Finer-grained delete-vs-delete file-overlap check. Two transactions
+        // that each write a delete file for the SAME data_file_id silently lose
+        // one set of deletions (the second transaction's INSERT into
+        // ducklake_delete_file end-snapshots the first). Upstream catches this
+        // at ducklake_transaction.cpp:1259-1283 by intersecting MY new
+        // delete-file data_file_ids with the set returned by
+        // GetFilesDeletedOrDroppedAfterSnapshot.
+        checkDeleteFileOverlap(ctx, myChanges, other, fromSnapshotExclusive, toSnapshotInclusive);
+    }
+
+    private static void checkDeleteFileOverlap(
+            DSLContext ctx,
+            List<WriteChange> myChanges,
+            InterveningChanges other,
+            long fromSnapshotExclusive,
+            long toSnapshotInclusive)
+    {
+        // Collect my data_file_ids whose tables also had intervening deletes.
+        // Outside that overlap, no contention is possible.
+        Set<Long> myFileIds = new HashSet<>();
+        for (WriteChange c : myChanges) {
+            if (c instanceof WriteChange.DeletedFromTable d
+                    && other.tablesDeletedFrom.contains(d.tableId())) {
+                myFileIds.addAll(d.referencedDataFileIds());
+            }
+        }
+        if (myFileIds.isEmpty()) {
+            return;
+        }
+
+        // Any delete file inserted in the intervening snapshot range that
+        // targets one of my data_file_ids is a conflict. Use begin_snapshot
+        // (when the row was inserted) to find intervening deletes.
+        var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
+        Set<Long> contendedFileIds = ctx.select(delfile.DATA_FILE_ID)
+                .from(delfile)
+                .where(delfile.BEGIN_SNAPSHOT.gt(fromSnapshotExclusive))
+                .and(delfile.BEGIN_SNAPSHOT.le(toSnapshotInclusive))
+                .and(delfile.DATA_FILE_ID.in(myFileIds))
+                .fetchSet(delfile.DATA_FILE_ID);
+        if (!contendedFileIds.isEmpty()) {
+            throw new LogicalConflictException(
+                    "Transaction conflict - attempting to delete from data_file_id(s) "
+                            + new TreeSet<>(contendedFileIds)
+                            + " - but another transaction also wrote delete files for the same"
+                            + " data files. The second-committing delete would silently end-snapshot"
+                            + " the first transaction's deletions, so this conflict is not retried.");
+        }
+    }
+
     private long readLatestSnapshotId(DSLContext ctx)
     {
         var snap = DUCKLAKE_SNAPSHOT.as("snap");
@@ -1116,7 +1209,7 @@ public class JdbcDucklakeCatalog
         executeWriteTransaction("create view " + schemaName + "." + viewName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long viewId = tx.allocateCatalogId();
-            tx.recordChange(new WriteChange.CreatedView(schemaName, viewName));
+            tx.recordChange(new WriteChange.CreatedView(schemaId, schemaName, viewName));
 
             insertViewRow(tx, viewId, UUID.fromString(newCatalogUuid()), schemaId, viewName, dialect, viewSql, viewMetadata);
             tx.incrementSchemaVersion();
@@ -1315,7 +1408,7 @@ public class JdbcDucklakeCatalog
                 throw new RuntimeException("Cannot drop schema " + schemaName + ": schema is not empty");
             }
 
-            tx.recordChange(new WriteChange.DroppedSchema(schemaId));
+            tx.recordChange(new WriteChange.DroppedSchema(schemaId, schemaName));
 
             tx.dsl().update(sch)
                     .set(sch.END_SNAPSHOT, tx.getNewSnapshotId())
@@ -1393,7 +1486,7 @@ public class JdbcDucklakeCatalog
             }
 
             tx.incrementSchemaVersion(tableId);
-            tx.recordChange(new WriteChange.CreatedTable(schemaName, tableName));
+            tx.recordChange(new WriteChange.CreatedTable(schemaId, schemaName, tableName));
         });
     }
 

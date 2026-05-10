@@ -74,10 +74,19 @@ catalog and translates the resulting exceptions, so no plugin work is required
 beyond confirming the existing `translateCatalogExceptions` wrapper still
 maps the new conflict messages cleanly.
 
-**Status (2026-05-10): Steps 1–3 landed.** Step 4 (relaxing the strict
-lineage check) remains open and is scoped below. Files added:
-`ConcurrentWriterHarness`, `WriteChange`, `LogicalConflictCheck`,
-`LogicalConflictException`; new tests
+**Status (2026-05-10): Steps 1–4 landed.** Conflict-detection now matches
+upstream's commit-time semantics. The summary below preserves the original
+plan; "landed" notes inline call out where the implementation deviates.
+Earlier framing of Step 4 as "relax the strict lineage check" was wrong:
+review of the vendored upstream source
+(`temp/pg_ducklake/third_party/ducklake/src/storage/ducklake_transaction.cpp:2460–2477`)
+showed our `ensureSnapshotLineageUnchanged` is functionally equivalent
+to upstream's `ducklake_snapshot.snapshot_id` PK fence on attempt 1.
+The actual remaining gap is the matrix upstream runs on retry, which
+catches dueling-name commits the state-based check in Step 3 misses.
+
+Files added in Steps 1–3: `ConcurrentWriterHarness`, `WriteChange`,
+`LogicalConflictCheck`, `LogicalConflictException`; new tests
 `TestConcurrentInsertSameTable`, `TestConcurrentInsertDifferentTables`,
 `TestConcurrentInsertVsDropColumn`, `TestConcurrentInsertVsDropTable`,
 `TestConcurrentAlteredTableVsAlteredTable`. The
@@ -204,34 +213,146 @@ The acceptance scenario:
   collision is the failure mode if it doesn't). Pin whichever behavior is
   correct after Step 3 lands.
 
-### Step 4 — (deferred follow-up) Relax the strict lineage check
+### Step 4 — Port upstream's change-vs-change conflict matrix — DONE (2026-05-10)
 
-Out of scope for the conflict-matrix work above; tracked here so it's not
-forgotten. Today `ensureSnapshotLineageUnchanged` rejects every intervening
-commit, which forces a retry even when interleavings are semantically
-compatible (e.g. concurrent INSERTs into different tables). Upstream DuckLake
-allows compatible interleavings to commit without retry. To match:
+**Landed**: `InterveningChanges` (parser + aggregator), `ConflictMatrix`
+(direct port of `ducklake_transaction.cpp:1184–1314`), wiring in
+`attemptWriteTransaction` (`runConflictMatrix` + finer-grained
+delete-vs-delete file-overlap query mirroring upstream's
+`GetFilesDeletedOrDroppedAfterSnapshot` path at upstream `:1259–1283`).
+The matrix runs only when intervening commits exist (i.e. on retry,
+matching upstream's `i > 0` gate). `WriteChange.{CreatedTable,
+CreatedView, DroppedSchema}` gained additional fields (schemaId / name)
+not serialized to changes_made but needed by the matrix. Acceptance
+tests: `TestConcurrentCreateSchemaSameName`,
+`TestConcurrentCreateTableSameName`,
+`TestConcurrentCreateTableInDroppedSchema`,
+`TestConcurrentDeleteVsDelete`. `TestInterveningChangesParser` covers
+quoting / escape / all-upstream-kinds round-trip. The behavior pinned
+in Step 3's `TestConcurrentAlteredTableVsAlteredTable` was flipped to
+match upstream's `altered_table × altered_table` conflict policy
+(`:1307–1310`).
 
-- [ ] Remove or weaken `ensureSnapshotLineageUnchanged`; rely on the logical
-  check from Step 3 plus the PK collision on the new snapshot row insert
-  for atomicity.
-- [ ] **Solve the ID-allocation race first**: `nextCatalogId` and `nextFileId`
-  are read at attempt-start (`JdbcDucklakeCatalog.java:925`–`927`) and
-  allocated lazily by `tx.allocateCatalogId() / allocateFileId()`. If we
-  let intervening commits land, their ID consumption isn't visible to the
-  in-flight transaction → PK collisions on `ducklake_table.table_id`,
-  `ducklake_data_file.data_file_id`, etc. Options: (a) re-read max IDs
-  before the snapshot insert and rewrite mutations to use offsets, (b)
-  switch to DB-side sequences, (c) keep optimistic lineage check but
-  scope it to "lineage advanced *and* affects me" via the typed
-  `WriteChange` log on the intervening snapshot. Option (c) is the closest
-  match to upstream behavior.
-- [ ] Re-validate Step 1's pinning tests against the relaxed behavior:
-  `concurrentInsertsBothCommit` on different tables should now commit
-  *without* either side retrying.
-- [ ] Performance check: under low contention, this should reduce snapshot
-  churn and DB round-trips. Under high contention on the same hot table,
-  retry counts should be unchanged.
+After reading the upstream source (vendored at
+`temp/pg_ducklake/third_party/ducklake/src/storage/`), my earlier framing of
+this step ("relax the strict lineage check") was wrong. The remaining gap to
+upstream parity is the **change-vs-change matrix**, not the lineage fence.
+
+**Upstream's actual flow** (`ducklake_transaction.cpp:2460–2477`):
+```cpp
+for (idx_t i = 0; i < max_retry_count + 1; i++) {
+    can_retry = false;
+    if (i > 0) {
+        // we failed our first commit due to another transaction committing
+        // retry - but first check for conflicts
+        commit_stats_snapshot = CheckForConflicts(transaction_snapshot, transaction_changes);
+    } else {
+        commit_stats_snapshot.snapshot = GetSnapshot();
+    }
+    commit_snapshot.snapshot_id++;          // bump and let PG fence on PK
+    ...
+    can_retry = true;                       // matrix passed — INSERT below may PK-collide
+```
+
+- **First attempt**: just bump `snapshot_id` and INSERT. The
+  `ducklake_snapshot` PK collision is the fence; PG rejects on duplicate.
+- **Retry attempts**: parse intervening commits' `changes_made` text into a
+  typed `SnapshotChangeInformation` struct, run the matrix in
+  `CheckForConflicts` (`ducklake_transaction.cpp:1184–1314`). If matrix
+  throws, `can_retry` is still `false` (it only flips true after the matrix
+  passes), so the retry loop bails — that's their non-retryable mechanism.
+
+Our `ensureSnapshotLineageUnchanged` is **functionally equivalent** to
+upstream's PK-on-snapshot-id fence — both fail attempt 1 when intervening
+commits exist. There's nothing to "relax". The only difference is: upstream
+runs the matrix on retry to catch interleavings where the *retry's action*
+itself would commit semantically incompatible state.
+
+**Why the matrix is essential** — the upstream metadata DDL
+(`ducklake_metadata_manager.cpp:196–217`) deliberately omits PKs on
+`ducklake_table.table_id`, `ducklake_view.view_id`, and stat tables, because
+rows are snapshot-versioned (same `table_id` recurs across rename / column
+ops). There's no DDL constraint that would catch dueling
+`createSchema("foo")` / `createSchema("foo")` or
+`createTable("S", "T")` / `createTable("S", "T")`. The matrix is the
+**only** safety net. We currently lack it.
+
+**Pre-existing bug exposed by the matrix audit**: two concurrent
+`createSchema(name)` (or `createTable(schema, name)`) calls with the same
+name today both land active rows. The lineage check fences attempt 1 →
+retry → on retry our `createSchema` blindly INSERTs without re-checking
+for an active conflicting name. State-based `LogicalConflictCheck` skips
+`Created*` variants. `PublicDbKeys.java` confirms only single-column
+PKs — no `(schema_id, table_name)` UNIQUE. Upstream catches this in the
+matrix at `ducklake_transaction.cpp:1212–1242`; we don't.
+
+**Step 4 work items** (port mechanically — upstream is the spec):
+
+- [x] **Add `ChangesMadeParser`** — inverse of `WriteChange.formatChangesMade`.
+  Parse the `ducklake_snapshot_changes.changes_made` text from intervening
+  snapshots back into `List<WriteChange>`. Upstream's `ParseChangesList` /
+  `ParseChangeEntry` / `ParseChangeValue` (in
+  `ducklake_transaction_changes.cpp:34–129`) is the spec; track quoting
+  with a 1-pass state machine, splitting on unquoted commas. ~80 lines +
+  parser tests covering quote-escaping and embedded-comma cases (mirror our
+  existing format tests in `TestJdbcDucklakeCatalogChangesMadeFormat`).
+- [x] **Aggregate intervening changes** into a structured equivalent of
+  upstream's `SnapshotChangeInformation` (sets keyed by `(schema_id,
+  name)` for create-by-name forms, sets of `tableId` for the rest). Add
+  alongside `WriteChange` — call it e.g. `InterveningChanges`.
+- [x] **Port `CheckForConflicts(my_changes, intervening_changes)`** — direct
+  translation of `ducklake_transaction.cpp:1184–1314`. Each `for` loop in
+  upstream maps to one Java loop checking the same set membership. Throw
+  `LogicalConflictException` (already exists, already non-retryable) with
+  upstream's error-message shape ("attempting to X — but another
+  transaction Y'd it"). The macro pairs to translate, in order:
+  - `dropped_tables × dropped_tables`
+  - `dropped_views × dropped_views`
+  - `dropped_scalar_macros × dropped_scalar_macros` (skip — we don't
+    support macros yet)
+  - `dropped_table_macros × dropped_table_macros` (skip — same)
+  - `dropped_schemas × dropped_schemas`, `dropped_schemas.name ×
+    created_tables[in that schema]`
+  - `created_schemas × created_schemas` (the dueling-name bug)
+  - `created_tables × dropped_schemas`, `created_tables × created_tables`
+    (the other dueling-name bug)
+  - `tables_inserted_into × dropped_tables`, `× altered_tables`
+  - `tables_deleted_from × dropped_tables`, `× altered_tables`,
+    `× tables_merge_adjacent`, `× tables_rewrite_delete`
+  - `tables_deleted_from × tables_deleted_from` — finer-grained: only
+    conflict if the same `data_file_id` is in both (upstream calls
+    `metadata_manager->GetFilesDeletedOrDroppedAfterSnapshot` and
+    intersects). We already capture `referencedDataFileIds` on
+    `WriteChange.DeletedFromTable`, so this is a Set intersection.
+  - `altered_tables × dropped_tables`, `× altered_tables`
+  - `altered_views × altered_views`
+  - Compaction / inline-flush rows are roadmap (see M8); add the matrix
+    entries when those changes are emitted.
+- [x] **Wire the matrix into `attemptWriteTransaction`**. Run it on retry
+  attempts only, mirroring upstream — when `attemptCount > 0`, fetch
+  intervening `changes_made` rows between `baseSnapshotId` and
+  `currentSnapshotId`, parse, run matrix. State-based
+  `LogicalConflictCheck` stays — it's a strictly stronger check on
+  per-call args (column / data-file IDs) that upstream doesn't have, and
+  we already pass tests against it.
+- [x] **Acceptance tests** (one per matrix gap closed):
+  - `TestConcurrentCreateSchemaSameName`: two `createSchema("foo")` →
+    loser fails non-retryable matrix conflict naming the schema.
+  - `TestConcurrentCreateTableSameName`: two `createTable("S", "T")` →
+    same.
+  - `TestConcurrentCreateTableInDroppedSchema`: T1 drops schema S
+    (empty); T2 creates table S.foo → T2 fails matrix conflict.
+  - `TestConcurrentDeleteVsDelete`: two deletes targeting the same
+    `data_file_id` → loser fails matrix conflict (other delete-vs-delete
+    pairs on different files commit cleanly).
+- [x] **Reuse existing test harness**. `ConcurrentWriterHarness` works as-is
+  for all four; the only diff vs Step 3 acceptance tests is that the
+  matrix throws, not the state-based check.
+
+**Estimate**: ~3–4 days end-to-end. The parser is a half-day; the matrix
+translation is a day; tests are a day; review-and-polish is a day.
+Mostly mechanical because upstream is the source of truth — no design
+decisions, just translation.
 
 ## M8: Maintenance Operations
 

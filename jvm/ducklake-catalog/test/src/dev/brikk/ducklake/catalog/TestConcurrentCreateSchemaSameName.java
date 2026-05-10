@@ -20,24 +20,21 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Pins upstream's {@code altered_table × altered_table} matrix entry
- * (ducklake_transaction.cpp:1307–1310). Two concurrent {@code addColumn}
- * calls on the same table — even when {@code column_order} would technically
- * not collide because the loser's retry re-reads {@code maxOrder} — are
- * rejected as a logical conflict per upstream policy. The loser fails
- * non-retryably with a {@link LogicalConflictException} naming the contended
- * {@code table_id}.
+ * Acceptance test for {@link ConflictMatrix}'s
+ * {@code created_schema × created_schema} entry
+ * (port of {@code ducklake_transaction.cpp:1212–1215}).
  *
- * <p>(Earlier, before the matrix landed, the loser's retry would commit and
- * both columns would land. The Step 3 test pinning that behavior was
- * marked "pin whichever is correct after Step 3 lands" — this is the
- * post-Step-4 behavior matching upstream.)
+ * <p>Two writers concurrently calling {@code createSchema("dueling_schema")}
+ * must not both land. Without the matrix this corrupts the catalog —
+ * upstream's metadata DDL has no UNIQUE on {@code ducklake_schema.schema_name}
+ * (only single-column PK on {@code schema_id}, see
+ * {@code ducklake_metadata_manager.cpp:198}), so two active rows with the
+ * same name would otherwise both INSERT successfully on retry.
  */
-public class TestConcurrentAlteredTableVsAlteredTable
+public class TestConcurrentCreateSchemaSameName
 {
     private static TestingDucklakePostgreSqlCatalogServer server;
     private static JdbcDucklakeCatalog catalog;
-    private static long tableId;
 
     @BeforeAll
     public static void setUpClass()
@@ -45,7 +42,7 @@ public class TestConcurrentAlteredTableVsAlteredTable
     {
         server = new TestingDucklakePostgreSqlCatalogServer();
         JdbcDucklakeCatalogTestDataGenerator.IsolatedCatalog isolated =
-                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-altered-table-vs-altered-table");
+                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-create-schema-same-name");
 
         DucklakeCatalogConfig config = new DucklakeCatalogConfig()
                 .setCatalogDatabaseUrl(isolated.jdbcUrl())
@@ -54,9 +51,6 @@ public class TestConcurrentAlteredTableVsAlteredTable
                 .setDataPath(isolated.dataDir().toAbsolutePath().toString())
                 .setMaxCatalogConnections(5);
         catalog = new JdbcDucklakeCatalog(config);
-
-        long snapshotId = catalog.getCurrentSnapshotId();
-        tableId = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow().tableId();
     }
 
     @AfterAll
@@ -71,38 +65,33 @@ public class TestConcurrentAlteredTableVsAlteredTable
     }
 
     @Test
-    public void concurrentAddColumnsConflict()
+    public void duelingCreateSchemaConflicts()
             throws Exception
     {
-        TableColumnSpec winnerColumn = TableColumnSpec.leaf("winner_col", "varchar", true);
-        TableColumnSpec loserColumn = TableColumnSpec.leaf("loser_col", "integer", true);
-
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
-                () -> catalog.addColumn(tableId, winnerColumn),
-                () -> catalog.addColumn(tableId, loserColumn));
+                () -> catalog.createSchema("dueling_schema"),
+                () -> catalog.createSchema("dueling_schema"));
 
         assertThat(result.loserException())
-                .as("upstream rejects altered_table × altered_table on the same table_id")
+                .as("two concurrent createSchema with same name must conflict — upstream matrix entry")
                 .isInstanceOf(LogicalConflictException.class);
         assertThat(result.loserException().getMessage())
-                .as("error message must name the contended table_id and the alter-vs-alter pair")
-                .contains("alter table")
-                .contains("id=" + tableId)
-                .contains("altered it");
+                .as("error message must name the conflicting schema and the cause")
+                .contains("create schema")
+                .contains("dueling_schema")
+                .contains("created a schema with this name already");
 
         assertThat(((TransactionConflictException) result.loserException()).retryable())
                 .as("logical conflicts are non-retryable")
                 .isFalse();
         assertThat(result.loserAttemptCount())
-                .as("loser must NOT burn the retry budget — exactly two attempts: parked + retry-failed")
+                .as("loser must NOT burn the retry budget — exactly two attempts: parked + matrix-failed")
                 .isEqualTo(2);
 
         long latestSnapshot = catalog.getCurrentSnapshotId();
-        assertThat(catalog.getTableColumns(tableId, latestSnapshot))
-                .extracting(DucklakeColumn::columnName)
-                .as("only the winner's column lands; loser's altered_table aborted")
-                .contains("winner_col")
-                .doesNotContain("loser_col");
+        assertThat(catalog.getSchema("dueling_schema", latestSnapshot))
+                .as("winner's createSchema lands; loser's aborted before commit")
+                .isPresent();
     }
 }

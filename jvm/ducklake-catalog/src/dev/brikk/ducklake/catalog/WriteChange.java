@@ -54,7 +54,12 @@ sealed interface WriteChange
         }
     }
 
-    record DroppedSchema(long schemaId)
+    /**
+     * @param schemaName carried alongside the ID so the conflict matrix can
+     *        cross-check intervening {@code created_table:"S".*} entries
+     *        against this drop. Not serialized to {@code changes_made}.
+     */
+    record DroppedSchema(long schemaId, String schemaName)
             implements WriteChange
     {
         @Override
@@ -64,7 +69,13 @@ sealed interface WriteChange
         }
     }
 
-    record CreatedTable(String schemaName, String tableName)
+    /**
+     * @param schemaId carried alongside the names so the conflict matrix can
+     *        cross-check this create against intervening
+     *        {@code dropped_schema:<id>} entries. Not serialized to
+     *        {@code changes_made}.
+     */
+    record CreatedTable(long schemaId, String schemaName, String tableName)
             implements WriteChange
     {
         @Override
@@ -138,7 +149,13 @@ sealed interface WriteChange
         }
     }
 
-    record CreatedView(String schemaName, String viewName)
+    /**
+     * @param schemaId carried alongside the names so the conflict matrix can
+     *        cross-check this create against intervening
+     *        {@code dropped_schema:<id>} entries. Not serialized to
+     *        {@code changes_made}.
+     */
+    record CreatedView(long schemaId, String schemaName, String viewName)
             implements WriteChange
     {
         @Override

@@ -17,27 +17,29 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Pins upstream's {@code altered_table × altered_table} matrix entry
- * (ducklake_transaction.cpp:1307–1310). Two concurrent {@code addColumn}
- * calls on the same table — even when {@code column_order} would technically
- * not collide because the loser's retry re-reads {@code maxOrder} — are
- * rejected as a logical conflict per upstream policy. The loser fails
- * non-retryably with a {@link LogicalConflictException} naming the contended
- * {@code table_id}.
+ * Acceptance test for the {@code tables_deleted_from × dropped_tables}
+ * matrix entry at {@code ducklake_transaction.cpp:1254}. T1 drops a
+ * table; T2 races with a delete against that table. The delete must
+ * abort non-retryably — without this check, T2's
+ * {@code applyDeleteFragments} would insert a {@code ducklake_delete_file}
+ * row referencing the dropped table's now end-snapshotted data files.
  *
- * <p>(Earlier, before the matrix landed, the loser's retry would commit and
- * both columns would land. The Step 3 test pinning that behavior was
- * marked "pin whichever is correct after Step 3 lands" — this is the
- * post-Step-4 behavior matching upstream.)
+ * <p>Either {@link LogicalConflictCheck} (state-based: the data_file_id
+ * is no longer active) or {@link ConflictMatrix} (change-based:
+ * {@code DeletedFromTable} hits the {@code dropped_tables} set) catches
+ * this. Both throw {@link LogicalConflictException}.
  */
-public class TestConcurrentAlteredTableVsAlteredTable
+public class TestConcurrentDeleteVsDropTable
 {
     private static TestingDucklakePostgreSqlCatalogServer server;
     private static JdbcDucklakeCatalog catalog;
     private static long tableId;
+    private static long sharedDataFileId;
 
     @BeforeAll
     public static void setUpClass()
@@ -45,7 +47,7 @@ public class TestConcurrentAlteredTableVsAlteredTable
     {
         server = new TestingDucklakePostgreSqlCatalogServer();
         JdbcDucklakeCatalogTestDataGenerator.IsolatedCatalog isolated =
-                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-altered-table-vs-altered-table");
+                JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-delete-vs-drop-table");
 
         DucklakeCatalogConfig config = new DucklakeCatalogConfig()
                 .setCatalogDatabaseUrl(isolated.jdbcUrl())
@@ -56,7 +58,9 @@ public class TestConcurrentAlteredTableVsAlteredTable
         catalog = new JdbcDucklakeCatalog(config);
 
         long snapshotId = catalog.getCurrentSnapshotId();
-        tableId = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow().tableId();
+        DucklakeTable table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow();
+        tableId = table.tableId();
+        sharedDataFileId = catalog.getDataFiles(tableId, snapshotId).getFirst().dataFileId();
     }
 
     @AfterAll
@@ -71,38 +75,35 @@ public class TestConcurrentAlteredTableVsAlteredTable
     }
 
     @Test
-    public void concurrentAddColumnsConflict()
+    public void deleteRacingDropTableConflicts()
             throws Exception
     {
-        TableColumnSpec winnerColumn = TableColumnSpec.leaf("winner_col", "varchar", true);
-        TableColumnSpec loserColumn = TableColumnSpec.leaf("loser_col", "integer", true);
+        DucklakeDeleteFragment loserFragment = new DucklakeDeleteFragment(
+                sharedDataFileId,
+                "test_data/delete_vs_drop_table_loser.parquet",
+                /* deleteCount */ 1L,
+                /* fileSizeBytes */ 256L,
+                /* footerSize */ 64L);
 
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
-                () -> catalog.addColumn(tableId, winnerColumn),
-                () -> catalog.addColumn(tableId, loserColumn));
+                () -> catalog.dropTable("test_schema", "simple_table"),
+                () -> catalog.commitDelete(tableId, List.of(loserFragment)));
 
         assertThat(result.loserException())
-                .as("upstream rejects altered_table × altered_table on the same table_id")
+                .as("delete racing a DROP TABLE must conflict")
                 .isInstanceOf(LogicalConflictException.class);
-        assertThat(result.loserException().getMessage())
-                .as("error message must name the contended table_id and the alter-vs-alter pair")
-                .contains("alter table")
-                .contains("id=" + tableId)
-                .contains("altered it");
 
         assertThat(((TransactionConflictException) result.loserException()).retryable())
                 .as("logical conflicts are non-retryable")
                 .isFalse();
         assertThat(result.loserAttemptCount())
-                .as("loser must NOT burn the retry budget — exactly two attempts: parked + retry-failed")
+                .as("loser must NOT burn the retry budget — exactly two attempts: parked + check-failed")
                 .isEqualTo(2);
 
         long latestSnapshot = catalog.getCurrentSnapshotId();
-        assertThat(catalog.getTableColumns(tableId, latestSnapshot))
-                .extracting(DucklakeColumn::columnName)
-                .as("only the winner's column lands; loser's altered_table aborted")
-                .contains("winner_col")
-                .doesNotContain("loser_col");
+        assertThat(catalog.getTable("test_schema", "simple_table", latestSnapshot))
+                .as("winner's DROP TABLE visible at the latest snapshot")
+                .isEmpty();
     }
 }

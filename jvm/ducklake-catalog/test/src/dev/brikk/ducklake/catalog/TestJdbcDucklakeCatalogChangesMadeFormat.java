@@ -35,6 +35,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class TestJdbcDucklakeCatalogChangesMadeFormat
 {
+    // schemaId is carried on CreatedTable / CreatedView for matrix cross-checks
+    // but is NOT serialized to the changes_made text — these format tests don't
+    // care which value we pass.
+    private static final long SCHEMA_ID = 1L;
+
     // ==================== formatChangesMade: plain joiner ====================
 
     @Test
@@ -55,7 +60,7 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     {
         assertThat(WriteChange.formatChangesMade(List.of(
                 new WriteChange.CreatedSchema("sales"),
-                new WriteChange.CreatedTable("sales", "orders"),
+                new WriteChange.CreatedTable(SCHEMA_ID, "sales", "orders"),
                 new WriteChange.InsertedIntoTable(7, Set.of()))))
                 .isEqualTo("created_schema:\"sales\",created_table:\"sales\".\"orders\",inserted_into_table:7");
     }
@@ -66,7 +71,7 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
         // Spec: `dropped_*`, `altered_*`, `inserted_into_table`, `deleted_from_table` use raw
         // integers (parsed by StringUtil::ToUnsigned upstream), never quoted.
         assertThat(WriteChange.formatChangesMade(List.of(
-                new WriteChange.DroppedSchema(3),
+                new WriteChange.DroppedSchema(3, "sales"),
                 new WriteChange.DroppedTable(12),
                 new WriteChange.AlteredTable(42),
                 new WriteChange.InsertedIntoTable(100, Set.of()),
@@ -79,7 +84,7 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     @Test
     public void testCreatedTableProducesFullyQualifiedQuotedForm()
     {
-        assertThat(new WriteChange.CreatedTable("sales", "orders").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedTable(SCHEMA_ID, "sales", "orders").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"orders\"");
     }
 
@@ -87,21 +92,21 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     public void testCreatedTableQuotesCommaInName()
     {
         // Without quoting, ParseChangesList would see three entries instead of one.
-        assertThat(new WriteChange.CreatedTable("sales", "bad,name").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedTable(SCHEMA_ID, "sales", "bad,name").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"bad,name\"");
     }
 
     @Test
     public void testCreatedTableEscapesEmbeddedQuoteByDoubling()
     {
-        assertThat(new WriteChange.CreatedTable("sales", "weird\"name").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedTable(SCHEMA_ID, "sales", "weird\"name").toChangesMadeEntry())
                 .isEqualTo("created_table:\"sales\".\"weird\"\"name\"");
     }
 
     @Test
     public void testCreatedTableQuotesBothSchemaAndTable()
     {
-        assertThat(new WriteChange.CreatedTable("odd.schema", "odd.table").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedTable(SCHEMA_ID, "odd.schema", "odd.table").toChangesMadeEntry())
                 .isEqualTo("created_table:\"odd.schema\".\"odd.table\"");
     }
 
@@ -110,14 +115,14 @@ public class TestJdbcDucklakeCatalogChangesMadeFormat
     @Test
     public void testCreatedViewProducesFullyQualifiedQuotedForm()
     {
-        assertThat(new WriteChange.CreatedView("analytics", "daily_summary").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedView(SCHEMA_ID, "analytics", "daily_summary").toChangesMadeEntry())
                 .isEqualTo("created_view:\"analytics\".\"daily_summary\"");
     }
 
     @Test
     public void testCreatedViewEscapesEmbeddedQuoteByDoubling()
     {
-        assertThat(new WriteChange.CreatedView("a\"b", "c\"d").toChangesMadeEntry())
+        assertThat(new WriteChange.CreatedView(SCHEMA_ID, "a\"b", "c\"d").toChangesMadeEntry())
                 .isEqualTo("created_view:\"a\"\"b\".\"c\"\"d\"");
     }
 
