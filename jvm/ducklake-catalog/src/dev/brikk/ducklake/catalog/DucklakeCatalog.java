@@ -138,6 +138,21 @@ public interface DucklakeCatalog
     boolean hasInlinedRows(long tableId, long schemaVersion, long snapshotId);
 
     /**
+     * Check whether this table has an inlined-delete metadata table
+     * ({@code ducklake_inlined_delete_<tableId>}) populated with deletions
+     * visible at the given snapshot. Returns {@code false} when the table
+     * doesn't exist (the common case — DuckDB only creates it the first
+     * time {@code DATA_INLINING_ROW_LIMIT} causes a deletion to be inlined).
+     *
+     * <p>The connector's reader does not understand inlined deletions today,
+     * so {@link DucklakeSplitManager} fails the query when this returns
+     * true — silently skipping inlined deletions would return rows that
+     * should have been deleted. Until a reader is implemented, this acts
+     * as a guard analogous to the puffin-format delete-file check.
+     */
+    boolean hasInlinedDeletes(long tableId, long snapshotId);
+
+    /**
      * Read inlined data rows for a table at a given snapshot.
      * Queries ducklake_inlined_data_{tableId}_{schemaVersion} with snapshot filtering.
      * Returns raw JDBC values for each row, one List per row, ordered by column.

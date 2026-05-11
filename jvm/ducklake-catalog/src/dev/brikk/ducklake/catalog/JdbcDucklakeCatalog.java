@@ -656,6 +656,31 @@ public class JdbcDucklakeCatalog
     }
 
     @Override
+    public boolean hasInlinedDeletes(long tableId, long snapshotId)
+    {
+        // ducklake_inlined_delete_<tableId> is created lazily by DuckDB the first
+        // time DATA_INLINING_ROW_LIMIT causes a deletion to be inlined; before
+        // that it doesn't exist at all. The probe catches the
+        // table-doesn't-exist case and returns false.
+        // Schema (per upstream data_inlining.md): file_id, row_id, begin_snapshot.
+        // No end_snapshot — once an inlined delete row exists for a snapshot, it's
+        // permanent until compaction rewrites the data file.
+        String inlinedDeleteName = "ducklake_inlined_delete_" + tableId;
+        Table<?> tab = DSL.table(DSL.name(inlinedDeleteName));
+        Field<Long> beginSnapshot = DSL.field(DSL.name("begin_snapshot"), Long.class);
+        try {
+            return dsl.fetchExists(
+                    DSL.selectOne()
+                            .from(tab)
+                            .where(beginSnapshot.le(snapshotId)));
+        }
+        catch (DataAccessException e) {
+            log.log(System.Logger.Level.DEBUG, "Could not probe inlined deletions from {0} (table may not exist): {1}", inlinedDeleteName, e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
     public List<List<Object>> readInlinedData(long tableId, long schemaVersion, long snapshotId, List<DucklakeColumn> columns)
     {
         if (columns.isEmpty()) {

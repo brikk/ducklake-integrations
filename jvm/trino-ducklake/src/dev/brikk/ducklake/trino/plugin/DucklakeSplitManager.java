@@ -119,6 +119,7 @@ public class DucklakeSplitManager
         log.debug("Found %d data files for table %s", dataFiles.size(), tableHandle.tableName());
 
         validateDeleteFileFormats(dataFiles, tableHandle);
+        validateNoInlinedDeletes(catalog, tableHandle);
 
         boolean tableHasNoDataFiles = dataFiles.isEmpty();
         List<DucklakeInlinedDataInfo> inlinedDataInfos = catalog.getInlinedDataInfos(tableHandle.tableId(), tableHandle.snapshotId());
@@ -209,6 +210,29 @@ public class DucklakeSplitManager
                     tableHandle.schemaName(),
                     tableHandle.tableName(),
                     deleteFileFormat.get()));
+        }
+    }
+
+    /**
+     * Reject snapshots that have inlined deletions. DuckLake stores small deletes
+     * directly in a per-table {@code ducklake_inlined_delete_<tableId>} metadata
+     * table when the writer's {@code DATA_INLINING_ROW_LIMIT} is set; this connector
+     * doesn't yet read that table, and silently skipping the deletions would return
+     * rows that should have been deleted. Mirrors the puffin delete-file guard above.
+     * Workaround: run {@code CALL ducklake_flush_inlined_data(...)} on a DuckDB writer
+     * to materialize inlined deletions before reading from Trino.
+     */
+    private static void validateNoInlinedDeletes(DucklakeCatalog catalog, DucklakeTableHandle tableHandle)
+    {
+        if (catalog.hasInlinedDeletes(tableHandle.tableId(), tableHandle.snapshotId())) {
+            throw new TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s has inlined deletions in ducklake_inlined_delete_%d which this connector cannot read. " +
+                            "DuckDB stores small deletes inline when DATA_INLINING_ROW_LIMIT is set on the writer; " +
+                            "run CALL ducklake_flush_inlined_data(...) on the writer to materialize them as parquet " +
+                            "delete files before reading from Trino.",
+                    tableHandle.schemaName(),
+                    tableHandle.tableName(),
+                    tableHandle.tableId()));
         }
     }
 
