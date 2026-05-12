@@ -343,6 +343,7 @@ public class JdbcDucklakeCatalog
                         file.FOOTER_SIZE,
                         file.ROW_ID_START,
                         file.PARTITION_ID,
+                        file.MAPPING_ID,
                         delfile.PATH,
                         delfile.PATH_IS_RELATIVE,
                         delfile.FOOTER_SIZE,
@@ -371,7 +372,8 @@ public class JdbcDucklakeCatalog
                         Optional.ofNullable(r.get(delfile.PATH)),
                         Optional.ofNullable(r.get(delfile.PATH_IS_RELATIVE)),
                         Optional.ofNullable(r.get(delfile.FOOTER_SIZE)),
-                        Optional.ofNullable(r.get(delfile.FORMAT))));
+                        Optional.ofNullable(r.get(delfile.FORMAT)),
+                        Optional.ofNullable(r.get(file.MAPPING_ID))));
     }
 
     @Override
@@ -595,6 +597,34 @@ public class JdbcDucklakeCatalog
                                     r.get(partval.PARTITION_VALUE)));
                 });
 
+        return result;
+    }
+
+    @Override
+    public Map<Long, Map<Long, String>> getNameMaps(Set<Long> mappingIds)
+    {
+        if (mappingIds == null || mappingIds.isEmpty()) {
+            return Map.of();
+        }
+        var nm = DUCKLAKE_NAME_MAPPING.as("nm");
+        Map<Long, Map<Long, String>> result = new HashMap<>();
+        dsl.select(nm.MAPPING_ID, nm.TARGET_FIELD_ID, nm.SOURCE_NAME)
+                .from(nm)
+                .where(nm.MAPPING_ID.in(mappingIds))
+                // Top-level entries only — nested struct/list/map source-name resolution
+                // is handled by Trino's reader once we descend into a matched group field.
+                .and(nm.PARENT_COLUMN.isNull())
+                // Exclude hive partition entries — those have no parquet column to find.
+                .and(nm.IS_PARTITION.isFalse().or(nm.IS_PARTITION.isNull()))
+                .forEach(r -> {
+                    Long mappingId = r.get(nm.MAPPING_ID);
+                    Long fieldId = r.get(nm.TARGET_FIELD_ID);
+                    String sourceName = r.get(nm.SOURCE_NAME);
+                    if (mappingId != null && fieldId != null && sourceName != null) {
+                        result.computeIfAbsent(mappingId, _ -> new HashMap<>())
+                                .put(fieldId, sourceName);
+                    }
+                });
         return result;
     }
 
@@ -1787,7 +1817,13 @@ public class JdbcDucklakeCatalog
             dataFile.setFileFormat(fragment.fileFormat());
             dataFile.setRecordCount(fragment.recordCount());
             dataFile.setFileSizeBytes(fragment.fileSizeBytes());
-            dataFile.setFooterSize(fragment.footerSize());
+            // footer_size is a hint column: SQL NULL means "no hint" and the reader
+            // falls back to a blind tail read. A literal 0 is wrong and crashes DuckDB's
+            // reader ("Invalid footer length"). Callers that don't compute the size
+            // (today: add_files) pass 0; map it to NULL here.
+            if (fragment.footerSize() > 0) {
+                dataFile.setFooterSize(fragment.footerSize());
+            }
             dataFile.setRowIdStart(runningRowId);
             if (fragment.partitionId().isPresent()) {
                 dataFile.setPartitionId(fragment.partitionId().getAsLong());
@@ -1977,7 +2013,10 @@ public class JdbcDucklakeCatalog
             r.setSourceName(entry.sourceName());
             r.setTargetFieldId(entry.targetFieldId());
             r.setParentColumn(parentColumnId);
-            r.setIsPartition(entry.isPartition() ? Boolean.TRUE : null);
+            // DuckDB's GetColumnMappings reader crashes on SQL NULL for is_partition —
+            // the column's DDL has DEFAULT false, and upstream always writes a literal bool.
+            // Mirror that contract: TRUE for hive-partition entries, FALSE for regular ones.
+            r.setIsPartition(entry.isPartition());
             sink.add(r);
             if (!entry.children().isEmpty()) {
                 appendNameMappingRows(sink, mappingId, entry.children(), columnId, nextColumnId);

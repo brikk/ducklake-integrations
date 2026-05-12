@@ -157,6 +157,20 @@ public class DucklakeSplitManager
                     ? catalog.getFilePartitionValues(tableHandle.tableId(), tableHandle.snapshotId())
                     : Map.of();
 
+            // Batch-fetch the source-name overrides recorded in ducklake_name_mapping for
+            // files registered via add_files (those carry a non-null mapping_id). The page
+            // source uses these when a column's table name doesn't appear in the parquet
+            // schema (e.g. case-difference, or a renamed column whose old file kept the old
+            // parquet name). Avoid the query when no files in this set have mapping_ids.
+            java.util.Set<Long> mappingIds = dataFiles.stream()
+                    .map(DucklakeDataFile::mappingId)
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            Map<Long, Map<Long, String>> nameMapsByMappingId = mappingIds.isEmpty()
+                    ? Map.of()
+                    : catalog.getNameMaps(mappingIds);
+
             // Group by dataFileId to merge multiple delete files per data file
             // (a data file can accumulate multiple delete files across snapshots)
             Map<Long, List<DucklakeDataFile>> groupedFiles = new LinkedHashMap<>();
@@ -164,7 +178,7 @@ public class DucklakeSplitManager
                 groupedFiles.computeIfAbsent(df.dataFileId(), _ -> new ArrayList<>()).add(df);
             }
             parquetSplits = groupedFiles.values().stream()
-                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile))
+                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId))
                     .collect(toImmutableList());
         }
 
@@ -523,7 +537,8 @@ public class DucklakeSplitManager
             String tableDataPath,
             TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
             Optional<DucklakePartitionSpec> activePartitionSpec,
-            Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile)
+            Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile,
+            Map<Long, Map<Long, String>> nameMapsByMappingId)
     {
         DucklakeDataFile primary = dataFileGroup.getFirst();
         String dataFilePath = pathResolver.resolveFilePath(primary.path(), primary.pathIsRelative(), tableDataPath);
@@ -552,6 +567,10 @@ public class DucklakeSplitManager
                 activePartitionSpec,
                 partitionValuesByFile);
 
+        Map<Long, String> fieldIdToParquetSourceName = primary.mappingId()
+                .map(mid -> nameMapsByMappingId.getOrDefault(mid, Map.<Long, String>of()))
+                .orElse(Map.of());
+
         return new DucklakeSplit(
                 dataFilePath,
                 deleteFilePaths,
@@ -562,7 +581,8 @@ public class DucklakeSplitManager
                 fileStatisticsDomain,
                 primary.footerSize(),
                 deleteFileFooterSizes,
-                partitionValuesByColumnId);
+                partitionValuesByColumnId,
+                fieldIdToParquetSourceName);
     }
 
     /**

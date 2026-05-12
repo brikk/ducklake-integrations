@@ -476,6 +476,55 @@ public class TestDucklakeAddFiles
         }
     }
 
+    // ==================== Name-map consulted at read time ====================
+
+    @Test
+    public void testAddFilesReadConsultsNameMapForCaseDifferingColumns()
+            throws Exception
+    {
+        // Source file written by DuckDB with an UPPERCASE column name. Trino's reader
+        // does case-sensitive lookup against the parquet schema, so without the name_map
+        // consultation it would return NULL for the lowercase table column. The
+        // name_map records source_name="ID" -> target_field_id=<id column's field_id>,
+        // and the page source uses that to find the column at read time.
+        java.nio.file.Path duckdbOutputDir = Paths.get("build", "test-data",
+                "test-catalog-isolated-write-add-files", "add_files_case");
+        Files.createDirectories(duckdbOutputDir);
+        java.nio.file.Path parquetPath = duckdbOutputDir.resolve("upper.parquet").toAbsolutePath();
+
+        // Write the parquet file via DuckDB's COPY (in-memory DuckDB — no catalog
+        // attach needed since we're just emitting raw parquet).
+        try (java.sql.Connection duckdb = java.sql.DriverManager.getConnection("jdbc:duckdb:");
+                java.sql.Statement stmt = duckdb.createStatement()) {
+            stmt.execute(String.format(
+                    "COPY (SELECT 1 AS \"ID\", 'alice' AS \"NAME\" UNION ALL "
+                            + "SELECT 2 AS \"ID\", 'bob' AS \"NAME\") "
+                            + "TO '%s' (FORMAT PARQUET)",
+                    parquetPath));
+        }
+
+        computeActual("CREATE TABLE test_schema.case_dst (id INTEGER, name VARCHAR)");
+        try {
+            computeActual(String.format(
+                    "CALL ducklake.system.add_files("
+                            + "schema_name => 'test_schema', "
+                            + "table_name => 'case_dst', "
+                            + "files => ARRAY['%s'])",
+                    parquetPath));
+
+            MaterializedResult result = computeActual(
+                    "SELECT id, name FROM test_schema.case_dst ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(1)).isEqualTo("alice");
+            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(1).getField(1)).isEqualTo("bob");
+        }
+        finally {
+            tryDropTable("test_schema.case_dst");
+        }
+    }
+
     // ==================== List/Struct nested types ====================
 
     @Test

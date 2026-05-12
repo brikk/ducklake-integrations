@@ -122,6 +122,16 @@ public interface DucklakeCatalog
     List<DucklakePartitionSpec> getPartitionSpecs(long tableId, long snapshotId);
 
     /**
+     * Load the top-level entries of one or more name maps. Returns a map keyed by
+     * {@code mapping_id} where each value maps {@code target_field_id → source_name}
+     * for non-hive-partition entries whose {@code parent_column} is NULL. Used by the
+     * read path to find the parquet column corresponding to a table field id when the
+     * file's column names don't match the table's (e.g. case-difference, registered
+     * via {@code add_files}). Returns an empty map for the empty input set.
+     */
+    Map<Long, Map<Long, String>> getNameMaps(java.util.Set<Long> mappingIds);
+
+    /**
      * Get partition values for all active data files of a table at the given snapshot
      */
     Map<Long, List<DucklakeFilePartitionValue>> getFilePartitionValues(long tableId, long snapshotId);

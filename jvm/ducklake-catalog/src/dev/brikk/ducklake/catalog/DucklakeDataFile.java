@@ -37,7 +37,8 @@ public record DucklakeDataFile(
         Optional<String> deleteFilePath,
         Optional<Boolean> deleteFilePathIsRelative,
         Optional<Long> deleteFileFooterSize,
-        Optional<String> deleteFileFormat)
+        Optional<String> deleteFileFormat,
+        Optional<Long> mappingId)
 {
     public DucklakeDataFile
     {
@@ -49,5 +50,34 @@ public record DucklakeDataFile(
         requireNonNull(deleteFilePathIsRelative, "deleteFilePathIsRelative is null");
         requireNonNull(deleteFileFooterSize, "deleteFileFooterSize is null");
         requireNonNull(deleteFileFormat, "deleteFileFormat is null");
+        requireNonNull(mappingId, "mappingId is null");
+    }
+
+    /**
+     * Backwards-compatible constructor for call sites that don't carry a name-map id.
+     */
+    public DucklakeDataFile(
+            long dataFileId,
+            long tableId,
+            long beginSnapshot,
+            Optional<Long> endSnapshot,
+            long fileOrder,
+            String path,
+            boolean pathIsRelative,
+            String fileFormat,
+            long recordCount,
+            long fileSizeBytes,
+            long footerSize,
+            long rowIdStart,
+            Optional<Long> partitionId,
+            Optional<String> deleteFilePath,
+            Optional<Boolean> deleteFilePathIsRelative,
+            Optional<Long> deleteFileFooterSize,
+            Optional<String> deleteFileFormat)
+    {
+        this(dataFileId, tableId, beginSnapshot, endSnapshot, fileOrder, path, pathIsRelative,
+                fileFormat, recordCount, fileSizeBytes, footerSize, rowIdStart, partitionId,
+                deleteFilePath, deleteFilePathIsRelative, deleteFileFooterSize, deleteFileFormat,
+                Optional.empty());
     }
 }

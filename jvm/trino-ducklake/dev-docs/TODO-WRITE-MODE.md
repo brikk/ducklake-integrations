@@ -111,6 +111,24 @@ generate new parquet files and need a similar metadata-insert path.
   `system.register_table()`-style procedures via
   `io.trino.spi.procedure.Procedure`.
 
+## `add_files` Follow-Ups
+
+- [ ] **`allow_missing` recurses into STRUCT fields.** Upstream's
+  `add_files_missing_fields.test` exercises a `ROW(a INT)` parquet against a
+  `ROW(a INT, b INT)` table column. Our `DucklakeAddFilesNameMapper.mapStruct`
+  rejects unconditionally when a child field is absent — only top-level columns
+  honor the `allow_missing` flag today. Port the same semantics for struct
+  children (return a name-map entry without a child for the missing field, and
+  the reader produces NULL via the existing missing-column path). ~half-day.
+- [ ] **Compute `footer_size` for `add_files`-registered files.** The footer-size
+  hint stored in `ducklake_data_file.footer_size` lets readers skip the blind
+  48 KB tail read (`FooterPrefetchingParquetDataSource`). The procedure writes
+  it as SQL NULL today, so reads of add_files-registered files pay one extra
+  round-trip. The post-script of every parquet file ends with a 4-byte
+  little-endian footer length — read it from the data source's tail bytes during
+  `MetadataReader.readFooter` and store it in the fragment. Correctness is
+  fine without; this is a read-path perf improvement.
+
 ## Nested-Leaf File Column Stats
 
 - [ ] **Emit `ducklake_file_column_stats` rows for nested-leaf columns.**

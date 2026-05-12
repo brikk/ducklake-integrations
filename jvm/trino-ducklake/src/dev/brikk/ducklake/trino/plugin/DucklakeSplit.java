@@ -55,7 +55,14 @@ public record DucklakeSplit(
         // projected back as the original column. The page source provider consults this
         // map to constant-fill partition columns missing from the parquet body
         // (hive-style external file imports).
-        @JsonProperty("partitionValuesByColumnId") Map<Long, String> partitionValuesByColumnId)
+        @JsonProperty("partitionValuesByColumnId") Map<Long, String> partitionValuesByColumnId,
+        // Per-file source-name override: maps each top-level field_id to the parquet
+        // column name to look up in this file's schema, when that differs from the
+        // table column name. Populated from {@code ducklake_name_mapping} when the data
+        // file has a non-null {@code mapping_id} (today: files registered via
+        // {@code add_files}). The page source consults this after name-then-field_id
+        // lookups miss in the parquet schema.
+        @JsonProperty("fieldIdToParquetSourceName") Map<Long, String> fieldIdToParquetSourceName)
         implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = instanceSize(DucklakeSplit.class);
@@ -72,6 +79,8 @@ public record DucklakeSplit(
         deleteFileFooterSizes = Map.copyOf(deleteFileFooterSizes);
         requireNonNull(partitionValuesByColumnId, "partitionValuesByColumnId is null");
         partitionValuesByColumnId = Map.copyOf(partitionValuesByColumnId);
+        requireNonNull(fieldIdToParquetSourceName, "fieldIdToParquetSourceName is null");
+        fieldIdToParquetSourceName = Map.copyOf(fieldIdToParquetSourceName);
     }
 
     // Convenience constructor without footer-size hints / partition values — used by
@@ -86,7 +95,7 @@ public record DucklakeSplit(
             String fileFormat,
             TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of(), Map.of());
     }
 
     // Eight-arg legacy constructor (no partition values) — kept for existing call sites
@@ -102,7 +111,24 @@ public record DucklakeSplit(
             long footerSize,
             Map<String, Long> deleteFileFooterSizes)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of(), Map.of());
+    }
+
+    // Ten-arg constructor used during the partition-value-projection introduction —
+    // kept for callers that don't yet supply per-file source-name overrides.
+    public DucklakeSplit(
+            String dataFilePath,
+            List<String> deleteFilePaths,
+            long rowIdStart,
+            long recordCount,
+            long fileSizeBytes,
+            String fileFormat,
+            TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
+            long footerSize,
+            Map<String, Long> deleteFileFooterSizes,
+            Map<Long, String> partitionValuesByColumnId)
+    {
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, Map.of());
     }
 
     /**
@@ -137,6 +163,9 @@ public record DucklakeSplit(
         long partitionValuesRetained = partitionValuesByColumnId.entrySet().stream()
                 .mapToLong(entry -> SIZE_OF_LONG + estimatedSizeOf(entry.getValue()))
                 .sum();
+        long sourceNameRetained = fieldIdToParquetSourceName.entrySet().stream()
+                .mapToLong(entry -> SIZE_OF_LONG + estimatedSizeOf(entry.getValue()))
+                .sum();
         return INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong(SizeOf::estimatedSizeOf).sum()
@@ -144,6 +173,7 @@ public record DucklakeSplit(
                 + estimatedSizeOf(fileFormat)
                 + fileStatisticsDomain.getRetainedSizeInBytes(DucklakeColumnHandle::getRetainedSizeInBytes)
                 + deleteFooterSizesRetained
-                + partitionValuesRetained;
+                + partitionValuesRetained
+                + sourceNameRetained;
     }
 }

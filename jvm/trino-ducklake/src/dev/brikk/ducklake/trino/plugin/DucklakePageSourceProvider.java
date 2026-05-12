@@ -468,6 +468,17 @@ public class DucklakePageSourceProvider
                 if (columnIO == null && column.columnId() > 0) {
                     columnIO = fieldIdToColumnIO.get((int) column.columnId());
                 }
+                // Finally, consult the catalog's name_map for files registered via
+                // add_files — covers the case where the parquet column name differs
+                // from the table column name (e.g. case-difference, or a column-rename
+                // where the file kept its original name). The map is empty for files
+                // without a mapping_id, so this is a no-op for INSERT-written files.
+                if (columnIO == null) {
+                    String parquetSourceName = split.fieldIdToParquetSourceName().get(column.columnId());
+                    if (parquetSourceName != null && !parquetSourceName.equals(columnName)) {
+                        columnIO = messageColumnIO.getChild(parquetSourceName);
+                    }
+                }
 
                 if (columnIO == null) {
                     // Missing column in file. Two cases:

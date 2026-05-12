@@ -185,6 +185,7 @@ operators and functions are not available through Trino.
 | ALTER TABLE DROP COLUMN | Yes | |
 | ALTER TABLE RENAME COLUMN | Yes | Field-ID based; existing files read correctly |
 | Partitioned writes | Yes | Identity and temporal transforms |
+| Register existing parquet files (`add_files`) | Yes | `CALL system.add_files(...)`; IDENTITY hive partitioning supported |
 | Cross-engine Parquet compatibility | Yes | `field_id` annotations for DuckDB interop |
 | Concurrent conflict detection | Yes | Snapshot lineage check; aborts on stale base |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
@@ -250,10 +251,13 @@ CALL ducklake.system.add_files(
 )
 ```
 
-Parquet column names are matched to table column names case-insensitively; column
-reordering between file and table is supported. Each unique parquet schema seen across
-the `files` array shares one `ducklake_column_mapping` row. The procedure produces
-one snapshot per invocation and participates in the connector's concurrent-conflict
+Parquet column names are matched to table column names case-insensitively at
+registration time, and the registration writes a `ducklake_name_mapping` row that
+the read path consults — so files with case-differing or otherwise-renamed
+columns read correctly through both Trino and DuckDB. Column reordering between
+file and table is supported. Each unique parquet schema seen across the `files`
+array shares one `ducklake_column_mapping` row. The procedure produces one
+snapshot per invocation and participates in the connector's concurrent-conflict
 matrix (an `add_files` racing a `DROP COLUMN` against the same column will fail
 non-retryably, matching upstream).
 
