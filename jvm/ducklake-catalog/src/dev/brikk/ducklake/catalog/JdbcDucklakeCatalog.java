@@ -15,11 +15,13 @@ package dev.brikk.ducklake.catalog;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnMappingRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeDataFileRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeDeleteFileRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeFileColumnStatsRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeFilePartitionValueRecord;
+import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeNameMappingRecord;
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeTableColumnStatsRecord;
 import org.jooq.Condition;
 import org.jooq.Field;
@@ -64,12 +66,14 @@ import com.fasterxml.uuid.impl.TimeBasedEpochGenerator;
 
 import static dev.brikk.ducklake.catalog.SnapshotRange.activeAt;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_MAPPING;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_NAME_MAPPING;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_COLUMN;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_INFO;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA;
@@ -1712,6 +1716,19 @@ public class JdbcDucklakeCatalog
         });
     }
 
+    @Override
+    public void commitAddFiles(long tableId, List<DucklakeWriteFragment> fragments)
+    {
+        if (fragments.isEmpty()) {
+            return;
+        }
+
+        executeWriteTransaction("add files to table " + tableId, tx -> {
+            applyInsertFragments(tx, tableId, fragments);
+            tx.recordChange(new WriteChange.InsertedIntoTable(tableId, referencedColumnIds(fragments)));
+        });
+    }
+
     private static Set<Long> referencedColumnIds(List<DucklakeWriteFragment> fragments)
     {
         return fragments.stream()
@@ -1749,6 +1766,13 @@ public class JdbcDucklakeCatalog
         List<DucklakeFilePartitionValueRecord> partitionValueRecords = new ArrayList<>();
         List<DucklakeFileColumnStatsRecord> fileColumnStatsRecords = new ArrayList<>();
         List<DucklakeDataFileRecord> dataFileRecords = new ArrayList<>();
+        // Dedupe identical NameMap structures within this call. Upstream's
+        // ducklake_add_data_files writes one ducklake_column_mapping row per
+        // unique parquet schema seen in a batch; matching that here lets a
+        // glob over homogeneous parquet files share one mapping_id.
+        Map<DucklakeNameMap, Long> nameMapToId = new HashMap<>();
+        List<DucklakeColumnMappingRecord> columnMappingRecords = new ArrayList<>();
+        List<DucklakeNameMappingRecord> nameMappingRecords = new ArrayList<>();
 
         for (DucklakeWriteFragment fragment : fragments) {
             long dataFileId = tx.allocateFileId();
@@ -1759,7 +1783,7 @@ public class JdbcDucklakeCatalog
             dataFile.setBeginSnapshot(tx.getNewSnapshotId());
             // file_order: NULL matches DuckDB convention
             dataFile.setPath(fragment.path());
-            dataFile.setPathIsRelative(true);
+            dataFile.setPathIsRelative(fragment.pathIsRelative());
             dataFile.setFileFormat(fragment.fileFormat());
             dataFile.setRecordCount(fragment.recordCount());
             dataFile.setFileSizeBytes(fragment.fileSizeBytes());
@@ -1767,6 +1791,21 @@ public class JdbcDucklakeCatalog
             dataFile.setRowIdStart(runningRowId);
             if (fragment.partitionId().isPresent()) {
                 dataFile.setPartitionId(fragment.partitionId().getAsLong());
+            }
+            if (fragment.nameMap().isPresent()) {
+                DucklakeNameMap nameMap = fragment.nameMap().get();
+                Long mappingId = nameMapToId.get(nameMap);
+                if (mappingId == null) {
+                    mappingId = tx.allocateCatalogId();
+                    nameMapToId.put(nameMap, mappingId);
+                    DucklakeColumnMappingRecord cm = new DucklakeColumnMappingRecord();
+                    cm.setMappingId(mappingId);
+                    cm.setTableId(tableId);
+                    cm.setType("map_by_name");
+                    columnMappingRecords.add(cm);
+                    addNameMappingRows(nameMappingRecords, mappingId, nameMap.entries(), null);
+                }
+                dataFile.setMappingId(mappingId);
             }
             dataFileRecords.add(dataFile);
 
@@ -1799,6 +1838,15 @@ public class JdbcDucklakeCatalog
             totalFileSize += fragment.fileSizeBytes();
         }
 
+        // Name-map rows must land before the data_file rows that reference them via
+        // mapping_id (no FK in upstream's schema, but kept in order for readability
+        // and to make crash recovery deterministic).
+        if (!columnMappingRecords.isEmpty()) {
+            ctx.batchInsert(columnMappingRecords).execute();
+        }
+        if (!nameMappingRecords.isEmpty()) {
+            ctx.batchInsert(nameMappingRecords).execute();
+        }
         if (!dataFileRecords.isEmpty()) {
             ctx.batchInsert(dataFileRecords).execute();
         }
@@ -1892,6 +1940,48 @@ public class JdbcDucklakeCatalog
         }
         if (!insertRecords.isEmpty()) {
             ctx.batchInsert(insertRecords).execute();
+        }
+    }
+
+    /**
+     * Walks a {@link DucklakeNameMap} entry tree and emits one
+     * {@code ducklake_name_mapping} row per node. Children point at their parent's
+     * column_id (allocated here) so a reader can reconstruct the tree from the flat
+     * rows. Mirrors upstream's {@code DuckLakeNameMapEntry} → row flattening in
+     * {@code DuckLakeTransaction::AppendFiles} (via {@code WriteNameMap}).
+     *
+     * <p>{@code column_id} is per-{@code mapping_id} (not global), so each top-level
+     * invocation starts a fresh {@code long[1]} counter.
+     */
+    private void addNameMappingRows(
+            List<DucklakeNameMappingRecord> sink,
+            long mappingId,
+            List<DucklakeNameMapEntry> entries,
+            Long parentColumnId)
+    {
+        appendNameMappingRows(sink, mappingId, entries, parentColumnId, new long[]{1L});
+    }
+
+    private void appendNameMappingRows(
+            List<DucklakeNameMappingRecord> sink,
+            long mappingId,
+            List<DucklakeNameMapEntry> entries,
+            Long parentColumnId,
+            long[] nextColumnId)
+    {
+        for (DucklakeNameMapEntry entry : entries) {
+            long columnId = nextColumnId[0]++;
+            DucklakeNameMappingRecord r = new DucklakeNameMappingRecord();
+            r.setMappingId(mappingId);
+            r.setColumnId(columnId);
+            r.setSourceName(entry.sourceName());
+            r.setTargetFieldId(entry.targetFieldId());
+            r.setParentColumn(parentColumnId);
+            r.setIsPartition(entry.isPartition() ? Boolean.TRUE : null);
+            sink.add(r);
+            if (!entry.children().isEmpty()) {
+                appendNameMappingRows(sink, mappingId, entry.children(), columnId, nextColumnId);
+            }
         }
     }
 

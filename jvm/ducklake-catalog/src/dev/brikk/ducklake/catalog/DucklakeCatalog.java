@@ -221,6 +221,23 @@ public interface DucklakeCatalog
     void commitInsert(long tableId, List<DucklakeWriteFragment> fragments);
 
     /**
+     * Register pre-existing parquet files as DuckLake data files of a table.
+     * The catalog inserts {@code ducklake_data_file} + {@code ducklake_file_column_stats}
+     * + {@code ducklake_column_mapping} / {@code ducklake_name_mapping} rows for each
+     * fragment, dedupes identical name maps within the call (multiple files with the
+     * same parquet schema share one {@code mapping_id}), and records a
+     * {@code tables_inserted_into} snapshot change — same as a normal INSERT, so the
+     * existing conflict matrix catches add_files × dropTable / × dropColumn races
+     * for free.
+     *
+     * <p>Fragments are expected to carry {@code pathIsRelative=false} and an absolute
+     * file path. Mirrors upstream's {@code ducklake_add_data_files} (its
+     * {@code created_by_ducklake=false} flag has no on-disk column in our schema —
+     * the difference is observable only via the presence of a name-map row).
+     */
+    void commitAddFiles(long tableId, List<DucklakeWriteFragment> fragments);
+
+    /**
      * Commit delete files for a table.
      * Creates a new snapshot with ducklake_delete_file rows and updated table stats.
      */

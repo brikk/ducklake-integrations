@@ -24,10 +24,12 @@ import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.procedure.Procedure;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
 
 import java.util.List;
+import java.util.Set;
 
 import static io.trino.spi.transaction.IsolationLevel.SERIALIZABLE;
 import static io.trino.spi.transaction.IsolationLevel.checkConnectorSupports;
@@ -47,6 +49,7 @@ public class DucklakeConnector
     private final ConnectorPageSinkProvider pageSinkProvider;
     private final List<PropertyMetadata<?>> sessionProperties;
     private final List<PropertyMetadata<?>> tableProperties;
+    private final Set<Procedure> procedures;
 
     @Inject
     public DucklakeConnector(
@@ -56,7 +59,8 @@ public class DucklakeConnector
             ConnectorPageSourceProviderFactory pageSourceProviderFactory,
             ConnectorPageSinkProvider pageSinkProvider,
             DucklakeSessionProperties ducklakeSessionProperties,
-            DucklakeTableProperties ducklakeTableProperties)
+            DucklakeTableProperties ducklakeTableProperties,
+            Set<Procedure> procedures)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
@@ -65,6 +69,13 @@ public class DucklakeConnector
         this.pageSinkProvider = requireNonNull(pageSinkProvider, "pageSinkProvider is null");
         this.sessionProperties = ImmutableList.copyOf(requireNonNull(ducklakeSessionProperties, "ducklakeSessionProperties is null").getSessionProperties());
         this.tableProperties = ImmutableList.copyOf(requireNonNull(ducklakeTableProperties, "ducklakeTableProperties is null").getTableProperties());
+        this.procedures = Set.copyOf(requireNonNull(procedures, "procedures is null"));
+    }
+
+    @Override
+    public Set<Procedure> getProcedures()
+    {
+        return procedures;
     }
 
     @Override

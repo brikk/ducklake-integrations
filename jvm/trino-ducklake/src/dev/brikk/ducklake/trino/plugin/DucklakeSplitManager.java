@@ -145,6 +145,18 @@ public class DucklakeSplitManager
             dataFiles = pruneDataFiles(dataFiles, tableHandle, constraint);
             dataFiles = pruneByPartitionValues(dataFiles, tableHandle);
 
+            // Pre-fetch partition spec + file partition values for the splits we're about
+            // to build. The page source uses these to constant-fill partition columns
+            // when the parquet body is missing them (hive-style external file imports).
+            List<DucklakePartitionSpec> specsForProjection = catalog.getPartitionSpecs(
+                    tableHandle.tableId(), tableHandle.snapshotId());
+            Optional<DucklakePartitionSpec> activeSpec = specsForProjection.isEmpty()
+                    ? Optional.empty()
+                    : Optional.of(specsForProjection.getLast());
+            Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile = activeSpec.isPresent()
+                    ? catalog.getFilePartitionValues(tableHandle.tableId(), tableHandle.snapshotId())
+                    : Map.of();
+
             // Group by dataFileId to merge multiple delete files per data file
             // (a data file can accumulate multiple delete files across snapshots)
             Map<Long, List<DucklakeDataFile>> groupedFiles = new LinkedHashMap<>();
@@ -152,7 +164,7 @@ public class DucklakeSplitManager
                 groupedFiles.computeIfAbsent(df.dataFileId(), _ -> new ArrayList<>()).add(df);
             }
             parquetSplits = groupedFiles.values().stream()
-                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain))
+                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile))
                     .collect(toImmutableList());
         }
 
@@ -501,39 +513,17 @@ public class DucklakeSplitManager
 
     private static Object parsePartitionValue(Type type, String value)
     {
-        if (type.equals(VARCHAR) || type instanceof io.trino.spi.type.VarcharType) {
-            return Slices.utf8Slice(value);
-        }
-        if (type.equals(BIGINT)) {
-            return Long.parseLong(value);
-        }
-        if (type.equals(INTEGER)) {
-            return (long) Integer.parseInt(value);
-        }
-        if (type.equals(SMALLINT)) {
-            return (long) Short.parseShort(value);
-        }
-        if (type.equals(TINYINT)) {
-            return (long) Byte.parseByte(value);
-        }
-        if (type.equals(DOUBLE)) {
-            return Double.parseDouble(value);
-        }
-        if (type.equals(REAL)) {
-            return (long) Float.floatToIntBits(Float.parseFloat(value));
-        }
-        if (type.equals(DATE)) {
-            return LocalDate.parse(value).toEpochDay();
-        }
-        if (type.equals(BOOLEAN)) {
-            return Boolean.parseBoolean(value);
-        }
-        throw new IllegalArgumentException("Unsupported partition value type: " + type);
+        return DucklakePartitionValueParser.parseIdentity(type, value);
     }
 
     private record PartitionKeyMapping(int keyIndex, DucklakePartitionTransform transform) {}
 
-    private DucklakeSplit createMergedSplit(List<DucklakeDataFile> dataFileGroup, String tableDataPath, TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
+    private DucklakeSplit createMergedSplit(
+            List<DucklakeDataFile> dataFileGroup,
+            String tableDataPath,
+            TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
+            Optional<DucklakePartitionSpec> activePartitionSpec,
+            Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile)
     {
         DucklakeDataFile primary = dataFileGroup.getFirst();
         String dataFilePath = pathResolver.resolveFilePath(primary.path(), primary.pathIsRelative(), tableDataPath);
@@ -557,6 +547,11 @@ public class DucklakeSplitManager
         }
         List<String> deleteFilePaths = List.copyOf(deleteFileFooterSizes.keySet());
 
+        Map<Long, String> partitionValuesByColumnId = buildIdentityPartitionValues(
+                primary.dataFileId(),
+                activePartitionSpec,
+                partitionValuesByFile);
+
         return new DucklakeSplit(
                 dataFilePath,
                 deleteFilePaths,
@@ -566,7 +561,44 @@ public class DucklakeSplitManager
                 primary.fileFormat(),
                 fileStatisticsDomain,
                 primary.footerSize(),
-                deleteFileFooterSizes);
+                deleteFileFooterSizes,
+                partitionValuesByColumnId);
+    }
+
+    /**
+     * Build the per-file {@code columnId -> partitionValue} map for IDENTITY-transform
+     * partition fields. Skip non-identity transforms — their stored value is derived
+     * (e.g. {@code year(date)} = 2024) and can't be projected back as the original
+     * column. The page source provider uses this map to constant-fill partition
+     * columns that don't appear in the parquet body.
+     */
+    private static Map<Long, String> buildIdentityPartitionValues(
+            long dataFileId,
+            Optional<DucklakePartitionSpec> activePartitionSpec,
+            Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile)
+    {
+        if (activePartitionSpec.isEmpty()) {
+            return Map.of();
+        }
+        List<DucklakeFilePartitionValue> values = partitionValuesByFile.getOrDefault(dataFileId, List.of());
+        if (values.isEmpty()) {
+            return Map.of();
+        }
+        Map<Integer, String> byKeyIndex = new HashMap<>();
+        for (DucklakeFilePartitionValue v : values) {
+            byKeyIndex.put(v.partitionKeyIndex(), v.partitionValue());
+        }
+        Map<Long, String> out = new HashMap<>();
+        for (DucklakePartitionField field : activePartitionSpec.get().fields()) {
+            if (field.transform() != DucklakePartitionTransform.IDENTITY) {
+                continue;
+            }
+            String value = byKeyIndex.get(field.partitionKeyIndex());
+            if (value != null) {
+                out.put(field.columnId(), value);
+            }
+        }
+        return out;
     }
 
     private record PredicateBounds(String minValue, String maxValue) {}

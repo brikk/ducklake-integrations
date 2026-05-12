@@ -16,6 +16,8 @@ package dev.brikk.ducklake.trino.plugin;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+import com.google.inject.multibindings.Multibinder;
+import io.trino.spi.procedure.Procedure;
 
 import java.util.Map;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSinkProvider;
@@ -119,5 +121,9 @@ public class DucklakeModule
 
         // DuckDB-format read cache (per-JVM)
         binder.bind(DucklakeMaterializedFileCache.class).in(Scopes.SINGLETON);
+
+        // Procedures (per-catalog, exposed under <catalog>.system.<name>).
+        Multibinder<Procedure> procedureBinder = Multibinder.newSetBinder(binder, Procedure.class);
+        procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure.class).in(Scopes.SINGLETON);
     }
 }

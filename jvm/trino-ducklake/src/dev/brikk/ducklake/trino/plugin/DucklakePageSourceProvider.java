@@ -470,8 +470,12 @@ public class DucklakePageSourceProvider
                 }
 
                 if (columnIO == null) {
-                    // Missing column in file — return nulls (schema evolution: new column added after file was written)
-                    transforms.constantValue(column.columnType().createNullBlock());
+                    // Missing column in file. Two cases:
+                    //   (1) hive-style external file: parquet body omits the partition column,
+                    //       but the catalog has a value for it via ducklake_file_partition_value.
+                    //       Project that value as a constant block.
+                    //   (2) schema evolution / genuinely missing: return NULL.
+                    transforms.constantValue(buildMissingColumnBlock(column, split));
                     continue;
                 }
 
@@ -479,8 +483,8 @@ public class DucklakePageSourceProvider
                         column.columnType(),
                         columnIO);
                 if (field.isEmpty()) {
-                    // Could not construct field — return nulls
-                    transforms.constantValue(column.columnType().createNullBlock());
+                    // Could not construct field — return nulls (or partition constant if available)
+                    transforms.constantValue(buildMissingColumnBlock(column, split));
                     continue;
                 }
 
@@ -980,6 +984,30 @@ public class DucklakePageSourceProvider
                 throws IOException
         {
             delegate.close();
+        }
+    }
+
+    /**
+     * Build the constant block emitted by {@link io.trino.plugin.hive.TransformConnectorPageSource}
+     * for a column not present in the parquet body. Defaults to a single-position NULL block;
+     * when the split carries a catalog-recorded partition value for this column (hive-style
+     * external imports), parses the string value and projects it as a constant instead.
+     */
+    private static Block buildMissingColumnBlock(DucklakeColumnHandle column, DucklakeSplit split)
+    {
+        String partitionValue = split.partitionValuesByColumnId().get(column.columnId());
+        if (partitionValue == null) {
+            return column.columnType().createNullBlock();
+        }
+        try {
+            Object nativeValue = DucklakePartitionValueParser.parseIdentity(column.columnType(), partitionValue);
+            return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType(), nativeValue);
+        }
+        catch (RuntimeException _) {
+            // If the catalog's stored value can't be parsed to the column's type, fall back
+            // to NULL rather than failing the whole read. The pruning path already tolerates
+            // parse failures the same way.
+            return column.columnType().createNullBlock();
         }
     }
 }

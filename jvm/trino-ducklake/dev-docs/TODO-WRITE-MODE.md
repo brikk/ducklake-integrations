@@ -10,6 +10,123 @@ Spec context for several items below lives in
 reference). Spec issues we filed upstream live in
 [REPORT_CROSS_ENGINE_WRITE.md](REPORT_CROSS_ENGINE_WRITE.md).
 
+## Top Priorities
+
+Picked next, in order. Pair this with [TODO-READ-MODE.md § Top Priorities](TODO-READ-MODE.md#top-priorities)
+on the read side.
+
+1. **Adopt existing parquet files** — `CALL ducklake.system.add_files(...)`.
+   Lets operators register pre-existing parquet files into a DuckLake table
+   without rewriting. Unlocks data import / migration workflows that don't
+   want a full `INSERT INTO ... SELECT FROM parquet_scan(...)`. ~1–2 days,
+   mostly footer parsing for stats extraction; catalog write path reuses
+   today's `commitInsert` infrastructure. **See § Adopt Existing Parquet
+   Files (`add_files`) below.**
+2. **Bucket partitioning (full implementation)** — finish the feature so
+   bucketed DuckDB-written tables are queryable by Trino with the same
+   partition pruning, and Trino-written tables can use `bucket(N, col)`.
+   ~1 day, ~100 lines across 4–5 files. **See § Bucket Partitioning
+   below.**
+3. **Nested-leaf file column stats** — today `DucklakeStatsExtractor`
+   skips ARRAY/MAP/ROW types entirely (`DucklakeStatsExtractor.java:67`),
+   so we never write `ducklake_file_column_stats` rows for nested-leaf
+   columns. Affects both `commitInsert` (INSERT / CTAS) and `commitAddFiles`
+   (since add_files inherits the same extractor). Upstream emits one row per
+   nested leaf using the leaf's own parquet column_id. Implementing this
+   unlocks file-level pruning for predicates over nested leaves (e.g.
+   `WHERE row.field = 'x'`) and matches the upstream stats coverage.
+   Touches `DucklakeStatsExtractor` (recurse into types, project leaf
+   parquet column_id against table field tree) and the test set in
+   `TestDucklakeCrossEngineTypeAudit`. ~1 day. **See § Nested-Leaf
+   File Column Stats below.**
+
+After these, the natural next chunks are sorted-table writes and the
+M8 maintenance procedures; both are bigger commitments and sit below.
+
+## Adopt Existing Parquet Files (`add_files`)
+
+DuckLake exposes `CALL ducklake_add_files(table_name, files => [...], ...)`
+to register pre-existing parquet files as data files of a DuckLake table.
+The procedure reads the footer of each file (record count, footer offset,
+column min/max/null stats) and inserts matching `ducklake_data_file` +
+`ducklake_file_column_stats` rows. No file rewriting — the bytes already
+on storage become live data of the table. Upstream tests this exhaustively
+under `temp/pg_ducklake/third_party/ducklake/test/sql/add_files/` (33
+files; footer validation, statistics recovery, column-reordering, malformed
+schemas).
+
+**Why this is high value**: closes the most-asked-for catalog migration
+path ("I have existing parquet on S3 — how do I make it a DuckLake table?")
+without forcing a full rewrite. The plumbing also lays groundwork for
+future maintenance ops (`rewrite_data_files`, `merge_adjacent_files`) that
+generate new parquet files and need a similar metadata-insert path.
+
+**Engine-agnostic placement**: most of the work lands in
+`jvm/ducklake-catalog`. The Trino plugin exposes the procedure surface.
+
+- [ ] **Footer reader** in the catalog module: extract `recordCount`,
+  `fileSizeBytes`, `footerSize`, per-column min/max/null-count from a
+  parquet footer. Trino's `io.trino.parquet.reader.MetadataReader` is the
+  right API to reuse — it already gives us `ParquetMetadata` with the
+  row-group statistics we need. Map the Parquet column stats to
+  `DucklakeFileColumnStats` (typed min/max strings per DuckLake's
+  encoding contract — see existing `DucklakeStatsExtractor` for the
+  forward direction we already wrote).
+- [ ] **Catalog write path**: `commitAddFiles(tableId, fragments)` on
+  `DucklakeCatalog` — accepts the same `DucklakeWriteFragment` shape we
+  already use for `commitInsert`, just with `path` pointing at an
+  absolute existing file (set `path_is_relative=false`). Reuses the
+  `applyInsertFragments` plumbing and emits `WriteChange.InsertedIntoTable`
+  so the conflict matrix already covers concurrent
+  `add_files × dropTable / × alter` cases.
+- [ ] **Schema validation**: each file's parquet schema must structurally
+  match the destination table's column types. Catalog-side: compare
+  `MessageType` of the parquet against `getAllColumnsWithParentage` for
+  the target table. Reject with a clear error on mismatch (extra columns,
+  missing columns, incompatible types). Upstream tests this in
+  `add_files/test_schema_mismatch.test` and similar — port those error
+  cases.
+- [ ] **Trino procedure surface**: `CALL ducklake.system.add_files(
+  schema_name => 'foo', table_name => 'bar', files => ARRAY['s3://...',
+  's3://...'], file_format => 'parquet')`. The procedure resolves the
+  table, opens each file via Trino's filesystem layer, reads the footer,
+  builds the fragment list, and calls `catalog.commitAddFiles(...)`. One
+  snapshot per `CALL` invocation.
+- [ ] **Tests**:
+  - Catalog-level integration test: write a parquet file with known
+    stats via Trino's `ParquetWriter`, then call `commitAddFiles`,
+    assert the catalog rows have the expected stats.
+  - Cross-engine test: DuckDB writes a parquet file (out of band), we
+    `add_files` it via Trino, DuckDB reads the table and sees the rows.
+  - Negative test: schema mismatch → clear error, no rows inserted, no
+    new snapshot.
+  - Conflict test: `add_files` racing `dropTable` → matrix conflict
+    (the existing `InsertedIntoTable × droppedTables` entry).
+
+**References**:
+- Spec: upstream's `data_inlining.md` and `add_files`-related docs on
+  the website.
+- Upstream tests: `temp/pg_ducklake/third_party/ducklake/test/sql/add_files/`
+- Procedure surface in Trino: existing connectors expose
+  `system.register_table()`-style procedures via
+  `io.trino.spi.procedure.Procedure`.
+
+## Nested-Leaf File Column Stats
+
+- [ ] **Emit `ducklake_file_column_stats` rows for nested-leaf columns.**
+  `DucklakeStatsExtractor.extractStats` currently early-returns on
+  `ArrayType / MapType / RowType` (`DucklakeStatsExtractor.java:67`), so
+  no file-level stats are written for any column inside a STRUCT/ARRAY/MAP.
+  Parquet stores one column chunk per leaf path, with statistics per
+  row-group. Recurse the table's field tree, project each leaf's parquet
+  column_id by name (LIST → child, MAP → key/value, STRUCT → field), and
+  emit a `DucklakeFileColumnStats` keyed by the **leaf's field_id** for
+  each. The string-encoding contract is the same as today's flat-column
+  case. Affects all write paths that funnel through `commitInsert` /
+  `commitAddFiles`. Test against `TestDucklakeCrossEngineTypeAudit`
+  nested cases, plus a new pruning test asserting `WHERE row.field = 'x'`
+  reads fewer files when nested-leaf min/max stats are available.
+
 ## Bucket Partitioning
 
 - [ ] **Bucket partitioning (full implementation).** Add BUCKET to

@@ -12,6 +12,94 @@ Spec context for several items below lives in
 reference). Gaps surfaced from upstream and sister connectors live in the
 `COMPARE-*.md` files.
 
+## Top Priorities
+
+Picked next, in order. Pair this with [TODO-WRITE-MODE.md § Top Priorities](TODO-WRITE-MODE.md#top-priorities)
+on the write side.
+
+1. **Inlined-deletion reader (long-term)** — lift today's
+   `TestDucklakeInlinedDeleteGuard` `NOT_SUPPORTED` throw by implementing the
+   actual reader. DuckLake stores small deletions in
+   `ducklake_inlined_delete_<tableId>` (columns: `file_id`, `row_id`,
+   `begin_snapshot`) when the writer's `DATA_INLINING_ROW_LIMIT` is set.
+   Currently any catalog where a DuckDB writer has run small `DELETE`s
+   becomes unreadable to Trino. ~1–2 days. **See § Inlined Deletion Vector
+   Reads below.**
+2. **Puffin deletion-vector reader (long-term)** — lift the existing
+   `TestDucklakePuffinDeleteFileGuard` `NOT_SUPPORTED` throw. DuckLake
+   writes Roaring-bitmap delete files in puffin format when
+   `write_deletion_vectors=true` is set on the writer; we currently refuse
+   the read. ~2–3 days (Iceberg's `iceberg-core` puffin lib +
+   `org.roaringbitmap:RoaringBitmap`). **See § Puffin Deletion Vector
+   Reads § Long-term below.**
+
+Both unlock real cross-engine compatibility — any DuckDB-written catalog
+becomes readable from Trino regardless of which delete-encoding the writer
+chose. After these two, the remaining type gap (`list<blob>` inlined
+reads) is the next bite-sized correctness item.
+
+## Inlined Deletion Vector Reads
+
+DuckLake's deletion inlining stores small deletions
+(below `DATA_INLINING_ROW_LIMIT` rows) directly in a per-table metadata
+table `ducklake_inlined_delete_<tableId>` rather than as a Parquet delete
+file. Schema (per
+`temp/pg_ducklake/third_party/ducklake/src/storage/ducklake_metadata_manager.cpp:2645`
+and the
+[Data Inlining doc page](https://ducklake.select/docs/stable/duckdb/advanced_features/data_inlining)):
+
+```sql
+ducklake_inlined_delete_<tableId> (
+    file_id        BIGINT,
+    row_id         BIGINT,
+    begin_snapshot BIGINT
+)
+```
+
+`file_id` is `ducklake_data_file.data_file_id`; `row_id` is the deleted
+row's position within that file; `begin_snapshot` is the snapshot that
+recorded the deletion. Rows accumulate forever in this table until
+compaction rewrites the data file; readers apply all rows with
+`begin_snapshot <= currentSnapshotId` as a positional delete mask on the
+data file's scan.
+
+- [x] **Short-term guard: refuse to read snapshots that have inlined
+  deletions.** `DucklakeSplitManager.validateNoInlinedDeletes` throws
+  `TrinoException(NOT_SUPPORTED, ...)` when
+  `catalog.hasInlinedDeletes(tableId, snapshotId)` returns true. Pinned by
+  `TestDucklakeInlinedDeleteGuard`. Workaround for users: run
+  `CALL ducklake_flush_inlined_data(...)` on a DuckDB writer to materialize
+  the inlined deletions as parquet delete files.
+- [ ] **Long-term: read inlined deletions and apply them at scan time.**
+  Implementation outline (catalog-side reader + plugin-side filter):
+  - Catalog: add `getInlinedDeletes(long tableId, long snapshotId)` →
+    `Map<Long, Set<Long>>` (data_file_id → set of row positions). Cheap
+    query: `SELECT file_id, row_id FROM ducklake_inlined_delete_<tableId>
+    WHERE begin_snapshot <= ?`. Return empty map when the table doesn't
+    exist.
+  - Trino plugin: in `DucklakeSplitManager`, when building each
+    `DucklakeSplit`, attach the matching `Set<Long>` of deleted row
+    positions. In `DucklakePageSourceProvider`, after constructing the
+    parquet page source, wrap it with a positional-delete filter that
+    drops rows whose `file_row_number` is in the set. Trino's
+    `MergedPositionalDelete` or `DeleteFilter` from the Iceberg connector
+    is the right reuse target — both connectors solve the same problem.
+  - Lift the guard once the reader is in place.
+  - Tests:
+    - Round-trip: DuckDB writes data + small DELETE under
+      `DATA_INLINING_ROW_LIMIT`, Trino reads, asserts deleted rows are
+      not returned.
+    - Per-file granularity: deletions on file A don't affect file B.
+    - Stats invalidation: snapshots with inlined deletes return unknown
+      table/column stats (same conservative policy as parquet delete
+      files — see `TODO-WRITE-MODE.md § Strict stats invalidation`).
+    - Cross-snapshot: `begin_snapshot > currentSnapshotId` rows are
+      NOT applied (time travel).
+
+  **Estimate**: 1–2 days. Simpler than puffin (no Roaring bitmap
+  decoding, no external library dependency, no encryption), but the
+  scan-time filter wiring is the same pattern.
+
 ## Inlined-Read Type Gaps
 
 - [ ] **`list<blob>` inlined reads.** DuckDB serializes blobs in lists as

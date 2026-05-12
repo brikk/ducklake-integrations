@@ -226,6 +226,45 @@ catalogs; it should not be needed against any v1-conformant catalog.
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
 
+## Procedures
+
+Procedures are exposed under the `system` schema of the catalog, following the Trino
+convention (`CALL <catalog>.system.<procedure>(...)`). The `<catalog>` token is the
+catalog name configured in `etc/catalog/<name>.properties` — a single procedure invocation
+operates on whichever DuckLake catalog you invoke through.
+
+| Procedure | Description |
+|-----------|-------------|
+| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning])` | Register pre-existing parquet files as data files of an existing DuckLake table without rewriting. Mirrors upstream's `ducklake_add_data_files`. |
+
+### `add_files`
+
+```sql
+CALL ducklake.system.add_files(
+    schema_name => 'sales',
+    table_name => 'orders',
+    files => ARRAY['s3://bucket/legacy/2024/orders.parquet'],
+    allow_missing => false,         -- default: false. Reject if a table column is missing from the file
+    ignore_extra_columns => false,  -- default: false. Reject if the file has columns not in the table
+    hive_partitioning => false      -- default: false. Parse {key=value}/ path segments as partition values
+)
+```
+
+Parquet column names are matched to table column names case-insensitively; column
+reordering between file and table is supported. Each unique parquet schema seen across
+the `files` array shares one `ducklake_column_mapping` row. The procedure produces
+one snapshot per invocation and participates in the connector's concurrent-conflict
+matrix (an `add_files` racing a `DROP COLUMN` against the same column will fail
+non-retryably, matching upstream).
+
+**Known limitation in v1:** hive partitioning is supported only for the IDENTITY
+transform. Tables with `year(col)` / `month(col)` / `bucket(N, col)` partition
+specs are not yet accepted with `hive_partitioning => true`, since their stored
+partition value is derived (not the original column value) and can't be projected
+back. Identity-partition columns missing from the parquet body are projected from
+the catalog's `ducklake_file_partition_value` row at read time, so hive-style
+external file imports round-trip through `SELECT`.
+
 ## Cross-Engine Compatibility
 
 The connector is tested for bidirectional compatibility with DuckDB:
