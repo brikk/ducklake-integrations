@@ -650,12 +650,18 @@ public class DucklakePageSourceProvider
     private ConnectorPageSource applyDeleteFile(TrinoFileSystem fileSystem, DucklakeSplit split, ConnectorPageSource dataSource)
             throws IOException
     {
-        if (split.deleteFilePaths().isEmpty()) {
+        boolean hasDeleteFiles = !split.deleteFilePaths().isEmpty();
+        boolean hasInlinedDeletes = !split.inlinedDeletedRowPositions().isEmpty();
+        if (!hasDeleteFiles && !hasInlinedDeletes) {
             return dataSource;
         }
 
-        // Read all delete files and merge their row ID sets
-        Set<Long> deletedRows = new HashSet<>();
+        // Merge parquet delete files (global row_ids) and inlined deletes (file-local row
+        // offsets, from ducklake_inlined_delete_<tableId>) into a single set. The filter
+        // checks both interpretations per page position, so adding both into the same set
+        // is correct: a parquet delete file row_id matches the rowId branch, an inlined
+        // delete row_id matches the rowOffset branch.
+        Set<Long> deletedRows = new HashSet<>(split.inlinedDeletedRowPositions());
         for (String deleteFilePath : split.deleteFilePaths()) {
             deletedRows.addAll(readDeletedRowsFromFile(fileSystem, deleteFilePath, split));
         }
@@ -664,10 +670,11 @@ public class DucklakePageSourceProvider
             return dataSource;
         }
 
-        log.debug("Applying %d delete file(s) with %d total deleted rows for data file %s",
+        log.debug("Applying deletions to data file %s: %d parquet delete file(s), %d inlined deletes, %d total deleted rows",
+                split.dataFilePath(),
                 split.deleteFilePaths().size(),
-                deletedRows.size(),
-                split.dataFilePath());
+                split.inlinedDeletedRowPositions().size(),
+                deletedRows.size());
         return TransformConnectorPageSource.create(dataSource, new DeleteRowFilterTransform(deletedRows, split.rowIdStart()));
     }
 

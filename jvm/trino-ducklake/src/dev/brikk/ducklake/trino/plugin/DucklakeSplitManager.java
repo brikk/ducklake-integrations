@@ -119,7 +119,6 @@ public class DucklakeSplitManager
         log.debug("Found %d data files for table %s", dataFiles.size(), tableHandle.tableName());
 
         validateDeleteFileFormats(dataFiles, tableHandle);
-        validateNoInlinedDeletes(catalog, tableHandle);
 
         boolean tableHasNoDataFiles = dataFiles.isEmpty();
         List<DucklakeInlinedDataInfo> inlinedDataInfos = catalog.getInlinedDataInfos(tableHandle.tableId(), tableHandle.snapshotId());
@@ -171,14 +170,26 @@ public class DucklakeSplitManager
                     ? Map.of()
                     : catalog.getNameMaps(mappingIds);
 
+            // Fetch inlined-delete rows for this table at this snapshot, grouped by
+            // data_file_id. DuckLake stores small deletes (below DATA_INLINING_ROW_LIMIT)
+            // in ducklake_inlined_delete_<tableId>(file_id, row_id, begin_snapshot) rather
+            // than as a parquet delete file. The page source merges these positions into
+            // the same deleted-row set as parquet delete files. Empty map when the per-table
+            // metadata table doesn't exist (common case).
+            Map<Long, Set<Long>> inlinedDeletesByFileId = catalog.hasInlinedDeletes(
+                    tableHandle.tableId(), tableHandle.snapshotId())
+                    ? catalog.getInlinedDeletes(tableHandle.tableId(), tableHandle.snapshotId())
+                    : Map.of();
+
             // Group by dataFileId to merge multiple delete files per data file
             // (a data file can accumulate multiple delete files across snapshots)
             Map<Long, List<DucklakeDataFile>> groupedFiles = new LinkedHashMap<>();
             for (DucklakeDataFile df : dataFiles) {
                 groupedFiles.computeIfAbsent(df.dataFileId(), _ -> new ArrayList<>()).add(df);
             }
+            Map<Long, Set<Long>> finalInlinedDeletesByFileId = inlinedDeletesByFileId;
             parquetSplits = groupedFiles.values().stream()
-                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId))
+                    .map(group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, finalInlinedDeletesByFileId))
                     .collect(toImmutableList());
         }
 
@@ -236,29 +247,6 @@ public class DucklakeSplitManager
                     tableHandle.schemaName(),
                     tableHandle.tableName(),
                     deleteFileFormat.get()));
-        }
-    }
-
-    /**
-     * Reject snapshots that have inlined deletions. DuckLake stores small deletes
-     * directly in a per-table {@code ducklake_inlined_delete_<tableId>} metadata
-     * table when the writer's {@code DATA_INLINING_ROW_LIMIT} is set; this connector
-     * doesn't yet read that table, and silently skipping the deletions would return
-     * rows that should have been deleted. Mirrors the puffin delete-file guard above.
-     * Workaround: run {@code CALL ducklake_flush_inlined_data(...)} on a DuckDB writer
-     * to materialize inlined deletions before reading from Trino.
-     */
-    private static void validateNoInlinedDeletes(DucklakeCatalog catalog, DucklakeTableHandle tableHandle)
-    {
-        if (catalog.hasInlinedDeletes(tableHandle.tableId(), tableHandle.snapshotId())) {
-            throw new TrinoException(NOT_SUPPORTED, String.format(
-                    "Table %s.%s has inlined deletions in ducklake_inlined_delete_%d which this connector cannot read. " +
-                            "DuckDB stores small deletes inline when DATA_INLINING_ROW_LIMIT is set on the writer; " +
-                            "run CALL ducklake_flush_inlined_data(...) on the writer to materialize them as parquet " +
-                            "delete files before reading from Trino.",
-                    tableHandle.schemaName(),
-                    tableHandle.tableName(),
-                    tableHandle.tableId()));
         }
     }
 
@@ -538,7 +526,8 @@ public class DucklakeSplitManager
             TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
             Optional<DucklakePartitionSpec> activePartitionSpec,
             Map<Long, List<DucklakeFilePartitionValue>> partitionValuesByFile,
-            Map<Long, Map<Long, String>> nameMapsByMappingId)
+            Map<Long, Map<Long, String>> nameMapsByMappingId,
+            Map<Long, Set<Long>> inlinedDeletesByFileId)
     {
         DucklakeDataFile primary = dataFileGroup.getFirst();
         String dataFilePath = pathResolver.resolveFilePath(primary.path(), primary.pathIsRelative(), tableDataPath);
@@ -571,6 +560,8 @@ public class DucklakeSplitManager
                 .map(mid -> nameMapsByMappingId.getOrDefault(mid, Map.<Long, String>of()))
                 .orElse(Map.of());
 
+        Set<Long> inlinedDeletedRowPositions = inlinedDeletesByFileId.getOrDefault(primary.dataFileId(), Set.of());
+
         return new DucklakeSplit(
                 dataFilePath,
                 deleteFilePaths,
@@ -582,7 +573,8 @@ public class DucklakeSplitManager
                 primary.footerSize(),
                 deleteFileFooterSizes,
                 partitionValuesByColumnId,
-                fieldIdToParquetSourceName);
+                fieldIdToParquetSourceName,
+                inlinedDeletedRowPositions);
     }
 
     /**

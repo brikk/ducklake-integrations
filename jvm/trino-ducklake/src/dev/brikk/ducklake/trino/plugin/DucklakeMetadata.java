@@ -379,6 +379,12 @@ public class DucklakeMetadata
             // Prefer unknown over wrong.
             return TableStatistics.empty();
         }
+        if (catalog.hasInlinedDeletes(table.tableId(), table.snapshotId())) {
+            // Same conservative policy for inlined deletes: file-level stats predate the
+            // deletions, so any column min/max/null fractions can be wrong relative to the
+            // surviving rows. Prefer unknown over wrong.
+            return TableStatistics.empty();
+        }
 
         boolean hasLiveInlinedRows = hasLiveInlinedRows(table);
 

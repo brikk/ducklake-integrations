@@ -154,13 +154,27 @@ public interface DucklakeCatalog
      * doesn't exist (the common case — DuckDB only creates it the first
      * time {@code DATA_INLINING_ROW_LIMIT} causes a deletion to be inlined).
      *
-     * <p>The connector's reader does not understand inlined deletions today,
-     * so {@link DucklakeSplitManager} fails the query when this returns
-     * true — silently skipping inlined deletions would return rows that
-     * should have been deleted. Until a reader is implemented, this acts
-     * as a guard analogous to the puffin-format delete-file check.
+     * <p>Used by readers to decide whether to invalidate file-level
+     * statistics conservatively and to short-circuit the more expensive
+     * {@link #getInlinedDeletes} when no inlined deletions are present.
      */
     boolean hasInlinedDeletes(long tableId, long snapshotId);
+
+    /**
+     * Read all inlined-delete rows visible at the given snapshot, grouped by
+     * {@code data_file_id}. Each value is the set of file-local row positions
+     * that the writer recorded as deleted ({@code row_id} in
+     * {@code ducklake_inlined_delete_<tableId>}).
+     *
+     * <p>Snapshot filter: {@code begin_snapshot <= snapshotId}. There is no
+     * {@code end_snapshot} — once a row is inlined-deleted it stays deleted
+     * until compaction rewrites the data file.
+     *
+     * <p>Returns an empty map when the per-table inlined-delete metadata table
+     * does not exist (the common case for tables DuckDB never inlined deletes
+     * for) or when no rows match the snapshot filter.
+     */
+    Map<Long, java.util.Set<Long>> getInlinedDeletes(long tableId, long snapshotId);
 
     /**
      * Read inlined data rows for a table at a given snapshot.

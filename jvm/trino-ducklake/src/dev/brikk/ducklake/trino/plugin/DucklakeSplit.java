@@ -23,6 +23,7 @@ import io.trino.spi.predicate.TupleDomain;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
@@ -62,7 +63,13 @@ public record DucklakeSplit(
         // file has a non-null {@code mapping_id} (today: files registered via
         // {@code add_files}). The page source consults this after name-then-field_id
         // lookups miss in the parquet schema.
-        @JsonProperty("fieldIdToParquetSourceName") Map<Long, String> fieldIdToParquetSourceName)
+        @JsonProperty("fieldIdToParquetSourceName") Map<Long, String> fieldIdToParquetSourceName,
+        // File-local row positions deleted via DuckLake's inlined-delete mechanism
+        // ({@code ducklake_inlined_delete_<tableId>.row_id} where {@code file_id} matches
+        // this data file's {@code data_file_id} and {@code begin_snapshot <= snapshotId}).
+        // The page source merges these into the same deleted-row set as any parquet
+        // positional delete files. Empty for files without inlined deletions.
+        @JsonProperty("inlinedDeletedRowPositions") Set<Long> inlinedDeletedRowPositions)
         implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = instanceSize(DucklakeSplit.class);
@@ -81,6 +88,8 @@ public record DucklakeSplit(
         partitionValuesByColumnId = Map.copyOf(partitionValuesByColumnId);
         requireNonNull(fieldIdToParquetSourceName, "fieldIdToParquetSourceName is null");
         fieldIdToParquetSourceName = Map.copyOf(fieldIdToParquetSourceName);
+        requireNonNull(inlinedDeletedRowPositions, "inlinedDeletedRowPositions is null");
+        inlinedDeletedRowPositions = Set.copyOf(inlinedDeletedRowPositions);
     }
 
     // Convenience constructor without footer-size hints / partition values — used by
@@ -95,7 +104,7 @@ public record DucklakeSplit(
             String fileFormat,
             TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of(), Map.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of(), Map.of(), Set.of());
     }
 
     // Eight-arg legacy constructor (no partition values) — kept for existing call sites
@@ -111,7 +120,7 @@ public record DucklakeSplit(
             long footerSize,
             Map<String, Long> deleteFileFooterSizes)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of(), Map.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of(), Map.of(), Set.of());
     }
 
     // Ten-arg constructor used during the partition-value-projection introduction —
@@ -128,7 +137,24 @@ public record DucklakeSplit(
             Map<String, Long> deleteFileFooterSizes,
             Map<Long, String> partitionValuesByColumnId)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, Map.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, Map.of(), Set.of());
+    }
+
+    // Eleven-arg constructor — kept for callers that don't carry inlined-delete row positions.
+    public DucklakeSplit(
+            String dataFilePath,
+            List<String> deleteFilePaths,
+            long rowIdStart,
+            long recordCount,
+            long fileSizeBytes,
+            String fileFormat,
+            TupleDomain<DucklakeColumnHandle> fileStatisticsDomain,
+            long footerSize,
+            Map<String, Long> deleteFileFooterSizes,
+            Map<Long, String> partitionValuesByColumnId,
+            Map<Long, String> fieldIdToParquetSourceName)
+    {
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, fieldIdToParquetSourceName, Set.of());
     }
 
     /**
@@ -166,6 +192,7 @@ public record DucklakeSplit(
         long sourceNameRetained = fieldIdToParquetSourceName.entrySet().stream()
                 .mapToLong(entry -> SIZE_OF_LONG + estimatedSizeOf(entry.getValue()))
                 .sum();
+        long inlinedDeletesRetained = (long) inlinedDeletedRowPositions.size() * SIZE_OF_LONG;
         return INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong(SizeOf::estimatedSizeOf).sum()
@@ -174,6 +201,7 @@ public record DucklakeSplit(
                 + fileStatisticsDomain.getRetainedSizeInBytes(DucklakeColumnHandle::getRetainedSizeInBytes)
                 + deleteFooterSizesRetained
                 + partitionValuesRetained
-                + sourceNameRetained;
+                + sourceNameRetained
+                + inlinedDeletesRetained;
     }
 }

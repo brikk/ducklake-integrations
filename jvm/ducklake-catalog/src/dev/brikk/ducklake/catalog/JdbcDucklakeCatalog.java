@@ -715,6 +715,43 @@ public class JdbcDucklakeCatalog
     }
 
     @Override
+    public Map<Long, Set<Long>> getInlinedDeletes(long tableId, long snapshotId)
+    {
+        // Schema (per upstream data_inlining.md):
+        //   ducklake_inlined_delete_<tableId>(file_id BIGINT, row_id BIGINT, begin_snapshot BIGINT)
+        // file_id = ducklake_data_file.data_file_id
+        // row_id  = deleted row's file-local position
+        // No end_snapshot — rows accumulate until compaction rewrites the data file.
+        // Table is created lazily by DuckDB the first time DATA_INLINING_ROW_LIMIT
+        // causes a deletion to be inlined; absence is the common case.
+        String inlinedDeleteName = "ducklake_inlined_delete_" + tableId;
+        Table<?> tab = DSL.table(DSL.name(inlinedDeleteName));
+        Field<Long> fileId = DSL.field(DSL.name("file_id"), Long.class);
+        Field<Long> rowId = DSL.field(DSL.name("row_id"), Long.class);
+        Field<Long> beginSnapshot = DSL.field(DSL.name("begin_snapshot"), Long.class);
+        try {
+            var result = dsl.select(fileId, rowId)
+                    .from(tab)
+                    .where(beginSnapshot.le(snapshotId))
+                    .fetch();
+            Map<Long, Set<Long>> grouped = new HashMap<>();
+            for (var rec : result) {
+                Long fid = rec.get(fileId);
+                Long rid = rec.get(rowId);
+                if (fid == null || rid == null) {
+                    continue;
+                }
+                grouped.computeIfAbsent(fid, _ -> new HashSet<>()).add(rid);
+            }
+            return grouped;
+        }
+        catch (DataAccessException e) {
+            log.log(System.Logger.Level.DEBUG, "Could not read inlined deletions from {0} (table may not exist): {1}", inlinedDeleteName, e.getMessage());
+            return Map.of();
+        }
+    }
+
+    @Override
     public List<List<Object>> readInlinedData(long tableId, long schemaVersion, long snapshotId, List<DucklakeColumn> columns)
     {
         if (columns.isEmpty()) {
