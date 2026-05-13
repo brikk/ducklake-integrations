@@ -557,11 +557,14 @@ public class JdbcDucklakeCatalog
                 .forEach(r -> {
                     long partitionId = orZero(r.get(partinfo.PARTITION_ID));
                     tableIdByPartition.put(partitionId, orZero(r.get(partinfo.TABLE_ID)));
+                    DucklakePartitionTransform.ParsedTransform parsed =
+                            DucklakePartitionTransform.parseCatalogTransform(r.get(partcol.TRANSFORM));
                     fieldsByPartition.computeIfAbsent(partitionId, _ -> new ArrayList<>())
                             .add(new DucklakePartitionField(
                                     (int) orZero(r.get(partcol.PARTITION_KEY_INDEX)),
                                     orZero(r.get(partcol.COLUMN_ID)),
-                                    DucklakePartitionTransform.fromString(r.get(partcol.TRANSFORM))));
+                                    parsed.transform(),
+                                    parsed.arity()));
                 });
 
         List<DucklakePartitionSpec> specs = new ArrayList<>();
@@ -1576,7 +1579,7 @@ public class JdbcDucklakeCatalog
                             .set(partcol.TABLE_ID, tableId)
                             .set(partcol.PARTITION_KEY_INDEX, keyIndex++)
                             .set(partcol.COLUMN_ID, columnId)
-                            .set(partcol.TRANSFORM, field.transform().name().toLowerCase(ENGLISH))
+                            .set(partcol.TRANSFORM, field.transform().toCatalogString(field.arity()))
                             .execute();
                 }
             }

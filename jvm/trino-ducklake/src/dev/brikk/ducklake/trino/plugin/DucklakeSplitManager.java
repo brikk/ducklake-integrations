@@ -433,13 +433,14 @@ public class DucklakeSplitManager
         Map<Long, List<DucklakeFilePartitionValue>> filePartValues =
                 catalog.getFilePartitionValues(tableHandle.tableId(), tableHandle.snapshotId());
 
-        // Build columnId -> list of (partitionKeyIndex, transform) for all fields
-        // A single column can have multiple transforms (e.g., year + month on the same date column)
+        // Build columnId -> list of (partitionKeyIndex, transform, arity) for all fields.
+        // A single column can have multiple transforms (e.g., year + month on the same date column).
+        // Arity is populated only for BUCKET transforms; other kinds carry empty.
         Map<Long, List<PartitionKeyMapping>> columnToPartKeys = new HashMap<>();
         for (DucklakePartitionSpec spec : specs) {
             for (DucklakePartitionField field : spec.fields()) {
                 columnToPartKeys.computeIfAbsent(field.columnId(), _ -> new ArrayList<>())
-                        .add(new PartitionKeyMapping(field.partitionKeyIndex(), field.transform()));
+                        .add(new PartitionKeyMapping(field.partitionKeyIndex(), field.transform(), field.arity()));
             }
         }
 
@@ -470,7 +471,7 @@ public class DucklakeSplitManager
                         // Null partition value — can only match IS NULL predicates, don't prune
                         continue;
                     }
-                    if (!partitionValueMatchesDomain(column.columnType(), partValue, domain, mapping.transform())) {
+                    if (!partitionValueMatchesDomain(column.columnType(), partValue, domain, mapping.transform(), mapping.arity())) {
                         return true; // this transform excludes the file
                     }
                 }
@@ -490,7 +491,12 @@ public class DucklakeSplitManager
         return result;
     }
 
-    private boolean partitionValueMatchesDomain(Type columnType, String partitionValue, Domain domain, DucklakePartitionTransform transform)
+    private boolean partitionValueMatchesDomain(
+            Type columnType,
+            String partitionValue,
+            Domain domain,
+            DucklakePartitionTransform transform,
+            java.util.OptionalInt arity)
     {
         try {
             if (transform.isIdentity()) {
@@ -506,6 +512,13 @@ public class DucklakeSplitManager
                         temporalPartitionEncoding,
                         temporalPartitionEncodingReadLeniency);
             }
+            if (transform.isBucket()) {
+                return DucklakeBucketPartitionMatcher.partitionValueMatchesDomain(
+                        columnType,
+                        partitionValue,
+                        domain,
+                        arity.orElseThrow(() -> new IllegalStateException("BUCKET partition field missing arity")));
+            }
             return true; // unknown transform — don't prune
         }
         catch (RuntimeException _) {
@@ -518,7 +531,7 @@ public class DucklakeSplitManager
         return DucklakePartitionValueParser.parseIdentity(type, value);
     }
 
-    private record PartitionKeyMapping(int keyIndex, DucklakePartitionTransform transform) {}
+    private record PartitionKeyMapping(int keyIndex, DucklakePartitionTransform transform, java.util.OptionalInt arity) {}
 
     private DucklakeSplit createMergedSplit(
             List<DucklakeDataFile> dataFileGroup,

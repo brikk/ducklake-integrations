@@ -322,12 +322,13 @@ public class DucklakeAddFilesProcedure
                     columnHandles,
                     result.topLevelMatches());
 
-            // footer_size: best estimate from the file (Trino's footer reader can't
-            // give us the precise footer size of the file; we use the last 8 bytes of
-            // file metadata as DuckDB does — but for now record 0 (the read path will
-            // fall back to the blind tail read). Future improvement: parse the postscript
-            // length directly.
-            long footerSize = 0;
+            // footer_size: read the 4-byte little-endian footer length from the parquet
+            // post-script (the trailer is `<thrift FileMetaData><4-byte LE length><4-byte magic>`).
+            // This is the same value DuckLake stores in ducklake_data_file.footer_size, and
+            // FooterPrefetchingParquetDataSource uses it on subsequent reads to skip the
+            // blind 48 KB tail read. Best-effort: any IO/parse failure falls back to 0 (the
+            // read path tolerates 0 by doing the default blind read).
+            long footerSize = readFooterLengthFromPostScript(dataSource);
 
             long recordCount = aggregateRecordCount(thriftMetadata);
 
@@ -384,6 +385,53 @@ public class DucklakeAddFilesProcedure
     private static long aggregateRecordCount(org.apache.parquet.format.FileMetaData thriftMetadata)
     {
         return thriftMetadata.getNum_rows();
+    }
+
+    /**
+     * Read the 4-byte little-endian Thrift FileMetaData length from the parquet
+     * post-script. The trailer layout per the parquet spec:
+     *
+     * <pre>
+     *   [ Thrift FileMetaData ][ 4 bytes LE footer length ][ 4 bytes "PAR1" magic ]
+     * </pre>
+     *
+     * <p>This value is what DuckLake stores in {@code ducklake_data_file.footer_size}
+     * (matches the existing {@link FooterPrefetchingParquetDataSource} contract:
+     * footer_size is the Thrift FileMetaData length only, excluding the 8-byte
+     * post-script).
+     *
+     * <p>Best-effort: any IO error, short read, or non-magic trailer returns 0, in
+     * which case the read path falls back to its default blind tail read — i.e.
+     * the previous behavior. Correctness is unaffected.
+     */
+    private static long readFooterLengthFromPostScript(ParquetDataSource dataSource)
+    {
+        try {
+            if (dataSource.getEstimatedSize() < 8) {
+                return 0;
+            }
+            io.airlift.slice.Slice tail = dataSource.readTail(8);
+            if (tail.length() < 8) {
+                return 0;
+            }
+            // Magic bytes at offset 4..7 of the tail: encrypted parquet uses "PARE"
+            // and the encrypted footer length sits in the same 4-byte LE slot, so we
+            // accept either marker. Anything else means this isn't a valid trailer.
+            byte b4 = tail.getByte(4);
+            byte b5 = tail.getByte(5);
+            byte b6 = tail.getByte(6);
+            byte b7 = tail.getByte(7);
+            boolean isParquetMagic = b4 == 'P' && b5 == 'A' && b6 == 'R' && (b7 == '1' || b7 == 'E');
+            if (!isParquetMagic) {
+                return 0;
+            }
+            // Airlift Slice is little-endian by contract, so getInt is already LE.
+            int footerLength = tail.getInt(0);
+            return footerLength >= 0 ? footerLength : 0;
+        }
+        catch (RuntimeException | IOException _) {
+            return 0;
+        }
     }
 
     private Map<Integer, String> remapPartitionValuesToPartitionKeyIndex(

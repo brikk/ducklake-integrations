@@ -15,19 +15,7 @@ reference). Spec issues we filed upstream live in
 Picked next, in order. Pair this with [TODO-READ-MODE.md § Top Priorities](TODO-READ-MODE.md#top-priorities)
 on the read side.
 
-1. **Adopt existing parquet files** — `CALL ducklake.system.add_files(...)`.
-   Lets operators register pre-existing parquet files into a DuckLake table
-   without rewriting. Unlocks data import / migration workflows that don't
-   want a full `INSERT INTO ... SELECT FROM parquet_scan(...)`. ~1–2 days,
-   mostly footer parsing for stats extraction; catalog write path reuses
-   today's `commitInsert` infrastructure. **See § Adopt Existing Parquet
-   Files (`add_files`) below.**
-2. **Bucket partitioning (full implementation)** — finish the feature so
-   bucketed DuckDB-written tables are queryable by Trino with the same
-   partition pruning, and Trino-written tables can use `bucket(N, col)`.
-   ~1 day, ~100 lines across 4–5 files. **See § Bucket Partitioning
-   below.**
-3. **Nested-leaf file column stats** — today `DucklakeStatsExtractor`
+1. **Nested-leaf file column stats** — today `DucklakeStatsExtractor`
    skips ARRAY/MAP/ROW types entirely (`DucklakeStatsExtractor.java:67`),
    so we never write `ducklake_file_column_stats` rows for nested-leaf
    columns. Affects both `commitInsert` (INSERT / CTAS) and `commitAddFiles`
@@ -40,8 +28,12 @@ on the read side.
    `TestDucklakeCrossEngineTypeAudit`. ~1 day. **See § Nested-Leaf
    File Column Stats below.**
 
-After these, the natural next chunks are sorted-table writes and the
+After this, the natural next chunks are sorted-table writes and the
 M8 maintenance procedures; both are bigger commitments and sit below.
+
+(The `add_files` procedure and bucket partitioning both landed; see
+§ Adopt Existing Parquet Files (`add_files`) and § Bucket Partitioning
+below.)
 
 ## Adopt Existing Parquet Files (`add_files`)
 
@@ -64,44 +56,29 @@ generate new parquet files and need a similar metadata-insert path.
 **Engine-agnostic placement**: most of the work lands in
 `jvm/ducklake-catalog`. The Trino plugin exposes the procedure surface.
 
-- [ ] **Footer reader** in the catalog module: extract `recordCount`,
-  `fileSizeBytes`, `footerSize`, per-column min/max/null-count from a
-  parquet footer. Trino's `io.trino.parquet.reader.MetadataReader` is the
-  right API to reuse — it already gives us `ParquetMetadata` with the
-  row-group statistics we need. Map the Parquet column stats to
-  `DucklakeFileColumnStats` (typed min/max strings per DuckLake's
-  encoding contract — see existing `DucklakeStatsExtractor` for the
-  forward direction we already wrote).
-- [ ] **Catalog write path**: `commitAddFiles(tableId, fragments)` on
-  `DucklakeCatalog` — accepts the same `DucklakeWriteFragment` shape we
-  already use for `commitInsert`, just with `path` pointing at an
-  absolute existing file (set `path_is_relative=false`). Reuses the
-  `applyInsertFragments` plumbing and emits `WriteChange.InsertedIntoTable`
-  so the conflict matrix already covers concurrent
-  `add_files × dropTable / × alter` cases.
-- [ ] **Schema validation**: each file's parquet schema must structurally
-  match the destination table's column types. Catalog-side: compare
-  `MessageType` of the parquet against `getAllColumnsWithParentage` for
-  the target table. Reject with a clear error on mismatch (extra columns,
-  missing columns, incompatible types). Upstream tests this in
-  `add_files/test_schema_mismatch.test` and similar — port those error
-  cases.
-- [ ] **Trino procedure surface**: `CALL ducklake.system.add_files(
-  schema_name => 'foo', table_name => 'bar', files => ARRAY['s3://...',
-  's3://...'], file_format => 'parquet')`. The procedure resolves the
-  table, opens each file via Trino's filesystem layer, reads the footer,
-  builds the fragment list, and calls `catalog.commitAddFiles(...)`. One
-  snapshot per `CALL` invocation.
-- [ ] **Tests**:
-  - Catalog-level integration test: write a parquet file with known
-    stats via Trino's `ParquetWriter`, then call `commitAddFiles`,
-    assert the catalog rows have the expected stats.
-  - Cross-engine test: DuckDB writes a parquet file (out of band), we
-    `add_files` it via Trino, DuckDB reads the table and sees the rows.
-  - Negative test: schema mismatch → clear error, no rows inserted, no
-    new snapshot.
-  - Conflict test: `add_files` racing `dropTable` → matrix conflict
-    (the existing `InsertedIntoTable × droppedTables` entry).
+- [x] **Footer reader** — landed in
+  `DucklakeAddFilesProcedure.buildFragment` (uses Trino's
+  `MetadataReader.readFooter` + a thrift adapter to reuse
+  `DucklakeStatsExtractor`).
+- [x] **Catalog write path** — `DucklakeCatalog.commitAddFiles` /
+  `JdbcDucklakeCatalog.commitAddFiles` delegate to
+  `applyInsertFragments` and record `WriteChange.InsertedIntoTable`, so
+  the existing conflict matrix covers `add_files × dropTable / × alter`
+  for free (pinned by `TestConcurrentAddFilesVsDropColumn` /
+  `TestConcurrentAddFilesVsDropTable`).
+- [x] **Schema validation** — `DucklakeAddFilesNameMapper` walks each
+  field by name, validating types recursively (struct / list / map).
+  Top-level missing columns honored by `allow_missing`; extra columns
+  honored by `ignore_extra_columns`.
+- [x] **Trino procedure surface** — `DucklakeAddFilesProcedure` exposes
+  `CALL ducklake.system.add_files(schema_name, table_name, files,
+  allow_missing, ignore_extra_columns, hive_partitioning)`. Iterates
+  files, builds fragments, single `commitAddFiles` call per invocation.
+- [x] **Tests** — `TestDucklakeAddFiles` (28 methods),
+  `TestDucklakeAddFilesCrossEngine`, and the concurrent-conflict tests
+  cover round-trip, column reorder, missing/extra columns, mapping_id
+  dedup, hive partitioning (IDENTITY), and `add_files × dropColumn /
+  dropTable` conflicts.
 
 **References**:
 - Spec: upstream's `data_inlining.md` and `add_files`-related docs on
@@ -120,14 +97,17 @@ generate new parquet files and need a similar metadata-insert path.
   honor the `allow_missing` flag today. Port the same semantics for struct
   children (return a name-map entry without a child for the missing field, and
   the reader produces NULL via the existing missing-column path). ~half-day.
-- [ ] **Compute `footer_size` for `add_files`-registered files.** The footer-size
-  hint stored in `ducklake_data_file.footer_size` lets readers skip the blind
-  48 KB tail read (`FooterPrefetchingParquetDataSource`). The procedure writes
-  it as SQL NULL today, so reads of add_files-registered files pay one extra
-  round-trip. The post-script of every parquet file ends with a 4-byte
-  little-endian footer length — read it from the data source's tail bytes during
-  `MetadataReader.readFooter` and store it in the fragment. Correctness is
-  fine without; this is a read-path perf improvement.
+- [x] **Compute `footer_size` for `add_files`-registered files.** Landed
+  2026-05-12. `DucklakeAddFilesProcedure.readFooterLengthFromPostScript`
+  reads the last 8 bytes via `ParquetDataSource.readTail(8)`, validates
+  the trailing `PAR1`/`PARE` magic, and decodes the 4-byte little-endian
+  Thrift FileMetaData length. The value is stored in the
+  `DucklakeWriteFragment.footerSize` field (and persisted to
+  `ducklake_data_file.footer_size`), letting subsequent reads through
+  `FooterPrefetchingParquetDataSource` skip the blind 48 KB tail read.
+  Best-effort: IO error / short read / non-magic trailer falls back to 0
+  (the read path tolerates 0 by doing its default blind read).
+  Pinned by `TestDucklakeAddFiles.testAddFilesPopulatesFooterSize`.
 
 ## Nested-Leaf File Column Stats
 
@@ -147,14 +127,33 @@ generate new parquet files and need a similar metadata-insert path.
 
 ## Bucket Partitioning
 
-- [ ] **Bucket partitioning (full implementation).** Add BUCKET to
-  `DucklakePartitionTransform` with arity, implement Murmur3 in
-  `DucklakePartitionComputer` (Guava `Hashing.murmur3_32_fixed()`), accept
-  `bucket(N, col)` syntax in `DucklakeTableProperties`, and parse the `bucket(N)`
-  transform string from `ducklake_partition_column.transform` on read. Formula:
-  `(murmur3_32(v) & INT_MAX) % N`, Iceberg-compatible. ~100 lines across 4–5
-  files. See
-  [DUCKLAKE_1_0_IMPACT.md § Bucket Partitioning](DUCKLAKE_1_0_IMPACT.md#1-bucket-partitioning).
+- [x] **Bucket partitioning (full implementation).** Landed 2026-05-12.
+  - `DucklakePartitionTransform` gained a `BUCKET` variant plus
+    `parseCatalogTransform(String)` / `toCatalogString(OptionalInt)` helpers
+    that round-trip the upstream `bucket(N)` text form stored in
+    `ducklake_partition_column.transform`.
+  - `PartitionFieldSpec` and `DucklakePartitionField` carry an
+    `OptionalInt arity` (empty for non-bucket transforms, populated with
+    the N for BUCKET).
+  - `DucklakePartitionComputer.computeBucket` implements
+    `(murmur3_32(v) & INT_MAX) % N` via Guava's `Hashing.murmur3_32_fixed()`
+    (Iceberg-compatible: int widened to long, UTF-8 for VARCHAR, raw
+    bytes for VARBINARY/UUID, μs for TIMESTAMP/TIMESTAMPTZ). REAL /
+    DOUBLE / BOOLEAN are rejected per Iceberg spec.
+  - `DucklakeTableProperties` accepts `bucket(N, col)` syntax
+    (`partitioned_by = ARRAY['bucket(4, name)']`).
+  - `DucklakePagePartitioner` routes BUCKET rows through the INTEGER
+    page-indexer path (same as temporal transforms).
+  - `DucklakeBucketPartitionMatcher` prunes files for equality
+    predicates by hashing the predicate constant and comparing against
+    the file's stored bucket index; ranges aren't pruned (bucketing
+    scrambles ordering).
+  - Unit tests in `TestDucklakePartitionComputer` cover Iceberg spec
+    reference values (int 34 → bucket 79, "iceberg" → 89, date
+    2017-11-16 → 26), determinism, non-negativity, and the unsupported-
+    type guard. Integration tests in `TestDucklakePartitionedWrite`
+    cover round-trip insert+read on VARCHAR and BIGINT columns, plus
+    equality-predicate pruning.
 
 ## Sorted Table Writes
 

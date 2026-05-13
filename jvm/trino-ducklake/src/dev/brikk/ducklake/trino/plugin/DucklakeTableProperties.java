@@ -23,6 +23,7 @@ import io.trino.spi.type.ArrayType;
 
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,6 +39,8 @@ public class DucklakeTableProperties
     public static final String DATA_FILE_FORMAT_PROPERTY = "data_file_format";
 
     private static final Pattern TRANSFORM_PATTERN = Pattern.compile("(year|month|day|hour)\\((.+)\\)");
+    // bucket(N, col) — N positive integer, col is the source column name. Spaces tolerated.
+    private static final Pattern BUCKET_PATTERN = Pattern.compile("bucket\\(\\s*(\\d+)\\s*,\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE);
 
     private final List<PropertyMetadata<?>> tableProperties;
 
@@ -106,7 +109,25 @@ public class DucklakeTableProperties
 
     private static PartitionFieldSpec parsePartitionField(String entry)
     {
-        Matcher matcher = TRANSFORM_PATTERN.matcher(entry.trim());
+        String trimmed = entry.trim();
+
+        Matcher bucketMatcher = BUCKET_PATTERN.matcher(trimmed);
+        if (bucketMatcher.matches()) {
+            int arity;
+            try {
+                arity = Integer.parseInt(bucketMatcher.group(1));
+            }
+            catch (NumberFormatException e) {
+                throw new TrinoException(INVALID_TABLE_PROPERTY, "Invalid bucket arity: " + bucketMatcher.group(1));
+            }
+            if (arity <= 0) {
+                throw new TrinoException(INVALID_TABLE_PROPERTY, "bucket(N, col) requires a positive arity, got " + arity);
+            }
+            String columnName = bucketMatcher.group(2).trim();
+            return new PartitionFieldSpec(columnName, DucklakePartitionTransform.BUCKET, OptionalInt.of(arity));
+        }
+
+        Matcher matcher = TRANSFORM_PATTERN.matcher(trimmed);
         if (matcher.matches()) {
             String transformName = matcher.group(1).toUpperCase(java.util.Locale.ENGLISH);
             String columnName = matcher.group(2).trim();
@@ -121,6 +142,6 @@ public class DucklakeTableProperties
         }
 
         // No transform — identity partition
-        return new PartitionFieldSpec(entry.trim(), DucklakePartitionTransform.IDENTITY);
+        return new PartitionFieldSpec(trimmed, DucklakePartitionTransform.IDENTITY);
     }
 }

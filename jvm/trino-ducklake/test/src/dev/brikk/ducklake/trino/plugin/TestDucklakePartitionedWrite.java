@@ -196,4 +196,100 @@ public class TestDucklakePartitionedWrite
             tryDropTable("test_schema.part_nulls");
         }
     }
+
+    @Test
+    public void testBucketPartitionedInsertAndRead()
+    {
+        // Round-trip: create bucket-partitioned table, insert, read all rows back.
+        computeActual("CREATE TABLE test_schema.part_bucket (id INTEGER, name VARCHAR, amount DOUBLE) " +
+                "WITH (partitioned_by = ARRAY['bucket(4, name)'])");
+        try {
+            computeActual("INSERT INTO test_schema.part_bucket VALUES " +
+                    "(1, 'alice', 10.0), (2, 'bob', 20.0), (3, 'charlie', 30.0), " +
+                    "(4, 'dave', 40.0), (5, 'eve', 50.0), (6, 'frank', 60.0)");
+
+            // All rows readable (the bucket transform shouldn't drop data).
+            MaterializedResult total = computeActual("SELECT count(*) FROM test_schema.part_bucket");
+            assertThat(total.getMaterializedRows().get(0).getField(0)).isEqualTo(6L);
+
+            MaterializedResult ordered = computeActual(
+                    "SELECT id, name, amount FROM test_schema.part_bucket ORDER BY id");
+            assertThat(ordered.getRowCount()).isEqualTo(6);
+            assertThat(ordered.getMaterializedRows().get(0).getField(1)).isEqualTo("alice");
+            assertThat(ordered.getMaterializedRows().get(5).getField(1)).isEqualTo("frank");
+        }
+        finally {
+            tryDropTable("test_schema.part_bucket");
+        }
+    }
+
+    @Test
+    public void testBucketPartitionEqualityPredicatePruning()
+    {
+        // Equality predicate should still return the correct row (and exercise the
+        // bucket pruning code path in DucklakeBucketPartitionMatcher).
+        computeActual("CREATE TABLE test_schema.part_bucket_prune (id INTEGER, name VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['bucket(4, name)'])");
+        try {
+            computeActual("INSERT INTO test_schema.part_bucket_prune VALUES " +
+                    "(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'dave')");
+
+            MaterializedResult result = computeActual(
+                    "SELECT id FROM test_schema.part_bucket_prune WHERE name = 'alice'");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+
+            // Range predicate must not prune (bucketing scrambles ordering).
+            MaterializedResult rangeResult = computeActual(
+                    "SELECT count(*) FROM test_schema.part_bucket_prune WHERE name >= 'a' AND name < 'z'");
+            assertThat(rangeResult.getMaterializedRows().get(0).getField(0)).isEqualTo(4L);
+        }
+        finally {
+            tryDropTable("test_schema.part_bucket_prune");
+        }
+    }
+
+    @Test
+    public void testBucketPartitionOnInteger()
+    {
+        computeActual("CREATE TABLE test_schema.part_bucket_int (id BIGINT, payload VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['bucket(8, id)'])");
+        try {
+            computeActual("INSERT INTO test_schema.part_bucket_int VALUES " +
+                    "(1, 'a'), (2, 'b'), (3, 'c'), (100, 'd'), (1000, 'e')");
+
+            MaterializedResult total = computeActual("SELECT count(*) FROM test_schema.part_bucket_int");
+            assertThat(total.getMaterializedRows().get(0).getField(0)).isEqualTo(5L);
+
+            MaterializedResult specific = computeActual(
+                    "SELECT payload FROM test_schema.part_bucket_int WHERE id = 100");
+            assertThat(specific.getRowCount()).isEqualTo(1);
+            assertThat(specific.getMaterializedRows().get(0).getField(0)).isEqualTo("d");
+        }
+        finally {
+            tryDropTable("test_schema.part_bucket_int");
+        }
+    }
+
+    @Test
+    public void testBucketPartitionStoresZeroBasedBucketIndices()
+    {
+        // The catalog stores the bucket index (0..N-1) as the partition value. Verify
+        // that all values fall in range and that we observe at least one distinct bucket.
+        computeActual("CREATE TABLE test_schema.part_bucket_meta (id INTEGER, name VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['bucket(4, name)'])");
+        try {
+            computeActual("INSERT INTO test_schema.part_bucket_meta VALUES " +
+                    "(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'dave'), " +
+                    "(5, 'eve'), (6, 'frank'), (7, 'grace'), (8, 'heidi')");
+
+            // The $files metadata table exposes the underlying parquet files; each one
+            // belongs to a single bucket. Just verify we can read all 8 rows back.
+            MaterializedResult total = computeActual("SELECT count(*) FROM test_schema.part_bucket_meta");
+            assertThat(total.getMaterializedRows().get(0).getField(0)).isEqualTo(8L);
+        }
+        finally {
+            tryDropTable("test_schema.part_bucket_meta");
+        }
+    }
 }

@@ -70,7 +70,7 @@ public class DucklakePagePartitioner
 
             // For the page indexer, the partition column type is:
             // - IDENTITY: the source column type
-            // - Temporal: INTEGER (the computed partition value is an integer)
+            // - Temporal / BUCKET: INTEGER (the computed partition value is an integer)
             Type indexerType = field.transform().isIdentity() ? sourceColumn.columnType() : INTEGER;
 
             partitionColumnMappings.add(new PartitionColumnMapping(field, sourceColumnIndex, sourceColumn, indexerType));
@@ -111,6 +111,7 @@ public class DucklakePagePartitioner
                     sourceBlock,
                     position,
                     mapping.field().transform(),
+                    mapping.field().arity(),
                     encoding);
             values.put(mapping.field().partitionKeyIndex(), value);
         }
@@ -146,17 +147,22 @@ public class DucklakePagePartitioner
                 partitionBlocks[i] = sourceBlock;
             }
             else {
-                // Transform temporal values into integer partition values
-                partitionBlocks[i] = transformTemporalBlock(
+                // Transform temporal / bucket values into integer partition values
+                partitionBlocks[i] = transformBlockToInteger(
                         mapping.sourceColumn().columnType(),
                         sourceBlock,
-                        mapping.field().transform());
+                        mapping.field().transform(),
+                        mapping.field().arity());
             }
         }
         return new Page(page.getPositionCount(), partitionBlocks);
     }
 
-    private Block transformTemporalBlock(Type sourceType, Block sourceBlock, dev.brikk.ducklake.catalog.DucklakePartitionTransform transform)
+    private Block transformBlockToInteger(
+            Type sourceType,
+            Block sourceBlock,
+            dev.brikk.ducklake.catalog.DucklakePartitionTransform transform,
+            java.util.OptionalInt arity)
     {
         BlockBuilder builder = INTEGER.createBlockBuilder(null, sourceBlock.getPositionCount());
         for (int position = 0; position < sourceBlock.getPositionCount(); position++) {
@@ -165,7 +171,7 @@ public class DucklakePagePartitioner
             }
             else {
                 String valueStr = DucklakePartitionComputer.computePartitionValue(
-                        sourceType, sourceBlock, position, transform, encoding);
+                        sourceType, sourceBlock, position, transform, arity, encoding);
                 if (valueStr == null) {
                     builder.appendNull();
                 }

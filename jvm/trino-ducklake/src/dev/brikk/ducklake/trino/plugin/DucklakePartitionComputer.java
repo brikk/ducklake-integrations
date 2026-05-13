@@ -14,17 +14,24 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform;
+import io.airlift.slice.Slice;
 import io.trino.spi.block.Block;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.UuidType;
+import io.trino.spi.type.VarbinaryType;
+import io.trino.spi.type.VarcharType;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.OptionalInt;
 
+import static com.google.common.hash.Hashing.murmur3_32_fixed;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
@@ -40,7 +47,8 @@ import static java.lang.Math.floorMod;
 
 /**
  * Computes partition values from Trino block data for DuckLake partitioned writes.
- * Supports both CALENDAR (DuckDB-compatible) and EPOCH encoding for temporal transforms.
+ * Supports CALENDAR / EPOCH encoding for temporal transforms and Iceberg-compatible
+ * Murmur3 hashing for {@code bucket(N)} transforms.
  */
 public final class DucklakePartitionComputer
 {
@@ -51,11 +59,25 @@ public final class DucklakePartitionComputer
      *
      * @return the partition value as a string, or null if the value is null
      */
+    /**
+     * Convenience overload for IDENTITY / temporal transforms (no arity needed).
+     */
     public static String computePartitionValue(
             Type columnType,
             Block block,
             int position,
             DucklakePartitionTransform transform,
+            DucklakeTemporalPartitionEncoding encoding)
+    {
+        return computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding);
+    }
+
+    public static String computePartitionValue(
+            Type columnType,
+            Block block,
+            int position,
+            DucklakePartitionTransform transform,
+            OptionalInt arity,
             DucklakeTemporalPartitionEncoding encoding)
     {
         if (block.isNull(position)) {
@@ -64,6 +86,13 @@ public final class DucklakePartitionComputer
 
         if (transform.isIdentity()) {
             return computeIdentityValue(columnType, block, position);
+        }
+
+        if (transform.isBucket()) {
+            if (arity.isEmpty()) {
+                throw new IllegalArgumentException("BUCKET transform requires an arity");
+            }
+            return Integer.toString(computeBucket(columnType, block, position, arity.getAsInt()));
         }
 
         return computeTemporalValue(columnType, block, position, transform, encoding);
@@ -160,7 +189,7 @@ public final class DucklakePartitionComputer
             case MONTH -> String.valueOf(dateTime.getMonthValue());
             case DAY -> String.valueOf(dateTime.getDayOfMonth());
             case HOUR -> String.valueOf(dateTime.getHour());
-            case IDENTITY -> throw new IllegalArgumentException("IDENTITY is not a temporal transform");
+            case IDENTITY, BUCKET -> throw new IllegalArgumentException(transform + " is not a temporal transform");
         };
     }
 
@@ -187,7 +216,81 @@ public final class DucklakePartitionComputer
                 long epochDay = dateTime.toLocalDate().toEpochDay();
                 yield String.valueOf(epochDay * 24 + dateTime.getHour());
             }
-            case IDENTITY -> throw new IllegalArgumentException("IDENTITY is not a temporal transform");
+            case IDENTITY, BUCKET -> throw new IllegalArgumentException(transform + " is not a temporal transform");
         };
+    }
+
+    /**
+     * Iceberg-compatible bucket hash: {@code (murmur3_32(serialized_v) & INT_MAX) % N}.
+     * Iceberg widens int/date to long before hashing; UTF-8 bytes for VARCHAR; raw bytes
+     * for VARBINARY; UUID hashed as two 8-byte halves (msb then lsb).
+     *
+     * <p>FLOAT / DOUBLE / BOOLEAN are intentionally unsupported, matching Iceberg's spec.
+     * Caller should reject these at table-property validation time; this is a defensive
+     * runtime guard.
+     */
+    public static int computeBucket(Type type, Block block, int position, int arity)
+    {
+        int hash = murmur3Hash(type, block, position);
+        return (hash & Integer.MAX_VALUE) % arity;
+    }
+
+    private static int murmur3Hash(Type type, Block block, int position)
+    {
+        if (type.equals(TINYINT)) {
+            return murmur3_32_fixed().hashLong(TINYINT.getLong(block, position)).asInt();
+        }
+        if (type.equals(SMALLINT)) {
+            return murmur3_32_fixed().hashLong(SMALLINT.getLong(block, position)).asInt();
+        }
+        if (type.equals(INTEGER)) {
+            return murmur3_32_fixed().hashLong(INTEGER.getInt(block, position)).asInt();
+        }
+        if (type.equals(BIGINT)) {
+            return murmur3_32_fixed().hashLong(BIGINT.getLong(block, position)).asInt();
+        }
+        if (type.equals(DATE)) {
+            return murmur3_32_fixed().hashLong(DATE.getInt(block, position)).asInt();
+        }
+        if (type instanceof TimestampType timestampType) {
+            long epochMicros;
+            if (timestampType.isShort()) {
+                epochMicros = timestampType.getLong(block, position);
+            }
+            else {
+                epochMicros = ((io.trino.spi.type.LongTimestamp) timestampType.getObject(block, position)).getEpochMicros();
+            }
+            return murmur3_32_fixed().hashLong(epochMicros).asInt();
+        }
+        if (type instanceof TimestampWithTimeZoneType tzType) {
+            long epochMicros;
+            if (tzType.isShort()) {
+                epochMicros = unpackMillisUtc(tzType.getLong(block, position)) * 1_000L;
+            }
+            else {
+                io.trino.spi.type.LongTimestampWithTimeZone tz =
+                        (io.trino.spi.type.LongTimestampWithTimeZone) tzType.getObject(block, position);
+                epochMicros = tz.getEpochMillis() * 1_000L + tz.getPicosOfMilli() / 1_000_000L;
+            }
+            return murmur3_32_fixed().hashLong(epochMicros).asInt();
+        }
+        if (type instanceof VarcharType) {
+            Slice slice = type.getSlice(block, position);
+            return murmur3_32_fixed().hashString(slice.toStringUtf8(), StandardCharsets.UTF_8).asInt();
+        }
+        if (type instanceof VarbinaryType) {
+            Slice slice = type.getSlice(block, position);
+            return murmur3_32_fixed().hashBytes(slice.byteArray(), slice.byteArrayOffset(), slice.length()).asInt();
+        }
+        if (type instanceof UuidType) {
+            // Iceberg hashes UUID as 16 bytes big-endian (msb, lsb) — Trino stores the same
+            // 16 bytes packed in a slice via UuidType.javaUuidToTrinoUuid.
+            Slice slice = UuidType.UUID.getSlice(block, position);
+            return murmur3_32_fixed().hashBytes(slice.byteArray(), slice.byteArrayOffset(), slice.length()).asInt();
+        }
+        if (type.equals(REAL) || type.equals(DOUBLE) || type.equals(BOOLEAN)) {
+            throw new IllegalArgumentException("bucket(N) is not defined for type " + type + " (Iceberg spec)");
+        }
+        throw new IllegalArgumentException("bucket(N) does not yet support type: " + type);
     }
 }

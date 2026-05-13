@@ -251,4 +251,107 @@ class TestDucklakePartitionComputer
         VARCHAR.writeSlice(builder, io.airlift.slice.Slices.utf8Slice(value));
         return builder.build();
     }
+
+    // ===== Bucket transform (Iceberg-compatible Murmur3) =====
+
+    // Reference values from Iceberg's spec Appendix B "Bucketing":
+    //   bucket[100] over int 34 → bucket 79
+    //   bucket[100] over long 34 → bucket 79 (int widened to long before hashing)
+    //   bucket[100] over CharSequence "iceberg" → bucket 89
+    //   bucket[100] over date 2017-11-16 → bucket 26
+
+    @Test
+    void testBucketInteger34MatchesIceberg()
+    {
+        BlockBuilder builder = INTEGER.createBlockBuilder(null, 1);
+        INTEGER.writeInt(builder, 34);
+        Block block = builder.build();
+        assertThat(DucklakePartitionComputer.computeBucket(INTEGER, block, 0, 100)).isEqualTo(79);
+    }
+
+    @Test
+    void testBucketBigint34MatchesIcebergIntCompat()
+    {
+        // long 34 hashes identically to int 34 because Iceberg widens int to long before hashing.
+        BlockBuilder builder = BIGINT.createBlockBuilder(null, 1);
+        BIGINT.writeLong(builder, 34L);
+        Block block = builder.build();
+        assertThat(DucklakePartitionComputer.computeBucket(BIGINT, block, 0, 100)).isEqualTo(79);
+    }
+
+    @Test
+    void testBucketStringMatchesIceberg()
+    {
+        Block block = buildVarcharBlock("iceberg");
+        assertThat(DucklakePartitionComputer.computeBucket(VARCHAR, block, 0, 100)).isEqualTo(89);
+    }
+
+    @Test
+    void testBucketDateMatchesIceberg()
+    {
+        Block block = buildDateBlock(LocalDate.of(2017, 11, 16));
+        assertThat(DucklakePartitionComputer.computeBucket(DATE, block, 0, 100)).isEqualTo(26);
+    }
+
+    @Test
+    void testBucketValueIsNonNegative()
+    {
+        // (hash & INT_MAX) ensures positive bucket value even for negative hash outputs.
+        for (long v : new long[] {-1L, Long.MIN_VALUE, Long.MAX_VALUE, 0L, 999_999L}) {
+            BlockBuilder builder = BIGINT.createBlockBuilder(null, 1);
+            BIGINT.writeLong(builder, v);
+            Block block = builder.build();
+            int bucket = DucklakePartitionComputer.computeBucket(BIGINT, block, 0, 16);
+            assertThat(bucket).isBetween(0, 15);
+        }
+    }
+
+    @Test
+    void testBucketIsStableAcrossInvocations()
+    {
+        // Determinism check — the hash function must be pure so two calls on the
+        // same input always produce the same bucket.
+        Block block = buildVarcharBlock("alice");
+        int first = DucklakePartitionComputer.computeBucket(VARCHAR, block, 0, 16);
+        int second = DucklakePartitionComputer.computeBucket(VARCHAR, block, 0, 16);
+        assertThat(first).isEqualTo(second);
+    }
+
+    @Test
+    void testBucketRejectsUnsupportedTypes()
+    {
+        BlockBuilder builder = DOUBLE.createBlockBuilder(null, 1);
+        DOUBLE.writeDouble(builder, 3.14);
+        Block block = builder.build();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                DucklakePartitionComputer.computeBucket(DOUBLE, block, 0, 16))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not defined for type");
+    }
+
+    @Test
+    void testBucketPartitionValueIsBucketIndex()
+    {
+        BlockBuilder builder = INTEGER.createBlockBuilder(null, 1);
+        INTEGER.writeInt(builder, 34);
+        Block block = builder.build();
+        String value = DucklakePartitionComputer.computePartitionValue(
+                INTEGER, block, 0, DucklakePartitionTransform.BUCKET,
+                java.util.OptionalInt.of(100), DucklakeTemporalPartitionEncoding.CALENDAR);
+        assertThat(value).isEqualTo("79");
+    }
+
+    @Test
+    void testBucketWithoutArityThrows()
+    {
+        BlockBuilder builder = INTEGER.createBlockBuilder(null, 1);
+        INTEGER.writeInt(builder, 1);
+        Block block = builder.build();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                DucklakePartitionComputer.computePartitionValue(
+                        INTEGER, block, 0, DucklakePartitionTransform.BUCKET,
+                        java.util.OptionalInt.empty(), DucklakeTemporalPartitionEncoding.CALENDAR))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("BUCKET");
+    }
 }

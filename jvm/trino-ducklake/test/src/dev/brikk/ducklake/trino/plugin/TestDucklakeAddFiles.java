@@ -390,6 +390,64 @@ public class TestDucklakeAddFiles
         }
     }
 
+    private long footerSizeForLatestDataFile()
+    {
+        try (java.sql.Connection conn = openCatalogConnection();
+                java.sql.Statement stmt = conn.createStatement();
+                java.sql.ResultSet rs = stmt.executeQuery(
+                        "SELECT footer_size FROM ducklake_data_file ORDER BY data_file_id DESC LIMIT 1")) {
+            if (!rs.next()) {
+                throw new IllegalStateException("no ducklake_data_file rows");
+            }
+            long value = rs.getLong(1);
+            return rs.wasNull() ? -1 : value;
+        }
+        catch (Exception e) {
+            throw new RuntimeException("Failed to read footer_size from ducklake_data_file", e);
+        }
+    }
+
+    @Test
+    public void testAddFilesPopulatesFooterSize()
+    {
+        // The footer_size hint stored in ducklake_data_file lets the read path skip the
+        // blind 48 KB tail read on subsequent queries (FooterPrefetchingParquetDataSource).
+        // Pre-fix this was hardcoded to 0; this test pins the new behavior.
+        computeActual("CREATE TABLE test_schema.footer_src (id INTEGER, name VARCHAR)");
+        computeActual("CREATE TABLE test_schema.footer_dst (id INTEGER, name VARCHAR)");
+        try {
+            computeActual("INSERT INTO test_schema.footer_src VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')");
+            String fileAbs = singleFileAbsolutePath("footer_src");
+
+            computeActual(String.format(
+                    "CALL ducklake.system.add_files("
+                            + "schema_name => 'test_schema', "
+                            + "table_name => 'footer_dst', "
+                            + "files => ARRAY['%s'])",
+                    fileAbs));
+
+            long footerSize = footerSizeForLatestDataFile();
+            assertThat(footerSize)
+                    .as("add_files must populate a non-zero footer_size (parsed from the parquet post-script)")
+                    .isGreaterThan(0L);
+            // Sanity ceiling: full file size on disk. Footer is a subset of the file.
+            long fileSize = Files.size(Paths.get(fileAbs));
+            assertThat(footerSize).isLessThan(fileSize);
+
+            // Read path must still work with the new hint.
+            MaterializedResult result = computeActual(
+                    "SELECT id, name FROM test_schema.footer_dst ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(3);
+        }
+        catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+        finally {
+            tryDropTable("test_schema.footer_src");
+            tryDropTable("test_schema.footer_dst");
+        }
+    }
+
     // ==================== Duplicate paths within one call ====================
 
     @Test
