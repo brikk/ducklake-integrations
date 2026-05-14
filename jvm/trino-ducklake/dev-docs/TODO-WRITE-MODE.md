@@ -15,24 +15,12 @@ reference). Spec issues we filed upstream live in
 Picked next, in order. Pair this with [TODO-READ-MODE.md § Top Priorities](TODO-READ-MODE.md#top-priorities)
 on the read side.
 
-1. **Nested-leaf file column stats** — today `DucklakeStatsExtractor`
-   skips ARRAY/MAP/ROW types entirely (`DucklakeStatsExtractor.java:67`),
-   so we never write `ducklake_file_column_stats` rows for nested-leaf
-   columns. Affects both `commitInsert` (INSERT / CTAS) and `commitAddFiles`
-   (since add_files inherits the same extractor). Upstream emits one row per
-   nested leaf using the leaf's own parquet column_id. Implementing this
-   unlocks file-level pruning for predicates over nested leaves (e.g.
-   `WHERE row.field = 'x'`) and matches the upstream stats coverage.
-   Touches `DucklakeStatsExtractor` (recurse into types, project leaf
-   parquet column_id against table field tree) and the test set in
-   `TestDucklakeCrossEngineTypeAudit`. ~1 day. **See § Nested-Leaf
-   File Column Stats below.**
+Next up: sorted-table writes and the M8 maintenance procedures; both are
+bigger commitments and sit further below.
 
-After this, the natural next chunks are sorted-table writes and the
-M8 maintenance procedures; both are bigger commitments and sit below.
-
-(The `add_files` procedure and bucket partitioning both landed; see
-§ Adopt Existing Parquet Files (`add_files`) and § Bucket Partitioning
+(The `add_files` procedure, bucket partitioning, and nested-leaf file
+column stats have all landed; see § Adopt Existing Parquet Files
+(`add_files`), § Bucket Partitioning, and § Nested-Leaf File Column Stats
 below.)
 
 ## Adopt Existing Parquet Files (`add_files`)
@@ -111,19 +99,35 @@ generate new parquet files and need a similar metadata-insert path.
 
 ## Nested-Leaf File Column Stats
 
-- [ ] **Emit `ducklake_file_column_stats` rows for nested-leaf columns.**
-  `DucklakeStatsExtractor.extractStats` currently early-returns on
-  `ArrayType / MapType / RowType` (`DucklakeStatsExtractor.java:67`), so
-  no file-level stats are written for any column inside a STRUCT/ARRAY/MAP.
-  Parquet stores one column chunk per leaf path, with statistics per
-  row-group. Recurse the table's field tree, project each leaf's parquet
-  column_id by name (LIST → child, MAP → key/value, STRUCT → field), and
-  emit a `DucklakeFileColumnStats` keyed by the **leaf's field_id** for
-  each. The string-encoding contract is the same as today's flat-column
-  case. Affects all write paths that funnel through `commitInsert` /
-  `commitAddFiles`. Test against `TestDucklakeCrossEngineTypeAudit`
-  nested cases, plus a new pruning test asserting `WHERE row.field = 'x'`
-  reads fewer files when nested-leaf min/max stats are available.
+- [x] **Emit `ducklake_file_column_stats` rows for nested-leaf columns.**
+  Landed 2026-05-13. `DucklakeStatsExtractor` no longer skips
+  ARRAY/MAP/ROW types — its input changed from `List<DucklakeColumnHandle>`
+  to a flat `List<LeafStatsTarget>` whose entries pair each parquet leaf
+  with the matching catalog field_id. Two builders feed it:
+  - `DucklakeStatsLeafProjector.projectFromCatalogTree(handles, allCatalogColumns)`
+    for the INSERT / CTAS / MERGE writer path, walking Trino types in
+    declaration order and consulting the catalog's parent→child tree.
+  - `DucklakeAddFilesNameMapper` now produces `leafStatsTargets` during
+    the same parquet-schema walk used to build the name map. Skipped /
+    hive-overridden parquet leaves advance the parquet-column-index
+    counter (via `countParquetLeaves`) so emitted indices stay aligned
+    with `RowGroup.columns`.
+
+  `extractStats` now looks up each row-group chunk by the explicit
+  `parquetColumnIndex` on its target, which also fixes a pre-existing
+  latent bug where flat columns following any nested column got
+  misaligned stats.
+
+  Pinned by:
+  - `TestDucklakeStatsLeafProjector` (8 cases — flat / ROW / ARRAY / MAP
+    / ARRAY<ROW> / nested ROW + error path).
+  - `TestDucklakeStatsExtractor` (synthetic thrift FileMetaData verifies
+    field_id keying, struct leaves, non-contiguous indices, multi-row-group
+    merge).
+  - `TestDucklakeNestedLeafStats` (end-to-end INSERT + add_files: asserts
+    one stats row per leaf, dotted-path lookup via `ducklake_column` tree,
+    correct min/max strings; covers ROW, ARRAY, MAP, ARRAY<ROW>, nested
+    ROW, and add_files with a ROW column).
 
 ## Bucket Partitioning
 

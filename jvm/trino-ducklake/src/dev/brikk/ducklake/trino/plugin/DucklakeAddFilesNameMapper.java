@@ -91,6 +91,12 @@ final class DucklakeAddFilesNameMapper
     // contract is "column N of the columns list maps to row-group column N of the file".
     private final List<TopLevelMatch> topLevelMatches = new ArrayList<>();
     private final Map<Integer, Object> partitionValues = new LinkedHashMap<>();
+    // One LeafStatsTarget per *mapped* parquet leaf — i.e., leaves that have a
+    // corresponding DuckLake catalog column. Skipped leaves (ignore_extra_columns
+    // children, hive-partition-wins overlap) still advance leafCounter so the
+    // emitted parquetColumnIndex stays aligned with the file's RowGroup.columns.
+    private final List<LeafStatsTarget> leafStatsTargets = new ArrayList<>();
+    private final int[] leafCounter = {0};
 
     DucklakeAddFilesNameMapper(
             DucklakeTypeConverter typeConverter,
@@ -109,12 +115,18 @@ final class DucklakeAddFilesNameMapper
     }
 
     /**
-     * Result bundle returned from {@link #map}.
+     * Result bundle returned from {@link #map}. {@code leafStatsTargets} lists
+     * one entry per matched parquet leaf (in file leaf order) for
+     * {@link DucklakeStatsExtractor} to consume; skipped or hive-overridden
+     * parquet leaves contribute no entry but still advance the underlying
+     * parquet column index so {@code parquetColumnIndex} on later targets
+     * stays aligned with {@code RowGroup.columns}.
      */
     record Result(
             DucklakeNameMap nameMap,
             List<TopLevelMatch> topLevelMatches,
-            Map<Integer, String> partitionValues) {}
+            Map<Integer, String> partitionValues,
+            List<LeafStatsTarget> leafStatsTargets) {}
 
     /**
      * One top-level parquet column matched to a DuckLake field. {@code parquetIndex}
@@ -158,6 +170,9 @@ final class DucklakeAddFilesNameMapper
             DucklakeColumn match = topByName.get(parquetNameLower);
             if (match == null) {
                 if (ignoreExtraColumns) {
+                    // Walk past the skipped column's parquet leaves so subsequent
+                    // matched leaves get the right RowGroup.columns offset.
+                    leafCounter[0] += countParquetLeaves(parquetField);
                     continue;
                 }
                 throw new DucklakeAddFilesException(String.format(
@@ -169,6 +184,10 @@ final class DucklakeAddFilesNameMapper
             // precedence (upstream behavior — a file under part=10/foo.parquet wins over
             // any 'part' column inside the parquet itself).
             if (hivePartitionKeyLower.containsKey(parquetNameLower)) {
+                // Hive value replaces the parquet column entirely — no leaf stats from
+                // the parquet column chunks. Advance the counter so later leaves stay
+                // aligned with the row group.
+                leafCounter[0] += countParquetLeaves(parquetField);
                 continue;
             }
             Type targetType = typeConverter.toTrinoType(match.columnType());
@@ -226,7 +245,8 @@ final class DucklakeAddFilesNameMapper
         return new Result(
                 new DucklakeNameMap(ImmutableList.copyOf(resultEntries)),
                 ImmutableList.copyOf(topLevelMatches),
-                partitionValuesOut);
+                partitionValuesOut,
+                ImmutableList.copyOf(leafStatsTargets));
     }
 
     private DucklakeNameMapEntry mapField(
@@ -245,6 +265,16 @@ final class DucklakeAddFilesNameMapper
             }
             Type source = parquetPrimitiveToTrino(parquetField.asPrimitiveType(), parquetName);
             DucklakeAddFilesTypeChecker.checkCompatible(targetType, source, parquetName, fileName, tableName);
+            // Record one leaf stats target per matched parquet primitive. Upstream's
+            // MapColumnStats keys these by the catalog field_id (target.columnId()),
+            // not by parquet path — and decodes min/max bytes using the *target*
+            // Trino type. The latter matches today's flat-column convention; values
+            // can be wrong if the parquet primitive's byte width disagrees with the
+            // catalog widening (e.g., INT32 file vs BIGINT catalog), which is a
+            // pre-existing limitation of the add_files stats path independent of
+            // nesting.
+            leafStatsTargets.add(new LeafStatsTarget(target.columnId(), targetType, leafCounter[0]));
+            leafCounter[0]++;
             return new DucklakeNameMapEntry(parquetName, target.columnId(), false, List.of());
         }
 
@@ -278,6 +308,8 @@ final class DucklakeAddFilesNameMapper
             DucklakeColumn childTarget = children.get(fieldName.toLowerCase(Locale.ROOT));
             if (childTarget == null) {
                 if (ignoreExtraColumns) {
+                    // Advance past the skipped struct child's parquet leaves.
+                    leafCounter[0] += countParquetLeaves(field);
                     continue;
                 }
                 throw new DucklakeAddFilesException(String.format(
@@ -361,6 +393,24 @@ final class DucklakeAddFilesNameMapper
         DucklakeNameMapEntry valueEntry = mapField(kvGroup.getType(1), "value", valueTarget,
                 mapType.getValueType(), childrenByParent);
         return new DucklakeNameMapEntry(parquetName, target.columnId(), false, List.of(keyEntry, valueEntry));
+    }
+
+    /**
+     * Number of primitive leaves in a parquet schema subtree — i.e., the number
+     * of {@code RowGroup.columns} entries this subtree contributes. Used to
+     * advance the leaf-index counter past skipped or hive-overridden parquet
+     * columns so subsequent stats targets stay aligned with the row group.
+     */
+    private static int countParquetLeaves(org.apache.parquet.schema.Type field)
+    {
+        if (field.isPrimitive()) {
+            return 1;
+        }
+        int total = 0;
+        for (org.apache.parquet.schema.Type child : field.asGroupType().getFields()) {
+            total += countParquetLeaves(child);
+        }
+        return total;
     }
 
     private static Type findRowFieldType(RowType rowType, String fieldName)

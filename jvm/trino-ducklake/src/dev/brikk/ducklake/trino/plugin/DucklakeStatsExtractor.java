@@ -15,16 +15,13 @@ package dev.brikk.ducklake.trino.plugin;
 
 import com.google.common.collect.ImmutableList;
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats;
-import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.IntegerType;
-import io.trino.spi.type.MapType;
 import io.trino.spi.type.RealType;
-import io.trino.spi.type.RowType;
 import io.trino.spi.type.SmallintType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
@@ -49,24 +46,31 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * Aggregates per-row-group parquet statistics into one {@link DucklakeFileColumnStats}
+ * row per parquet leaf, keyed by the DuckLake catalog field_id at that leaf
+ * (top-level column_id for flat columns; child column_id for nested struct /
+ * array / map leaves).
+ *
+ * <p>Caller is responsible for projecting the leaf list — see
+ * {@link DucklakeStatsLeafProjector} (write path) and
+ * {@link DucklakeAddFilesNameMapper} (add_files path). Both produce a
+ * {@link LeafStatsTarget} list in the same order parquet writes leaves into
+ * {@code RowGroup.columns}.
+ */
 public final class DucklakeStatsExtractor
 {
     private DucklakeStatsExtractor() {}
 
     public static List<DucklakeFileColumnStats> extractStats(
             FileMetaData fileMetaData,
-            List<DucklakeColumnHandle> columns)
+            List<LeafStatsTarget> leafTargets)
     {
         ImmutableList.Builder<DucklakeFileColumnStats> result = ImmutableList.builder();
 
-        for (int columnIndex = 0; columnIndex < columns.size(); columnIndex++) {
-            DucklakeColumnHandle column = columns.get(columnIndex);
-            Type type = column.columnType();
-
-            // Skip complex types — no meaningful min/max stats
-            if (type instanceof ArrayType || type instanceof MapType || type instanceof RowType) {
-                continue;
-            }
+        for (LeafStatsTarget target : leafTargets) {
+            int parquetColumnIndex = target.parquetColumnIndex();
+            Type type = target.leafType();
 
             long totalCompressedSize = 0;
             long totalValueCount = 0;
@@ -77,10 +81,10 @@ public final class DucklakeStatsExtractor
             boolean hasStats = false;
 
             for (RowGroup rowGroup : fileMetaData.getRow_groups()) {
-                if (columnIndex >= rowGroup.getColumns().size()) {
+                if (parquetColumnIndex >= rowGroup.getColumns().size()) {
                     continue;
                 }
-                ColumnMetaData columnMeta = rowGroup.getColumns().get(columnIndex).getMeta_data();
+                ColumnMetaData columnMeta = rowGroup.getColumns().get(parquetColumnIndex).getMeta_data();
                 totalCompressedSize += columnMeta.getTotal_compressed_size();
                 totalValueCount += columnMeta.getNum_values();
 
@@ -106,7 +110,7 @@ public final class DucklakeStatsExtractor
             }
 
             result.add(new DucklakeFileColumnStats(
-                    column.columnId(),
+                    target.fieldId(),
                     totalCompressedSize,
                     totalValueCount,
                     totalNullCount,

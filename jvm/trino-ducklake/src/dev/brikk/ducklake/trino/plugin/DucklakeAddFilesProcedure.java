@@ -57,7 +57,6 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource;
 import static io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
@@ -297,30 +296,17 @@ public class DucklakeAddFilesProcedure
                 throw new TrinoException(INVALID_PROCEDURE_ARGUMENT, e.getMessage());
             }
 
-            // The existing stats extractor projects by position. Build a synthetic
-            // column-handle list in parquet column order so the stats land keyed by
-            // the matched table field_id.
-            List<DucklakeColumnHandle> columnHandles = result.topLevelMatches().stream()
-                    .map(m -> new DucklakeColumnHandle(m.fieldId(), m.columnName(), m.targetType(), true))
-                    .collect(toImmutableList());
-
-            // Get footer in the legacy thrift form for stats extraction. Trino's
-            // MetadataReader gives us the trimmed FileMetadata; we need the
-            // org.apache.parquet.format.FileMetaData for our existing extractor.
-            // Recompute by re-reading the trailer bytes? Cheaper: walk parquetMetadata
-            // directly to gather stats — but DucklakeStatsExtractor consumes thrift
-            // FileMetaData. Easiest path: re-read via parquet-mr's serialized footer
-            // by reading the bytes from disk. Alternative: convert via
-            // toThriftFileMetaData(). We use parquetMetadata's block info directly
-            // through an adapter.
+            // Convert the trimmed Trino-side ParquetMetadata to the legacy
+            // org.apache.parquet.format.FileMetaData thrift shape that our extractor
+            // consumes. (The extractor walks RowGroup.columns positionally and decodes
+            // min/max bytes against the leaf's Trino target type.)
             org.apache.parquet.format.FileMetaData thriftMetadata = toThriftFileMetaData(parquetMetadata);
 
-            // Map top-level parquet columns to their actual file-column-order index
-            // so stats extractor's positional lookup pulls the right row-group columns.
-            List<DucklakeFileColumnStats> stats = extractStatsForMatches(
-                    thriftMetadata,
-                    columnHandles,
-                    result.topLevelMatches());
+            // result.leafStatsTargets() lists one entry per matched parquet leaf in file
+            // order, with parquetColumnIndex tracking through ignored-extra-columns and
+            // hive-partition-overrides so the index stays aligned with RowGroup.columns.
+            List<DucklakeFileColumnStats> stats = DucklakeStatsExtractor.extractStats(
+                    thriftMetadata, result.leafStatsTargets());
 
             // footer_size: read the 4-byte little-endian footer length from the parquet
             // post-script (the trailer is `<thrift FileMetaData><4-byte LE length><4-byte magic>`).
@@ -365,21 +351,6 @@ public class DucklakeAddFilesProcedure
                 }
             }
         }
-    }
-
-    private List<DucklakeFileColumnStats> extractStatsForMatches(
-            org.apache.parquet.format.FileMetaData thriftMetadata,
-            List<DucklakeColumnHandle> reorderedHandles,
-            List<DucklakeAddFilesNameMapper.TopLevelMatch> matches)
-    {
-        // The stats extractor reads row_group.columns[columnIndex] for columnIndex in
-        // the same order as the provided handles. Build a wrapping FileMetaData whose
-        // row-group columns appear in the matched (parquet-file) order — which they
-        // already do, because parquet stores them in schema-declared order. So the
-        // handle list already aligns with file column positions for parquet columns
-        // that the user mapped; partition columns aren't in row groups and don't
-        // need to appear in this call.
-        return DucklakeStatsExtractor.extractStats(thriftMetadata, reorderedHandles);
     }
 
     private static long aggregateRecordCount(org.apache.parquet.format.FileMetaData thriftMetadata)

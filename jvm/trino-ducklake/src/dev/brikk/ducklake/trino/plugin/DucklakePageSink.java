@@ -318,7 +318,7 @@ public class DucklakePageSink
                 Optional.empty());
 
         OptionalLong partitionId = partitioner != null ? OptionalLong.of(partitioner.getPartitionId()) : OptionalLong.empty();
-        return new ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns());
+        return new ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns(), handle.allCatalogColumns());
     }
 
     private DucklakeFileWriter openDuckDbWriter(Map<Integer, String> partitionValues)

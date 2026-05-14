@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.DucklakeColumn;
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats;
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment;
 import io.airlift.slice.DynamicSliceOutput;
@@ -43,7 +44,7 @@ final class ParquetFileWriter
     private final String relativePath;
     private final Map<Integer, String> partitionValues;
     private final OptionalLong partitionId;
-    private final List<DucklakeColumnHandle> columns;
+    private final List<LeafStatsTarget> leafStatsTargets;
 
     ParquetFileWriter(
             ParquetWriter parquetWriter,
@@ -51,14 +52,17 @@ final class ParquetFileWriter
             String relativePath,
             Map<Integer, String> partitionValues,
             OptionalLong partitionId,
-            List<DucklakeColumnHandle> columns)
+            List<DucklakeColumnHandle> columns,
+            List<DucklakeColumn> allCatalogColumns)
     {
         this.parquetWriter = requireNonNull(parquetWriter, "parquetWriter is null");
         this.outputStream = requireNonNull(outputStream, "outputStream is null");
         this.relativePath = requireNonNull(relativePath, "relativePath is null");
         this.partitionValues = new HashMap<>(requireNonNull(partitionValues, "partitionValues is null"));
         this.partitionId = requireNonNull(partitionId, "partitionId is null");
-        this.columns = requireNonNull(columns, "columns is null");
+        requireNonNull(columns, "columns is null");
+        requireNonNull(allCatalogColumns, "allCatalogColumns is null");
+        this.leafStatsTargets = DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns);
     }
 
     @Override
@@ -95,7 +99,7 @@ final class ParquetFileWriter
         }
 
         List<DucklakeFileColumnStats> columnStats =
-                DucklakeStatsExtractor.extractStats(fileMetaData, columns);
+                DucklakeStatsExtractor.extractStats(fileMetaData, leafStatsTargets);
 
         return new DucklakeWriteFragment(
                 relativePath,
