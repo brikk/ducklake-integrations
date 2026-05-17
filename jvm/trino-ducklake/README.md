@@ -136,8 +136,9 @@ operators and functions are not available through Trino.
 |---------|:---------:|-------|
 | SELECT / table scans | Yes | |
 | Predicate pushdown (WHERE) | Yes | All types |
-| File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files |
+| File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files via `ducklake_file_column_stats` (top-level and nested-leaf rows). Trino predicates today land on top-level handles; the nested-leaf stats are emitted on write so DuckDB readers can prune subfield predicates against Trino-written tables. |
 | Partition pruning | Yes | Identity and temporal partitions |
+| Bucket partition pruning | Yes | Murmur3 hash; prunes files for equality predicates (ranges aren't pruned — bucketing scrambles ordering) |
 | Row-group pruning (Parquet footer) | Yes | Uses Parquet internal statistics |
 | Page-level filtering (Parquet page index) | Yes | |
 | Dynamic filter pushdown | Yes | Intersected with file-level stats |
@@ -160,7 +161,6 @@ operators and functions are not available through Trino.
 | Views (Trino dialect) | Yes | |
 | Views (other dialects) | No | Filtered out; only Trino-created views exposed |
 | Puffin deletion vectors | No | Experimental in DuckLake 1.0; not yet supported |
-| Bucket partition pruning | No | Planned |
 | Sorted table optimizations | No | Tables are still readable; sort metadata ignored |
 
 ## Write Operations
@@ -185,6 +185,7 @@ operators and functions are not available through Trino.
 | ALTER TABLE DROP COLUMN | Yes | |
 | ALTER TABLE RENAME COLUMN | Yes | Field-ID based; existing files read correctly |
 | Partitioned writes | Yes | Identity and temporal transforms |
+| Bucket partitioned writes | Yes | `partitioned_by = ARRAY['bucket(N, col)']`; Iceberg-compatible Murmur3 hash |
 | Register existing parquet files (`add_files`) | Yes | `CALL system.add_files(...)`; IDENTITY hive partitioning supported |
 | Cross-engine Parquet compatibility | Yes | `field_id` annotations for DuckDB interop |
 | Concurrent conflict detection | Yes | Snapshot lineage check; aborts on stale base |
@@ -195,7 +196,6 @@ operators and functions are not available through Trino.
 | COMMENT ON TABLE | No | |
 | COMMENT ON COLUMN | No | |
 | ANALYZE | No | Statistics are read-only from the catalog |
-| Bucket partitioned writes | No | Planned |
 | Sorted writes | No | Trino-written files are unsorted |
 
 ## Partitioning
@@ -207,7 +207,7 @@ operators and functions are not available through Trino.
 | `month(col)` | Yes | Yes | Date or timestamp column |
 | `day(col)` | Yes | Yes | Date or timestamp column |
 | `hour(col)` | Yes | Yes | Timestamp column |
-| `bucket(N, col)` | No | No | Planned — Murmur3 hash partitioning |
+| `bucket(N, col)` | Yes | Yes | Iceberg-compatible Murmur3 hash; equality predicates pruned, ranges not |
 
 Temporal partition values follow the DuckLake 1.0 calendar encoding (the default; spec
 PR [duckdb/ducklake-web#349](https://github.com/duckdb/ducklake-web/pull/349) settled
@@ -221,8 +221,8 @@ catalogs; it should not be needed against any v1-conformant catalog.
 |-----------|:---------:|-------|
 | Table row count | Yes | From `ducklake_table_stats` |
 | Column min/max (table-level) | Yes | Typed parsing of string-encoded values |
-| Column min/max (file-level, for pruning) | Yes | From `ducklake_file_column_stats` |
-| Column null count (file-level) | Yes | Used in file pruning decisions |
+| Column min/max (file-level, for pruning) | Yes | From `ducklake_file_column_stats`; one row per primitive leaf (top-level columns and nested STRUCT/ARRAY/MAP leaves) |
+| Column null count (file-level) | Yes | Used in file pruning decisions; emitted for nested leaves too |
 | Conservative mode for deletes | Yes | Returns unknown stats when delete files are present |
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
