@@ -1,361 +1,302 @@
 # DuckLake-on-Doris — Friction log
 
-A running log of SPI / FE / BE friction we hit while implementing the
-DuckLake `fe-connector` plugin against PR
-[apache/doris#62767](https://github.com/apache/doris/pull/62767).
+Running log of SPI / FE / BE surprises hit while implementing the DuckLake
+`fe-connector` plugin against [apache/doris#62767](https://github.com/apache/doris/pull/62767).
 
-Intended audience:
+For Doris fe-connector maintainers — each entry has a pickable upstream
+fix. For future plugin authors — read top-to-bottom before starting; saves
+hours of debugging.
 
-- **Doris fe-connector maintainers** — places the SPI surface, BE
-  contract, or operator docs are quietly ambiguous. Each entry calls
-  out what we expected vs. what we found, and where in code the
-  mismatch lives, so it can be triaged without re-reproducing.
-- **Future plugin authors** — the workarounds. Read top-to-bottom
-  before authoring a new fe-connector plugin and you'll skip a few
-  hours of debugging.
+Sister docs: [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md)
+(canonical plan), [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md)
+(one-shot architectural review), [`ducklake-doris-todo.md`](./ducklake-doris-todo.md)
+(working state).
 
-Sister docs:
-
-- [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md)
-  — canonical implementation plan.
-- [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md)
-  — one-shot architectural review (deployment posture, capability set,
-  BE workaround for position deletes, JDK 17 ABI rules). The friction
-  log is the running counterpart.
-- [`ducklake-doris-todo.md`](./ducklake-doris-todo.md) — our working
-  state and roadmap.
-
-Each entry is dated (so the log doubles as a changelog of when each
-surprise surfaced) and has the same shape:
-
-> **Symptom** — what we saw  
-> **Root cause** — where in code  
-> **Workaround** — what we did  
-> **Suggested upstream fix** — what would prevent the next person hitting it
+Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
+→ **Fix** (small, pickable). Newest first.
 
 ---
 
-## 2026-05-19 · `ConnectorScanRange.getFileFormat()` is dead on the plugin-driven scan path
+## 2026-05-19 · `ConnectorScanRange.getFileFormat()` is dead on the plugin-driven path
 
-**Symptom.** Plugin returned `"parquet"` from
-`ConnectorScanRange.getFileFormat()`. BE rejected the scan with:
+**Symptom.** Returning `"parquet"` from `ConnectorScanRange.getFileFormat()`
+isn't enough. First live `SELECT *` failed:
 
 ```
 [NOT_IMPLEMENTED_ERROR]Not supported create reader for table format:
 iceberg / file format: FORMAT_JNI. cur path: s3://.../foo.parquet
 ```
 
-**Root cause.** `PluginDrivenScanNode` never consumes
-`ConnectorScanRange.getFileFormat()`. Its
-`getFileFormatType()` (`fe-core/.../datasource/PluginDrivenScanNode.java`,
-lines ~198-205) reads the property key `"file_format_type"` out of
-`getScanNodeProperties()` and runs it through
-`mapFileFormatType()` (lines ~689-707). Missing key → defaults to
-`TFileFormatType.FORMAT_JNI` silently.
+**Root cause.** `PluginDrivenScanNode.getFileFormatType()` (~line 198)
+reads `"file_format_type"` from `getScanNodeProperties()`, not from
+`range.getFileFormat()`. Missing key silently defaults to `FORMAT_JNI`
+in `mapFileFormatType()` (~line 689). The range-level method's javadoc
+("determines the BE reader") is misleading.
 
-`ConnectorScanRange.getFileFormat()`'s javadoc says "this determines
-the BE reader" — that's accurate for non-plugin-driven scan nodes,
-but it's NOT how the plugin-driven path resolves format. The method
-is only consumed by the default `populateRangeParams` implementation
-that stuffs it into `jdbc_params` as `"connector_file_format"`.
+**Workaround.** Emit the key from `getScanNodeProperties()`:
 
-**Workaround.**
-`DuckLakeScanPlanProvider.getScanNodeProperties()` emits
-`"file_format_type" = "parquet"`. The scan-range-level method stays
-overridden for completeness but doesn't influence dispatch.
+```java
+props.put("file_format_type", "parquet");
+```
 
-**Suggested upstream fix.** One of:
-
-1. Have `PluginDrivenScanNode.getFileFormatType()` fall back to
-   `range.getFileFormat()` when `file_format_type` is absent from the
-   scan-node properties.
-2. Update `ConnectorScanRange.getFileFormat()`'s javadoc to call out
-   that the plugin-driven path uses `getScanNodeProperties()` instead,
-   and add a `PROP_FILE_FORMAT_TYPE` constant on the API side that
-   plugins can import.
-3. Make the default `FORMAT_JNI` fallback raise instead of silently
-   selecting a reader the iceberg/parquet path can't open — a missing
-   format declaration is always a planning bug, not a runtime
-   condition.
+**Fix.**
+- Fall back to `range.getFileFormat()` when the property is absent, OR
+- Add a `PROP_FILE_FORMAT_TYPE` constant on the API side + fix the
+  range-level javadoc, OR
+- Raise instead of silently defaulting to `FORMAT_JNI`.
 
 ---
 
-## 2026-05-19 · BE S3 reader requires `AWS_*` keys verbatim; FE-side `s3.*` form is invisible
+## 2026-05-19 · BE S3 reader needs `AWS_*` keys verbatim; `s3.*` is silently dropped
 
-**Symptom.** Plugin emitted `s3.endpoint`, `s3.access_key`,
-`s3.secret_key`, `s3.region` (the FE-canonical names users write into
-`CREATE CATALOG`) into `TFileScanRangeParams.properties`. BE rejected
-the scan with:
+**Symptom.** `CREATE CATALOG` and the scan range carried
+`s3.endpoint=http://minio:9000`, `s3.access_key=minioadmin`, etc. BE rejected:
 
 ```
 [INVALID_ARGUMENT]Invalid s3 conf, empty endpoint. cur path: s3://...
 ```
 
-even though the properties map carried `s3.endpoint = http://minio:9000`.
+even with `params.properties["s3.endpoint"]` set on the wire. The error
+reads like missing config, not an alias mismatch.
 
 **Root cause.** `S3ClientFactory::convert_properties_to_s3_conf`
-(`be/src/util/s3_util.cpp`, lines ~541-619) does literal map lookups
-against these constants:
+(`be/src/util/s3_util.cpp:541-619`) does literal lookups against:
 
 ```cpp
 constexpr char S3_AK[]       = "AWS_ACCESS_KEY";
 constexpr char S3_SK[]       = "AWS_SECRET_KEY";
 constexpr char S3_ENDPOINT[] = "AWS_ENDPOINT";
 constexpr char S3_REGION[]   = "AWS_REGION";
-constexpr char S3_TOKEN[]    = "AWS_TOKEN";
 ```
 
-The FE-side `S3ObjStorage.normalizeProperties`
-(`fe-filesystem-s3/.../S3ObjStorage.java`, lines ~127-135) knows about
-the `s3.*` aliases — but it does NOT run on the parquet-reader path.
-It's invoked from FE-side code that opens S3 directly (HMS / Iceberg
-metadata reads), not from `populateScanLevelParams` → wire → BE.
+FE-side `S3ObjStorage.normalizeProperties` knows the `s3.*` aliases but
+runs on a different path (FE-direct S3 opens, e.g. HMS metadata reads).
+The parquet reader doesn't pass through it.
 
-So the FE has two parallel S3-key vocabularies: one the user writes
-(`s3.*`), one the BE understands (`AWS_*`), and they're only
-reconciled if the call site happens to go through `S3ObjStorage`.
+**Workaround.** In `populateScanLevelParams`, emit both forms:
 
-**Workaround.** `DuckLakeScanPlanProvider.canonicalAwsAlias()` is a
-static switch from FE-form keys to BE-form aliases; called from
-`populateScanLevelParams` after the location prefix is stripped.
-Both forms get emitted into `params.properties` (belt + suspenders).
+```java
+out.put("s3.endpoint",  "http://minio:9000");  // FE-form
+out.put("AWS_ENDPOINT", "http://minio:9000");  // BE-form (the one that actually works)
+```
 
-**Suggested upstream fix.** One of:
+`DuckLakeScanPlanProvider.canonicalAwsAlias()` is the static mapping.
 
-1. Move `S3ObjStorage.normalizeProperties` (or an equivalent) onto
-   the `TFileScanRangeParams.properties` path on the FE side so all
-   plugins benefit automatically — i.e. wrap the call to
-   `populateScanLevelParams` with a post-normalisation step.
-2. Have the BE-side `convert_properties_to_s3_conf` recognise both
-   forms (a five-line switch).
-3. At minimum, document the contract loudly in the
-   `ConnectorScanPlanProvider.populateScanLevelParams` javadoc:
-   "keys for S3 must be in `AWS_*` form; for HDFS in `dfs.*` form; etc."
-   so plugin authors don't have to read the BE source to find out.
+**Fix.**
+- Normalise `s3.*` → `AWS_*` engine-side after `populateScanLevelParams`, OR
+- Make `convert_properties_to_s3_conf` accept both (~5-line BE switch), OR
+- Document the contract in `populateScanLevelParams` javadoc:
+  *"S3 creds must be `AWS_*`, HDFS `dfs.*`, …"*
 
-We hit this on the first live `SELECT *` end-to-end. The error
-message ("Invalid s3 conf, empty endpoint") doesn't hint that
-*alternate keys exist and were ignored* — it reads like missing
-configuration.
+---
+
+## 2026-05-19 · `SPI_READY_TYPES` whitelist silently drops unknown ConnectorProviders
+
+**Symptom.** Provider correctly registered via
+`META-INF/services/org.apache.doris.connector.spi.ConnectorProvider`,
+`getType()` returns `"ducklake"`, jar on classpath. `CREATE CATALOG`
+still fails:
+
+```
+ERROR: Unknown catalog type: ducklake
+```
+
+No FE log line saying the provider was discovered-but-rejected.
+
+**Root cause.** `CatalogFactory.java` hardcodes
+`SPI_READY_TYPES = {"jdbc", "es", "iceberg"}`. Providers outside that
+set fall through to the legacy switch.
+
+**Workaround.** One-line worktree patch (`+ "ducklake"`) re-applied
+on every Doris release we deploy.
+
+**Fix.**
+- End state: drop the whitelist; any registered `ConnectorProvider`
+  wins.
+- Until then: log a warning when discovery skips a registered provider.
+  The silent drop is the worst part.
+
+---
+
+## 2026-05-19 · BE position-delete dispatch keyed on the literal string `"iceberg"`
+
+**Symptom.** Setting `TTableFormatFileDesc.table_format_type = "ducklake"`
+with correctly-populated `iceberg_params` produces no reader: `_cur_reader`
+stays unset, scan errors as "Not supported".
+
+**Root cause.** `be/src/exec/scan/file_scanner.cpp:1252` (Parquet) and
+`:1343` (ORC) gate on `table_format_params.table_format_type == "iceberg"`
+with no default branch.
+
+**Workaround.** Emit `table_format_type = "iceberg"` and reuse
+`iceberg_params.delete_files`. DuckLake parquet carries field-ids, so the
+Iceberg reader's column resolution works unchanged. EXPLAIN VERBOSE shows
+"iceberg" for DuckLake tables — operationally confusing.
+
+**Fix.** Five-line BE PR:
+
+```cpp
+} else if (range.__isset.table_format_params &&
+           (range.table_format_params.table_format_type == "iceberg" ||
+            range.table_format_params.table_format_type == "ducklake")) {
+    // existing IcebergParquetReader path
+}
+```
+
+Also tracked in `ducklake-doris-sanity-check.md` §2.1.
+
+---
+
+## 2026-05-19 · `populateScanLevelParams` vs `populateRangeParams` boundary is unenforced
+
+**Symptom.** First implementation put `iceberg_params` in
+`populateScanLevelParams` and storage creds in `populateRangeParams`.
+Result: BE saw an empty `iceberg_params` per range and duplicated S3
+properties at the node level.
+
+**Root cause.** The two overrides look symmetric but cover different
+scopes — and the SPI doesn't enforce it.
+
+| Method | Scope | Goes here |
+|---|---|---|
+| `populateRangeParams(TTableFormatFileDesc, TFileRangeDesc)` | per range | `iceberg_params` / `paimon_params` / per-file `columns_from_path` |
+| `populateScanLevelParams(TFileScanRangeParams, Map)` | per node | shared `properties` (S3 creds, JDBC info), `serialized_table` |
+
+**Workaround.** Move per-file thrift fragments to `populateRangeParams`;
+keep `populateScanLevelParams` for shared state. The iceberg reference
+plugin gets this right but doesn't call out the rule.
+
+**Fix.** Add the scope table above to `ConnectorScanPlanProvider` /
+`ConnectorScanRange` javadoc or the fe-connector handbook.
+
+---
+
+## 2026-05-19 · Doris injects engine-level keys into every `CREATE CATALOG`
+
+**Symptom.** Strict unknown-property check in `validateProperties()`
+rejected valid usage. Engine adds keys like `enable.mapping.varbinary`
+before the plugin sees the map:
+
+```
+ERROR: unknown property: enable.mapping.varbinary
+```
+
+Not documented in the SPI handbook.
+
+**Root cause.** Engine-side property injection at the DDL layer runs
+before `validateProperties`.
+
+**Workaround.** Plugin's `validateProperties` enforces required keys
+only; ignores unknowns.
+
+**Fix.** Document the contract — *"validate required + known keys;
+tolerate arbitrary additional keys; the engine may inject its own"* —
+OR strip engine-injected keys before calling the plugin.
+
+---
+
+## 2026-05-19 · `DriverManager.getDriver` doesn't see plugin-classloader JDBC drivers
+
+**Symptom.** `postgresql-42.7.8.jar` present in the deployed plugin
+`lib/` dir. Connection still fails:
+
+```
+SQLException: No suitable driver found for jdbc:postgresql://...
+```
+
+**Root cause.** `DriverManager`'s registry is populated by
+`ServiceLoader` at JVM startup using the **system** classloader.
+Plugin jars live on a child classloader, so their
+`META-INF/services/java.sql.Driver` isn't discovered.
+
+**Workaround.** Force the driver's static initialiser to run under the
+plugin classloader:
+
+```java
+Class.forName("org.postgresql.Driver");  // inside DuckLakeConnector.buildCatalog()
+```
+
+This triggers `DriverManager.registerDriver(this)` from within the
+plugin CL.
+
+**Fix.** Document this pattern in the fe-connector handbook. Every
+JDBC-using plugin will need it; currently it's lore.
+
+---
+
+## 2026-05-19 · FE healthcheck on `SELECT 1` deadlocks BE startup
+
+**Symptom.** `docker compose` with `BE depends_on: doris-fe service_healthy`
+and `healthcheck: mysql -e "SELECT 1"` on FE: neither ever comes up.
+
+**Root cause.** `SELECT 1` requires BE dispatch for query planning, even
+in the trivial case. BE waits for FE-healthy → FE-healthy waits for a BE.
+
+**Workaround.** FE-local healthcheck:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "mysql -h127.0.0.1 -P9030 -uroot -e 'SHOW FRONTENDS' >/dev/null 2>&1"]
+```
+
+`SHOW FRONTENDS` reads FE state only.
+
+**Fix.** Either add a dedicated FE-local probe (`SHOW SELF`?), or
+document `SHOW FRONTENDS` as the canonical container healthcheck in the
+Docker deploy docs. Official `apache/doris` images hit this same
+deadlock when chained.
+
+---
+
+## 2026-05-19 · `start_fe.sh` sources `fe.conf` for JVM flags; env-vars don't override
+
+**Symptom.** Setting `JAVA_OPTS_FOR_JDK_17=-Xmx2g -Xms2g` as a Docker
+env-var had no effect — FE still booted with the 8GB default and got
+OOM-killed on Docker Desktop.
+
+**Root cause.** `start_fe.sh` reads `JAVA_OPTS_FOR_JDK_17` from
+`fe.conf` only.
+
+**Workaround.** Ship a tuned `fe.conf` as a writable bind mount
+(`init_fe.sh` appends `priority_networks` at boot, so `:ro` deadlocks
+init):
+
+```
+# fe.conf
+JAVA_OPTS_FOR_JDK_17="-Xmx2g -Xms2g ..."
+```
+
+**Fix.** `start_fe.sh` should prefer env-vars when present, fall through
+to `fe.conf` otherwise. Standard Twelve-Factor expectation for
+containers.
 
 ---
 
 ## 2026-05-19 · `connector_plugin_root` default is hardcoded in `Config.java`
 
 **Symptom.** Plugins land in `${DORIS_HOME}/plugins/connector/<name>/`
-but neither `conf/fe.conf` nor the docs mention the path. Operators
-have to grep `Config.java` to learn where to deploy.
+(singular) but `conf/fe.conf` doesn't mention the path. Sibling
+`plugins/connectors/` (plural) is the legacy Trino-bridge loader
+(`TrinoConnectorPluginLoader.java:92`) — both coexist. Wrong directory
+→ silent no-op, no log.
 
-**Root cause.** `Config.java:3541` hardcodes the default; the value is
-not surfaced as a commented-out line in `conf/fe.conf` like other
-defaults.
+**Root cause.** `Config.java:3541` hardcodes the default without
+surfacing it in `fe.conf`.
 
-Sibling directory `plugins/connectors/` (plural) is the legacy
-Trino-bridge loader (`TrinoConnectorPluginLoader.java:92`) — both
-coexist, which compounds the confusion ("which `plugins/connector*` do
-I drop my jar into?").
+**Workaround.** Read the source.
 
-**Workaround.** Documented in `ducklake-doris-todo.md` (Reference
-section).
-
-**Suggested upstream fix.** Surface the default as a commented-out
-line in `conf/fe.conf`. Zero behaviour change; saves every new plugin
-author a grep.
-
----
-
-## 2026-05-19 · `SPI_READY_TYPES` whitelist silently drops unknown ConnectorProviders
-
-**Symptom.** `CREATE CATALOG dl PROPERTIES('type'='ducklake', ...)`
-fails with `Unknown catalog type: ducklake` even though our
-`META-INF/services/org.apache.doris.connector.spi.ConnectorProvider`
-file is correct, the jar is on the classpath, and the provider's
-`getType()` returns `"ducklake"`. No log line acknowledging the
-provider was discovered-but-rejected.
-
-**Root cause.** `CatalogFactory.java` carries a hardcoded
-`SPI_READY_TYPES = {"jdbc", "es", "iceberg"}` set; providers whose
-`getType()` isn't in this set are silently ignored and the factory
-falls through to its legacy `switch`.
-
-**Workaround.** We carry a one-line worktree patch (`+ "ducklake"`)
-on top of every Doris release we deploy. Re-applied on every refresh
-of PR #62767.
-
-**Suggested upstream fix.** Already flagged in
-`ducklake-doris-sanity-check.md` §3.5 / `ducklake-doris-todo.md`. The
-correct end state is "any `ConnectorProvider` discoverable via
-`ServiceLoader` wins". Until that lands, *at minimum* log a warning
-when discovery skips a registered provider — the silent-drop is the
-worst part.
-
----
-
-## 2026-05-19 · BE position-delete dispatch keyed on the literal string `"iceberg"`
-
-**Symptom.** Setting `TTableFormatFileDesc.table_format_type =
-"ducklake"` and populating `iceberg_params` correctly results in BE
-silently producing no reader: `_cur_reader` stays unset and the scan
-errors as "Not supported".
-
-**Root cause.** `be/src/exec/scan/file_scanner.cpp:1252` (Parquet)
-and `:1343` (ORC) gate on `table_format_params.table_format_type ==
-"iceberg"` with no default branch. An unknown discriminator falls off
-the end.
-
-**Workaround.** Plugin emits `table_format_type = "iceberg"` and uses
-the existing Iceberg reader path with `iceberg_params.delete_files`
-to carry positional deletes. DuckLake's parquet files carry field-ids,
-so the Iceberg reader's column resolution works unchanged.
-
-Operational cost: EXPLAIN VERBOSE, BE profile output, and any
-operator-facing error message says `"iceberg"` for DuckLake tables.
-
-**Suggested upstream fix.** Five-line BE PR adding `||
-table_format_type == "ducklake"` to the iceberg branch in both call
-sites. Already documented in `ducklake-doris-sanity-check.md` §2.1.
-A registry-based dispatch is the right *eventual* answer but not v1.
-
----
-
-## 2026-05-19 · FE `start_fe.sh` sources `fe.conf` for JVM flags; env-vars don't override
-
-**Symptom.** Setting `JAVA_OPTS_FOR_JDK_17=-Xmx2g -Xms2g` as a Docker
-environment variable had no effect — FE still booted with the 8GB
-heap default and OOM-killed on Docker Desktop's typical memory ceiling.
-
-**Root cause.** `start_fe.sh` reads `JAVA_OPTS_FOR_JDK_17` from
-`fe.conf`, not from the environment. Env-var override never lands.
-
-**Workaround.** Ship a tuned `fe.conf` as a bind mount and set the
-flag there. Caveat: `init_fe.sh` appends `priority_networks` at boot,
-so the mount must be writable — `:ro` deadlocks the init script.
-
-**Suggested upstream fix.** Have `start_fe.sh` honour the env-var
-when present (fall through to `fe.conf` otherwise). Standard
-Twelve-Factor expectation for containerised deployments.
-
----
-
-## 2026-05-19 · `DriverManager.getDriver` can't see plugin-classloader JDBC drivers
-
-**Symptom.** Plugin jar includes `postgresql-42.7.8.jar` (verified
-present in the deployed `lib/` directory), but
-`DriverManager.getConnection("jdbc:postgresql://...")` raises
-`SQLException: No suitable driver found`.
-
-**Root cause.** `DriverManager` consults its registry, which is
-populated by `ServiceLoader` at JVM startup with the **system**
-classloader. Plugin jars live on a child classloader, so their
-`META-INF/services/java.sql.Driver` files aren't discovered without
-explicit help from the plugin code.
-
-**Workaround.** `Class.forName("org.postgresql.Driver")` from inside
-the plugin's `Connector` (must be called from a plugin-loaded class so
-the driver's static initialiser runs under the plugin classloader and
-registers itself via `DriverManager.registerDriver(this)`).
-
-**Suggested upstream fix.** The fe-connector handbook should call
-out this pattern explicitly — every JDBC-using plugin needs it.
-Currently it's lore: each plugin author rediscovers it through a
-runtime error.
-
----
-
-## 2026-05-19 · FE healthcheck deadlocks BE startup when based on `SELECT 1`
-
-**Symptom.** `depends_on: service_healthy` for BE was waiting on FE
-healthcheck. FE healthcheck was `mysql ... -e "SELECT 1"`. Neither
-ever came up — `SELECT 1` needs a BE to dispatch the plan, BE waits
-for FE health, FE waits for a BE.
-
-**Root cause.** `SELECT 1` is not FE-local; it goes through query
-planning + BE dispatch even in the trivial case.
-
-**Workaround.** Healthcheck on `SHOW FRONTENDS` (FE-local, no BE
-required). Documented in `compose/fe.conf` and the smoke loop.
-
-**Suggested upstream fix.** Either:
-
-1. Add an explicit FE-local-only health probe SQL (`SELECT VERSION()`
-   or a dedicated `SHOW SELF`).
-2. Document the canonical container healthcheck SQL in the Docker
-   deploy docs; the official `apache/doris` images currently
-   include healthchecks that hit this same deadlock when chained.
-
----
-
-## 2026-05-19 · Doris injects engine-level keys into every `CREATE CATALOG`
-
-**Symptom.** A strict unknown-property check in
-`ConnectorProvider.validateProperties()` rejected valid usage because
-Doris's DDL layer added `enable.mapping.varbinary` (and friends) on
-top of the user-supplied properties.
-
-**Root cause.** Engine-side property injection at the DDL layer
-happens before the provider's `validateProperties` is called. Not
-documented in the SPI handbook.
-
-**Workaround.** Plugin's `validateProperties` enforces the required
-set but doesn't reject unknowns.
-
-**Suggested upstream fix.** Document the contract: providers should
-treat their property map as "required-keys-must-be-present +
-known-keys-validated; arbitrary additional keys may be present and
-must be tolerated". Or, alternatively, strip engine-injected keys
-before calling `validateProperties` so the plugin sees only the
-user-supplied set.
-
----
-
-## 2026-05-19 · `populateScanLevelParams` vs `populateRangeParams` boundary is subtle
-
-**Symptom.** Initial implementation put per-range thrift content
-(`iceberg_params`) into `populateScanLevelParams` and node-level
-properties into `populateRangeParams`. Result: BE saw an empty
-`iceberg_params` on every range and either nothing or duplicated
-S3 properties at the node level.
-
-**Root cause.** The two methods look symmetric (both take a thrift
-struct + properties) but operate on different scopes:
-
-- `populateRangeParams(TTableFormatFileDesc, TFileRangeDesc)` —
-  **per scan range**, fills the format-specific descriptor for ONE
-  file (iceberg_params, paimon_params, etc.) plus
-  `columns_from_path` on the range desc.
-- `populateScanLevelParams(TFileScanRangeParams, Map)` —
-  **per scan node**, fills shared state across all ranges
-  (`properties` map for storage creds, JDBC connection info,
-  serialized table, etc.).
-
-The boundary makes sense once you read both javadocs side by side, but
-the SPI doesn't enforce it (nothing stops you from setting node-level
-state inside `populateRangeParams` — the result is wasted bytes per
-range or silently-ignored properties).
-
-**Workaround.** Plugin separates them cleanly:
-`populateRangeParams` builds `iceberg_params` per file;
-`populateScanLevelParams` strips the location prefix off node
-properties and emits S3 keys (plus AWS_* aliases).
-
-**Suggested upstream fix.** The
-`ConnectorScanPlanProvider`/`ConnectorScanRange` package-info or
-handbook section could lay out the boundary explicitly with a
-"node-level vs range-level fields" table. Right now plugin authors
-infer it from reading the iceberg implementation.
+**Fix.** Add a commented-out line in `conf/fe.conf` documenting the
+default. Zero behaviour change.
 
 ---
 
 ## How to add an entry
 
-When you hit the next gotcha:
+When you hit the next one:
 
-1. Date the entry (top of file is most-recent-first).
-2. Symptom: paste the actual error / SQL output.
-3. Root cause: file path + line range. Don't paraphrase code; quote it.
-4. Workaround: what we did. Cite the class / method on our side.
-5. Suggested upstream fix: a small ask the Doris team could pick up
-   without a deep refactor — "log a warning instead of silently dropping",
-   "add a constant on the API side", "honour env-var override", etc.
-   The friction log is most useful when the upstream-fix column is
-   small and pickable.
+1. Date the entry; insert at the top.
+2. **Symptom** — paste the literal error / SQL output. No paraphrasing.
+3. **Root cause** — file path + line. Quote the offending code if small.
+4. **Workaround** — code snippet or config line on our side.
+5. **Fix** — bullet list of pickable upstream changes. Keep each one
+   small enough to be a single PR.
