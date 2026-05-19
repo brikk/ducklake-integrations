@@ -4,6 +4,8 @@ Snapshot of the Rust [`datafusion-ducklake`](https://github.com/) project review
 our JVM implementation (`ducklake-catalog` + `trino-ducklake`). The goal is to flag real
 spec-level conflicts, call out ideas worth stealing, and record where we're ahead.
 
+Last refreshed against upstream `main` at `536729a` (v0.2.1, 2026-05-05).
+
 ## TL;DR
 
 No real spec-level conflicts — both honor the same DuckLake catalog schema, validity
@@ -29,7 +31,7 @@ read-only, but its code has started a write path (`metadata_writer*`, `table_wri
 | Time travel (`FOR VERSION`/`FOR TIMESTAMP AS OF`) | Latest-only | Full (query / session / catalog precedence) | JVM way ahead |
 | Snapshot conflict detection on commit | None in writer | `ensureSnapshotLineageUnchanged()` — aborts on stale base | JVM way ahead |
 | Views | None | Trino dialect supported, cross-dialect filtered | JVM ahead |
-| Stats-driven pruning | Stats not exposed via `MetadataProvider` trait | Full file + table level; conservative mode when deletes present | JVM way ahead |
+| Stats-driven pruning | `TableProvider::statistics()` returns only `total_byte_size` (sum of `file_size_bytes` − `delete_file_size_bytes`), marked `Precision::Inexact` since the catalog tracks compressed parquet bytes while DataFusion's contract is uncompressed Arrow output. No `num_rows`, no per-column stats — record count is noted as a follow-up "when `record_count` is plumbed through `DuckLakeFileData`" (v0.2.1) | Full file + table level via `getTableStatistics`: row count, per-column null fractions, data sizes, ranges; conservative mode (`TableStatistics.empty()`) when delete files or live inlined rows are present | JVM way ahead |
 | Parquet footer size hint | Passed via `with_metadata_size_hint()` — saves an S3 round-trip per file | Passed via `FooterPrefetchingParquetDataSource` wrapper (Trino's `MetadataReader.readFooter` has no hint API, so we intercept `readTail`). Covers data files + delete files | At parity |
 | Path validation (null-byte, traversal) | `validate_path()` guards | Assumes trusted catalog | Rust more defensive |
 | Unsigned range validation on writes | None | `DucklakeUnsignedRangeChecker` rejects out-of-range SMALLINT/INTEGER/BIGINT/DECIMAL(20,0) writes into uint8/uint16/uint32/uint64 columns at page-sink time, before silent Parquet-truncation can corrupt the uint catalog column | JVM ahead |
@@ -118,7 +120,7 @@ Still open:
 
 | | Rust | JVM (this repo) |
 |---|---|---|
-| Integration test LOC | ~9,110 across 19 files | ~10,215 across 24 files |
+| Integration test LOC | ~9,231 across 19 files | ~10,215 across 24 files |
 | Unit tests in source files | 11 files with `#[cfg(test)]` | N/A — separated out |
 | `.slt` suite | 248 files / 47 categories / ~18,740 LOC | none |
 | Per-backend metadata-provider tests | Postgres / MySQL / SQLite, Testcontainers | Postgres only (Testcontainers) |

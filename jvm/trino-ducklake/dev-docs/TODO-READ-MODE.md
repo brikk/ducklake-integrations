@@ -39,7 +39,7 @@ DuckLake's deletion inlining stores small deletions
 (below `DATA_INLINING_ROW_LIMIT` rows) directly in a per-table metadata
 table `ducklake_inlined_delete_<tableId>` rather than as a Parquet delete
 file. Schema (per
-`temp/pg_ducklake/third_party/ducklake/src/storage/ducklake_metadata_manager.cpp:2645`
+`vendor/pg_ducklake/third_party/ducklake/src/storage/ducklake_metadata_manager.cpp:2645`
 and the
 [Data Inlining doc page](https://ducklake.select/docs/stable/duckdb/advanced_features/data_inlining)):
 

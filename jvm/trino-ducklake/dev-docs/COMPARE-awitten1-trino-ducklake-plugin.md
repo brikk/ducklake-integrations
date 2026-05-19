@@ -2,6 +2,14 @@
 
 Date: 2026-04-23
 
+> **Status update — 2026-05-19:** rechecked upstream; **no new commits
+> observed** since the original audit. The `awitten1/trino-ducklake`
+> project appears to be abandoned. This file is no longer being kept
+> current and will be deleted shortly. It is left in place for now so
+> the conclusions remain discoverable in `git log` after deletion; once
+> removed, search `git log --diff-filter=D -- jvm/trino-ducklake/dev-docs/COMPARE-awitten1-trino-ducklake-plugin.md`
+> to find this file in history.
+
 This document compares the two independent Trino DuckLake connector implementations. The
 awitten1 plugin source was pulled into `ducklake-other-trino-plugin/` for analysis. The
 brikk plugin is the main implementation in this repository.

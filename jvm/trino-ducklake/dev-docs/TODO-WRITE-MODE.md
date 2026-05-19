@@ -15,13 +15,152 @@ reference). Spec issues we filed upstream live in
 Picked next, in order. Pair this with [TODO-READ-MODE.md § Top Priorities](TODO-READ-MODE.md#top-priorities)
 on the read side.
 
-Next up: sorted-table writes and the M8 maintenance procedures; both are
-bigger commitments and sit further below.
+Next up:
+
+1. **Quack/remote-DuckDB catalog backend** — a new DuckLake catalog
+   option upstream just added (merged 2026-05-12) that we MUST support
+   and test against. See § Quack Catalog Backend (DuckDB RPC) below.
+   Cross-cutting concern — affects both read and write paths.
+2. Per-table storage path (`location` table property) — small,
+   self-contained, closes a UX gap surfaced by the pg_ducklake
+   comparison.
+3. Sorted-table writes and the M8 maintenance procedures; both are
+   bigger commitments and sit further below.
 
 (The `add_files` procedure, bucket partitioning, and nested-leaf file
 column stats have all landed; see § Adopt Existing Parquet Files
 (`add_files`), § Bucket Partitioning, and § Nested-Leaf File Column Stats
 below.)
+
+## Quack Catalog Backend (DuckDB RPC)
+
+**Status: high priority, must support and test against.**
+
+Upstream `duckdb/ducklake#1151` (merged 2026-05-12, title "Experimental
+Support For Quack (DuckDB RPC Client/Server Protocol) as a catalog for
+Ducklake") added a new metadata-manager backend that lets a DuckLake
+catalog live in a remote DuckDB accessed over the Quack RPC protocol.
+Files added in that PR:
+
+- `src/include/metadata_manager/quack_metadata_manager.hpp`
+- `src/metadata_manager/quack_metadata_manager.cpp`
+- `test/configs/quack.json` (test config wiring)
+- `scripts/run_quack_tests.py` (runner)
+
+This becomes a first-class catalog backend alongside DuckDB-local /
+SQLite / Postgres / MySQL, and is the natural deployment shape for
+"shared DuckDB-as-catalog without giving every reader filesystem access
+to the .db file." We need to be in front of it, not chasing it.
+
+**Target architecture for our JVM stack**:
+
+```
+Trino → DuckLake plugin → JDBC → local DuckDB (driver) ──Quack RPC──▶ remote DuckDB (catalog)
+```
+
+The local DuckDB acts as a Quack *client*; our existing JDBC-based
+catalog plumbing (`JdbcDucklakeCatalog`) keeps working unchanged because
+from Java's POV it still talks JDBC to a DuckDB driver — just one
+configured to delegate storage to a remote DuckDB over Quack. This is
+the same "DuckDB as a thin client" pattern DuckDB itself uses for the
+Quack tests.
+
+Scope (read + write — this is cross-cutting):
+
+- [ ] Verify the DuckDB JDBC driver exposes the connection-string knobs
+  needed to point a local DuckDB at a Quack server (host/port/auth/TLS).
+  Pin the minimum driver version that supports it.
+- [ ] Confirm `JdbcDucklakeCatalog` works unmodified against the
+  Quack-backed local DuckDB. If the catalog-schema bootstrap or any of
+  our SPI queries break under the remote-delegation surface, file those
+  as bugs and fix close to the catalog layer (not in the Trino plugin).
+- [ ] Add a Quack profile to the cross-engine compatibility harness
+  (`TestDucklakeCrossEngineCompatibility`): same scenarios as the
+  existing DuckDB run, but with both sides (Trino-side local DuckDB and
+  the DuckDB CLI write fixture) pointed at a shared remote-DuckDB
+  catalog over Quack. This is the test that proves "Trino's catalog
+  writes and DuckDB's catalog writes converge under Quack".
+- [ ] Snapshot-lineage / concurrent-writer test under Quack: two Trino
+  sessions plus one direct DuckDB writer, all hitting the same remote
+  catalog. The PR's own concern was correctness of the catalog manager
+  under RPC; our concern is `ensureSnapshotLineageUnchanged()` still
+  fires correctly when the catalog reads/writes go through Quack
+  round-trips.
+- [ ] Document the Quack catalog config in the connector README
+  alongside the existing JDBC / Postgres examples. Include the
+  delegating-DuckDB JDBC URL pattern and the remote-DuckDB endpoint
+  config.
+- [ ] CI: stand up a remote-DuckDB Quack server in Testcontainers (or
+  a shell-spawned DuckDB CLI with Quack server enabled) and run a
+  reduced regression suite against it on every PR. The full
+  cross-engine matrix can run nightly if startup cost is too high for
+  per-PR.
+
+Open questions to resolve before scoping the work:
+
+- Does the upstream DuckDB JDBC driver already ship with Quack-client
+  support enabled, or does it require an explicit extension load
+  (`LOAD quack`) the way `httpfs` does? If extension-load, our catalog
+  bootstrap needs the right `INSTALL` / `LOAD` sequence.
+- Authentication model: token, TLS client cert, or neither yet? The PR
+  is labeled "Experimental" — auth may not be finalized. We need to
+  pick a posture that doesn't regress when upstream tightens it.
+- Wire-protocol stability guarantees. "Experimental" in the PR title
+  means we should pin a specific DuckDB version per release and not
+  assume forward compatibility across DuckDB minor bumps.
+
+Why this is "MUST support" and not optional: Quack is the obvious answer
+to the question "how do I share one DuckDB-format DuckLake catalog
+between multiple engines/clusters without NFS-mounting the .db file."
+Every DuckDB-as-catalog deployment that goes past a single host will
+end up wanting this. If we ship a Trino connector that can't read a
+Quack-backed catalog, we cede the multi-engine-shared-catalog story
+back to pg_ducklake (Postgres) and to native DuckDB. Owning Quack
+parity keeps us aligned with the reference implementation's deployment
+shape, not just its on-disk format.
+
+Reference: <https://github.com/duckdb/ducklake/pull/1151>
+
+## Per-Table Storage Path (`location` Table Property)
+
+Today every table we create gets its `ducklake_table.path` hardcoded to
+`<tableName>/` under the schema's path (`JdbcDucklakeCatalog.java:1544`).
+There is no Trino-side knob to override it. The catalog mechanism is
+already there — the column is per-table — we just don't expose user
+control over it.
+
+**Why now**: pg_ducklake #199 (2026-05-18) shipped `CREATE TABLE ... USING
+ducklake WITH (ducklake.table_path = '...')` precisely to close this gap
+on the PG side. The motivating use cases — landing different tables on
+different storage tiers, ORM-emitted DDL that needs a specific prefix —
+apply equally to Trino. Without it users have to externally re-symlink or
+rewrite paths after the fact. See
+[COMPARE-pg_ducklake.md](COMPARE-pg_ducklake.md) "Things pg_ducklake (and
+therefore the reference) does that we don't" → **Per-table data path at
+CREATE** row.
+
+Scope:
+
+- [ ] Add a `location` (or `data_path`) string property to
+  `DucklakeTableProperties`. Trino's convention across connectors is
+  `location` (Hive, Iceberg, Delta all use it); match that for least
+  surprise.
+- [ ] Plumb the property value through `DucklakeMetadata.createTable`
+  into `JdbcDucklakeCatalog.createTable` so it lands in
+  `ducklake_table.path` instead of the hardcoded default.
+- [ ] Validate the value: non-empty, no path traversal, trailing slash
+  enforced (DuckLake stores paths with trailing `/`).
+- [ ] Respect `path_is_relative`: a property value starting with a known
+  scheme (`s3://`, `gs://`, `file://`, `abfss://`) should be treated as
+  absolute (`path_is_relative=false`); anything else stays relative.
+- [ ] Cross-engine test: Trino creates a table with an explicit
+  `location`, DuckDB reads it back, data files land where expected.
+- [ ] Documentation row in the README table-properties section.
+
+Out of scope for v1: per-table data inlining row limit, per-table sort
+keys, and other knobs that route through `ducklake_set_option`.
+pg_ducklake deferred those too (#199 PR notes) because the new table is
+transaction-local inside the create-table path. Same reasoning for us.
 
 ## Adopt Existing Parquet Files (`add_files`)
 
@@ -31,7 +170,7 @@ The procedure reads the footer of each file (record count, footer offset,
 column min/max/null stats) and inserts matching `ducklake_data_file` +
 `ducklake_file_column_stats` rows. No file rewriting — the bytes already
 on storage become live data of the table. Upstream tests this exhaustively
-under `temp/pg_ducklake/third_party/ducklake/test/sql/add_files/` (33
+under `vendor/pg_ducklake/third_party/ducklake/test/sql/add_files/` (33
 files; footer validation, statistics recovery, column-reordering, malformed
 schemas).
 
@@ -71,7 +210,7 @@ generate new parquet files and need a similar metadata-insert path.
 **References**:
 - Spec: upstream's `data_inlining.md` and `add_files`-related docs on
   the website.
-- Upstream tests: `temp/pg_ducklake/third_party/ducklake/test/sql/add_files/`
+- Upstream tests: `vendor/pg_ducklake/third_party/ducklake/test/sql/add_files/`
 - Procedure surface in Trino: existing connectors expose
   `system.register_table()`-style procedures via
   `io.trino.spi.procedure.Procedure`.
@@ -217,7 +356,7 @@ upstream's commit-time semantics. The summary below preserves the original
 plan; "landed" notes inline call out where the implementation deviates.
 Earlier framing of Step 4 as "relax the strict lineage check" was wrong:
 review of the vendored upstream source
-(`temp/pg_ducklake/third_party/ducklake/src/storage/ducklake_transaction.cpp:2460–2477`)
+(`vendor/pg_ducklake/third_party/ducklake/src/storage/ducklake_transaction.cpp:2460–2477`)
 showed our `ensureSnapshotLineageUnchanged` is functionally equivalent
 to upstream's `ducklake_snapshot.snapshot_id` PK fence on attempt 1.
 The actual remaining gap is the matrix upstream runs on retry, which
@@ -372,7 +511,7 @@ match upstream's `altered_table × altered_table` conflict policy
 (`:1307–1310`).
 
 After reading the upstream source (vendored at
-`temp/pg_ducklake/third_party/ducklake/src/storage/`), my earlier framing of
+`vendor/pg_ducklake/third_party/ducklake/src/storage/`), my earlier framing of
 this step ("relax the strict lineage check") was wrong. The remaining gap to
 upstream parity is the **change-vs-change matrix**, not the lineage fence.
 

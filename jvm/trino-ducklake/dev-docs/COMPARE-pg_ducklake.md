@@ -3,6 +3,12 @@
 Snapshot of the `pg_ducklake` project reviewed against our JVM implementation
 (`ducklake-catalog` + `trino-ducklake`).
 
+Last refreshed against upstream `main` at `011ab8d` (2026-05-18). The vendored
+DuckLake reference C++ extension at `third_party/ducklake/` was **not** bumped in
+this refresh — all 7 incoming commits touch only pg_ducklake's PG-side glue
+(direct-insert fast path, hooks, metadata manager helpers, new CREATE TABLE WITH
+options, observability), so there are no new spec-level signals.
+
 **What this comparison actually is.** `pg_ducklake` is thin: it static-links the upstream
 DuckDB `ducklake` extension (`third_party/ducklake/`, same repo as the DuckLake spec) and
 wires it into PostgreSQL via `pg_duckdb` hooks, event triggers, and a background worker.
@@ -52,6 +58,16 @@ well understood and tractable.
 
 - **`partial_max` not read.** Already in `DUCKLAKE_1_0_IMPACT.md`. One-file delete model
   remains spec-correct; we just don't read the compaction hint yet.
+- **Inlined-data table selection across schema bumps.** Reconfirmed by pg_ducklake
+  #197/#198 (2026-05-13): after a schema-bumping DDL (ADD COLUMN, SET PARTITIONED BY, …)
+  multiple `ducklake_inlined_data_tables` rows exist for the same `table_id`, and the
+  reference selects the row with `MAX(schema_version)` for **new** inlined writes
+  (mirroring upstream `DuckLakeMetadataManager::WriteNewInlinedData`). On the read side,
+  every row with `schema_version ≤ snapshot.schema_version` is valid and must be
+  unioned. Our `JdbcDucklakeCatalog.getInlinedDataInfos()` already returns all qualifying
+  rows ordered by `schema_version`; we don't write to the inlined heap (Trino always
+  writes Parquet), so the pg_ducklake direct-insert bug they hit doesn't have a JVM
+  analog. No action.
 - **`default_value_type='literal'`, `default_value_dialect='duckdb'` hardcoded.** We
   already documented this in `REPORT_CROSS_ENGINE_WRITE.md`. Reference actually does
   something similar — it writes the dialect that wrote the column. Fine until we want
@@ -90,6 +106,7 @@ well understood and tractable.
 | **`set_commit_message()`** (author/message on snapshot) | Yes | No (session properties planned) | Trivial once we add session properties for `commit_author`, `commit_message`, `commit_extra_info`. |
 | **`freeze()` / export-to-`.ducklake` single-file** | Yes | No | Nice-to-have. |
 | **CHECKPOINT (umbrella maintenance)** | Yes | No | Downstream of the individual ops above. |
+| **Per-table data path at CREATE** | Yes — `CREATE TABLE ... USING ducklake WITH (ducklake.table_path = '...')` (pg_ducklake #199, 2026-05-18) | No | Catalog mechanism already exists: `ducklake_table.path` is set per-table (we hardcode it to `<tableName>/` under the schema path). Gap is purely the Trino-side property: `DucklakeTableProperties` exposes `partitioned_by` + `data_file_format` but no `location`. Easy to add when needed. |
 
 ## Things we do that pg_ducklake doesn't
 
@@ -110,7 +127,20 @@ spec features and they don't apply to our Trino connector:
 - Role-based access control (`ducklake_superuser`/`writer`/`reader`)
 - Foreign data wrapper for read-only access (`pgducklake_fdw.cpp`)
 - `IMPORT FOREIGN SCHEMA` bulk import
-- Direct insert fast path for `INSERT ... SELECT UNNEST($n)`
+- Direct insert fast path for `INSERT ... SELECT UNNEST($n)` and `INSERT ... VALUES`.
+  Several recent fixes here (#188 partial-column-list with DEFAULT, #190 deferred VALUES
+  evaluation for STABLE coercions, #193 snapshot_id race surfaced as SQLSTATE 40001) are
+  specific to PG's planner and the inlined-heap write path — not portable. Worth noting:
+  the SQLSTATE 40001 race (#193, 2026-05-16) is the same hazard our
+  `ensureSnapshotLineageUnchanged()` guards against; pg_ducklake surfaces it as a
+  serialization-failure SQLSTATE, we throw `DUCKLAKE_TRANSACTION_CONFLICT`. Same shape,
+  same trigger, different driver — at parity.
+- Direct-insert observability (`ducklake.direct_insert_stats()`, pg_ducklake #187,
+  2026-05-12): per-process counters bucketed by why a candidate insert took the fast vs
+  slow path (`matched_values`, `unmatched`, `schema_version_mismatch`, …). PG-specific
+  because the buckets correspond to pg_ducklake's planner decisions, but the pattern
+  ("expose connector-internal optimization stats") is generic. If we add a Trino
+  fast-path later, an analogous JMX/SHOW STATS surface would be cheap.
 - Background maintenance worker (PG-style autovacuum-shaped launcher + per-database
   workers). Trino equivalent would be operator-scheduled `CALL` procedures; same
   functions, different driver.
@@ -123,7 +153,10 @@ concurrent DML (append-only catalog semantics, no locks).
 - **`flush_inlined_data`** — Reads `ducklake_inlined_data_<tableId>_<schemaVersion>`,
   writes one or more Parquet files, inserts matching `ducklake_data_file` rows, drops
   the inlined rows. Atomic in one snapshot. Must also handle inlined deletes by writing
-  a delete file.
+  a delete file. **Stream rather than buffer.** pg_ducklake #195 (2026-05-15) hit OOM
+  reading large inlined heaps into a single result set; the fix added a streaming SPI
+  cursor. When we implement this, pull rows in bounded batches rather than
+  `select * from ducklake_inlined_data_<...>` into memory.
 - **`expire_snapshots`** — Deletes rows from `ducklake_snapshot` older than a retention
   window. Catalog-only; never deletes data files (that's `cleanup_old_files`). Must
   never expire the current snapshot.
