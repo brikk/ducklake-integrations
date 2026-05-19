@@ -14,6 +14,8 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import com.google.common.collect.ImmutableMap;
+import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer;
+import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture;
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
 import io.airlift.log.Logger;
 import io.airlift.log.Logging;
@@ -66,6 +68,38 @@ public final class DucklakeQueryRunner
             return self();
         }
 
+        private static Map<String, String> buildIsolatedCatalogProperties(String testName)
+                throws Exception
+        {
+            DucklakeTestCatalogBackend backend = DucklakeTestCatalogEnvironment.selectedBackend();
+            DucklakeCatalogGenerator.IsolatedCatalog isolated;
+            switch (backend) {
+                case POSTGRES -> {
+                    TestingDucklakePostgreSqlCatalogServer server = DucklakeTestCatalogEnvironment.getServer();
+                    isolated = DucklakeCatalogGenerator.generateIsolatedPostgreSqlCatalog(server, testName);
+                }
+                case DUCKDB_LOCAL -> {
+                    TestingDucklakeLocalDuckDbCatalogFixture fixture = DucklakeTestCatalogEnvironment.getLocalDuckDbFixture();
+                    isolated = DucklakeCatalogGenerator.generateIsolatedLocalDuckDbCatalog(fixture, testName);
+                }
+                case DUCKDB_QUACK -> {
+                    TestingDucklakeDuckDbQuackCatalogServer server = DucklakeTestCatalogEnvironment.getQuackServer();
+                    isolated = DucklakeCatalogGenerator.generateIsolatedDuckDbQuackCatalog(server, testName);
+                }
+                default -> throw new IllegalStateException("Unsupported backend: " + backend);
+            }
+            ImmutableMap.Builder<String, String> properties = ImmutableMap.<String, String>builder()
+                    .put("ducklake.catalog.database-url", isolated.jdbcUrl())
+                    .put("ducklake.data-path", isolated.dataDir().toAbsolutePath().toString());
+            if (isolated.user() != null) {
+                properties.put("ducklake.catalog.database-user", isolated.user());
+            }
+            if (isolated.password() != null) {
+                properties.put("ducklake.catalog.database-password", isolated.password());
+            }
+            return properties.buildOrThrow();
+        }
+
         @Override
         public DistributedQueryRunner build()
                 throws Exception
@@ -74,14 +108,7 @@ public final class DucklakeQueryRunner
             try {
                 Map<String, String> baseProperties;
                 if (isolatedCatalogName != null) {
-                    TestingDucklakePostgreSqlCatalogServer server = DucklakeTestCatalogEnvironment.getServer();
-                    DucklakeCatalogGenerator.IsolatedCatalog isolated =
-                            DucklakeCatalogGenerator.generateIsolatedPostgreSqlCatalog(server, isolatedCatalogName);
-                    baseProperties = ImmutableMap.of(
-                            "ducklake.catalog.database-url", isolated.jdbcUrl(),
-                            "ducklake.catalog.database-user", isolated.user(),
-                            "ducklake.catalog.database-password", isolated.password(),
-                            "ducklake.data-path", isolated.dataDir().toAbsolutePath().toString());
+                    baseProperties = buildIsolatedCatalogProperties(isolatedCatalogName);
                 }
                 else {
                     baseProperties = DucklakeTestCatalogEnvironment.getConnectorProperties();

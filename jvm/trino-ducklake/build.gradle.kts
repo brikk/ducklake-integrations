@@ -104,6 +104,16 @@ tasks.test {
     // Podman Docker API compatibility rejects status=restarting filter in ReportLeakedContainers
     systemProperty("ReportLeakedContainers.disabled", "true")
 
+    // Forward the catalog-backend selector from the Gradle CLI to the test JVM. Gradle
+    // doesn't propagate `-D` system properties to forked test workers by default.
+    // Without this, `-Dducklake.test.catalog-backend=DUCKDB_QUACK` silently runs PG.
+    System.getProperty("ducklake.test.catalog-backend")?.let {
+        systemProperty("ducklake.test.catalog-backend", it)
+        // Treat the property as a task input so Gradle re-runs the test task when the
+        // selector value changes instead of returning a cached UP-TO-DATE result.
+        inputs.property("ducklake.test.catalog-backend", it)
+    }
+
     jvmArgs(
         "-XX:+ExitOnOutOfMemoryError",
         "-XX:+HeapDumpOnOutOfMemoryError",

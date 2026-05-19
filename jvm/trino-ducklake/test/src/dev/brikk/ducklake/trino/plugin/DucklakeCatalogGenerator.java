@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer;
+import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture;
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
 
 import java.nio.file.Files;
@@ -21,6 +23,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * Utility to generate a test Ducklake catalog using DuckDB's embedded JDBC driver.
@@ -89,6 +92,111 @@ public final class DucklakeCatalogGenerator
             String password,
             Path dataDir,
             String duckDbAttachUri) {}
+
+    /**
+     * Generate an isolated local-DuckDB test catalog. Each call creates a fresh
+     * {@code lake.db} file under the fixture's root and bootstraps the full
+     * test-data fixture by ATTACHing it as a DuckLake catalog through an
+     * in-process DuckDB JDBC connection. The connector then talks to the same
+     * {@code .db} file directly via {@code jdbc:duckdb:/path/to/lake.db} —
+     * no DuckLake-on-X wrapper at runtime, so {@code JdbcDucklakeCatalog}'s
+     * UPDATE/DELETE on {@code ducklake_*} metadata rows hits regular base tables
+     * and is unaffected by the read-only-sibling restriction that DuckLake-on-Quack
+     * imposes today.
+     */
+    public static IsolatedCatalog generateIsolatedLocalDuckDbCatalog(
+            TestingDucklakeLocalDuckDbCatalogFixture fixture,
+            String testName)
+            throws Exception
+    {
+        Path catalogDir = fixture.catalogDirectory(testName);
+        Path catalogFile = catalogDir.resolve("lake.db");
+        String attachUri = "ducklake:" + catalogFile.toAbsolutePath();
+
+        generateTestCatalog(
+                "duckdb-local",
+                catalogDir,
+                attachUri,
+                List.of(),
+                "isolated local DuckDB catalog for " + testName);
+
+        return new IsolatedCatalog(
+                "jdbc:duckdb:" + catalogFile.toAbsolutePath(),
+                /* user */ null,
+                /* password */ null,
+                catalogDir.resolve("data"),
+                attachUri);
+    }
+
+    /**
+     * Generate an isolated Quack-backed test catalog. Each call picks a unique
+     * METADATA_CATALOG name inside the shared container's remote DuckDB, so two
+     * isolated catalogs in the same JVM don't see each other's metadata. The
+     * returned {@code jdbcUrl} is the synthetic
+     * {@code jdbc:duckdb:quack://host:port?metadata_catalog=name} URL that the
+     * connector's {@code JdbcDucklakeCatalog} knows how to interpret.
+     *
+     * <p>Unlike the PG path, this does not pre-create the 17-table test fixture
+     * data. Tests that need pre-bootstrapped tables either skip under
+     * {@code DUCKDB_QUACK} or create the rows themselves in setUp(). Most
+     * cross-engine tests create their own tables, so this is fine for the
+     * smoke set; expanding parity with the PG bootstrap is tracked in
+     * {@code TODO-WRITE-MODE.md}.
+     */
+    public static IsolatedCatalog generateIsolatedDuckDbQuackCatalog(
+            TestingDucklakeDuckDbQuackCatalogServer server,
+            String testName)
+            throws Exception
+    {
+        String metadataCatalog = toQuackMetadataCatalogName(testName);
+        Path catalogDir = TARGET_DIR.resolve("test-catalog-quack-" + testName);
+        Path dataDir = catalogDir.resolve("data");
+        if (Files.exists(catalogDir)) {
+            deleteDirectory(catalogDir);
+        }
+        Files.createDirectories(dataDir);
+
+        // Pre-touch the catalog so its metadata schema exists before the connector's
+        // JdbcDucklakeCatalog issues its first SELECT. Doing it here keeps the
+        // connector-side init script idempotent and front-loads any extension-
+        // download cost into test setup (visible) rather than the first query.
+        Properties props = new Properties();
+        props.setProperty("allow_unsigned_extensions", "true");
+        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:", props);
+                Statement stmt = conn.createStatement()) {
+            stmt.execute("FORCE INSTALL quack FROM core_nightly");
+            stmt.execute("LOAD quack");
+            stmt.execute("FORCE INSTALL ducklake FROM core_nightly");
+            stmt.execute("LOAD ducklake");
+            stmt.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '" + escapeSql(server.getToken()) + "')");
+            stmt.execute("ATTACH '" + server.getDucklakeAttachUri() + "' AS lake "
+                    + "(DATA_PATH '" + escapeSql(dataDir.toAbsolutePath().toString())
+                    + "', METADATA_CATALOG '" + metadataCatalog + "')");
+            // Touch the catalog so DuckLake materialises its metadata schema in the
+            // remote DuckDB before any reader hits it. CREATE SCHEMA on the lake
+            // is idempotent and produces visible metadata rows we can later assert
+            // against from JdbcDucklakeCatalog's jOOQ DSL.
+            stmt.execute("USE lake");
+            stmt.execute("CREATE SCHEMA IF NOT EXISTS test_schema");
+        }
+
+        String syntheticUrl = "jdbc:duckdb:quack://" + server.getHost() + ":" + server.getMappedPort()
+                + "?metadata_catalog=" + metadataCatalog;
+        return new IsolatedCatalog(
+                syntheticUrl,
+                /* user */ null,
+                /* password */ server.getToken(),
+                dataDir,
+                server.getDucklakeAttachUri());
+    }
+
+    private static String toQuackMetadataCatalogName(String testName)
+    {
+        // METADATA_CATALOG must match [A-Za-z0-9_]+ — QuackBackedDuckDbCatalogUrl
+        // validates this on the parsing side. Normalise the test name to fit.
+        String normalised = testName.replaceAll("[^A-Za-z0-9_]", "_");
+        return "qmeta_" + normalised;
+    }
 
     static void generateTestCatalog(
             String backendName,

@@ -1,8 +1,11 @@
 # Trino DuckLake Connector — Feature Support
 
 Connector for the [DuckLake](https://ducklake.select) open table format (spec v1.0).
-Supports PostgreSQL as the catalog metadata backend, with SQLite and DuckDB backends
-planned for local development and testing workflows.
+Supports PostgreSQL (shared, multi-process) and a local DuckDB `.db` file
+(single-process; ideal for dev, local interactive use, and single-node Trino
+deployments) as catalog metadata backends. SQLite, and a remote-DuckDB backend
+over [Quack RPC](https://duckdb.org/2026/05/12/quack-remote-protocol) for shared
+DuckDB-as-catalog without filesystem mounting, are planned next.
 
 Tested with DuckDB 1.5.2 for cross-engine compatibility.
 
@@ -34,10 +37,15 @@ stack with optional TPC-H seed data, see [compose/README.md](compose/README.md).
 
 ### Running Tests
 
-Tests require Docker or Podman (PostgreSQL runs via TestContainers).
+Tests require Docker or Podman (PostgreSQL — and the Quack DuckDB sidecar when
+that backend is selected — run via Testcontainers). The default test backend is
+PostgreSQL; flip backends with the `ducklake.test.catalog-backend` system
+property:
 
 ```shell
-./gradlew :trino-ducklake:test
+./gradlew :trino-ducklake:test                                                # PostgreSQL (default)
+./gradlew :trino-ducklake:test -Dducklake.test.catalog-backend=DUCKDB_LOCAL   # local DuckDB .db file
+./gradlew :trino-ducklake:test -Dducklake.test.catalog-backend=DUCKDB_QUACK   # remote DuckDB over Quack (experimental; see TODO doc)
 ```
 
 ## Install
@@ -56,7 +64,11 @@ The plugin directory should contain all JARs flat (not nested in a subdirectory)
   ...other jars...
 ```
 
-Create a catalog properties file at `etc/catalog/ducklake.properties`:
+Create a catalog properties file at `etc/catalog/ducklake.properties`. Pick the
+backend that matches your deployment shape.
+
+**PostgreSQL** — shared multi-process deployment (multiple Trino workers, mixed
+DuckDB + Trino access):
 
 ```properties
 connector.name=ducklake
@@ -72,6 +84,37 @@ ducklake.data-path=s3://<bucket>/<prefix>/
 # Optional tuning
 ducklake.catalog.max-connections=10
 ```
+
+**Local DuckDB `.db` file** — single-process deployment (one Trino coordinator,
+zero or one workers on the same host), dev/test, or interactive single-user use:
+
+```properties
+connector.name=ducklake
+
+# DuckLake metadata catalog database (DuckDB file)
+ducklake.catalog.database-url=jdbc:duckdb:/var/lib/trino/ducklake/lake.db
+
+# Base location for data files
+ducklake.data-path=/var/lib/trino/ducklake/data/
+```
+
+The `.db` file must already contain a DuckLake metadata schema before Trino
+connects. The simplest way to initialize one is from a one-shot DuckDB session:
+
+```bash
+duckdb -c "INSTALL ducklake; LOAD ducklake; \
+  ATTACH 'ducklake:/var/lib/trino/ducklake/lake.db' AS lake \
+    (DATA_PATH '/var/lib/trino/ducklake/data/'); \
+  DETACH lake;"
+```
+
+`user` and `password` are not required for the local DuckDB backend.
+
+Concurrency limits: a single DuckDB `.db` file can be safely accessed by
+multiple connections within one process (HikariCP pool sharing one DuckDB
+`DatabaseInstance`), but not by multiple OS processes simultaneously. For
+multi-worker Trino clusters or for sharing the catalog with concurrent DuckDB
+CLI sessions, use the PostgreSQL backend.
 
 For S3 storage, add to the same catalog properties file:
 
@@ -277,7 +320,8 @@ The connector is tested for bidirectional compatibility with DuckDB:
 |-----------|:------:|-------|
 | DuckDB writes, Trino reads | Yes | Full column value round-trips validated |
 | Trino writes, DuckDB reads | Yes | Parquet field_id mapping ensures correct column matching |
-| Shared PostgreSQL catalog | Yes | Both engines operate on the same metadata |
+| Shared PostgreSQL catalog | Yes | Both engines operate on the same metadata; preferred for multi-process |
+| DuckDB `.db` catalog (local) | Yes | Single-process — DuckDB sessions and Trino can't access the file simultaneously, so cross-engine workflow is sequential rather than concurrent |
 | Inlined data created by DuckDB | Yes | Trino reads inlined rows from catalog tables |
 | Schema evolution across engines | Yes | ADD COLUMN by one engine, read by the other |
 
@@ -285,9 +329,9 @@ The connector is tested for bidirectional compatibility with DuckDB:
 
 | Property | Required | Default | Description |
 |----------|:--------:|---------|-------------|
-| `ducklake.catalog.database-url` | Yes | — | JDBC URL for PostgreSQL catalog |
-| `ducklake.catalog.database-user` | Yes | — | Catalog database username |
-| `ducklake.catalog.database-password` | Yes | — | Catalog database password |
+| `ducklake.catalog.database-url` | Yes | — | JDBC URL for the catalog metadata DB. PostgreSQL: `jdbc:postgresql://host:port/db`. Local DuckDB: `jdbc:duckdb:/abs/path/to/lake.db` |
+| `ducklake.catalog.database-user` | Conditional | — | Catalog database username. Required for PostgreSQL; omit for local DuckDB |
+| `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL; omit for local DuckDB |
 | `ducklake.data-path` | Yes | — | Base path for data files |
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
@@ -348,8 +392,12 @@ research item.
 
 ### Catalog Backends
 
-Only PostgreSQL is supported today. SQLite and DuckDB catalog backends are coming soon
-for single-user, local development, and testing workflows.
+| Backend | Status | Notes |
+|---------|--------|-------|
+| PostgreSQL | Supported | Multi-process; preferred for shared / clustered deployments |
+| Local DuckDB `.db` file | Supported | Single-process; dev, single-node Trino, interactive use |
+| SQLite | Planned | Single-process; lighter-weight alternative to local DuckDB |
+| Remote DuckDB over Quack RPC | Planned | Shared DuckDB-as-catalog without filesystem mounting; landed experimentally upstream 2026-05-12 (`duckdb/ducklake#1151`) and gated here on the Quack RPC layer adding multi-table-query and UPDATE/DELETE support. Fixture and URL plumbing are in tree behind `-Dducklake.test.catalog-backend=DUCKDB_QUACK`; see `dev-docs/TODO-WRITE-MODE.md § DuckDB-as-Catalog Backend` |
 
 ## Known Limitations
 

@@ -32,9 +32,124 @@ column stats have all landed; see § Adopt Existing Parquet Files
 (`add_files`), § Bucket Partitioning, and § Nested-Leaf File Column Stats
 below.)
 
-## Quack Catalog Backend (DuckDB RPC)
+## DuckDB-as-Catalog Backend (Local + Quack)
 
-**Status: high priority, must support and test against.**
+**Status: local-DuckDB backend ready; Quack backend experimental, gated on upstream maturity.**
+
+Two DuckDB-flavoured backend variants are wired alongside the default PostgreSQL
+backend, selected via `-Dducklake.test.catalog-backend={POSTGRES,DUCKDB_LOCAL,DUCKDB_QUACK}`
+(default POSTGRES). The local-DuckDB variant is the "SQL + type compatibility
+gate" for the Quack work — if our jOOQ-generated SQL round-trips against
+DuckDB-as-catalog on a local file, then when upstream Quack RPC matures past
+its multi-table-query and UPDATE/DELETE limitations the connector will pick up
+Quack without a second refactor. We deliberately do *not* compromise our SQL
+patterns to work around Quack's current limitations — local DuckDB and PG both
+handle the efficient single-query forms.
+
+What landed (2026-05-19):
+
+**Backend selector + fixtures**:
+- `DucklakeTestCatalogBackend { POSTGRES, DUCKDB_LOCAL, DUCKDB_QUACK }` plus
+  system-property forwarding through Gradle into the test JVM (see
+  `jvm/trino-ducklake/build.gradle.kts`).
+- `TestingDucklakeLocalDuckDbCatalogFixture` — a managed temp dir; one
+  `lake.db` + `data/` subdir per isolated catalog. No Testcontainer required.
+- `TestingDucklakeDuckDbQuackCatalogServer` — Testcontainer running a DuckDB CLI
+  sidecar with the Quack extension preloaded; Dockerfile + entrypoint at
+  `jvm/ducklake-catalog/testFixtures/resources/docker/quack-server/`.
+  Out-of-process by construction — required because in-process DuckLake-on-Quack
+  + `quack_serve` deadlock on connection-id self-RPC.
+**JdbcDucklakeCatalog changes**:
+- `Settings.withRenderSchema(false)` — jOOQ codegen runs against PG so generated
+  Table refs hard-code `public.`. PG keeps working via its default `search_path`;
+  DuckDB-as-catalog (`jdbc:duckdb:/path/lake.db`) needs the prefix dropped so
+  bare table refs resolve against the current default schema.
+- **Synthetic URL parser** for Quack: `QuackBackedDuckDbCatalogUrl` recognises
+  `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`. Token rides in
+  `ducklake.catalog.database-password`. `JdbcDucklakeCatalog` swaps the URL for
+  a real `jdbc:duckdb:` (in-memory) connection and uses HikariCP's
+  `connectionInitSql` to install/load Quack + DuckLake from `core_nightly`,
+  create the Quack secret, ATTACH `ducklake:quack:...` with a unique
+  `METADATA_CATALOG` name, and `USE <metadata_catalog>.main`. Bare references
+  to `ducklake_*` then resolve via the metadata-catalog sibling that
+  DuckLake-on-Quack publishes alongside the user catalog.
+- **SQL kept efficient**: the same-table-multi-scan in `attemptWriteTransaction`
+  (`SELECT … WHERE id = (SELECT max(id) FROM same_table)`) is kept as a single
+  query. PG and local DuckDB run it efficiently; Quack rejects it today, but
+  we don't compromise the SQL for that — Quack tests skip.
+
+**Smoke tests**:
+- `TestQuackJdbcProbeTest` — bare Quack RPC + DuckLake-on-Quack subprocess
+  round-trip; no Docker required (diagnostic).
+- `TestDuckDbQuackCatalogServerSmoke` — containerized DuckLake-on-Quack
+  round-trip through the test fixture.
+- `TestJdbcDucklakeCatalogOnQuackSmoke` — `JdbcDucklakeCatalog` against the
+  Quack fixture; `listSchemas` passes, `createSchema` is `@Disabled` until
+  Quack supports same-table multi-scan.
+- `TestJdbcDucklakeCatalogOnLocalDuckDbSmoke` — full schema + table CRUD round
+  trip against a local DuckDB `.db` file, including `dropTable`/`dropSchema`
+  (which Quack can't do yet). This is the "SQL/type-compat gate" for Quack —
+  if it stays green, Quack should Just Work once upstream lifts its
+  limitations.
+- `TestDucklakeBackendDispatchSmoke` — end-to-end Trino connector against the
+  selected backend; runs unmodified under POSTGRES and DUCKDB_LOCAL, skips
+  cleanly under DUCKDB_QUACK with a documented assumption message.
+
+What's already validated end-to-end on DUCKDB_LOCAL:
+
+- Schema CRUD (createSchema / listSchemas / dropSchema)
+- Table CRUD (createTable with mixed types / listTables / getTable / dropTable)
+- Trino CREATE SCHEMA / CREATE TABLE / INSERT / SELECT / DROP TABLE round trip
+- jOOQ + DuckDB JDBC type round trip for INTEGER / VARCHAR / BOOLEAN / DATE
+- HikariCP pool against a single `.db` file, multiple connections sharing one
+  `DatabaseInstance` inside the JVM
+
+The catalog-lib full PG suite (30 classes, 0 failures) keeps passing alongside,
+confirming nothing in the DuckDB-friendly changes (`renderSchema(false)`, URL
+parser dispatch, fixture additions) regresses the PG path.
+
+What's blocked on upstream Quack:
+
+- **Multi-table queries**: Quack RPC rejects any query that scans more than
+  one remote table — both same-table multi-scan (subqueries on the same table)
+  and cross-table JOINs (e.g. `ducklake_partition_info` ⋈
+  `ducklake_partition_column` during Trino plan building) fail with
+  `Not implemented Error: Multiple streaming scans or streaming scans + CTAS
+  / insert in the same query are not currently supported`. JdbcDucklakeCatalog's
+  read path uses JOINs throughout (partition info, column lineage, file lists,
+  snapshot lookups), so virtually every Trino query against a Quack-backed
+  catalog blocks on this.
+- **UPDATE / DELETE on remote ducklake_* tables**: DuckLake-on-Quack exposes
+  the metadata catalog as a *read-only* sibling — UPDATE fails with
+  `Binder Error: Can only update base table` and DELETE with the analogous
+  delete error. Raw Quack ATTACH (no `ducklake:` prefix) exhibits the same
+  restriction. This blocks every metadata mutation that end-snapshots existing
+  rows: `dropTable`, `dropSchema`, schema evolution, compaction, expire-snapshots,
+  the entire `attemptWriteTransaction` end-snapshot path for delete commits, etc.
+- **`SHOW DATABASES` / `duckdb_databases()` on Quack-attached remotes** error
+  with `Not implemented Error: InMemory not implemented yet`. Surfaces in
+  catalog-introspection code paths and any test that does ad-hoc topology
+  queries. Workaround: query the specific catalog name directly (`SELECT FROM
+  smoke_meta.main.ducklake_*`).
+
+What works under DUCKDB_QUACK today:
+
+- Single-table reads against `ducklake_*` metadata (`listSchemas`)
+- INSERT-only metadata writes that don't end-snapshot existing rows
+
+How to revisit when upstream Quack matures:
+
+- Watch `duckdb/ducklake` `test/configs/quack.json` for shrinking FIXME skip
+  lists. When "Multiple streaming scans" disappears, our read path becomes
+  usable. Same for "Can only update / delete base table" — that one likely
+  needs an upstream Quack-extension change rather than a DuckLake change.
+- When the Quack-side blockers lift, lift the `assumeTrue` skip in
+  `TestDucklakeBackendDispatchSmoke`, lift the `@Disabled` on the
+  `createSchema` test in `TestJdbcDucklakeCatalogOnQuackSmoke`, and extend
+  `DucklakeCatalogGenerator.generateIsolatedDuckDbQuackCatalog` with the
+  full test-data bootstrap so the cross-engine suite can run under it.
+
+(Pre-2026-05-19 scoping notes follow.)
 
 Upstream `duckdb/ducklake#1151` (merged 2026-05-12, title "Experimental
 Support For Quack (DuckDB RPC Client/Server Protocol) as a catalog for

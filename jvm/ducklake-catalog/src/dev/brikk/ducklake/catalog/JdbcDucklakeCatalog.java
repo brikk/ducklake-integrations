@@ -124,12 +124,37 @@ public class JdbcDucklakeCatalog
         requireNonNull(config, "config is null");
 
         HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(config.getCatalogDatabaseUrl());
-        if (config.getCatalogDatabaseUser() != null) {
-            hikariConfig.setUsername(config.getCatalogDatabaseUser());
+        String configuredUrl = config.getCatalogDatabaseUrl();
+        String dialectInferenceUrl;
+        if (QuackBackedDuckDbCatalogUrl.matches(configuredUrl)) {
+            // Synthetic URL — `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`.
+            // Open a plain in-memory DuckDB JDBC connection and let HikariCP run a
+            // per-connection init script that loads quack + ducklake, creates the
+            // Quack auth secret, ATTACHes the remote DuckLake catalog with a
+            // METADATA_CATALOG name, and USEs that catalog's main schema. After init,
+            // bare references to `ducklake_*` tables resolve directly to the remote
+            // metadata storage — JdbcDucklakeCatalog's jOOQ DSL stays unchanged.
+            QuackBackedDuckDbCatalogUrl quack = QuackBackedDuckDbCatalogUrl.parse(
+                    configuredUrl, config.getCatalogDatabasePassword(), config.getDataPath());
+            hikariConfig.setJdbcUrl(QuackBackedDuckDbCatalogUrl.UNDERLYING_JDBC_URL);
+            // Required to load quack / ducklake from core_nightly — those extensions
+            // ship signed but with a key the embedded driver treats as non-default.
+            hikariConfig.addDataSourceProperty("allow_unsigned_extensions", "true");
+            hikariConfig.setConnectionInitSql(quack.connectionInitSql());
+            // The user/password slots aren't used at the JDBC layer for this backend;
+            // the token is interpolated into the CREATE SECRET statement inside the
+            // init script.
+            dialectInferenceUrl = QuackBackedDuckDbCatalogUrl.UNDERLYING_JDBC_URL;
         }
-        if (config.getCatalogDatabasePassword() != null) {
-            hikariConfig.setPassword(config.getCatalogDatabasePassword());
+        else {
+            hikariConfig.setJdbcUrl(configuredUrl);
+            if (config.getCatalogDatabaseUser() != null) {
+                hikariConfig.setUsername(config.getCatalogDatabaseUser());
+            }
+            if (config.getCatalogDatabasePassword() != null) {
+                hikariConfig.setPassword(config.getCatalogDatabasePassword());
+            }
+            dialectInferenceUrl = configuredUrl;
         }
         hikariConfig.setMaximumPoolSize(config.getMaxCatalogConnections());
         hikariConfig.setMinimumIdle(1);
@@ -140,12 +165,19 @@ public class JdbcDucklakeCatalog
 
         // Infer dialect from the JDBC URL. JDBCUtils.dialect() returns SQLDialect.DEFAULT for
         // backends jOOQ OSS doesn't recognize, which keeps query rendering portable.
-        this.dialect = JDBCUtils.dialect(config.getCatalogDatabaseUrl());
+        this.dialect = JDBCUtils.dialect(dialectInferenceUrl);
         this.jooqSettings = new Settings()
                 // The generated DuckLake tables use lowercase unquoted identifiers. Quoting is
                 // only needed on identifiers that collide with reserved words (none in the
                 // ducklake_* schema today) — leaving it off keeps queries readable in logs.
-                .withRenderQuotedNames(RenderQuotedNames.EXPLICIT_DEFAULT_UNQUOTED);
+                .withRenderQuotedNames(RenderQuotedNames.EXPLICIT_DEFAULT_UNQUOTED)
+                // jOOQ's codegen runs against Postgres, so generated Table<?> references
+                // hardcode the `public` schema prefix. PG's default `search_path` would pick
+                // unqualified references up anyway; on the Quack-backed DuckDB path the
+                // metadata lives at <metadata_catalog>.main and the per-connection
+                // `USE <metadata_catalog>.main` makes unqualified resolution work. Stripping
+                // the rendered schema works for both — but is required for the latter.
+                .withRenderSchema(false);
         this.dsl = DSL.using(dataSource, dialect, jooqSettings);
 
         log.log(System.Logger.Level.INFO,

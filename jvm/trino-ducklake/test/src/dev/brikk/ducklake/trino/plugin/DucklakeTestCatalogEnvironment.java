@@ -14,6 +14,8 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import com.google.common.collect.ImmutableMap;
+import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer;
+import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture;
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer;
 
 import java.util.Map;
@@ -21,37 +23,78 @@ import java.util.Map;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Manages the shared PostgreSQL test catalog environment.
- * Provides a singleton PostgreSQL Testcontainer and generates the shared
- * test catalog on first use.
+ * Manages the shared catalog-backend fixtures used by Trino plugin tests. Holds
+ * one lazily-created {@link TestingDucklakePostgreSqlCatalogServer} for the
+ * default (PG) backend and one {@link TestingDucklakeDuckDbQuackCatalogServer}
+ * for the Quack-backed DuckDB backend, with selection driven by
+ * {@link DucklakeTestCatalogBackend#fromSystemProperty()}.
+ *
+ * <p>Backend selection is read once per JVM and pinned for the life of the
+ * test process — flipping the system property mid-suite isn't supported.
  */
 public final class DucklakeTestCatalogEnvironment
 {
     private static final Object LOCK = new Object();
 
-    private static volatile TestingDucklakePostgreSqlCatalogServer server;
+    private static volatile TestingDucklakePostgreSqlCatalogServer pgServer;
+    private static volatile TestingDucklakeDuckDbQuackCatalogServer quackServer;
+    private static volatile TestingDucklakeLocalDuckDbCatalogFixture localDuckDbFixture;
     private static volatile RuntimeException serverUnavailable;
-    private static volatile boolean catalogGenerated;
+    private static volatile boolean pgCatalogGenerated;
 
     private DucklakeTestCatalogEnvironment() {}
 
+    public static DucklakeTestCatalogBackend selectedBackend()
+    {
+        return DucklakeTestCatalogBackend.fromSystemProperty();
+    }
+
+    /**
+     * Returns the PG server. Only valid when the selected backend is POSTGRES
+     * — callers that need backend-pluggable behaviour should branch on
+     * {@link #selectedBackend()} first. Kept as-is for source compatibility
+     * with the existing PG-only test code.
+     */
     public static TestingDucklakePostgreSqlCatalogServer getServer()
             throws Exception
     {
-        return ensureServer();
+        return ensurePostgresServer();
+    }
+
+    public static TestingDucklakeDuckDbQuackCatalogServer getQuackServer()
+            throws Exception
+    {
+        return ensureQuackServer();
+    }
+
+    public static TestingDucklakeLocalDuckDbCatalogFixture getLocalDuckDbFixture()
+    {
+        return ensureLocalDuckDbFixture();
     }
 
     public static DucklakeConfig createDucklakeConfig()
             throws Exception
     {
-        TestingDucklakePostgreSqlCatalogServer pgServer = ensureServer();
-        ensureCatalogGenerated(pgServer);
+        // Only the shared (non-isolated) PG catalog flow runs through here today;
+        // it's the path used by tests that don't call useIsolatedCatalog and
+        // expect the pre-bootstrapped 17-table fixture. The Quack backend doesn't
+        // ship that bootstrap yet (see DucklakeCatalogGenerator) so any test
+        // reaching this code path under DUCKDB_QUACK will need migration to the
+        // isolated-catalog form.
+        if (selectedBackend() != DucklakeTestCatalogBackend.POSTGRES) {
+            throw new IllegalStateException(
+                    "createDucklakeConfig (shared catalog) is only supported under POSTGRES backend; "
+                            + "selected backend is " + selectedBackend()
+                            + ". Use useIsolatedCatalog(...) on the query-runner builder instead.");
+        }
+        TestingDucklakePostgreSqlCatalogServer server = ensurePostgresServer();
+        ensureCatalogGenerated(server);
 
         return new DucklakeConfig()
                 .setMaxCatalogConnections(5)
-                .setCatalogDatabaseUrl(pgServer.getJdbcUrl())
-                .setCatalogDatabaseUser(pgServer.getUser())
-                .setCatalogDatabasePassword(pgServer.getPassword())
+                .setCatalogDatabaseUrl(server.getJdbcUrl())
+                .setCatalogDatabaseUser(server.getUser())
+                .setCatalogDatabasePassword(server.getPassword())
                 .setDataPath(DucklakeCatalogGenerator.getPostgreSqlCatalogDirectory().resolve("data").toAbsolutePath().toString());
     }
 
@@ -73,7 +116,7 @@ public final class DucklakeTestCatalogEnvironment
         return properties.buildOrThrow();
     }
 
-    private static TestingDucklakePostgreSqlCatalogServer ensureServer()
+    private static TestingDucklakePostgreSqlCatalogServer ensurePostgresServer()
             throws Exception
     {
         RuntimeException unavailable = serverUnavailable;
@@ -81,14 +124,14 @@ public final class DucklakeTestCatalogEnvironment
             skipTests(unavailable);
         }
 
-        TestingDucklakePostgreSqlCatalogServer result = server;
+        TestingDucklakePostgreSqlCatalogServer result = pgServer;
         if (result == null) {
             synchronized (LOCK) {
-                result = server;
+                result = pgServer;
                 if (result == null) {
                     try {
                         result = new TestingDucklakePostgreSqlCatalogServer();
-                        server = result;
+                        pgServer = result;
                         Runtime.getRuntime().addShutdownHook(new Thread(result::close));
                     }
                     catch (RuntimeException e) {
@@ -104,14 +147,61 @@ public final class DucklakeTestCatalogEnvironment
         return result;
     }
 
-    private static void ensureCatalogGenerated(TestingDucklakePostgreSqlCatalogServer pgServer)
+    private static TestingDucklakeDuckDbQuackCatalogServer ensureQuackServer()
             throws Exception
     {
-        if (!catalogGenerated) {
+        RuntimeException unavailable = serverUnavailable;
+        if (unavailable != null) {
+            skipTests(unavailable);
+        }
+
+        TestingDucklakeDuckDbQuackCatalogServer result = quackServer;
+        if (result == null) {
             synchronized (LOCK) {
-                if (!catalogGenerated) {
-                    DucklakeCatalogGenerator.generatePostgreSqlCatalog(pgServer);
-                    catalogGenerated = true;
+                result = quackServer;
+                if (result == null) {
+                    try {
+                        result = new TestingDucklakeDuckDbQuackCatalogServer();
+                        quackServer = result;
+                        Runtime.getRuntime().addShutdownHook(new Thread(result::close));
+                    }
+                    catch (RuntimeException e) {
+                        if (isDockerUnavailable(e)) {
+                            serverUnavailable = e;
+                            skipTests(e);
+                        }
+                        throw e;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static TestingDucklakeLocalDuckDbCatalogFixture ensureLocalDuckDbFixture()
+    {
+        TestingDucklakeLocalDuckDbCatalogFixture result = localDuckDbFixture;
+        if (result == null) {
+            synchronized (LOCK) {
+                result = localDuckDbFixture;
+                if (result == null) {
+                    result = new TestingDucklakeLocalDuckDbCatalogFixture();
+                    localDuckDbFixture = result;
+                    Runtime.getRuntime().addShutdownHook(new Thread(result::close));
+                }
+            }
+        }
+        return result;
+    }
+
+    private static void ensureCatalogGenerated(TestingDucklakePostgreSqlCatalogServer server)
+            throws Exception
+    {
+        if (!pgCatalogGenerated) {
+            synchronized (LOCK) {
+                if (!pgCatalogGenerated) {
+                    DucklakeCatalogGenerator.generatePostgreSqlCatalog(server);
+                    pgCatalogGenerated = true;
                 }
             }
         }
@@ -135,6 +225,6 @@ public final class DucklakeTestCatalogEnvironment
     {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 false,
-                () -> "Ducklake tests require a working Docker environment for PostgreSQL: " + cause.getMessage());
+                () -> "Ducklake tests require a working Docker environment: " + cause.getMessage());
     }
 }
