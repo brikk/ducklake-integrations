@@ -60,25 +60,23 @@ final class LogicalConflictCheck
         long snapshotId = tx.getCurrentSnapshotId();
         DSLContext ctx = tx.dsl();
         for (WriteChange change : tx.getChanges()) {
-            switch (change) {
-                case WriteChange.InsertedIntoTable c ->
-                        checkInsertedIntoTable(ctx, snapshotId, c, operationDescription);
-                case WriteChange.DeletedFromTable c ->
-                        checkDeletedFromTable(ctx, snapshotId, c, operationDescription);
-                case WriteChange.AlteredTable c ->
-                        checkTableActive(ctx, snapshotId, c.tableId(), "altered", operationDescription);
-                case WriteChange.DroppedTable c ->
-                        checkTableActive(ctx, snapshotId, c.tableId(), "dropped", operationDescription);
-                case WriteChange.DroppedSchema c ->
-                        checkSchemaActive(ctx, snapshotId, c.schemaId(), operationDescription);
-                case WriteChange.AlteredView c ->
-                        checkViewActive(ctx, snapshotId, c.viewId(), "altered", operationDescription);
-                case WriteChange.DroppedView c ->
-                        checkViewActive(ctx, snapshotId, c.viewId(), "dropped", operationDescription);
-                case WriteChange.CreatedSchema ignored -> {}
-                case WriteChange.CreatedTable ignored -> {}
-                case WriteChange.CreatedView ignored -> {}
+            if (change instanceof WriteChange.InsertedIntoTable) {
+                checkInsertedIntoTable(ctx, snapshotId, (WriteChange.InsertedIntoTable) change, operationDescription);
+            } else if (change instanceof WriteChange.DeletedFromTable) {
+                checkDeletedFromTable(ctx, snapshotId, (WriteChange.DeletedFromTable) change, operationDescription);
+            } else if (change instanceof WriteChange.AlteredTable) {
+                checkTableActive(ctx, snapshotId, ((WriteChange.AlteredTable) change).tableId(), "altered", operationDescription);
+            } else if (change instanceof WriteChange.DroppedTable) {
+                checkTableActive(ctx, snapshotId, ((WriteChange.DroppedTable) change).tableId(), "dropped", operationDescription);
+            } else if (change instanceof WriteChange.DroppedSchema) {
+                checkSchemaActive(ctx, snapshotId, ((WriteChange.DroppedSchema) change).schemaId(), operationDescription);
+            } else if (change instanceof WriteChange.AlteredView) {
+                checkViewActive(ctx, snapshotId, ((WriteChange.AlteredView) change).viewId(), "altered", operationDescription);
+            } else if (change instanceof WriteChange.DroppedView) {
+                checkViewActive(ctx, snapshotId, ((WriteChange.DroppedView) change).viewId(), "dropped", operationDescription);
             }
+            // CreatedSchema / CreatedTable / CreatedView: no logical-conflict check
+            // (duplicate-name races are PK-protected by the catalog row INSERTs).
         }
     }
 

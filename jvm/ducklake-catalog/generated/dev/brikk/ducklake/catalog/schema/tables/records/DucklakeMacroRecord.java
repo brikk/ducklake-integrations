@@ -120,6 +120,6 @@ public class DucklakeMacroRecord extends TableRecordImpl<DucklakeMacroRecord> {
         setMacroName(macroName);
         setBeginSnapshot(beginSnapshot);
         setEndSnapshot(endSnapshot);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

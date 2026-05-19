@@ -103,6 +103,6 @@ public class DucklakePartitionInfoRecord extends TableRecordImpl<DucklakePartiti
         setTableId(tableId);
         setBeginSnapshot(beginSnapshot);
         setEndSnapshot(endSnapshot);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

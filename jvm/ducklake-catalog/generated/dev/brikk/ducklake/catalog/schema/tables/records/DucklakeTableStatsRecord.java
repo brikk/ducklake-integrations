@@ -103,6 +103,6 @@ public class DucklakeTableStatsRecord extends TableRecordImpl<DucklakeTableStats
         setRecordCount(recordCount);
         setNextRowId(nextRowId);
         setFileSizeBytes(fileSizeBytes);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

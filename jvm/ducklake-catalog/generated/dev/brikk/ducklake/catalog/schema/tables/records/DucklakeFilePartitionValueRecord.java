@@ -109,6 +109,6 @@ public class DucklakeFilePartitionValueRecord extends TableRecordImpl<DucklakeFi
         setTableId(tableId);
         setPartitionKeyIndex(partitionKeyIndex);
         setPartitionValue(partitionValue);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

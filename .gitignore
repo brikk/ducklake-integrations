@@ -1,2 +1,6 @@
 /.idea/
-/temp/
+
+# Vendored upstream repos for research/audit. The directories themselves
+# are never committed; only the clone script and any of our own docs at
+# the top level of vendor/ are tracked.
+/vendor/*/

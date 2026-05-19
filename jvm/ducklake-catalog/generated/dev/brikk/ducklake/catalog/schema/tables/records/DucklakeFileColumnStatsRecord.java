@@ -207,6 +207,6 @@ public class DucklakeFileColumnStatsRecord extends TableRecordImpl<DucklakeFileC
         setMaxValue(maxValue);
         setContainsNan(containsNan);
         setExtraStats(extraStats);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

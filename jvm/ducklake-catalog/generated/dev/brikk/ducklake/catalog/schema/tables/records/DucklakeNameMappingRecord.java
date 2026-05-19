@@ -137,6 +137,6 @@ public class DucklakeNameMappingRecord extends TableRecordImpl<DucklakeNameMappi
         setTargetFieldId(targetFieldId);
         setParentColumn(parentColumn);
         setIsPartition(isPartition);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

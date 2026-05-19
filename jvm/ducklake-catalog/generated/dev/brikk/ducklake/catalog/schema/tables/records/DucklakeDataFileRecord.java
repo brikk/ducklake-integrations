@@ -319,6 +319,6 @@ public class DucklakeDataFileRecord extends UpdatableRecordImpl<DucklakeDataFile
         setEncryptionKey(encryptionKey);
         setMappingId(mappingId);
         setPartialMax(partialMax);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

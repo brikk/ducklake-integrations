@@ -103,6 +103,6 @@ public class DucklakeSortInfoRecord extends TableRecordImpl<DucklakeSortInfoReco
         setTableId(tableId);
         setBeginSnapshot(beginSnapshot);
         setEndSnapshot(endSnapshot);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

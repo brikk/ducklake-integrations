@@ -472,7 +472,7 @@ public class JdbcDucklakeCatalog
                 .and(activeAt(file, snapshotId))
                 .forEach(r -> {
                     long columnId = orZero(r.get(colstats.COLUMN_ID));
-                    long[] counts = countAccumulators.computeIfAbsent(columnId, _ -> new long[3]);
+                    long[] counts = countAccumulators.computeIfAbsent(columnId, k -> new long[3]);
                     counts[0] += orZero(r.get(colstats.VALUE_COUNT));
                     counts[1] += orZero(r.get(colstats.NULL_COUNT));
                     counts[2] += orZero(r.get(colstats.COLUMN_SIZE_BYTES));
@@ -527,7 +527,7 @@ public class JdbcDucklakeCatalog
                 default -> a.compareTo(b);
             };
         }
-        catch (RuntimeException _) {
+        catch (RuntimeException ignored) {
             // If parsing fails, fall back to string comparison (conservative)
             return a.compareTo(b);
         }
@@ -559,7 +559,7 @@ public class JdbcDucklakeCatalog
                     tableIdByPartition.put(partitionId, orZero(r.get(partinfo.TABLE_ID)));
                     DucklakePartitionTransform.ParsedTransform parsed =
                             DucklakePartitionTransform.parseCatalogTransform(r.get(partcol.TRANSFORM));
-                    fieldsByPartition.computeIfAbsent(partitionId, _ -> new ArrayList<>())
+                    fieldsByPartition.computeIfAbsent(partitionId, k -> new ArrayList<>())
                             .add(new DucklakePartitionField(
                                     (int) orZero(r.get(partcol.PARTITION_KEY_INDEX)),
                                     orZero(r.get(partcol.COLUMN_ID)),
@@ -593,7 +593,7 @@ public class JdbcDucklakeCatalog
                 .and(activeAt(file, snapshotId))
                 .forEach(r -> {
                     long dataFileId = orZero(r.get(partval.DATA_FILE_ID));
-                    result.computeIfAbsent(dataFileId, _ -> new ArrayList<>())
+                    result.computeIfAbsent(dataFileId, k -> new ArrayList<>())
                             .add(new DucklakeFilePartitionValue(
                                     dataFileId,
                                     (int) orZero(r.get(partval.PARTITION_KEY_INDEX)),
@@ -624,7 +624,7 @@ public class JdbcDucklakeCatalog
                     Long fieldId = r.get(nm.TARGET_FIELD_ID);
                     String sourceName = r.get(nm.SOURCE_NAME);
                     if (mappingId != null && fieldId != null && sourceName != null) {
-                        result.computeIfAbsent(mappingId, _ -> new HashMap<>())
+                        result.computeIfAbsent(mappingId, k -> new HashMap<>())
                                 .put(fieldId, sourceName);
                     }
                 });
@@ -744,7 +744,7 @@ public class JdbcDucklakeCatalog
                 if (fid == null || rid == null) {
                     continue;
                 }
-                grouped.computeIfAbsent(fid, _ -> new HashSet<>()).add(rid);
+                grouped.computeIfAbsent(fid, k -> new HashSet<>()).add(rid);
             }
             return grouped;
         }

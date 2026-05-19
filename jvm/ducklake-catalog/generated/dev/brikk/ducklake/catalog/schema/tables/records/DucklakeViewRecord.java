@@ -190,6 +190,6 @@ public class DucklakeViewRecord extends TableRecordImpl<DucklakeViewRecord> {
         setDialect(dialect);
         setSql(sql);
         setColumnAliases(columnAliases);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

@@ -154,6 +154,6 @@ public class DucklakeSortExpressionRecord extends TableRecordImpl<DucklakeSortEx
         setDialect(dialect);
         setSortDirection(sortDirection);
         setNullOrder(nullOrder);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

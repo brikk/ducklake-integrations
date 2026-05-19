@@ -156,6 +156,6 @@ public class DucklakeMacroParametersRecord extends TableRecordImpl<DucklakeMacro
         setParameterType(parameterType);
         setDefaultValue(defaultValue);
         setDefaultValueType(defaultValueType);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

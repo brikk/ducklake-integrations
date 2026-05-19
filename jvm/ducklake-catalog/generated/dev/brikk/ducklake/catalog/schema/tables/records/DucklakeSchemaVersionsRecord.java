@@ -86,6 +86,6 @@ public class DucklakeSchemaVersionsRecord extends TableRecordImpl<DucklakeSchema
         setBeginSnapshot(beginSnapshot);
         setSchemaVersion(schemaVersion);
         setTableId(tableId);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

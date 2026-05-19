@@ -268,6 +268,6 @@ public class DucklakeDeleteFileRecord extends UpdatableRecordImpl<DucklakeDelete
         setFooterSize(footerSize);
         setEncryptionKey(encryptionKey);
         setPartialMax(partialMax);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

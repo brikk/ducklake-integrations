@@ -173,6 +173,6 @@ public class DucklakeTableRecord extends TableRecordImpl<DucklakeTableRecord> {
         setTableName(tableName);
         setPath(path);
         setPathIsRelative(pathIsRelative);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

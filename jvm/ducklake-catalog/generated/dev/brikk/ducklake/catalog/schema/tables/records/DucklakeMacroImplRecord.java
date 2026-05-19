@@ -120,6 +120,6 @@ public class DucklakeMacroImplRecord extends TableRecordImpl<DucklakeMacroImplRe
         setDialect(dialect);
         setSql(sql);
         setType(type);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

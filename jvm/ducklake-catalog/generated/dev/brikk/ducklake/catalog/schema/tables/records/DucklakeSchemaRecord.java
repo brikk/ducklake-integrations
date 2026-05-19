@@ -168,6 +168,6 @@ public class DucklakeSchemaRecord extends UpdatableRecordImpl<DucklakeSchemaReco
         setSchemaName(schemaName);
         setPath(path);
         setPathIsRelative(pathIsRelative);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

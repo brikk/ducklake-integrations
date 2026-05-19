@@ -88,6 +88,6 @@ public class DucklakeInlinedDataTablesRecord extends TableRecordImpl<DucklakeInl
         setTableId(tableId);
         setTableName(tableName);
         setSchemaVersion(schemaVersion);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

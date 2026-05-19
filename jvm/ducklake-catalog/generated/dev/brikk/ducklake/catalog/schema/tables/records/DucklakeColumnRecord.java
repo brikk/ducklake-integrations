@@ -256,6 +256,6 @@ public class DucklakeColumnRecord extends TableRecordImpl<DucklakeColumnRecord> 
         setParentColumn(parentColumn);
         setDefaultValueType(defaultValueType);
         setDefaultValueDialect(defaultValueDialect);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

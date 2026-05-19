@@ -137,6 +137,6 @@ public class DucklakeColumnTagRecord extends TableRecordImpl<DucklakeColumnTagRe
         setEndSnapshot(endSnapshot);
         setKey(key);
         setValue(value);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

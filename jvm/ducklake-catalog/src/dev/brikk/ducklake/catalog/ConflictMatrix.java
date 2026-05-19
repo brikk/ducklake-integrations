@@ -57,17 +57,26 @@ final class ConflictMatrix
     static void check(List<WriteChange> myChanges, InterveningChanges other)
     {
         for (WriteChange change : myChanges) {
-            switch (change) {
-                case WriteChange.DroppedTable c -> checkDroppedTable(c, other);
-                case WriteChange.DroppedView c -> checkDroppedView(c, other);
-                case WriteChange.DroppedSchema c -> checkDroppedSchema(c, other);
-                case WriteChange.CreatedSchema c -> checkCreatedSchema(c, other);
-                case WriteChange.CreatedTable c -> checkCreatedTable(c, other);
-                case WriteChange.CreatedView c -> checkCreatedView(c, other);
-                case WriteChange.InsertedIntoTable c -> checkInsertedIntoTable(c, other);
-                case WriteChange.DeletedFromTable c -> checkDeletedFromTable(c, other);
-                case WriteChange.AlteredTable c -> checkAlteredTable(c, other);
-                case WriteChange.AlteredView c -> checkAlteredView(c, other);
+            if (change instanceof WriteChange.DroppedTable) {
+                checkDroppedTable((WriteChange.DroppedTable) change, other);
+            } else if (change instanceof WriteChange.DroppedView) {
+                checkDroppedView((WriteChange.DroppedView) change, other);
+            } else if (change instanceof WriteChange.DroppedSchema) {
+                checkDroppedSchema((WriteChange.DroppedSchema) change, other);
+            } else if (change instanceof WriteChange.CreatedSchema) {
+                checkCreatedSchema((WriteChange.CreatedSchema) change, other);
+            } else if (change instanceof WriteChange.CreatedTable) {
+                checkCreatedTable((WriteChange.CreatedTable) change, other);
+            } else if (change instanceof WriteChange.CreatedView) {
+                checkCreatedView((WriteChange.CreatedView) change, other);
+            } else if (change instanceof WriteChange.InsertedIntoTable) {
+                checkInsertedIntoTable((WriteChange.InsertedIntoTable) change, other);
+            } else if (change instanceof WriteChange.DeletedFromTable) {
+                checkDeletedFromTable((WriteChange.DeletedFromTable) change, other);
+            } else if (change instanceof WriteChange.AlteredTable) {
+                checkAlteredTable((WriteChange.AlteredTable) change, other);
+            } else if (change instanceof WriteChange.AlteredView) {
+                checkAlteredView((WriteChange.AlteredView) change, other);
             }
         }
     }

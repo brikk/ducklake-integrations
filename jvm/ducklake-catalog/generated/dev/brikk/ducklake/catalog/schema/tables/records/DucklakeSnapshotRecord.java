@@ -134,6 +134,6 @@ public class DucklakeSnapshotRecord extends UpdatableRecordImpl<DucklakeSnapshot
         setSchemaVersion(schemaVersion);
         setNextCatalogId(nextCatalogId);
         setNextFileId(nextFileId);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

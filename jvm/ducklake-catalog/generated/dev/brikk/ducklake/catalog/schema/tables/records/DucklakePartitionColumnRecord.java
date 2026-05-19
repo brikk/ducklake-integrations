@@ -122,6 +122,6 @@ public class DucklakePartitionColumnRecord extends TableRecordImpl<DucklakeParti
         setPartitionKeyIndex(partitionKeyIndex);
         setColumnId(columnId);
         setTransform(transform);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

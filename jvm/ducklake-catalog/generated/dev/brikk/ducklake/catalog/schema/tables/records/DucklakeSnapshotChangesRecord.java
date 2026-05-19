@@ -134,6 +134,6 @@ public class DucklakeSnapshotChangesRecord extends UpdatableRecordImpl<DucklakeS
         setAuthor(author);
         setCommitMessage(commitMessage);
         setCommitExtraInfo(commitExtraInfo);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

@@ -241,6 +241,6 @@ public class DucklakeFileVariantStatsRecord extends TableRecordImpl<DucklakeFile
         setMaxValue(maxValue);
         setContainsNan(containsNan);
         setExtraStats(extraStats);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

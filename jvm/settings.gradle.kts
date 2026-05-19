@@ -12,4 +12,5 @@ dependencyResolutionManagement {
 
 include(":ducklake-catalog")
 include(":trino-ducklake")
+include(":doris-ducklake")
 include(":jooq-custom-naming")

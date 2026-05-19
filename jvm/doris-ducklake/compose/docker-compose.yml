@@ -1,0 +1,98 @@
+name: doris-ducklake-dev
+
+# Two containers: Doris FE (with our plugin) and stock Doris BE 4.1.0.
+#
+# Substrate (Postgres metadata DB + MinIO warehouse) is reused from
+# trino-ducklake/compose/ by attaching to its bridge network as external.
+# Bring that up first: `docker compose -f ../../trino-ducklake/compose/docker-compose.yml up -d`
+#
+# Static IPs because init_fe.sh requires FE_SERVERS=name:ip:port and we want
+# a stable target for SHOW BACKENDS / mysql clients.
+
+services:
+  doris-fe:
+    image: doris-fe:pr62767-local
+    container_name: doris-ducklake-fe
+    hostname: doris-fe
+    environment:
+      FE_SERVERS: fe1:172.30.80.10:9010
+      FE_ID: "1"
+    ports:
+      - "8030:8030"   # FE HTTP
+      - "9030:9030"   # FE MySQL
+      - "9020:9020"   # FE RPC
+      - "9010:9010"   # FE edit log
+    volumes:
+      # fe.conf with the heap dropped to 2g — the upstream default (8g) doesn't
+      # fit on a typical Docker Desktop memory ceiling. Doris's start_fe.sh
+      # sources fe.conf for JAVA_OPTS_FOR_JDK_17, so env-var override doesn't
+      # work — must replace the file.
+      # init_fe.sh appends `priority_networks` at boot, so the file must be writable.
+      - ./fe.conf:/opt/apache-doris/fe/conf/fe.conf
+      # Plugin contents (unzipped). Lives in a named volume rather than a host
+      # bind mount because Podman's macOS bind mounts don't reliably propagate
+      # file contents from the host into the VM. The smoke script populates
+      # this volume via a one-shot helper container before bringing FE up.
+      - fe-plugin-ducklake:/opt/apache-doris/fe/plugins/connector/ducklake
+      # Persist FE metadata across restarts. Wipe to reset cluster state.
+      - fe-meta:/opt/apache-doris/fe/doris-meta
+      - fe-log:/opt/apache-doris/fe/log
+    networks:
+      doris-net:
+        ipv4_address: 172.30.80.10
+      # Reach substrate by service name (postgres, minio) on its bridge network.
+      trino-ducklake-dev_default:
+    healthcheck:
+      # SHOW FRONTENDS hits FE-local state only — no BE required. SELECT 1
+      # would deadlock against the BE depends_on:service_healthy gate.
+      test: ["CMD-SHELL", "mysql -h127.0.0.1 -P9030 -uroot -e 'SHOW FRONTENDS' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+  doris-be:
+    image: apache/doris:be-4.1.0
+    container_name: doris-ducklake-be
+    hostname: doris-be
+    platform: linux/arm64
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    environment:
+      # Election mode: BE reads FE_SERVERS to locate the master FE (port is
+      # ignored — BE uses MYSQL_PORT 9030 to query SHOW FRONTENDS), and
+      # BE_ADDR is its own heartbeat addr (9050 is the default).
+      # entry_point.sh derives MASTER_FE_IP / CURRENT_BE_IP / PRIORITY_NETWORKS
+      # internally from these.
+      FE_SERVERS: fe1:172.30.80.10:9020
+      BE_ADDR: 172.30.80.20:9050
+    volumes:
+      - be-storage:/opt/apache-doris/be/storage
+      - be-log:/opt/apache-doris/be/log
+    networks:
+      doris-net:
+        ipv4_address: 172.30.80.20
+      trino-ducklake-dev_default:
+    # Doris BE is sensitive to ulimits; relax them to defaults the start scripts expect.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+networks:
+  doris-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.30.80.0/24
+  trino-ducklake-dev_default:
+    external: true
+
+volumes:
+  fe-meta:
+  fe-log:
+  fe-plugin-ducklake:
+  be-storage:
+  be-log:

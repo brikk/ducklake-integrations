@@ -104,6 +104,6 @@ public class DucklakeMetadataRecord extends TableRecordImpl<DucklakeMetadataReco
         setValue(value);
         setScope(scope);
         setScopeId(scopeId);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

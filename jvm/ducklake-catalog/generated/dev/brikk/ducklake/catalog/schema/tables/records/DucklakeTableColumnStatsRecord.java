@@ -154,6 +154,6 @@ public class DucklakeTableColumnStatsRecord extends TableRecordImpl<DucklakeTabl
         setMinValue(minValue);
         setMaxValue(maxValue);
         setExtraStats(extraStats);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

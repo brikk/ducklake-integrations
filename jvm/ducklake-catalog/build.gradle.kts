@@ -1,4 +1,5 @@
 import dev.brikk.jooq.ducklake.DucklakePostgresService
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jooq.codegen.gradle.CodegenPluginExtension
 import org.jooq.codegen.gradle.CodegenTask
 import org.jooq.meta.jaxb.GeneratedAnnotationType
@@ -11,6 +12,20 @@ plugins {
 }
 
 version = "0.0.1"
+
+// JDK 17 ABI so this library is consumable by the Doris fe-connector plugin,
+// whose FE is pinned to JDK 17. Toolchain remains 25 (set in buildlogic.kotlin.common);
+// only the produced bytecode level is downgraded.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
 
 // Match the project's flat layout (see buildlogic.kotlin.common). Default would
 // look for src/testFixtures/{java,kotlin}; we keep things at testFixtures/src/.

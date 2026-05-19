@@ -113,6 +113,6 @@ public class DucklakeFilesScheduledForDeletionRecord extends TableRecordImpl<Duc
         setPath(path);
         setPathIsRelative(pathIsRelative);
         setScheduleStart(scheduleStart);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }

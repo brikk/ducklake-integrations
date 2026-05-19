@@ -86,6 +86,6 @@ public class DucklakeColumnMappingRecord extends TableRecordImpl<DucklakeColumnM
         setMappingId(mappingId);
         setTableId(tableId);
         setType(type);
-        resetTouchedOnNotNull();
+        resetChangedOnNotNull();
     }
 }
