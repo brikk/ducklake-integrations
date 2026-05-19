@@ -1,0 +1,142 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.brikk.ducklake.catalog;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Properties;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Architecture-validation probe for the Quack-as-DuckLake-catalog path. Today's
+ * {@code JdbcDucklakeCatalog} (PG-backed) reads/writes the raw {@code ducklake_*}
+ * metadata tables directly via JDBC. We need an equivalent path under Quack.
+ *
+ * <p><b>Finding:</b> {@code METADATA_CATALOG '<name>'} on the DuckLake-on-Quack
+ * ATTACH publishes the underlying metadata storage as a sibling catalog on the
+ * client side. So a single client ATTACH gives us both:
+ *
+ * <ul>
+ *   <li>{@code lake.<schema>.<table>} — the DuckLake user catalog (high-level
+ *       CREATE/INSERT semantics).</li>
+ *   <li>{@code <metadata_catalog>.main.ducklake_*} — raw access to the metadata
+ *       tables, which is what {@code JdbcDucklakeCatalog} needs.</li>
+ * </ul>
+ *
+ * That means {@code JdbcDucklakeCatalog}'s HikariCP {@code connectionInitSql} can
+ * be a single multi-statement script that installs the extensions, creates the
+ * Quack secret, ATTACHes with a METADATA_CATALOG name, and {@code USE}s that
+ * catalog's main schema. No separate bootstrap connection required.
+ *
+ * <p>{@code duckdb_databases()} / {@code SHOW DATABASES} surfaces a "Not
+ * implemented Error: InMemory not implemented yet" error on Quack-attached
+ * remotes, so don't rely on those to introspect catalog topology — query the
+ * specific metadata catalog by name instead.
+ */
+final class QuackMetadataAccessProbeTest
+{
+    private static TestingDucklakeDuckDbQuackCatalogServer server;
+    private static Path dataDir;
+
+    @BeforeAll
+    static void setUp() throws Exception
+    {
+        server = new TestingDucklakeDuckDbQuackCatalogServer();
+        dataDir = Files.createTempDirectory("ducklake-quack-meta-probe-");
+    }
+
+    @AfterAll
+    static void tearDown() throws Exception
+    {
+        if (server != null) {
+            server.close();
+        }
+        if (dataDir != null) {
+            deleteRecursively(dataDir);
+        }
+    }
+
+    @Test
+    void singleAttachExposesMetadataCatalogAsSiblingCatalog() throws Exception
+    {
+        Properties props = new Properties();
+        props.setProperty("allow_unsigned_extensions", "true");
+        String metadataCatalog = "probe_meta";
+
+        try (Connection client = DriverManager.getConnection("jdbc:duckdb:", props);
+                Statement s = client.createStatement()) {
+            s.execute("INSTALL quack FROM core_nightly");
+            s.execute("LOAD quack");
+            s.execute("FORCE INSTALL ducklake FROM core_nightly");
+            s.execute("LOAD ducklake");
+            s.execute("CREATE SECRET (TYPE quack, TOKEN '" + server.getToken() + "')");
+            s.execute("ATTACH '" + server.getDucklakeAttachUri() + "' AS lake "
+                    + "(DATA_PATH '" + dataDir.toAbsolutePath() + "', METADATA_CATALOG '" + metadataCatalog + "')");
+            s.execute("USE lake");
+            s.execute("CREATE TABLE t (x INTEGER)");
+            s.execute("INSERT INTO t VALUES (1), (2)");
+
+            // The DuckLake metadata tables must be queryable via the sibling
+            // catalog name set in METADATA_CATALOG. This is the contract
+            // JdbcDucklakeCatalog will rely on for raw catalog-table access.
+            List<String> rows = new ArrayList<>();
+            try (ResultSet rs = s.executeQuery(
+                    "SELECT table_name FROM " + metadataCatalog + ".main.ducklake_table ORDER BY table_name")) {
+                while (rs.next()) {
+                    rows.add(rs.getString(1));
+                }
+            }
+            assertThat(rows).containsExactly("t");
+
+            try (ResultSet rs = s.executeQuery(
+                    "SELECT schema_name FROM " + metadataCatalog + ".main.ducklake_schema "
+                            + "WHERE schema_name = 'main'")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString(1)).isEqualTo("main");
+            }
+        }
+    }
+
+    private static void deleteRecursively(Path dir)
+    {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                }
+                catch (IOException ignored) {
+                }
+            });
+        }
+        catch (IOException ignored) {
+        }
+    }
+}
