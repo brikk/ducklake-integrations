@@ -203,7 +203,7 @@ operators and functions are not available through Trino.
 | Metadata tables (`$snapshot_changes`) | Yes | Snapshot audit trail |
 | Views (Trino dialect) | Yes | |
 | Views (other dialects) | No | Filtered out; only Trino-created views exposed |
-| Puffin deletion vectors | No | Experimental in DuckLake 1.0; not yet supported |
+| Puffin deletion vectors | Yes | DuckLake's Roaring-bitmap delete files (`write_deletion_vectors=true` on the writer) |
 | Sorted table optimizations | No | Tables are still readable; sort metadata ignored |
 
 ## Write Operations

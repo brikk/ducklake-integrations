@@ -13,64 +13,89 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
-import io.trino.spi.type.LongTimestampWithTimeZone;
-import io.trino.spi.type.TimestampWithTimeZoneType;
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
-
-import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
-import static io.trino.spi.type.DateTimeEncoding.unpackZoneKey;
-import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MICROS;
-import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@code DucklakeInlinedValueConverter.decodeBlobText} — the inverse of
+ * DuckDB's {@code Blob::ToString}. The end-to-end inlined-list round trip is covered by
+ * {@code TestDucklakeCrossEngineTypeAudit.testDuckdbListBlobReadsInTrino}.
+ */
 public class TestDucklakeInlinedValueConverter
 {
     @Test
-    public void testConvertTimestampMicrosFromString()
+    public void testAllNonPrintableBytesDecode()
     {
-        Object converted = DucklakeInlinedValueConverter.convertJdbcValue(
-                "2024-01-01 12:34:56.123456",
-                TIMESTAMP_MICROS);
-
-        long expectedMicros = LocalDateTime.parse("2024-01-01T12:34:56.123456")
-                .toEpochSecond(ZoneOffset.UTC) * 1_000_000 + 123_456;
-        assertThat(converted).isEqualTo(expectedMicros);
+        // BLOB '\x00\x01\xFF' is serialized as plain `\x00\x01\xFF` (no quoting — the list-cast
+        // LOOKUP_TABLE doesn't flag '\\' so the element stays unquoted in the list literal).
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\x00\\x01\\xFF"))
+                .containsExactly((byte) 0x00, (byte) 0x01, (byte) 0xFF);
     }
 
     @Test
-    public void testConvertTimestampWithTimeZoneMicrosFromOffsetString()
+    public void testEmptyBlobDecodesToEmptyBytes()
     {
-        Object converted = DucklakeInlinedValueConverter.convertJdbcValue(
-                "2024-01-01 00:00:00.123456-06",
-                TIMESTAMP_TZ_MICROS);
-
-        assertThat(converted).isInstanceOf(LongTimestampWithTimeZone.class);
-        LongTimestampWithTimeZone timestamp = (LongTimestampWithTimeZone) converted;
-
-        Instant expectedInstant = OffsetDateTime.parse("2024-01-01T00:00:00.123456-06:00").toInstant();
-        assertThat(timestamp.getEpochMillis()).isEqualTo(expectedInstant.toEpochMilli());
-        assertThat(timestamp.getPicosOfMilli()).isEqualTo((expectedInstant.getNano() % 1_000_000) * 1_000);
-        assertThat(timestamp.getTimeZoneKey()).isEqualTo(UTC_KEY.getKey());
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("")).isEmpty();
     }
 
     @Test
-    public void testConvertShortTimestampWithTimeZoneUsesUtcZoneKey()
+    public void testMixedPrintableAndEscapedBytes()
     {
-        TimestampWithTimeZoneType shortTimestampWithTimeZone = TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
-        Object converted = DucklakeInlinedValueConverter.convertJdbcValue(
-                "2024-01-01 00:00:00.123-06:00",
-                shortTimestampWithTimeZone);
+        // BLOB '\x00Foo\xFF' — 'F','o','o' are regular ASCII; 0x00 and 0xFF aren't.
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\x00Foo\\xFF"))
+                .containsExactly((byte) 0x00, (byte) 0x46, (byte) 0x6F, (byte) 0x6F, (byte) 0xFF);
+    }
 
-        assertThat(converted).isInstanceOf(Long.class);
-        long packed = (long) converted;
-        Instant expectedInstant = OffsetDateTime.parse("2024-01-01T00:00:00.123-06:00").toInstant();
-        assertThat(unpackMillisUtc(packed)).isEqualTo(expectedInstant.toEpochMilli());
-        assertThat(unpackZoneKey(packed)).isEqualTo(UTC_KEY);
+    @Test
+    public void testBackslashByteIsEmittedAsHexEscape()
+    {
+        // Byte 0x5C ('\\') is non-regular in DuckDB's IsRegularCharacter, so it's emitted as \x5C,
+        // not as a literal backslash. We must decode it back to a single 0x5C byte.
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\x5C"))
+                .containsExactly((byte) 0x5C);
+    }
+
+    @Test
+    public void testApostropheAndDoubleQuoteAreHexEscaped()
+    {
+        // Byte 0x27 (') and 0x22 (") are non-regular, emitted as \x27 and \x22.
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\x27\\x22"))
+                .containsExactly((byte) 0x27, (byte) 0x22);
+    }
+
+    @Test
+    public void testLowercaseHexAcceptedToo()
+    {
+        // DuckDB emits uppercase hex but we accept lowercase too — Blob::ToBlob (the inverse) does.
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\xab\\xcd"))
+                .containsExactly((byte) 0xAB, (byte) 0xCD);
+    }
+
+    @Test
+    public void testPureAsciiBytes()
+    {
+        // Printable ASCII 0x20-0x7E (minus '\\', '\'', '"') are emitted as-is.
+        assertThat(DucklakeInlinedValueConverter.decodeBlobText("Hello"))
+                .containsExactly((byte) 'H', (byte) 'e', (byte) 'l', (byte) 'l', (byte) 'o');
+    }
+
+    @Test
+    public void testTruncatedHexEscapeRejected()
+    {
+        assertThatThrownBy(() -> DucklakeInlinedValueConverter.decodeBlobText("\\x0"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DucklakeInlinedValueConverter.decodeBlobText("\\xZZ"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    public void testNonAsciiCharacterRejected()
+    {
+        // Any byte ≥ 0x80 would arrive as `\xNN`; a literal high-bit character would indicate
+        // malformed input, so reject loudly rather than truncating silently.
+        assertThatThrownBy(() -> DucklakeInlinedValueConverter.decodeBlobText("abÿcd"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

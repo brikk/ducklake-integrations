@@ -43,6 +43,7 @@ dependencies {
     }
     implementation("org.weakref:jmxutils")
     implementation(libs.duckdb.jdbc)
+    implementation(libs.roaring.bitmap)
     implementation(platform(libs.arrow.bom))
     implementation(libs.arrow.vector)
     implementation(libs.arrow.memory.core)

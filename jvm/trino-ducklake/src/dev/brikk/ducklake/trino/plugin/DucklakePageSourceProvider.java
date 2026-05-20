@@ -663,7 +663,13 @@ public class DucklakePageSourceProvider
         // delete row_id matches the rowOffset branch.
         Set<Long> deletedRows = new HashSet<>(split.inlinedDeletedRowPositions());
         for (String deleteFilePath : split.deleteFilePaths()) {
-            deletedRows.addAll(readDeletedRowsFromFile(fileSystem, deleteFilePath, split));
+            if (isPuffinPath(deleteFilePath)) {
+                deletedRows.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
+                        fileSystem.newInputFile(toLocation(deleteFilePath))));
+            }
+            else {
+                deletedRows.addAll(readDeletedRowsFromFile(fileSystem, deleteFilePath, split));
+            }
         }
 
         if (deletedRows.isEmpty()) {
@@ -845,6 +851,17 @@ public class DucklakePageSourceProvider
             return TupleDomain.all();
         }
         return TupleDomain.withColumnDomains(parquetDomains);
+    }
+
+    private static boolean isPuffinPath(String path)
+    {
+        // DuckLake's delete-file path always ends with .puffin when format='puffin'
+        // (see vendor/ducklake/src/storage/ducklake_delete.cpp:161 — the writer hardcodes
+        // "ducklake-<uuid>-delete.puffin"). Catalog format='puffin' has already been
+        // permitted by DucklakeSplitManager.validateDeleteFileFormats by the time we get
+        // here; dispatching on extension keeps the split schema stable and matches the
+        // pattern Trino's Iceberg connector uses for puffin DV files.
+        return path.regionMatches(true, path.length() - ".puffin".length(), ".puffin", 0, ".puffin".length());
     }
 
     private static Location toLocation(String path)

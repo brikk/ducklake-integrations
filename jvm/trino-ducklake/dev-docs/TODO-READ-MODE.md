@@ -17,21 +17,16 @@ reference). Gaps surfaced from upstream and sister connectors live in the
 Picked next, in order. Pair this with [TODO-WRITE-MODE.md § Top Priorities](TODO-WRITE-MODE.md#top-priorities)
 on the write side.
 
-1. **Puffin deletion-vector reader (long-term)** — lift the existing
-   `TestDucklakePuffinDeleteFileGuard` `NOT_SUPPORTED` throw. DuckLake
-   writes Roaring-bitmap delete files in puffin format when
-   `write_deletion_vectors=true` is set on the writer; we currently refuse
-   the read. ~2–3 days (Iceberg's `iceberg-core` puffin lib +
-   `org.roaringbitmap:RoaringBitmap`). **See § Puffin Deletion Vector
-   Reads § Long-term below.**
+All previously-listed top priorities have landed: the inlined-deletion
+reader, the `list<blob>` inlined-read type-gap fix, and the puffin
+deletion-vector reader (Roaring bitmaps inside DuckLake's `.puffin`
+delete files). See § Inlined Deletion Vector Reads, § Inlined-Read Type
+Gaps, and § Puffin Deletion Vector Reads below.
 
-Unlocks real cross-engine compatibility for puffin-encoded deletes — any
-DuckDB-written catalog becomes readable from Trino regardless of which
-delete-encoding the writer chose. After this, the remaining type gap
-(`list<blob>` inlined reads) is the next bite-sized correctness item.
-
-(The inlined-deletion reader landed; see § Inlined Deletion Vector Reads
-below.)
+Next bite-sized read items: sorted-table read awareness (planner hints),
+virtual columns (rowid/file_row_number), and the `R7` cross-backend view
+tests. None are correctness blockers — pick whichever fits the current
+session.
 
 ## Inlined Deletion Vector Reads
 
@@ -89,18 +84,27 @@ data file's scan.
 
 ## Inlined-Read Type Gaps
 
-- [ ] **`list<blob>` inlined reads.** DuckDB serializes blobs in lists as
-  `'\xNN\xNN'` text. Our parser strips the single quotes but doesn't decode the
-  `\xNN` hex escapes, so `VarbinaryType` receives the literal escape characters
-  instead of the intended bytes. Pinned by `@Disabled testDuckdbListBlobReadsInTrino`
-  in `TestDucklakeCrossEngineTypeAudit` (the test runs both inlined and Parquet
-  paths, so lifting `@Disabled` will also confirm whether Trino's Parquet array
-  reader survives DuckDB's `ARRAY<BINARY>` layout). Fix in
-  `DucklakeInlinedValueConverter`: when the element type is `VarbinaryType`,
-  decode `\xNN` sequences before building the Trino value. Compare against
-  `ducklake_util.cpp::ToSQLString` BLOB branch and DuckDB's `Blob::ToString` for
-  exact escape semantics.
-  - Source: `COMPARE-pg_ducklake.md` B2 follow-up
+- [x] **`list<blob>` inlined reads.** Landed 2026-05-20.
+  `DucklakeInlinedValueConverter.decodeBlobText` inverts DuckDB's
+  `Blob::ToString` — `\xNN` (upper or lower hex) → byte, other ASCII
+  bytes pass through verbatim, bare `\` or non-ASCII chars are rejected
+  loudly because DuckDB never emits them in blob text. The `VarbinaryType`
+  branch now routes String inputs through it (`byte[]` scalar path
+  unchanged). Both serialization shapes work: DuckDB's LIST→VARCHAR cast
+  emits unquoted `\xNN\xNN…` for pure-non-printable blobs (since
+  `NestedToVarcharCast::LOOKUP_TABLE` doesn't flag `\\`) and quoted
+  `'…\\xNN…'` (with `\\` → `\` parser unescape) for blobs whose text form
+  contains list-special chars like `,` `[` `]` etc. — both reduce to the
+  same `\xNN…` text by the time `decodeBlobText` sees it.
+  Pinned by:
+  - `TestDucklakeInlinedValueConverter` (9 cases — all-non-printable,
+    empty, mixed printable + escape, backslash byte, `'`/`"` bytes,
+    lowercase hex, pure-ASCII passthrough, truncated escape rejection,
+    non-ASCII char rejection).
+  - `TestDucklakeCrossEngineTypeAudit.testDuckdbListBlobReadsInTrino`
+    (formerly `@Disabled`; now runs both inlined and Parquet paths via
+    `runListRoundTrip`, so it also confirms Trino's Parquet array reader
+    survives DuckDB's `ARRAY<BINARY>` layout).
 
 - [x] **`uuid` scalar + `list<uuid>` inlined reads.** Done.
   `DucklakeInlinedValueConverter` now has a `UuidType` branch
@@ -122,15 +126,44 @@ data file's scan.
   Pinned by `TestDucklakePuffinDeleteFileGuard` (metadata-only — injects a
   `format='puffin'` row pointing at a non-existent path; the guard runs before
   any IO so a real puffin file isn't required for this test).
-- [ ] **Long-term: read DuckLake puffin delete files (Roaring bitmaps).**
-  Implement on the Trino connector side (not in `ducklake-catalog`) using
-  Iceberg's `iceberg-core` puffin library + `org.roaringbitmap:RoaringBitmap`.
-  See
-  [DUCKLAKE_1_0_IMPACT.md § Existing Puffin Support in Trino](DUCKLAKE_1_0_IMPACT.md#existing-puffin-support-in-trino-reuse-analysis)
-  for reuse analysis. Lift the guard once the reader is in place; add a
-  round-trip test with a real puffin file (DuckDB writer with
-  `write_deletion_vectors=true` → Trino reader) alongside the existing
-  metadata-only guard test.
+- [x] **Long-term: read DuckLake puffin delete files (Roaring bitmaps).**
+  Landed 2026-05-20.
+  - `DucklakePuffinDeleteReader` (Trino-plugin-side) parses DuckLake's
+    bespoke deletion-vector blob format — vector_size (BE u32) + magic
+    `0xD1D33964` + bitmap_count (LE u64) + N × (LE i32 high_bits + portable
+    Roaring bitmap) + CRC32 (BE u32). The `.puffin` file is *not* a real
+    Iceberg Puffin file (no PFA1 framing, no JSON footer); it's just the
+    blob bytes, matching `vendor/ducklake/src/storage/ducklake_delete.cpp`
+    `WriteDeletionVectorFile`. We do not pull in `iceberg-core` — the
+    bespoke format and the absence of an outer puffin container made it
+    cheaper to implement the ~150-line decoder directly. Only the
+    `org.roaringbitmap:RoaringBitmap` dependency is added.
+  - **One library gotcha pinned**: `RoaringBitmap.deserialize(ByteBuffer)`
+    slices the input buffer internally and does NOT advance the input's
+    position. The reader manually advances by
+    `bitmap.serializedSizeInBytes()` after each call. Pinned by
+    `TestDucklakePuffinDeleteReader.testMultipleHighGroupsRoundTrip` which
+    would loop forever / reject the second bitmap's cookie if regressed.
+  - `DucklakePageSourceProvider.applyDeleteFile` dispatches on the file
+    extension (`.puffin` → puffin reader, else parquet) and merges the
+    resulting positions into the same `deletedRows` set as parquet
+    positional deletes. `DucklakeSplit` schema unchanged.
+  - `DucklakeSplitManager.validateDeleteFileFormats` now accepts both
+    `parquet` and `puffin`; unknown formats still hard-fail with a clear
+    message naming the supported formats.
+  - Pinned by:
+    - `TestDucklakePuffinDeleteReader` (10 cases — empty bitmaps, single
+      low-bits group, multi-high-bits groups, sparse 10k-element bitmap,
+      negative-high-bits sign handling, CRC mismatch, magic mismatch,
+      truncated blob, inconsistent vector_size, helper round-trip
+      sanity).
+    - `TestDucklakePuffinDeleteFileGuard` (rewritten to assert
+      `puffin` is accepted and an unknown format is rejected — replaces
+      the previous "puffin not supported" assertion).
+    - `TestDucklakeCrossEnginePuffinDeleteRoundTrip` (DuckDB writes with
+      `write_deletion_vectors=true`, deletes some rows, Trino reads back
+      only the survivors; also covers the no-op delete case where
+      DuckDB writes nothing).
 
 ## Sorted-Table Awareness (Read)
 

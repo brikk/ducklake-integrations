@@ -103,7 +103,9 @@ public final class DucklakeInlinedValueConverter
             if (jdbcValue instanceof byte[] bytes) {
                 return Slices.wrappedBuffer(bytes);
             }
-            return Slices.wrappedBuffer(toStringValue(jdbcValue).getBytes(StandardCharsets.UTF_8));
+            // Text form (typical for list<blob> elements): DuckDB's Blob::ToString emits printable
+            // ASCII (except '\\', '\'', '"') as-is and everything else as `\xNN`. Decode back to bytes.
+            return Slices.wrappedBuffer(decodeBlobText(toStringValue(jdbcValue)));
         }
         if (trinoType instanceof DecimalType decimalType) {
             return toDecimal(jdbcValue, decimalType);
@@ -219,6 +221,69 @@ public final class DucklakeInlinedValueConverter
             }
         }
         return elements.toArray();
+    }
+
+    /**
+     * Decode DuckDB's blob-to-text representation back to raw bytes. Mirrors
+     * {@code Blob::ToBlob} in {@code duckdb/src/common/types/blob.cpp}: each
+     * {@code \xNN} sequence (uppercase or lowercase hex) becomes one byte; any
+     * other ASCII character is taken as a literal byte value. The text form is
+     * unambiguous because {@code Blob::ToString} emits {@code \\}, {@code '},
+     * {@code "}, and every non-printable byte as {@code \xNN}, so a literal
+     * {@code \\} in the text always introduces a hex escape.
+     *
+     * <p>Visible for testing.
+     */
+    static byte[] decodeBlobText(String text)
+    {
+        int len = text.length();
+        byte[] out = new byte[len];
+        int j = 0;
+        int i = 0;
+        while (i < len) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                // DuckDB never emits a bare backslash — 0x5C is always escaped as \x5C — so we
+                // require a complete \xNN here. Anything else is malformed input.
+                if (i + 3 >= len || text.charAt(i + 1) != 'x') {
+                    throw new IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: " + text);
+                }
+                int hi = hexDigit(text.charAt(i + 2));
+                int lo = hexDigit(text.charAt(i + 3));
+                if (hi < 0 || lo < 0) {
+                    throw new IllegalArgumentException("Invalid hex digits in \\xNN escape: " + text);
+                }
+                out[j++] = (byte) ((hi << 4) | lo);
+                i += 4;
+                continue;
+            }
+            if (c > 0x7F) {
+                throw new IllegalArgumentException("Non-ASCII char 0x" + Integer.toHexString(c)
+                        + " in blob text — DuckDB escapes these as \\xNN: " + text);
+            }
+            out[j++] = (byte) c;
+            i++;
+        }
+        if (j == out.length) {
+            return out;
+        }
+        byte[] trimmed = new byte[j];
+        System.arraycopy(out, 0, trimmed, 0, j);
+        return trimmed;
+    }
+
+    private static int hexDigit(char c)
+    {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return 10 + (c - 'a');
+        }
+        if (c >= 'A' && c <= 'F') {
+            return 10 + (c - 'A');
+        }
+        return -1;
     }
 
     // DuckDB serializes UUID values as the canonical 36-character text form

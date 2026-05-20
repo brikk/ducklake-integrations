@@ -38,51 +38,47 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Verifies the connector refuses to read a snapshot whose delete files use a format
- * the connector cannot decode (today: anything other than {@code parquet}, in practice
- * {@code puffin} written by DuckDB with {@code write_deletion_vectors=true}). Without
- * this guard the puffin delete file is silently ignored and rows that should be deleted
- * are returned.
+ * Pins the delete-file-format gate in {@code DucklakeSplitManager.validateDeleteFileFormats}.
+ * {@code parquet} and {@code puffin} are accepted (the actual decode happens in the page
+ * source, exercised by {@code TestDucklakeCrossEnginePuffinDeleteRoundTrip}); any other
+ * format hard-fails the query rather than silently dropping deletes.
  */
 public class TestDucklakePuffinDeleteFileGuard
 {
     @Test
-    public void testPuffinDeleteFileFailsWithClearError()
+    public void testPuffinFormatIsAccepted()
             throws Exception
     {
-        TestingDucklakePostgreSqlCatalogServer server = DucklakeTestCatalogEnvironment.getServer();
-        DucklakeCatalogGenerator.IsolatedCatalog isolated =
-                DucklakeCatalogGenerator.generateIsolatedPostgreSqlCatalog(server, "puffin-guard-" + UUID.randomUUID().toString().substring(0, 8));
-
-        DucklakeConfig config = new DucklakeConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl())
-                .setCatalogDatabaseUser(isolated.user())
-                .setCatalogDatabasePassword(isolated.password())
-                .setDataPath(isolated.dataDir().toAbsolutePath().toString())
-                .setMaxCatalogConnections(5);
-
-        DucklakeCatalog catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
-        try {
-            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config));
-
-            long snapshotId = catalog.getCurrentSnapshotId();
-            DucklakeTable table = getTable(catalog, "test_schema", "simple_table", snapshotId);
+        runWithCatalog("puffin-accept", (isolated, catalog, splitManager, table, snapshotId) -> {
             DucklakeTableHandle tableHandle = new DucklakeTableHandle("test_schema", "simple_table", table.tableId(), snapshotId);
-
             DucklakeDataFile victim = catalog.getDataFiles(table.tableId(), snapshotId).stream()
                     .findFirst()
                     .orElseThrow(() -> new AssertionError("No data files found for simple_table"));
 
-            // Inject a puffin-format delete file row pointing at a non-existent path.
-            // The format check happens on metadata before any file IO, so the path
-            // does not need to resolve to a real artifact.
-            insertPuffinDeleteFileMetadata(
-                    isolated.jdbcUrl(),
-                    isolated.user(),
-                    isolated.password(),
-                    table.tableId(),
-                    snapshotId,
-                    victim.dataFileId());
+            // Inject a puffin-format delete file row pointing at a non-existent path. The
+            // catalog-side format check runs before any file IO, so split building should
+            // succeed without throwing. Actual decode of the puffin bytes is covered by
+            // TestDucklakeCrossEnginePuffinDeleteRoundTrip with a real puffin file.
+            insertDeleteFileMetadata(isolated, table.tableId(), snapshotId, victim.dataFileId(), "puffin",
+                    "ducklake-deletion-vector-" + UUID.randomUUID() + ".puffin");
+
+            // No exception — the guard accepts puffin.
+            splitManager.getSplits(null, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue());
+        });
+    }
+
+    @Test
+    public void testUnknownFormatIsRejectedWithClearError()
+            throws Exception
+    {
+        runWithCatalog("puffin-reject", (isolated, catalog, splitManager, table, snapshotId) -> {
+            DucklakeTableHandle tableHandle = new DucklakeTableHandle("test_schema", "simple_table", table.tableId(), snapshotId);
+            DucklakeDataFile victim = catalog.getDataFiles(table.tableId(), snapshotId).stream()
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("No data files found for simple_table"));
+
+            insertDeleteFileMetadata(isolated, table.tableId(), snapshotId, victim.dataFileId(), "flatfile-v9",
+                    "made-up-format.bin");
 
             assertThatThrownBy(() -> splitManager.getSplits(
                     null,
@@ -95,25 +91,57 @@ public class TestDucklakePuffinDeleteFileGuard
                         assertThat(ex.getMessage())
                                 .contains("test_schema")
                                 .contains("simple_table")
-                                .contains("puffin")
-                                .contains("write_deletion_vectors");
+                                .contains("flatfile-v9")
+                                .contains("parquet")
+                                .contains("puffin");
                     });
+        });
+    }
+
+    @FunctionalInterface
+    private interface CatalogTest
+    {
+        void run(DucklakeCatalogGenerator.IsolatedCatalog isolated, DucklakeCatalog catalog, DucklakeSplitManager splitManager,
+                DucklakeTable table, long snapshotId)
+                throws Exception;
+    }
+
+    private static void runWithCatalog(String suffix, CatalogTest test)
+            throws Exception
+    {
+        TestingDucklakePostgreSqlCatalogServer server = DucklakeTestCatalogEnvironment.getServer();
+        DucklakeCatalogGenerator.IsolatedCatalog isolated =
+                DucklakeCatalogGenerator.generateIsolatedPostgreSqlCatalog(server, suffix + "-" + UUID.randomUUID().toString().substring(0, 8));
+
+        DucklakeConfig config = new DucklakeConfig()
+                .setCatalogDatabaseUrl(isolated.jdbcUrl())
+                .setCatalogDatabaseUser(isolated.user())
+                .setCatalogDatabasePassword(isolated.password())
+                .setDataPath(isolated.dataDir().toAbsolutePath().toString())
+                .setMaxCatalogConnections(5);
+
+        DucklakeCatalog catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
+        try {
+            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config));
+            long snapshotId = catalog.getCurrentSnapshotId();
+            DucklakeTable table = getTable(catalog, "test_schema", "simple_table", snapshotId);
+            test.run(isolated, catalog, splitManager, table, snapshotId);
         }
         finally {
             catalog.close();
         }
     }
 
-    private static void insertPuffinDeleteFileMetadata(
-            String jdbcUrl,
-            String user,
-            String password,
+    private static void insertDeleteFileMetadata(
+            DucklakeCatalogGenerator.IsolatedCatalog isolated,
             long tableId,
             long snapshotId,
-            long dataFileId)
+            long dataFileId,
+            String format,
+            String path)
             throws Exception
     {
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, user, password)) {
+        try (Connection conn = DriverManager.getConnection(isolated.jdbcUrl(), isolated.user(), isolated.password())) {
             DSLContext dsl = CatalogTestSupport.dsl(conn);
             var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
 
@@ -126,9 +154,9 @@ public class TestDucklakePuffinDeleteFileGuard
                     .set(delfile.TABLE_ID, tableId)
                     .set(delfile.BEGIN_SNAPSHOT, snapshotId)
                     .set(delfile.DATA_FILE_ID, dataFileId)
-                    .set(delfile.PATH, "ducklake-deletion-vector-" + UUID.randomUUID() + ".puffin")
+                    .set(delfile.PATH, path)
                     .set(delfile.PATH_IS_RELATIVE, true)
-                    .set(delfile.FORMAT, "puffin")
+                    .set(delfile.FORMAT, format)
                     .set(delfile.DELETE_COUNT, 1L)
                     .set(delfile.FILE_SIZE_BYTES, 0L)
                     .set(delfile.FOOTER_SIZE, 0L)

@@ -438,8 +438,6 @@ public class TestDucklakeCrossEngineTypeAudit
     // delete.
 
     @Test
-    @org.junit.jupiter.api.Disabled("TODO-READ-MODE: inlined `list<blob>` — DuckDB serializes bytes as "
-            + "'\\xNN\\xNN' text; parser does not yet decode hex escapes. Parquet path not yet validated.")
     public void testDuckdbListBlobReadsInTrino()
             throws Exception
     {

@@ -223,10 +223,10 @@ public class DucklakeSplitManager
 
     /**
      * Reject snapshots that reference delete files in formats this connector cannot read.
-     * Today only {@code parquet} positional delete files are supported. DuckDB writers can
-     * produce {@code puffin} (Roaring-bitmap deletion-vector) delete files when the
-     * {@code write_deletion_vectors} session setting is enabled — silently skipping them
-     * would return rows that should have been deleted, so we fail the query instead.
+     * Today {@code parquet} positional delete files and {@code puffin} deletion-vector
+     * files (DuckLake's Roaring-bitmap format, written when {@code write_deletion_vectors}
+     * is enabled) are both supported. Anything else fails the query rather than silently
+     * skipping deletes — a missed delete returns rows that should not be visible.
      */
     private static void validateDeleteFileFormats(List<DucklakeDataFile> dataFiles, DucklakeTableHandle tableHandle)
     {
@@ -236,14 +236,13 @@ public class DucklakeSplitManager
                 continue;
             }
             String normalized = deleteFileFormat.get().toLowerCase(Locale.ROOT);
-            if (normalized.equals("parquet")) {
+            if (normalized.equals("parquet") || normalized.equals("puffin")) {
                 continue;
             }
             throw new TrinoException(NOT_SUPPORTED, String.format(
                     "Table %s.%s references a delete file with format '%s', which this connector cannot read. " +
-                            "DuckDB produces puffin (Roaring-bitmap deletion vector) delete files when " +
-                            "'write_deletion_vectors' is enabled; disable that session setting on the writer " +
-                            "or compact the table to materialize deletes before reading from Trino.",
+                            "Supported formats are 'parquet' (positional delete files) and 'puffin' (DuckLake " +
+                            "deletion-vector files). Compact the table to materialize deletes before reading.",
                     tableHandle.schemaName(),
                     tableHandle.tableName(),
                     deleteFileFormat.get()));
