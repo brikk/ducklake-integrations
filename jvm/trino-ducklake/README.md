@@ -442,8 +442,9 @@ research item.
   wrapping to 44.
 - Files written before a failed commit become orphans. DuckLake's
   `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
-- Puffin deletion vectors (experimental in DuckLake 1.0, opt-in) are not supported. Tables
-  using `write_deletion_vectors=true` will not be readable through this connector.
+- Puffin deletion vectors (DuckLake's Roaring-bitmap delete files, written when
+  `write_deletion_vectors=true`) are read but not written. Trino-side DELETE/UPDATE/MERGE
+  always emits parquet positional delete files.
 
 ## Additional Documentation
 
