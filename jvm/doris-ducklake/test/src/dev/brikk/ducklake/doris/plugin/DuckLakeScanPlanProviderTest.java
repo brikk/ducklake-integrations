@@ -17,7 +17,12 @@ import org.apache.doris.connector.api.scan.ConnectorScanRange;
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType;
 import org.apache.doris.connector.api.scan.ConnectorScanRequest;
 import org.apache.doris.connector.spi.ConnectorContext;
+import org.apache.doris.thrift.TFileFormatType;
+import org.apache.doris.thrift.TFileRangeDesc;
 import org.apache.doris.thrift.TFileScanRangeParams;
+import org.apache.doris.thrift.TIcebergDeleteFileDesc;
+import org.apache.doris.thrift.TIcebergFileDesc;
+import org.apache.doris.thrift.TTableFormatFileDesc;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -104,6 +109,112 @@ class DuckLakeScanPlanProviderTest {
             List<ConnectorScanRange> emptyRanges = plan.planScan(
                     ConnectorScanRequest.builder().table(customers).columns(List.of()).build());
             assertThat(emptyRanges).isEmpty();
+        }
+    }
+
+    @Test
+    void emitsPositionDeleteFileForFileBasedDeletePath() throws Exception {
+        // sales.returns_file is seeded with INSERT + DELETE under
+        // DATA_INLINING_ROW_LIMIT = 0, so DuckLake writes the deletion as a
+        // position-delete parquet plus a ducklake_delete_file row (NOT as
+        // catalog-DB inline-delete rows). The catalog's LEFT JOIN in
+        // getDataFiles inlines the delete-file path on the DucklakeDataFile;
+        // Step 7 surfaces that as a populated iceberg_params.delete_files
+        // entry on the scan range's wire descriptor.
+        Map<String, String> properties = Map.of(
+                "type", "ducklake",
+                DuckLakeConnectorProperties.METADATA_URL, isolated.jdbcUrl(),
+                DuckLakeConnectorProperties.METADATA_USER, isolated.user(),
+                DuckLakeConnectorProperties.METADATA_PASSWORD, isolated.password(),
+                DuckLakeConnectorProperties.STORAGE_WAREHOUSE,
+                isolated.dataDir().toAbsolutePath().toString());
+
+        try (Connector connector = new DuckLakeConnectorProvider()
+                .create(properties, new FakeConnectorContext("dl", 1L))) {
+            ConnectorMetadata metadata = connector.getMetadata(null);
+            ConnectorTableHandle handle = metadata.getTableHandle(null, "sales", "returns_file")
+                    .orElseThrow(() -> new AssertionError("expected sales.returns_file handle"));
+
+            ConnectorScanPlanProvider plan = connector.getScanPlanProvider();
+            List<ConnectorScanRange> ranges = plan.planScan(
+                    ConnectorScanRequest.builder().table(handle).columns(List.of()).build());
+
+            // returns_file has one INSERT batch → one active data file. That
+            // one data file carries one active position-delete file.
+            assertThat(ranges).hasSize(1);
+            ConnectorScanRange range = ranges.get(0);
+
+            // Inspect the wire descriptor: that's where the BE reads delete
+            // files from (table_format_type="iceberg" → iceberg_params).
+            TTableFormatFileDesc formatDesc = new TTableFormatFileDesc();
+            TFileRangeDesc rangeDesc = new TFileRangeDesc();
+            range.populateRangeParams(formatDesc, rangeDesc);
+
+            assertThat(formatDesc.isSetIcebergParams()).isTrue();
+            TIcebergFileDesc iceberg = formatDesc.getIcebergParams();
+            assertThat(iceberg.getDeleteFiles()).hasSize(1);
+
+            TIcebergDeleteFileDesc delete = iceberg.getDeleteFiles().get(0);
+            // Path is resolved against the warehouse data dir (delete files
+            // live under the same table data path as data files in DuckLake).
+            assertThat(delete.getPath())
+                    .startsWith(isolated.dataDir().toAbsolutePath().toString())
+                    .endsWith(".parquet");
+            assertThat(delete.getFileFormat()).isEqualTo(TFileFormatType.FORMAT_PARQUET);
+            assertThat(delete.getContent()).isEqualTo(1);  // POSITION_DELETE
+        }
+    }
+
+    @org.junit.jupiter.api.Disabled(
+            "Step 7.5: inline deletes from ducklake_inlined_delete_<tableId> "
+            + "are not yet surfaced to Doris. Two things needed before this "
+            + "can pass: (1) fixture work — DuckDB-JDBC 1.5.2 doesn't honour "
+            + "data_inlining_row_limit for DELETEs, so the bootstrap must "
+            + "INSERT directly into ducklake_inlined_delete_<tableId> over a "
+            + "PG JDBC connection to simulate the state DuckDB-Python "
+            + "produces by default; (2) connector work — DuckLakeScanPlanProvider "
+            + "should consume DucklakeCatalog#getInlinedDeletes(tableId, "
+            + "snapshotId) and synthesise a parquet delete file under a "
+            + "scratch location, then thread it through DuckLakeScanRange "
+            + "the same way file-based deletes are threaded today. "
+            + "See ducklake-doris-friction.md (2026-05-19) for the full "
+            + "writeup and Step 7.5 in ducklake-doris-todo.md.")
+    @Test
+    void emitsDeletesForInlineDeletePath() throws Exception {
+        // sales.returns_inline is currently seeded with INSERTs only —
+        // there's no inline-delete row in the catalog DB yet (see fixture
+        // TODO in the @Disabled message above). Once that's wired, the
+        // assertion below should hold.
+        Map<String, String> properties = Map.of(
+                "type", "ducklake",
+                DuckLakeConnectorProperties.METADATA_URL, isolated.jdbcUrl(),
+                DuckLakeConnectorProperties.METADATA_USER, isolated.user(),
+                DuckLakeConnectorProperties.METADATA_PASSWORD, isolated.password(),
+                DuckLakeConnectorProperties.STORAGE_WAREHOUSE,
+                isolated.dataDir().toAbsolutePath().toString());
+
+        try (Connector connector = new DuckLakeConnectorProvider()
+                .create(properties, new FakeConnectorContext("dl", 1L))) {
+            ConnectorMetadata metadata = connector.getMetadata(null);
+            ConnectorTableHandle handle = metadata.getTableHandle(null, "sales", "returns_inline")
+                    .orElseThrow(() -> new AssertionError("expected sales.returns_inline handle"));
+
+            ConnectorScanPlanProvider plan = connector.getScanPlanProvider();
+            List<ConnectorScanRange> ranges = plan.planScan(
+                    ConnectorScanRequest.builder().table(handle).columns(List.of()).build());
+
+            assertThat(ranges).hasSize(1);
+            ConnectorScanRange range = ranges.get(0);
+
+            TTableFormatFileDesc formatDesc = new TTableFormatFileDesc();
+            TFileRangeDesc rangeDesc = new TFileRangeDesc();
+            range.populateRangeParams(formatDesc, rangeDesc);
+
+            // Step 7.5 contract (currently NOT satisfied — that's why this
+            // test is @Disabled): the inlined-delete row in
+            // ducklake_inlined_delete_<tableId> must surface as at least one
+            // TIcebergDeleteFileDesc entry on iceberg_params.delete_files.
+            assertThat(formatDesc.getIcebergParams().getDeleteFiles()).isNotEmpty();
         }
     }
 

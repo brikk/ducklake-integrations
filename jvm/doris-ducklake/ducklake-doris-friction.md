@@ -17,6 +17,113 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-05-19 · DuckLake position-delete files use OPTIONAL columns; Doris BE rejects them
+
+**Symptom.** Step 7 smoke: DuckDB issues DELETE on `tpch.orders` (with
+`data_inlining_row_limit = 0` so the DELETE materialises as a
+`ducklake_delete_file` row + a position-delete parquet file). The FE plugin
+correctly packs the delete file into `iceberg_params.delete_files`. BE
+errors on read:
+
+```
+[INTERNAL_ERROR]Read parquet file s3://…/orders/…-delete.parquet failed,
+reason = [CORRUPTION]Not nullable column has null values in parquet file
+```
+
+The delete file has zero actual nulls; the error is about parquet schema
+nullability metadata, not row content.
+
+**Root cause.** Two-layer schema mismatch between DuckLake's delete-file
+parquet and what the BE iceberg reader expects:
+
+1. **Column shape matches.** DuckLake writes `(file_path: VARCHAR, pos:
+   BIGINT)` — same column names + types as the Iceberg
+   [position-delete spec](https://iceberg.apache.org/spec/#position-delete-files).
+2. **Nullability disagrees.** DuckLake writes both columns as
+   `repetition_type = OPTIONAL`. Iceberg's spec marks them `required`,
+   and Doris's BE parquet reader (`ScalarColumnReader<false, false>`,
+   the not-nullable fast path) trusts the schema's NOT-NULL contract.
+   The DuckLake-written parquet declares the columns as nullable, so
+   the reader's NOT-NULL fast path raises rather than fall back to the
+   nullable path.
+
+Confirmed via `parquet_schema()`:
+
+```
+('file_path', 'BYTE_ARRAY', None, 'OPTIONAL', None, None, 'UTF8')
+('pos',       'INT64',      None, 'OPTIONAL', None, None, 'INT_64')
+```
+
+**Workaround.** None on the FE side. Three honest options:
+- Patch DuckDB to write `REQUIRED` repetition_type on DuckLake delete files.
+- Patch the BE iceberg reader to widen the nullability contract on the
+  Iceberg-spec'd delete-file columns (treat OPTIONAL-but-no-nulls as
+  REQUIRED, falling through to the nullable path).
+- Rewrite the delete file FE-side before handing it to the BE.
+  Cost-prohibitive (per-query parquet rewrite).
+
+**Fix (pickable, upstream coordination).**
+- **DuckDB / DuckLake**: write delete-file parquet with `REQUIRED`
+  columns for `file_path` + `pos`. The schema matches Iceberg's spec by
+  intent (column names + types); nullability is the only deviation.
+  One-line fix at the parquet writer for delete files.
+- **Doris BE** (`ParquetReader` / `ScalarColumnReader`): treat
+  OPTIONAL columns whose definition levels are all `1` as effectively
+  required, OR explicitly route Iceberg-spec'd delete files through the
+  nullable column path.
+
+---
+
+## 2026-05-19 · DuckLake defaults inline DELETEs into Postgres rows, not parquet files
+
+**Symptom.** Issue `DELETE FROM lake.tpch.orders WHERE …` through DuckDB.
+DuckDB sees the rows gone. `ducklake_delete_file` stays empty. Doris
+sees no change. Catalog has a row in
+`ducklake_inlined_delete_<table_id>(file_id, row_id, begin_snapshot)`.
+
+**Root cause.** DuckLake's `DATA_INLINING_ROW_LIMIT` defaults non-zero.
+DELETEs smaller than the limit are materialised as rows in per-table
+`ducklake_inlined_delete_<tableId>` tables in the catalog database
+rather than as `ducklake_delete_file` + position-delete parquet.
+
+The Doris BE iceberg reader has no way to consume Postgres-side delete
+rows; only file-based deletes route through `iceberg_params.delete_files`.
+
+**Workaround.** Disable inlining for the test/dev catalog:
+
+```sql
+CALL lake.set_option('data_inlining_row_limit', '0');
+```
+
+(Syntax discovered by probing — `CALL lake.set_option(<key>, <value>)`.
+`ducklake_options('lake')` lists the four built-in keys but doesn't show
+this one until it's been set.)
+
+After the option is set, subsequent DELETEs write to
+`ducklake_delete_file` and a position-delete parquet — the format
+[the FE plugin's Step 7 path expects](./ducklake-doris-todo.md#step-7--position-deletes-path-still-v1-scope).
+Existing inline-delete rows stay where they are; they're not migrated
+to files.
+
+**Fix (FE plugin work).** Implement inline-delete handling on the FE
+side. The library already exposes
+`DucklakeCatalog#hasInlinedDeletes(tableId, snapshotId)` and
+`getInlinedDeletes(tableId, snapshotId)` returning `Map<fileId,
+Set<rowId>>`. Three options for honouring them at scan time:
+- **Synthesize a parquet delete file** with `(file_path, pos)` rows on
+  the FE side, drop it under a scratch location, hand it to the BE
+  through `iceberg_params.delete_files`. Per-query parquet write.
+- **Push the row IDs as a predicate** — Doris would need to support
+  "exclude row indexes" pushdown; it doesn't today (file_scanner has no
+  such hook).
+- **Block reads when inline deletes are present** until upstream
+  resolves a path. Honest, ergonomically poor.
+
+The synthesize-parquet path is the only one that works without an
+upstream change. Track as Step 7.5.
+
+---
+
 ## 2026-05-19 · `ConnectorScanRange.getFileFormat()` is dead on the plugin-driven path
 
 **Symptom.** Returning `"parquet"` from `ConnectorScanRange.getFileFormat()`

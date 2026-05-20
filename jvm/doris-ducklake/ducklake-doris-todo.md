@@ -14,16 +14,43 @@ Cross-references:
 
 🎉 **`SELECT * FROM dl.tpch.orders LIMIT 5` returns rows end-to-end through
 Doris.** Live FE+BE cluster stands up reproducibly via `compose/smoke.sh`.
-34 unit tests green (3 metadata + 10 type-mapping + 8 mvcc-codec + 3
-capabilities + 6 scan-plan-provider + 4 thrift-parity).
-Plugin code: provider (with mvcc snapshot codec), properties, connector
-(with v1 capability set + scan-plan provider), metadata (listing + handle
-+ schema), type mapping, handle records, MVCC snapshot + codec,
-scan-plan provider (file-format dispatch + storage-cred forwarding with
-AWS_* aliases) + scan range (Option-A iceberg-shaped wire bytes,
-no deletes yet) + path resolver. `fe-thrift` 1.2-SNAPSHOT on compile + test
-classpath. Next is Step 6 — applyFilter / applyProjection / applyLimit
-for pushdown performance, OR Step 7 — position deletes.
+38 unit tests green + 1 @Disabled (3 metadata + 10 type-mapping + 8
+mvcc-codec + 3 capabilities + 7 scan-plan-provider [+1 @Disabled inline] + 7
+thrift-parity).
+
+Step 7 (position deletes) plumbing is wired end-to-end FE-side: the
+catalog already inlines the active delete file path on `DucklakeDataFile`
+via LEFT JOIN; `DuckLakeScanPlanProvider` resolves it to absolute paths
+and threads it through `DuckLakeScanRange`; `populateRangeParams` packs
+it into `iceberg_params.delete_files` with
+`content = POSITION_DELETE (1)`, `file_format = FORMAT_PARQUET`. Smoke
+shows the BE receives the wire bytes correctly. **Blocked on two
+interop gaps surfaced by live smoke** — see [friction log](./ducklake-doris-friction.md)
+entries dated 2026-05-19:
+
+1. **DuckLake defaults DELETEs to inline (Postgres rows), not files.** Per-table
+   `ducklake_inlined_delete_<tableId>` carries `(file_id, row_id,
+   begin_snapshot)` for DELETEs that fit under `DATA_INLINING_ROW_LIMIT`.
+   Workaround: `CALL lake.set_option('data_inlining_row_limit', '0')` on
+   the catalog forces the file path. Long-term: Step 7.5 honours inline
+   deletes by synthesising a parquet delete file FE-side
+   ([catalog API already there](../ducklake-catalog/src/dev/brikk/ducklake/catalog/DucklakeCatalog.java#L151-L177)).
+2. **DuckLake-written delete-file parquet uses OPTIONAL columns; BE
+   iceberg reader expects REQUIRED.** Schema is otherwise Iceberg-spec
+   compatible (`file_path: VARCHAR`, `pos: BIGINT`, field-ids align).
+   Reader's NOT-NULL fast path raises `[CORRUPTION]Not nullable column
+   has null values in parquet file` despite zero actual nulls. Pickable
+   one-line fix on either side; tracked in friction log.
+
+Plugin code stable: provider (with mvcc snapshot codec), properties,
+connector (with v1 capability set + scan-plan provider), metadata
+(listing + handle + schema), type mapping, handle records, MVCC
+snapshot + codec, scan-plan provider (file-format dispatch +
+storage-cred forwarding with AWS_* aliases + position-delete plumbing)
++ scan range (Option-A iceberg-shaped wire bytes with position deletes)
++ path resolver. `fe-thrift` 1.2-SNAPSHOT on compile + test classpath.
+Next is Step 6 — applyFilter / applyProjection / applyLimit
+for pushdown performance, OR Step 7.5 — inline-delete synthesis.
 
 ## 🚀 Roadmap to `SELECT *`
 
@@ -66,10 +93,25 @@ unit test and (where applicable) a live-FE smoke checkpoint.
 - [ ] `DuckLakePredicateConverter` — free function: `ConnectorExpression` → library `ColumnRangePredicate`. Start with comparisons + AND; grow as features land.
 - [ ] `applyFilter` / `applyProjection` / `applyLimit` on metadata, returning partial-pushdown results. Each can return `Optional.empty()` to opt out per query; that's fine for v1.
 
-### Step 7 — Position deletes path (still v1 scope)
-- [ ] Library: surface `ducklake_delete_file` rows valid at a given snapshot for the active data files. Probably already exposed; verify the shape we need.
-- [ ] `DuckLakeScanRange` populates `iceberg_params.delete_files` with `TIcebergDeleteFileDesc` per delete file. Field-ID semantics are compatible (sanity-check §2.1).
-- [ ] Smoke: write a delete through DuckDB into the substrate, re-query through Doris, assert deleted rows are absent.
+### Step 7 — Position deletes path (FE-side plumbing landed, BE-side blocked)
+- [x] Library: `DucklakeDataFile` already inlines the active delete file path/format via LEFT JOIN in `JdbcDucklakeCatalog#getDataFiles`; catalog enforces at-most-one active delete file per data file per snapshot (`checkDeleteFileOverlap`). No new catalog method needed.
+- [x] `DuckLakePositionDelete` record + `DuckLakeScanRange` populates `iceberg_params.delete_files` with `TIcebergDeleteFileDesc` (content=POSITION_DELETE, format=FORMAT_PARQUET). Field-ID semantics compatible (sanity-check §2.1).
+- [x] `DuckLakeScanPlanProvider.resolvePositionDeletes` threads the delete path through the path resolver.
+- [x] Unit tests: 3 parity tests (golden byte-identity, field-level assertions on populated delete-file descriptor, accessor immutability) + 1 scan-plan-provider test seeding a DELETE on `sales.returns`.
+- [x] Live smoke: BE receives the iceberg_params wire bytes correctly when `data_inlining_row_limit=0` forces DuckLake to write file-based deletes.
+- [ ] **BLOCKED**: BE iceberg reader rejects DuckLake's delete-file parquet with `[CORRUPTION]Not nullable column has null values`. DuckLake writes `(file_path, pos)` as OPTIONAL; Iceberg spec requires REQUIRED. Friction-log entry has pickable upstream fixes on either side.
+
+### Step 7.5 — Inline-delete handling (newly scoped)
+
+Real users will produce both inline and file-based deletes depending on
+DuckLake's `data_inlining_row_limit` and DuckDB driver behaviour — the
+connector must handle both. We don't prescribe `data_inlining_row_limit=0`
+to users; we only flip it in tests / smoke as fixture setup.
+
+- [ ] Honour `ducklake_inlined_delete_<tableId>` rows (catalog API exists: `hasInlinedDeletes` / `getInlinedDeletes`).
+- [ ] Likely path: synthesise a parquet delete file FE-side per scan, drop under a scratch location, emit through `iceberg_params.delete_files`. Per-query parquet write — acceptable as a v1.5 once the Step 7 BE block is unstuck.
+- [ ] Fixture work: DuckDB-JDBC 1.5.2 doesn't reliably honour `data_inlining_row_limit` for DELETE inlining the way DuckDB-Python does — the test bootstrap will need to INSERT directly into `ducklake_inlined_delete_<tableId>` over a PG JDBC connection to simulate an inline-delete row. The `DuckLakeScanPlanProviderTest#emitsDeletesForInlineDeletePath` test is @Disabled until both this fixture work AND the connector implementation land.
+- [ ] Alternative: get the BE / Doris to accept "exclude row indexes" pushdown. No hook today.
 
 ### Step 8 — Time travel
 - [ ] `DuckLakeConnectorMetadata.getTableHandle` second overload taking `Optional<ConnectorTableVersion>` + `Optional<ConnectorRefSpec>`. Map `BySnapshotId` and `ByTimestamp` to the library's existing snapshot resolvers; reject `ByRef` / `ByRefAtTimestamp` for v1 (DuckLake has no branches/tags). `ByOpaque` decodes via our MVCC codec from Step 1.
@@ -92,6 +134,7 @@ hardcoded list should be open / discoverable"):
 - [ ] **`connector_plugin_root` discoverability** — surface the hardcoded default at `Config.java:3541` as a commented-out line in `conf/fe.conf`. Zero behavior change.
 - [ ] **API-surface churn on PR #62767**. Diff `fe-connector-api/` and `fe-connector-spi/` against the head of PR #62767 whenever we re-pull; flag breaking changes.
 - [ ] **Avoid binlog/CCR table-create paths** in our smoke loop — PR-branch FE removed `TBinlogFormat` etc. from the FE↔BE thrift; stock 4.1.0 BE talks to PR FE fine for everything we care about, but `CREATE TABLE … PROPERTIES("binlog.enable"="true")` would deadlock. Document in the smoke recipe (done) and keep out of regression tests.
+- [ ] **DuckLake delete-file parquet nullability**. Upstream ask to DuckDB/DuckLake: write `file_path` + `pos` as `REQUIRED` in position-delete parquet, matching Iceberg's spec. Or, to the Doris BE: fall through to the nullable column reader path when an Iceberg-spec'd delete-file column reports OPTIONAL. Friction log 2026-05-19 has the full repro.
 
 ## Done — shipped milestones
 

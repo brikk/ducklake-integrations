@@ -46,6 +46,20 @@ final class DuckLakeTestCatalogBootstrap {
             statement.execute("CREATE SCHEMA dl.sales");
             statement.execute("CREATE TABLE dl.sales.orders (id INTEGER, total DOUBLE)");
             statement.execute("CREATE TABLE dl.sales.customers (id INTEGER, name VARCHAR)");
+            // sales.returns_file exercises the Step-7 file-based delete path
+            // (DuckLake writes a position-delete parquet + ducklake_delete_file
+            // row). sales.returns_inline is a placeholder for the Step-7.5
+            // inline-delete fixture (`ducklake_inlined_delete_<tableId>`
+            // catalog rows). DuckDB-JDBC 1.5.2 doesn't currently honour
+            // `data_inlining_row_limit` for DELETE inlining the way the
+            // Python driver does — it always writes file-based deletes —
+            // so seeding a real inline-delete row in the test fixture
+            // needs a direct ducklake_inlined_delete_<tableId> INSERT
+            // via PG JDBC (Step-7.5 fixture work). For now returns_inline
+            // is seeded with INSERTs only and the inline-delete test stays
+            // @Disabled. See ducklake-doris-friction.md (2026-05-19).
+            statement.execute("CREATE TABLE dl.sales.returns_file (id INTEGER, amount DOUBLE)");
+            statement.execute("CREATE TABLE dl.sales.returns_inline (id INTEGER, amount DOUBLE)");
 
             statement.execute("CREATE SCHEMA dl.analytics");
             statement.execute("CREATE TABLE dl.analytics.events (ts TIMESTAMP, kind VARCHAR)");
@@ -55,6 +69,20 @@ final class DuckLakeTestCatalogBootstrap {
             // — the second insert hands us a second DucklakeDataFile to assert against.
             statement.execute("INSERT INTO dl.sales.orders VALUES (1, 9.99), (2, 19.50)");
             statement.execute("INSERT INTO dl.sales.orders VALUES (3, 5.25)");
+
+            statement.execute(
+                    "INSERT INTO dl.sales.returns_inline "
+                            + "VALUES (10, 1.00), (11, 2.00), (12, 3.00), (13, 4.00)");
+
+            // File-based delete path: even with the default DuckDB-JDBC
+            // behaviour we'd get a file here, but we also `set_option` to
+            // make the intent explicit — anyone reading this knows we
+            // want a position-delete parquet, not a catalog-row inline.
+            statement.execute("CALL dl.set_option('data_inlining_row_limit', '0')");
+            statement.execute(
+                    "INSERT INTO dl.sales.returns_file "
+                            + "VALUES (10, 1.00), (11, 2.00), (12, 3.00), (13, 4.00)");
+            statement.execute("DELETE FROM dl.sales.returns_file WHERE id = 12");
 
             statement.execute("CHECKPOINT dl");
         }

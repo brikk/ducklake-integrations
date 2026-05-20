@@ -90,7 +90,8 @@ class DuckLakeConnectorListingTest {
             assertThat(metadata.databaseExists(null, "does_not_exist")).isFalse();
 
             assertThat(metadata.listTableNames(null, "sales"))
-                    .containsExactlyInAnyOrder("orders", "customers");
+                    .containsExactlyInAnyOrder(
+                            "orders", "customers", "returns_file", "returns_inline");
             assertThat(metadata.listTableNames(null, "analytics"))
                     .containsExactly("events");
             assertThat(metadata.listTableNames(null, "does_not_exist"))

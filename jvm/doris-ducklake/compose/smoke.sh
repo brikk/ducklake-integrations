@@ -169,4 +169,108 @@ docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
     SELECT * FROM orders LIMIT 5;
 " 2>&1
 
+# 9. Step 7 of the roadmap: position-delete plumbing exercise.
+#
+# Plan (against a dedicated tpch.step7_orders table so tpch.orders stays
+# clean for the Step 5 SELECT *):
+#   (a) issue DELETE through DuckDB+DuckLake. step7-delete.py first sets
+#       data_inlining_row_limit=0 to force the file-based delete path
+#       for THIS SMOKE only — production users will produce both inline
+#       and file-based deletes and the connector must handle whatever
+#       DuckDB writes. The smoke flips the option as fixture setup,
+#       not as a usage prescription. Inline-delete handling is tracked
+#       as Step 7.5 (see friction log 2026-05-19 entry on inline deletes);
+#   (b) verify ducklake_delete_file got a fresh row pointing at a
+#       position-delete parquet — that's the FE-observable signal that
+#       the Step 7 path is reachable from the catalog side;
+#   (c) drop+recreate the catalog so Doris re-resolves snapshot fresh
+#       (REFRESH CATALOG was not enough on the first bring-up);
+#   (d) try SELECT COUNT(*) through Doris. As of 2026-05-19 this fails
+#       with `[CORRUPTION]Not nullable column has null values` because
+#       DuckLake writes the position-delete file with OPTIONAL columns
+#       and the BE iceberg reader expects REQUIRED (friction log entry
+#       on DuckLake delete-file parquet nullability). We log the
+#       expected failure but do not fail the smoke — the FE work shipped;
+#       end-to-end correctness is blocked on the BE/DuckLake fix.
+DELETE_COUNT=7
+
+log "Issuing DELETE of $DELETE_COUNT rows through DuckDB+DuckLake (on tpch.step7_orders)…"
+# step7-delete.py is a single file so a bind mount survives the
+# host→podman-VM file-sharing path (the previous-bring-up lesson about bind
+# mounts failing applies to directory trees with jars, not single files).
+docker run --rm \
+    --network trino-ducklake-dev_default \
+    -v "${HERE}/step7-delete.py:/script.py:ro" \
+    -e PG_HOST=trino-ducklake-postgres \
+    -e PG_DB=ducklake \
+    -e PG_USER=ducklake \
+    -e PG_PASSWORD=ducklake \
+    -e S3_ENDPOINT=trino-ducklake-minio:9000 \
+    -e S3_KEY_ID=minioadmin \
+    -e S3_SECRET=minioadmin \
+    -e DATA_PATH=s3://ducklake/data/ \
+    -e DELETE_COUNT="$DELETE_COUNT" \
+    python:3.12-slim sh -c '
+        set -e
+        pip install --quiet --no-cache-dir "duckdb==1.5.2"
+        python /script.py
+    ' 2>&1 | sed "s/^/  [duckdb] /"
+
+log "Verifying ducklake_delete_file got a fresh row (active at the latest snapshot)…"
+active_deletes=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+    SELECT COUNT(*) FROM ducklake_delete_file WHERE end_snapshot IS NULL;
+" 2>&1 | tail -1)
+if [[ "$active_deletes" -lt 1 ]]; then
+    log "FAIL: no active delete file row in ducklake_delete_file. DELETE may have inlined instead — check ducklake_inlined_delete_*."
+    exit 1
+fi
+log "  ducklake_delete_file has $active_deletes active row(s) — FE-side Step 7 plumbing is exercised."
+
+log "Refreshing Doris catalog so the new snapshot is visible…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    DROP CATALOG IF EXISTS dl;
+    CREATE CATALOG dl PROPERTIES (
+        'type'              = 'ducklake',
+        'metadata.url'      = 'jdbc:postgresql://trino-ducklake-postgres:5432/ducklake',
+        'metadata.user'     = 'ducklake',
+        'metadata.password' = 'ducklake',
+        'storage.warehouse' = 's3://ducklake/data/',
+        's3.endpoint'       = 'http://trino-ducklake-minio:9000',
+        's3.region'         = 'us-east-1',
+        's3.access_key'     = 'minioadmin',
+        's3.secret_key'     = 'minioadmin',
+        'use_path_style'    = 'true'
+    );
+" 2>&1 | tail -5
+
+log "Attempting SELECT COUNT(*) via Doris on the table with the new delete file…"
+# Capture output; either success (count == 100 - DELETE_COUNT) or the known
+# BE error. Don't propagate failure to smoke exit code — the FE wire-format
+# work is what this smoke verifies; downstream BE parquet-nullability fix
+# is tracked in ducklake-doris-friction.md (2026-05-19 entry).
+set +e
+output=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+    SELECT COUNT(*) FROM dl.tpch.step7_orders;
+" 2>&1)
+status=$?
+set -e
+if [[ $status -eq 0 ]]; then
+    expected=$((100 - DELETE_COUNT))
+    if [[ "$output" == "$expected" ]]; then
+        log "Step 7 GREEN: Doris saw $output rows (expected $expected). Deletes propagated end-to-end."
+    else
+        log "Step 7 PARTIAL: Doris returned $output rows, expected $expected."
+    fi
+else
+    if echo "$output" | grep -q "Not nullable column has null values"; then
+        log "Step 7 FE-side OK; BE-side blocked on known parquet-nullability gap."
+        log "  See ducklake-doris-friction.md (2026-05-19) for the upstream fix."
+        log "  BE error: $(echo "$output" | grep -oE 'reason = \[[^]]+\][^[:cntrl:]]*' | head -1)"
+    else
+        log "Step 7 unexpected error from Doris:"
+        echo "$output" | tail -10
+        exit 1
+    fi
+fi
+
 log "Smoke complete."

@@ -1,8 +1,11 @@
 package dev.brikk.ducklake.doris.plugin;
 
 import java.util.ArrayList;
+import java.util.List;
 
+import org.apache.doris.thrift.TFileFormatType;
 import org.apache.doris.thrift.TFileRangeDesc;
+import org.apache.doris.thrift.TIcebergDeleteFileDesc;
 import org.apache.doris.thrift.TIcebergFileDesc;
 import org.apache.doris.thrift.TTableFormatFileDesc;
 import org.apache.thrift.TSerializer;
@@ -25,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DuckLakeScanRangeThriftParityTest {
 
     private static final String PATH = "s3://warehouse/sales/orders/data_0.parquet";
+    private static final String DELETE_PATH = "s3://warehouse/sales/orders/delete_0.parquet";
     private static final long START = 0L;
     private static final long LENGTH = 4096L;
     private static final long FILE_SIZE = 4096L;
@@ -88,6 +92,64 @@ class DuckLakeScanRangeThriftParityTest {
         assertThat(iceberg.isSetContent()).isFalse();
     }
 
+    @Test
+    void formatDescMatchesIcebergGoldenForPositionDeleteRange() throws Exception {
+        // Byte identity against a hand-built golden that mirrors how Iceberg
+        // emits a single position-delete file. A divergence here means the BE
+        // reader's delete-file dispatch could miss or misinterpret our entries.
+        DuckLakeScanRange range = new DuckLakeScanRange(
+                PATH, START, LENGTH, FILE_SIZE, FILE_FORMAT,
+                List.of(new DuckLakePositionDelete(DELETE_PATH, FILE_FORMAT)));
+
+        TTableFormatFileDesc actual = populatedFormatDesc(range);
+        TTableFormatFileDesc golden = goldenFormatDescWithPositionDelete(
+                PATH, "iceberg", DELETE_PATH);
+
+        assertThat(serialize(actual)).isEqualTo(serialize(golden));
+    }
+
+    @Test
+    void icebergParamsCarryPositionDeleteFile() throws Exception {
+        // Field-level assertions on the populated delete-file descriptor:
+        // path, file format, content discriminator. Position bounds stay
+        // unset — DuckLake's catalog doesn't track them in v1, so the BE
+        // scans the full delete file (correct, just unpruned).
+        DuckLakeScanRange range = new DuckLakeScanRange(
+                PATH, START, LENGTH, FILE_SIZE, FILE_FORMAT,
+                List.of(new DuckLakePositionDelete(DELETE_PATH, FILE_FORMAT)));
+
+        TTableFormatFileDesc formatDesc = populatedFormatDesc(range);
+        TIcebergFileDesc iceberg = formatDesc.getIcebergParams();
+
+        assertThat(iceberg.getDeleteFiles()).hasSize(1);
+        TIcebergDeleteFileDesc delete = iceberg.getDeleteFiles().get(0);
+        assertThat(delete.getPath()).isEqualTo(DELETE_PATH);
+        assertThat(delete.getFileFormat()).isEqualTo(TFileFormatType.FORMAT_PARQUET);
+        // POSITION_DELETE discriminator (= 1). DuckLake has no equality
+        // deletes, so this constant should never change.
+        assertThat(delete.getContent())
+                .isEqualTo(DuckLakeScanRange.CONTENT_POSITION_DELETE)
+                .isEqualTo(1);
+        assertThat(delete.isSetPositionLowerBound()).isFalse();
+        assertThat(delete.isSetPositionUpperBound()).isFalse();
+        assertThat(delete.isSetFieldIds()).isFalse();
+    }
+
+    @Test
+    void positionDeletesAccessorIsImmutable() {
+        DuckLakePositionDelete pd = new DuckLakePositionDelete(DELETE_PATH, FILE_FORMAT);
+        DuckLakeScanRange range = new DuckLakeScanRange(
+                PATH, START, LENGTH, FILE_SIZE, FILE_FORMAT, List.of(pd));
+
+        List<DuckLakePositionDelete> deletes = range.positionDeletes();
+        assertThat(deletes).containsExactly(pd);
+        // List.copyOf produces an unmodifiable list; mutation must throw so
+        // the range's internal state can't be corrupted by an outside caller.
+        org.junit.jupiter.api.Assertions.assertThrows(
+                UnsupportedOperationException.class,
+                () -> deletes.add(new DuckLakePositionDelete("x", "parquet")));
+    }
+
     private static TTableFormatFileDesc populatedFormatDesc(DuckLakeScanRange range) {
         TTableFormatFileDesc formatDesc = new TTableFormatFileDesc();
         TFileRangeDesc rangeDesc = new TFileRangeDesc();
@@ -111,6 +173,32 @@ class DuckLakeScanRangeThriftParityTest {
         iceberg.setFormatVersion(2);
         iceberg.setOriginalFilePath(path);
         iceberg.setDeleteFiles(new ArrayList<>());
+
+        formatDesc.setIcebergParams(iceberg);
+        return formatDesc;
+    }
+
+    /**
+     * Hand-built golden for a v2 data file carrying one position-delete file.
+     * Mirrors IcebergScanRange's single-position-delete emission with no
+     * bounds set (DuckLake's catalog doesn't surface row-position bounds).
+     */
+    private static TTableFormatFileDesc goldenFormatDescWithPositionDelete(
+            String path, String discriminator, String deletePath) {
+        TTableFormatFileDesc formatDesc = new TTableFormatFileDesc();
+        formatDesc.setTableFormatType(discriminator);
+
+        TIcebergFileDesc iceberg = new TIcebergFileDesc();
+        iceberg.setFormatVersion(2);
+        iceberg.setOriginalFilePath(path);
+
+        List<TIcebergDeleteFileDesc> deletes = new ArrayList<>();
+        TIcebergDeleteFileDesc delete = new TIcebergDeleteFileDesc();
+        delete.setPath(deletePath);
+        delete.setFileFormat(TFileFormatType.FORMAT_PARQUET);
+        delete.setContent(1);  // POSITION_DELETE
+        deletes.add(delete);
+        iceberg.setDeleteFiles(deletes);
 
         formatDesc.setIcebergParams(iceberg);
         return formatDesc;

@@ -99,9 +99,38 @@ final class DuckLakeScanPlanProvider implements ConnectorScanPlanProvider {
                     0L,
                     file.fileSizeBytes(),
                     file.fileSizeBytes(),
-                    normalizeFileFormat(file.fileFormat())));
+                    normalizeFileFormat(file.fileFormat()),
+                    resolvePositionDeletes(file, tableDataPath)));
         }
         return ranges;
+    }
+
+    /**
+     * Surfaces the at-most-one active position-delete file the catalog already
+     * inlines on the {@link DucklakeDataFile} (LEFT JOIN at
+     * {@code JdbcDucklakeCatalog#getDataFiles}, snapshot-filtered). Returns
+     * an empty list when the data file has no active deletes.
+     *
+     * <p>DuckLake's catalog guarantees at most one active delete file per
+     * data file per snapshot
+     * ({@code JdbcDucklakeCatalog#checkDeleteFileOverlap}), so no second
+     * catalog round-trip is needed.
+     */
+    private List<DuckLakePositionDelete> resolvePositionDeletes(
+            DucklakeDataFile file, String tableDataPath) {
+        Optional<String> deletePath = file.deleteFilePath();
+        if (deletePath.isEmpty()) {
+            return List.of();
+        }
+        // PATH_IS_RELATIVE and FORMAT come from the same row as PATH; when
+        // PATH is non-null the others are non-null too. Defensive defaults
+        // mirror DuckLake's own convention (relative paths under the
+        // warehouse, parquet format).
+        boolean isRelative = file.deleteFilePathIsRelative().orElse(true);
+        String absolutePath = pathResolver.resolveFilePath(
+                deletePath.get(), isRelative, tableDataPath);
+        String format = normalizeFileFormat(file.deleteFileFormat().orElse("parquet"));
+        return List.of(new DuckLakePositionDelete(absolutePath, format));
     }
 
     /**
