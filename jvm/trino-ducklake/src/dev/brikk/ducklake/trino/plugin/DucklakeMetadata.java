@@ -35,6 +35,7 @@ import dev.brikk.ducklake.catalog.DucklakeTableStats;
 import dev.brikk.ducklake.catalog.DucklakeView;
 import dev.brikk.ducklake.catalog.PartitionFieldSpec;
 import dev.brikk.ducklake.catalog.TableColumnSpec;
+import dev.brikk.ducklake.catalog.TableLocationSpec;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -841,7 +842,9 @@ public class DucklakeMetadata
                 ? Optional.empty()
                 : Optional.of(partitionFields);
 
-        translateCatalogExceptions(() -> catalog.createTable(tableName.getSchemaName(), tableName.getTableName(), columnSpecs, partitionSpec));
+        Optional<TableLocationSpec> location = DucklakeTableProperties.getLocation(tableMetadata.getProperties());
+
+        translateCatalogExceptions(() -> catalog.createTable(tableName.getSchemaName(), tableName.getTableName(), columnSpecs, partitionSpec, location));
     }
 
     private TableColumnSpec toColumnSpec(String name, Type trinoType, boolean nullable)
@@ -986,7 +989,9 @@ public class DucklakeMetadata
                 ? Optional.empty()
                 : Optional.of(partitionFields);
 
-        translateCatalogExceptions(() -> catalog.createTable(tableName.getSchemaName(), tableName.getTableName(), columnSpecs, partitionSpec));
+        Optional<TableLocationSpec> location = DucklakeTableProperties.getLocation(tableMetadata.getProperties());
+
+        translateCatalogExceptions(() -> catalog.createTable(tableName.getSchemaName(), tableName.getTableName(), columnSpecs, partitionSpec, location));
 
         // Resolve the newly created table to get its ID and build a writable handle
         long snapshotId = catalog.getCurrentSnapshotId();

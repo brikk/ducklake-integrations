@@ -206,10 +206,17 @@ public interface DucklakeCatalog
     /**
      * Create a new empty table with columns and optional partition spec.
      * Creates a new snapshot atomically.
+     *
+     * <p>{@code location}, when present, lands in {@code ducklake_table.path}
+     * (and {@code path_is_relative}) instead of the default
+     * {@code <tableName>/} relative path. The catalog stores it verbatim;
+     * callers (e.g. the Trino connector's {@code DucklakeTableProperties})
+     * are responsible for trailing-slash, traversal, and scheme normalization.
      */
     void createTable(String schemaName, String tableName,
             List<TableColumnSpec> columns,
-            Optional<List<PartitionFieldSpec>> partitionSpec);
+            Optional<List<PartitionFieldSpec>> partitionSpec,
+            Optional<TableLocationSpec> location);
 
     /**
      * Drop a table. Sets end_snapshot on the table and all its columns,

@@ -21,16 +21,13 @@ Next up:
    option upstream just added (merged 2026-05-12) that we MUST support
    and test against. See § Quack Catalog Backend (DuckDB RPC) below.
    Cross-cutting concern — affects both read and write paths.
-2. Per-table storage path (`location` table property) — small,
-   self-contained, closes a UX gap surfaced by the pg_ducklake
-   comparison.
-3. Sorted-table writes and the M8 maintenance procedures; both are
+2. Sorted-table writes and the M8 maintenance procedures; both are
    bigger commitments and sit further below.
 
-(The `add_files` procedure, bucket partitioning, and nested-leaf file
-column stats have all landed; see § Adopt Existing Parquet Files
-(`add_files`), § Bucket Partitioning, and § Nested-Leaf File Column Stats
-below.)
+(The `add_files` procedure, bucket partitioning, nested-leaf file
+column stats, and per-table `location` have all landed; see § Adopt
+Existing Parquet Files (`add_files`), § Bucket Partitioning, § Nested-
+Leaf File Column Stats, and § Per-Table Storage Path below.)
 
 ## DuckDB-as-Catalog Backend (Local + Quack)
 
@@ -238,39 +235,36 @@ Reference: <https://github.com/duckdb/ducklake/pull/1151>
 
 ## Per-Table Storage Path (`location` Table Property)
 
-Today every table we create gets its `ducklake_table.path` hardcoded to
-`<tableName>/` under the schema's path (`JdbcDucklakeCatalog.java:1544`).
-There is no Trino-side knob to override it. The catalog mechanism is
-already there — the column is per-table — we just don't expose user
-control over it.
-
-**Why now**: pg_ducklake #199 (2026-05-18) shipped `CREATE TABLE ... USING
-ducklake WITH (ducklake.table_path = '...')` precisely to close this gap
-on the PG side. The motivating use cases — landing different tables on
-different storage tiers, ORM-emitted DDL that needs a specific prefix —
-apply equally to Trino. Without it users have to externally re-symlink or
-rewrite paths after the fact. See
-[COMPARE-pg_ducklake.md](COMPARE-pg_ducklake.md) "Things pg_ducklake (and
-therefore the reference) does that we don't" → **Per-table data path at
-CREATE** row.
-
-Scope:
-
-- [ ] Add a `location` (or `data_path`) string property to
-  `DucklakeTableProperties`. Trino's convention across connectors is
-  `location` (Hive, Iceberg, Delta all use it); match that for least
-  surprise.
-- [ ] Plumb the property value through `DucklakeMetadata.createTable`
-  into `JdbcDucklakeCatalog.createTable` so it lands in
-  `ducklake_table.path` instead of the hardcoded default.
-- [ ] Validate the value: non-empty, no path traversal, trailing slash
-  enforced (DuckLake stores paths with trailing `/`).
-- [ ] Respect `path_is_relative`: a property value starting with a known
-  scheme (`s3://`, `gs://`, `file://`, `abfss://`) should be treated as
-  absolute (`path_is_relative=false`); anything else stays relative.
-- [ ] Cross-engine test: Trino creates a table with an explicit
-  `location`, DuckDB reads it back, data files land where expected.
-- [ ] Documentation row in the README table-properties section.
+- [x] **`location` table property.** Landed 2026-05-20.
+  - `TableLocationSpec(path, isRelative)` added to `ducklake-catalog`;
+    `DucklakeCatalog.createTable` signature carries an
+    `Optional<TableLocationSpec>` so callers (Trino plugin today, future
+    Doris/Spark) opt in per-table. Empty falls back to the historical
+    `<tableName>/` relative default.
+  - `DucklakeTableProperties.LOCATION_PROPERTY = "location"` (matches
+    Hive/Iceberg/Delta convention) with `getLocation` doing scheme
+    detection and trailing-slash normalization, and a validator that
+    rejects blank input and `..` path-traversal segments (both `/` and
+    `\` separators).
+  - URI-scheme prefix (matched by `^[a-zA-Z][a-zA-Z0-9+\-.]*://`) →
+    `path_is_relative=false`; otherwise relative. Covers
+    `s3://`, `gs://`, `file://`, `abfss://`, `hdfs://`, `gcs://`, etc.
+    without enumeration.
+  - `DucklakeMetadata.createTable` and `beginCreateTable` (CTAS) both
+    plumb the property through. `JdbcDucklakeCatalog.createTable` uses
+    the provided value (or default) when writing `ducklake_table.path` /
+    `path_is_relative`. The existing `DucklakePathResolver` handles
+    relative-vs-absolute resolution at INSERT time unchanged.
+  - Pinned by:
+    - `TestDucklakeTablePropertiesLocation` (10 cases — scheme
+      detection per backend, trailing-slash normalization, missing /
+      blank, validator rejection of `..` traversal, segment-internal
+      `..` allowed).
+    - `TestDucklakeCrossEngineTableLocation` (6 cases — relative
+      round-trip including Trino INSERT + DuckDB read + on-disk parquet
+      assertion, absolute s3-style catalog row, trailing-slash
+      normalization, traversal rejection at CREATE TABLE, default
+      `<tableName>/` fallback unchanged).
 
 Out of scope for v1: per-table data inlining row limit, per-table sort
 keys, and other knobs that route through `ducklake_set_option`.

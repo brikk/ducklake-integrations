@@ -123,7 +123,7 @@ public class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke
                 TableColumnSpec.leaf("name", "VARCHAR", true),
                 TableColumnSpec.leaf("active", "BOOLEAN", true),
                 TableColumnSpec.leaf("event_date", "DATE", true));
-        catalog.createTable(schemaName, "smoke_tbl", cols, Optional.empty());
+        catalog.createTable(schemaName, "smoke_tbl", cols, Optional.empty(), Optional.empty());
 
         long snapshotId = catalog.getCurrentSnapshotId();
         assertThat(catalog.listTables(schema.schemaId(), snapshotId))

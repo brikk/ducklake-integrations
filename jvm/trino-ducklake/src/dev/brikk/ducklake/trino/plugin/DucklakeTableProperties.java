@@ -17,12 +17,14 @@ import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform;
 import dev.brikk.ducklake.catalog.PartitionFieldSpec;
+import dev.brikk.ducklake.catalog.TableLocationSpec;
 import io.trino.spi.TrinoException;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.ArrayType;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,10 +39,13 @@ public class DucklakeTableProperties
 {
     public static final String PARTITIONED_BY_PROPERTY = "partitioned_by";
     public static final String DATA_FILE_FORMAT_PROPERTY = "data_file_format";
+    public static final String LOCATION_PROPERTY = "location";
 
     private static final Pattern TRANSFORM_PATTERN = Pattern.compile("(year|month|day|hour)\\((.+)\\)");
     // bucket(N, col) — N positive integer, col is the source column name. Spaces tolerated.
     private static final Pattern BUCKET_PATTERN = Pattern.compile("bucket\\(\\s*(\\d+)\\s*,\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE);
+    // URI scheme prefix: <scheme>:// — e.g. s3://, gs://, file://, abfss://, hdfs://, gcs://
+    private static final Pattern URI_SCHEME_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+\\-.]*://");
 
     private final List<PropertyMetadata<?>> tableProperties;
 
@@ -62,6 +67,13 @@ public class DucklakeTableProperties
                         "Data file format for this table's CTAS payload: 'parquet' (default) or 'duckdb'. Overrides the session-level data_file_format for this CREATE only.",
                         null,
                         DucklakeTableProperties::validateDataFileFormat,
+                        false),
+                stringProperty(
+                        LOCATION_PROPERTY,
+                        "Storage path for this table's data files. Absolute (s3://bucket/foo/, file:///abs/path/) lands as-is; "
+                                + "relative (e.g. 'special_dir/') resolves under the schema's data path.",
+                        null,
+                        DucklakeTableProperties::validateLocation,
                         false));
     }
 
@@ -85,6 +97,50 @@ public class DucklakeTableProperties
     public static String getDataFileFormat(Map<String, Object> tableProperties)
     {
         return (String) tableProperties.get(DATA_FILE_FORMAT_PROPERTY);
+    }
+
+    /**
+     * Returns a normalized {@link TableLocationSpec} when the user supplied
+     * {@code location}, otherwise empty (caller should use the catalog's default
+     * relative {@code <tableName>/} path). Normalization:
+     * <ul>
+     *   <li>trailing slash appended if missing (DuckLake convention)</li>
+     *   <li>{@code path_is_relative=false} when the value starts with a URI scheme
+     *       (e.g. {@code s3://}, {@code gs://}, {@code file://}, {@code abfss://}),
+     *       otherwise relative</li>
+     * </ul>
+     * Validation (rejected as {@code INVALID_TABLE_PROPERTY}) happens in
+     * {@link #validateLocation}.
+     */
+    public static Optional<TableLocationSpec> getLocation(Map<String, Object> tableProperties)
+    {
+        String raw = (String) tableProperties.get(LOCATION_PROPERTY);
+        if (raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
+        String trimmed = raw.trim();
+        boolean isAbsolute = URI_SCHEME_PATTERN.matcher(trimmed).find();
+        String normalized = trimmed.endsWith("/") ? trimmed : trimmed + "/";
+        return Optional.of(new TableLocationSpec(normalized, !isAbsolute));
+    }
+
+    private static void validateLocation(String value)
+    {
+        if (value == null) {
+            return;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            throw new TrinoException(INVALID_TABLE_PROPERTY, LOCATION_PROPERTY + " must not be blank");
+        }
+        // Reject path traversal — split on both '/' and '\' to catch Windows-style attempts.
+        for (String segment : trimmed.split("[/\\\\]")) {
+            if (segment.equals("..")) {
+                throw new TrinoException(
+                        INVALID_TABLE_PROPERTY,
+                        LOCATION_PROPERTY + " must not contain '..' path-traversal segments: " + value);
+            }
+        }
     }
 
     public List<PropertyMetadata<?>> getTableProperties()

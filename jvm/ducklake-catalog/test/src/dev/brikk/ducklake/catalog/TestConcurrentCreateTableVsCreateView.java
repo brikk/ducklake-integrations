@@ -73,6 +73,7 @@ public class TestConcurrentCreateTableVsCreateView
                 catalog,
                 () -> catalog.createTable("test_schema", "shared_name",
                         List.of(TableColumnSpec.leaf("id", "integer", false)),
+                        Optional.empty(),
                         Optional.empty()),
                 () -> catalog.createView("test_schema", "shared_name",
                         "SELECT 1 AS x", "trino", null));

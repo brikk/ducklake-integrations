@@ -87,7 +87,7 @@ public class TestConcurrentCreateTableInDroppedSchema
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
                 () -> catalog.dropSchema("about_to_be_dropped"),
-                () -> catalog.createTable("about_to_be_dropped", "racing_table", columns, Optional.empty()));
+                () -> catalog.createTable("about_to_be_dropped", "racing_table", columns, Optional.empty(), Optional.empty()));
 
         assertThat(result.loserException())
                 .as("loser's createTable in a concurrently-dropped schema must abort")

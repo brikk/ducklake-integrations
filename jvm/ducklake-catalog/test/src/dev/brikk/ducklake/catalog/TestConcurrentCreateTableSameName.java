@@ -75,8 +75,8 @@ public class TestConcurrentCreateTableSameName
 
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
-                () -> catalog.createTable("test_schema", "dueling_table", columns, Optional.empty()),
-                () -> catalog.createTable("test_schema", "dueling_table", columns, Optional.empty()));
+                () -> catalog.createTable("test_schema", "dueling_table", columns, Optional.empty(), Optional.empty()),
+                () -> catalog.createTable("test_schema", "dueling_table", columns, Optional.empty(), Optional.empty()));
 
         assertThat(result.loserException())
                 .as("two concurrent createTable with same (schema, name) must conflict")

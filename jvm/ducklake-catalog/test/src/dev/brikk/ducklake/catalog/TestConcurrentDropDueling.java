@@ -81,6 +81,7 @@ public class TestConcurrentDropDueling
     {
         catalog.createTable("test_schema", "drop_dueling_table",
                 List.of(TableColumnSpec.leaf("id", "integer", false)),
+                Optional.empty(),
                 Optional.empty());
 
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(

@@ -270,6 +270,30 @@ catalogs; it should not be needed against any v1-conformant catalog.
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
 
+## Table Properties
+
+Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (...)`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `partitioned_by` | `ARRAY(VARCHAR)` | Partition columns with optional transform, e.g. `ARRAY['region', 'year(event_date)', 'bucket(4, customer_id)']`. See [Partitioning](#partitioning). |
+| `data_file_format` | `VARCHAR` | Data file format for this table's CTAS payload: `'parquet'` (default) or `'duckdb'`. Overrides the session-level `data_file_format` for this CREATE only. |
+| `location` | `VARCHAR` | Per-table storage path landed in `ducklake_table.path`. Values with a URI scheme (`s3://`, `gs://`, `file://`, `abfss://`, ...) are stored absolute (`path_is_relative=false`); other values are stored relative to the schema's data path. Trailing slash is appended if missing; `..` segments are rejected. Defaults to `<tableName>/`. |
+
+Example:
+
+```sql
+CREATE TABLE sales.orders (
+    id BIGINT,
+    region VARCHAR,
+    event_date DATE,
+    amount DOUBLE
+) WITH (
+    partitioned_by = ARRAY['region', 'year(event_date)'],
+    location = 's3://my-bucket/cold-tier/orders/'
+);
+```
+
 ## Procedures
 
 Procedures are exposed under the `system` schema of the catalog, following the Trino

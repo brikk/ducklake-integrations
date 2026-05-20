@@ -1556,11 +1556,14 @@ public class JdbcDucklakeCatalog
     @Override
     public void createTable(String schemaName, String tableName,
             List<TableColumnSpec> columns,
-            Optional<List<PartitionFieldSpec>> partitionSpec)
+            Optional<List<PartitionFieldSpec>> partitionSpec,
+            Optional<TableLocationSpec> location)
     {
         var tab = DUCKLAKE_TABLE.as("tab");
         var partinfo = DUCKLAKE_PARTITION_INFO.as("partinfo");
         var partcol = DUCKLAKE_PARTITION_COLUMN.as("partcol");
+        String tablePath = location.map(TableLocationSpec::path).orElse(tableName + "/");
+        boolean pathIsRelative = location.map(TableLocationSpec::isRelative).orElse(true);
         executeWriteTransaction("create table " + schemaName + "." + tableName, tx -> {
             long schemaId = tx.resolveSchemaId(schemaName);
             long tableId = tx.allocateCatalogId();
@@ -1573,8 +1576,8 @@ public class JdbcDucklakeCatalog
                     .set(tab.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
                     .set(tab.SCHEMA_ID, schemaId)
                     .set(tab.TABLE_NAME, tableName)
-                    .set(tab.PATH, tableName + "/")
-                    .set(tab.PATH_IS_RELATIVE, true)
+                    .set(tab.PATH, tablePath)
+                    .set(tab.PATH_IS_RELATIVE, pathIsRelative)
                     .execute();
 
             // 2. Insert column rows (flattening nested types with parent links)
