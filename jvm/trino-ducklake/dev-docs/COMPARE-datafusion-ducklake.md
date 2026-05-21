@@ -107,10 +107,11 @@ Closed:
 
 Still open:
 
-- **Track `partial_max` handling for 1.0.** `DUCKLAKE_1_0_IMPACT.md` already flags Puffin
-  format as a medium-priority gap; `partial_max` deserves the same treatment. Neither
-  implementation reads it today. When a DuckDB compaction rewrites a delete file as partial,
-  we need to not mis-attribute deletes to older snapshots.
+- **Track `partial_max` handling for 1.0.** Puffin deletion-vector reads landed on our
+  side (2026-05-20 — `DucklakePuffinDeleteReader`), so the remaining 1.0 delete-file gap
+  is `partial_max`. Neither implementation reads it today. When a DuckDB compaction
+  rewrites a delete file as partial, we need to not mis-attribute deletes to older
+  snapshots.
 - ~~Consider adopting the footer-size hint on the read path.~~ Adopted — see "Ideas worth
   stealing" #1 above; `FooterPrefetchingParquetDataSource` wraps reads using the
   `ducklake_data_file.footer_size` / `ducklake_delete_file.footer_size` hints.

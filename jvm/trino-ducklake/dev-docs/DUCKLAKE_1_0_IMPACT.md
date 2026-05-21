@@ -72,9 +72,13 @@ which handles both transparently.
 | `format` values | Was: only `parquet`. Now: `parquet` or `puffin` (experimental) |
 | New column: `partial_max` | BIGINT — max snapshot_id in partial deletion files |
 
-If a DuckDB user enables `write_deletion_vectors=true`, our connector will encounter
-`puffin` delete files and silently produce wrong results. Tracked under
-[TODO-READ-MODE § Puffin Deletion Vector Reads](TODO-READ-MODE.md#puffin-deletion-vector-reads).
+A DuckDB user enabling `write_deletion_vectors=true` produces `puffin` delete files;
+those are now read by `DucklakePuffinDeleteReader` (2026-05-20) and applied via the
+same `deletedRows` set as parquet positional deletes. `DucklakeSplitManager.validateDeleteFileFormats`
+accepts both `parquet` and `puffin`. The `partial_max` column is still not consulted
+by either our reader or the Rust reference reader — when a compaction rewrites a delete
+file as partial we may mis-attribute deletes to older snapshots. Tracked separately in
+[COMPARE-datafusion-ducklake.md § Action items surfaced by this comparison](COMPARE-datafusion-ducklake.md#action-items-surfaced-by-this-comparison).
 
 ## New Features in 1.0
 
@@ -120,15 +124,24 @@ without variant-specific operators, shredded field access, or pushdown. Tracked 
 **Impact**: geometry types map to VARBINARY (degraded). No spatial pruning. Tracked
 under [TODO-READ-MODE § Type-Support Improvements](TODO-READ-MODE.md#type-support-improvements).
 
-### 5. Deletion Vectors (Experimental)
+### 5. Deletion Vectors (Experimental) — shipped (read path)
 
 **Spec**: Iceberg V3 deletion vectors in Puffin file format (Roaring bitmap),
 opt-in via `write_deletion_vectors=true`.
 
-**Impact**: only Parquet positional delete files are supported today. See the
-`ducklake_delete_file` section above and the Puffin reuse analysis below for what
-implementation will look like; the open work is under
-[TODO-READ-MODE § Puffin Deletion Vector Reads](TODO-READ-MODE.md#puffin-deletion-vector-reads).
+**Impact**: read path landed 2026-05-20 via `DucklakePuffinDeleteReader`. Both
+`parquet` and `puffin` delete-file formats are accepted; positions are merged
+into the same per-split `deletedRows` set. Cross-engine test
+`TestDucklakeCrossEnginePuffinDeleteRoundTrip` proves Trino can read deletes
+written by DuckDB with the writer flag enabled.
+
+Write path is *not* changed — Trino-side DELETE/UPDATE/MERGE still emits parquet
+positional delete files. That asymmetry is deliberate (no `write_deletion_vectors`
+session property added) and noted in the README's "Known Limitations".
+
+Implementation note: DuckLake's `.puffin` file is **not** a real Iceberg Puffin
+file — see the "Reuse analysis" section below for the discovered format and why
+we did not adopt `iceberg-core`.
 
 ### 6. New Integer Types (int128, uint128) — shipped
 
@@ -175,50 +188,66 @@ No connector impact: we already use PostgreSQL exclusively.
 | Snapshot changes descriptions | Minor wording fixes (e.g., "ran" vs "run") |
 | Documentation links | All changed from `docs/preview/` to `docs/stable/` |
 
-## Existing Puffin Support in Trino (Reuse Analysis)
+## DuckLake "Puffin" Delete Files: Format Discovery (Implementation Notes)
 
-Reference for the Puffin DV implementation work tracked in
-[TODO-READ-MODE](TODO-READ-MODE.md). Both the Iceberg and Delta Lake connectors
-already have deletion vector / Roaring bitmap support.
+This section was previously a "reuse analysis" assuming DuckLake's puffin delete
+files matched the Iceberg V3 spec. Implementing the reader (2026-05-20) revealed
+they don't — capturing the discovered format here for future maintainers.
 
-### Iceberg connector — full Puffin stack
+### What DuckLake actually writes
 
-| File | Purpose | Reusable? |
-|------|---------|-----------|
-| `plugin/trino-iceberg/.../delete/DeletionVector.java` | In-memory DV with RoaringBitmap array | Reference only — coupled to Iceberg internals |
-| `plugin/trino-iceberg/.../delete/DefaultDeletionVectorWriter.java` | Writes DVs to Puffin via `org.apache.iceberg.puffin.PuffinWriter` | Reference only |
-| `plugin/trino-iceberg/.../IcebergPageSourceProvider.java` (line ~512) | Reads DV blob from Puffin file by offset+size | **Pattern reusable** |
-| `plugin/trino-iceberg/.../delete/DeleteFile.java` | `isDeletionVector()`, content offset/size | Reference only |
+Per `vendor/ducklake/src/storage/ducklake_delete.cpp` `WriteDeletionVectorFile`,
+a DuckLake `.puffin` file contains **only the deletion-vector blob bytes** —
+no PFA1 magic, no JSON footer, no blob framing. It's a `.puffin` file in name only.
 
-### Delta Lake connector — separate implementation
+Blob layout (per `DuckLakeDeletionVectorData::ToBlob` in
+`ducklake_deletion_vector.cpp`):
 
-| File | Purpose | Reusable? |
-|------|---------|-----------|
-| `plugin/trino-delta-lake/.../delete/RoaringBitmapArray.java` | Roaring bitmap wrapper | Reference only |
-| `plugin/trino-delta-lake/.../delete/DeletionVectors.java` | Reads/writes DV blobs (NOT Puffin format) | Reference only |
+```
+[4B BE u32 vector_size]            length of magic+count+bitmaps (excludes vector_size and CRC)
+[4B magic 0xD1 0xD3 0x39 0x64]
+[8B LE u64 bitmap_count]
+for each bitmap:
+  [4B LE i32 high_bits]            high 32 bits of the row positions in this group
+  [N bytes portable Roaring]       CRoaring portable serialization (LITTLE-endian)
+[4B BE u32 CRC32]                  checksum over magic+count+bitmaps
+```
 
-### Key takeaways
+Row positions are reconstructed as `(high_bits << 32) | (low & 0xFFFFFFFFL)`.
 
-- **Both connectors use `org.roaringbitmap:RoaringBitmap`** — we can add the same
-  dependency.
-- **Iceberg uses Apache Iceberg's Puffin library** (`org.apache.iceberg.puffin.*`)
-  for reading/writing Puffin files. DuckLake's Puffin format should be compatible
-  since both follow the Iceberg Puffin spec.
-- **DeletionVector serialization format**: Iceberg's `DeletionVector.java` handles
-  the binary format (magic number `0x64_39_d3_d1`, RoaringBitmap array, CRC32
-  checksums). DuckLake's puffin deletion vectors likely use the same format since
-  they claim Iceberg V3 compatibility.
-- **None of the code is directly reusable** (too tightly coupled to each connector),
-  but the patterns and libraries are proven. Our implementation would:
-  1. Add `org.roaringbitmap:RoaringBitmap` dependency
-  2. Add `org.apache.iceberg:iceberg-core` dependency (or just the puffin subset)
-  3. Read puffin blob by offset+size from `TrinoFileSystem`
-  4. Deserialize RoaringBitmap using the same format as Iceberg's DeletionVector
-  5. Apply bitmap filter in page source (same pattern as our existing parquet
-     delete files)
-- **Estimated effort**: Medium. Most of the hard work (Puffin format, bitmap format)
-  is solved by existing libraries. The integration into our page source pipeline is
-  the real work.
+### Divergence from Iceberg V3
+
+The Iceberg V3 spec says the blob is a single **64-bit** portable Roaring bitmap
+(`Roaring64NavigableMap`). DuckLake uses multiple **32-bit** Roarings keyed by
+high 32 bits — functionally equivalent but byte-format-incompatible. Iceberg's
+puffin lib cannot decode DuckLake puffin files.
+
+### Why we did not adopt `iceberg-core`
+
+Both the divergent blob format and the absent outer puffin container would have
+required custom code anyway. The ~150-line `DucklakePuffinDeleteReader` is
+cheaper than a transitive `iceberg-core` dependency. Only
+`org.roaringbitmap:RoaringBitmap` (1.6.13 transitively from Trino) was added.
+
+### Library gotcha caught
+
+`RoaringBitmap.deserialize(ByteBuffer)` (versions 1.x) internally slices the
+input buffer and **does not** advance the original buffer's position. The reader
+manually advances by `bitmap.serializedSizeInBytes()` after each call. Without
+this, the second bitmap in a multi-group blob fails with `InvalidRoaringFormat`
+because the cookie read happens at the wrong offset. Regression-pinned by
+`TestDucklakePuffinDeleteReader.testMultipleHighGroupsRoundTrip`.
+
+### Reference points (kept for posterity)
+
+The Iceberg and Delta connectors in Trino both ship RoaringBitmap-based
+deletion-vector readers; neither is directly reusable for DuckLake's bespoke
+format but their integration patterns informed the page-source dispatch:
+
+- `plugin/trino-iceberg/.../IcebergPageSourceProvider.java` — reads DV blob by
+  offset+size from a Puffin file (the actual format, with footer)
+- `plugin/trino-delta-lake/.../delete/DeletionVectors.java` — reads Delta-format
+  DV blobs (also not Iceberg Puffin)
 
 ## DuckLake v1.1 Preview
 
