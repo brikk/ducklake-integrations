@@ -155,6 +155,122 @@ documentation describe how to point a local DuckDB at a Quack server?
 Only commit to a hard cross-engine CI dependency once these three are
 green; before then, keep the work in a development branch.
 
+### quack-wrapper-rewrite-spike
+
+**Source:** `duckdb-quack`, `vendor/ducklake/src/metadata_manager/quack_metadata_manager.cpp:14-30`,
+dated 2026-05-22 (research pass on Quack catalog blockers; see
+`RESEARCH-LOG.md` entry 2026-05-22).
+**Kind:** research → likely large action item
+**Impact:** write path on the Quack-backed catalog only;
+`JdbcDucklakeCatalog`'s constructor + `attemptWriteTransaction` SQL
+emission. Does **not** affect the Postgres or in-process DuckDB paths.
+**Our state:** On the Quack backend we today `ATTACH 'ducklake:quack:...'`
+and let the local DuckDB binder plan our jOOQ DSL against the attached
+catalog. This hits `QuackOptimizer`'s "Multiple streaming scans" check
+(`vendor/duckdb-quack/src/storage/quack_optimizer.cpp:71`) on any query
+with two or more `ducklake_*` references, including the
+`attemptWriteTransaction` snapshot read (`JdbcDucklakeCatalog.java:1051-1054`)
+and every partition-info JOIN (`:575-587`). It also hits the binder's
+`Can only update base table` check (`vendor/duckdb/src/planner/binder/statement/bind_update.cpp:130/135`)
+on every UPDATE/DELETE.
+**Proposed next step:** spike (1-2 days). Build a jOOQ
+`ExecuteListener` (or similar) that, on the Quack branch only:
+
+1. Renders the SQL with `ParamType.INLINED` (no `?` placeholders).
+2. Wraps the rendered SQL in
+   `CALL system.main.quack_query_by_name('<metadata_catalog>', '<inlined-sql>')`.
+3. Sends the wrapper string over JDBC.
+
+Drop the `ATTACH 'ducklake:quack:...'` line from
+`QuackBackedDuckDbCatalogUrl.connectionInitSql()` (`:139-158`); just keep
+`LOAD quack` + `CREATE SECRET`. Verify against
+`TestJdbcDucklakeCatalogOnQuackSmoke`:
+
+- `createSchemaCommitsAndListSchemasSeesIt` — exercises snapshot-read
+  via `attemptWriteTransaction`.
+- `dropTable` / `dropSchema` paths — exercise UPDATE on `ducklake_*`.
+
+Out-of-scope for the spike: server-side transactionality (see
+`quack-server-side-txn-lifecycle`). Spike should succeed at single-op
+correctness; multi-op transactional correctness gates on that separate
+item.
+
+### quack-server-side-txn-lifecycle
+
+**Source:** `vendor/ducklake/test/configs/quack.json` skip-list note on
+`test_deletion_inlining_transaction.test`, dated 2026-05-22.
+**Kind:** research → blocker on full write parity
+**Impact:** write path on Quack-backed catalog;
+`JdbcDucklakeCatalog.attemptWriteTransaction` transaction lifecycle.
+**Our state:** Even on the upstream C++ Quack path, server-side
+transactionality is **not** automatic. Per upstream's own skip note:
+"Each `CALL quack_query(uri, sql)` opens a fresh server-side connection
+that auto-commits independently of the outer DuckLake transaction.
+Proper fix needs metadata operations routed through a transaction-scoped
+server-side connection ... and have the catalog's QuackTransaction
+lifecycle drive server-side BEGIN/COMMIT/ROLLBACK." Our JDBC pool
+already pins one connection per write transaction
+(`dataSource.getConnection()` inside `attemptWriteTransaction` at
+`JdbcDucklakeCatalog.java:1045`), but it is unverified whether DuckDB's
+Quack catalog pins one server-side connection ID per local JDBC
+connection.
+**Proposed next step:** measurement spike. Stand up a Quack server with
+a known token, open one local DuckDB JDBC connection, run a sequence of
+`quack_query_by_name(catalog, sql)` calls, and inspect the
+`quack_connection_id` field of `duckdb_logs_parsed('Quack')` (see
+`vendor/duckdb-web/docs/current/quack/reference.md`, "Quack Log"
+section) — confirm all server-side calls share one `connection_id` as
+long as the local DuckDB session is the same. If yes, server-side
+`BEGIN`/`COMMIT`/`ROLLBACK` should ride that pinned connection
+correctly. If no, we'd need to introduce a per-write-transaction
+"opaque server-side session handle" — non-trivial.
+
+### quack-read-only-fallback
+
+**Source:** Quack research pass 2026-05-22; combined fallback if
+`quack-wrapper-rewrite-spike` proves expensive or
+`quack-server-side-txn-lifecycle` blocks multi-op writes.
+**Kind:** gap → potential alternate posture
+**Impact:** Trino reads on Quack-backed DuckLake, writes deferred to
+DuckDB-native clients.
+**Our state:** The current read path uses single-table queries for
+most metadata accesses (`getCurrentSnapshotId`, `getSchema`,
+`getTable`, `listSchemas`, `listTables`, `listSnapshots`). These are
+single LogicalGets and do **not** trip `QuackOptimizer`'s multi-scan
+check. `getPartitionSpecs` and `getSortKeys` do (`JdbcDucklakeCatalog.java:575-587`,
+`:614-627`) — they JOIN two `ducklake_*` tables. UPDATE/DELETE never
+fires on the read path.
+**Proposed next step:** decision item. If we adopt a read-only Quack
+posture, replace the 2-table JOINs in `getPartitionSpecs` /
+`getSortKeys` with sequential per-table fetches joined in-JVM (one
+`SELECT FROM partinfo WHERE ...` followed by one `SELECT FROM partcol
+WHERE partition_id IN (...)`), or move them behind the wrapper from
+`quack-wrapper-rewrite-spike` (which works for reads too — the wrapper
+also handles JOIN-spanning queries). Verify the full read suite passes
+on Quack without writes. Document the posture in `TODO-WRITE-MODE.md`
+and `TODO-READ-MODE.md` as "Quack: read parity, write deferred".
+
+### quack-jdbc-vs-quack-connid-pinning
+
+**Source:** Quack research pass 2026-05-22.
+**Kind:** research, unblocks `quack-server-side-txn-lifecycle`
+**Impact:** transactional write path on Quack; potentially also
+session-state cross-talk if pinning is per-JDBC.
+**Our state:** Unknown whether the DuckLake C++ extension's Quack
+catalog binds one server-side connection ID per local DuckDB session,
+per local DuckLake transaction, or per local query. Quack's protocol
+docs (`vendor/duckdb-web/docs/current/quack/overview.md`,
+`vendor/duckdb-web/docs/current/quack/reference.md`) describe
+"connection_id (server-issued, stable across requests in one ATTACH)"
+but don't spell out the JDBC-pool case.
+**Proposed next step:** read `vendor/ducklake/src/storage/ducklake_initializer.cpp`
++ `ducklake_transaction.cpp` and `vendor/duckdb-quack/src/quack_client.cpp`
+for the connection-ID lifecycle. Cross-reference with the
+"Connection Request" handshake in
+`vendor/duckdb-quack/src/quack_message.cpp`. ~30 min read. If clear,
+record finding in this entry; if not, escalate to a code-level spike
+against a live Quack server.
+
 ## Closed (escalated to working TODO)
 
 *(none yet)*

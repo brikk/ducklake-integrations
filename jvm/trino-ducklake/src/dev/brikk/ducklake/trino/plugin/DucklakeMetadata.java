@@ -32,6 +32,7 @@ import dev.brikk.ducklake.catalog.DucklakePartitionSpec;
 import dev.brikk.ducklake.catalog.DucklakeSchema;
 import dev.brikk.ducklake.catalog.DucklakeTable;
 import dev.brikk.ducklake.catalog.DucklakeTableStats;
+import dev.brikk.ducklake.catalog.DucklakeSortKey;
 import dev.brikk.ducklake.catalog.DucklakeView;
 import dev.brikk.ducklake.catalog.PartitionFieldSpec;
 import dev.brikk.ducklake.catalog.TableColumnSpec;
@@ -50,7 +51,9 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.ConnectorTableProperties;
 import io.trino.spi.connector.ConnectorTableVersion;
+import io.trino.spi.connector.LocalProperty;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
@@ -296,6 +299,38 @@ public class DucklakeMetadata
         return new ConnectorTableMetadata(
                 ducklakeTableHandle.getSchemaTableName(),
                 columnMetadata);
+    }
+
+    @Override
+    public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle table)
+    {
+        if (!(table instanceof DucklakeTableHandle handle)) {
+            return new ConnectorTableProperties();
+        }
+        List<DucklakeSortKey> sortKeys = catalog.getSortKeys(handle.tableId(), handle.snapshotId());
+        if (sortKeys.isEmpty()) {
+            return new ConnectorTableProperties();
+        }
+        Map<String, ColumnHandle> columnHandlesByLowercaseName = new java.util.HashMap<>();
+        for (DucklakeColumn column : catalog.getTableColumns(handle.tableId(), handle.snapshotId())) {
+            columnHandlesByLowercaseName.put(
+                    column.columnName().toLowerCase(java.util.Locale.ROOT),
+                    new DucklakeColumnHandle(
+                            column.columnId(),
+                            column.columnName(),
+                            typeConverter.toTrinoType(column.columnType()),
+                            column.nullsAllowed()));
+        }
+        List<LocalProperty<ColumnHandle>> localProperties =
+                DucklakeSortPropertyMapper.toLocalProperties(sortKeys, columnHandlesByLowercaseName);
+        if (localProperties.isEmpty()) {
+            return new ConnectorTableProperties();
+        }
+        return new ConnectorTableProperties(
+                io.trino.spi.predicate.TupleDomain.all(),
+                Optional.empty(),
+                Optional.empty(),
+                localProperties);
     }
 
     @Override

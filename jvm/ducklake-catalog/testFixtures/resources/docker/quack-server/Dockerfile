@@ -4,12 +4,12 @@
 # that breaks the connection-id self-RPC loop documented upstream in
 # duckdb/ducklake's scripts/run_quack_tests.py.
 #
-# Pinned to match duckdb_jdbc:1.5.2.0 on the client side. Bumping this version
+# Pinned to match duckdb_jdbc:1.5.3.0 on the client side. Bumping this version
 # requires the matching bump in jvm/gradle/libs.versions.toml (key: `duckdb`).
 
 FROM debian:bookworm-slim
 
-ARG DUCKDB_VERSION=v1.5.2
+ARG DUCKDB_VERSION=v1.5.3
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
@@ -31,10 +31,10 @@ RUN set -eu; \
     chmod +x /usr/local/bin/duckdb
 
 # Pre-pull the Quack extension at image build time so container startup doesn't
-# pay the network round-trip. core_nightly is required: Quack as a DuckLake
-# catalog backend was merged upstream 2026-05-12 (duckdb/ducklake#1151) and the
-# stable extension channel hadn't picked it up at the time this image was pinned.
-RUN duckdb -unsigned -c "INSTALL quack FROM core_nightly;"
+# pay the network round-trip. Quack ships as a core extension as of DuckDB
+# 1.5.3 (announced 2026-05-20), so the stable repo is sufficient — no
+# core_nightly or -unsigned flag required.
+RUN duckdb -c "INSTALL quack;"
 
 COPY entrypoint.sh /usr/local/bin/quack-entrypoint.sh
 RUN chmod +x /usr/local/bin/quack-entrypoint.sh

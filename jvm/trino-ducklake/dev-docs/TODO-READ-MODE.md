@@ -23,10 +23,10 @@ deletion-vector reader (Roaring bitmaps inside DuckLake's `.puffin`
 delete files). See § Inlined Deletion Vector Reads, § Inlined-Read Type
 Gaps, and § Puffin Deletion Vector Reads below.
 
-Next bite-sized read items: sorted-table read awareness (planner hints),
-virtual columns (rowid/file_row_number), and the `R7` cross-backend view
-tests. None are correctness blockers — pick whichever fits the current
-session.
+Next bite-sized read items: virtual columns (rowid/file_row_number) and
+the `R7` cross-backend view tests. None are correctness blockers — pick
+whichever fits the current session. (Sorted-table read awareness landed
+2026-05-21; see § Sorted-Table Awareness (Read) below.)
 
 ## Inlined Deletion Vector Reads
 
@@ -167,12 +167,35 @@ data file's scan.
 
 ## Sorted-Table Awareness (Read)
 
-- [ ] **Read `ducklake_sort_info` / `ducklake_sort_expression`.** Today the sort
-  metadata is ignored. Sorted tables read fine without it (sorting is a
-  write-time optimization), but exposing it enables future planner optimizations
-  (skip sort operator when input is pre-sorted, propagate sort properties for
-  merge joins, etc.). See
-  [DUCKLAKE_1_0_IMPACT.md § Sorted Tables](DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+- [x] **Read `ducklake_sort_info` / `ducklake_sort_expression`.** Landed
+  2026-05-21. `JdbcDucklakeCatalog.getSortKeys(tableId, snapshotId)` reads
+  the active sort spec (joined + ordered by `sort_key_index`) and returns
+  `List<DucklakeSortKey>`. `DucklakeMetadata.getTableProperties` translates
+  via `DucklakeSortPropertyMapper.toLocalProperties` and returns a
+  `ConnectorTableProperties` carrying the matching
+  `SortingProperty<ColumnHandle>` list, which Trino's planner uses to skip
+  sort operators when an `ORDER BY` matches the leading prefix.
+  - **Safety rule**: prefix-only translation. On the first sort key we
+    cannot interpret (unknown dialect, non-column expression, column
+    dropped at the snapshot), we stop and emit the safe prefix. Skipping
+    a middle key would be a lie (the secondary sort wouldn't actually
+    apply to the next-emitted column).
+  - **Dialect**: only `duckdb` is honored. Foreign dialects bail to an
+    empty list — different identifier/quoting rules can't be guessed.
+  - **Column resolution**: case-insensitive name match against top-level
+    columns at the snapshot. Quoted DuckDB identifiers (`"name"`,
+    `"with""quote"`) and unquoted ASCII identifiers are both accepted.
+  - Pinned by:
+    - `TestDucklakeSortPropertyMapper` (12 cases — 4 SortOrder
+      permutations, multi-key ordering preservation, case-insensitive
+      match, quoted-identifier handling including `""` escape, unknown
+      dialect, non-column expression, dropped column, empty input, and
+      a battery of `parseColumnReference` edge cases).
+    - `TestDucklakeCrossEngineSortedTableProperties` (3 cases — DuckDB
+      `ALTER TABLE ... SET SORTED BY` two-key spec round-trips with
+      mixed ASC/DESC + NULLS_FIRST/NULLS_LAST; unsorted tables yield
+      empty properties; `RESET SORTED BY` end-snapshots the row and
+      clears the local properties at the next snapshot).
 
 ## Type-Support Improvements
 
@@ -190,7 +213,12 @@ data file's scan.
 
 - [ ] **Add DuckDB-equivalent virtual columns** (`rowid`, `snapshot_id`,
   `filename`, `file_row_number`, `file_index`). Useful for the MERGE story and
-  for debug/lineage queries. Deserves its own design doc when prioritized.
+  for debug/lineage queries. Design sketched in
+  [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md) — v1 ships four
+  `$`-prefixed hidden columns (`$path`, `$snapshot_id`, `$file_row_number`,
+  `$row_id`); see that doc for naming/encoding decisions, plumbing
+  sketch, test plan, and what's deferred to v2. ~2 focused days when
+  scheduled.
 
 ## R6: Change Feed and Extended Metadata Parity
 

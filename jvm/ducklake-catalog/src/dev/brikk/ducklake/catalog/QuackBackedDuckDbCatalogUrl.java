@@ -140,12 +140,14 @@ final class QuackBackedDuckDbCatalogUrl
     {
         String attachUri = "ducklake:quack:" + host + ":" + port;
         StringBuilder sb = new StringBuilder();
-        // INSTALL is idempotent when origin matches the cached install; FORCE
-        // covers the case where ducklake was previously auto-installed from
-        // the stable repo (which doesn't yet ship QuackMetadataManager).
-        sb.append("FORCE INSTALL quack FROM core_nightly;");
+        // Quack ships in core as of DuckDB 1.5.3; ducklake's QuackMetadataManager
+        // also rides along in the bundled extension. Plain INSTALL/LOAD against
+        // the default (core) repo is sufficient — autoinstall would also work,
+        // but explicit INSTALL surfaces failures at init time rather than at
+        // first CREATE SECRET / ATTACH.
+        sb.append("INSTALL quack;");
         sb.append("LOAD quack;");
-        sb.append("FORCE INSTALL ducklake FROM core_nightly;");
+        sb.append("INSTALL ducklake;");
         sb.append("LOAD ducklake;");
         sb.append("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '").append(escapeSqlString(token)).append("');");
         sb.append("ATTACH '").append(attachUri).append("' AS lake ")

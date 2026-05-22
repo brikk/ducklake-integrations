@@ -21,4 +21,4 @@ TOKEN="${QUACK_TOKEN:-ducklake-test-token}"
     # namespace makes 0.0.0.0 mean "this container's interfaces only".
     printf "SELECT * FROM quack_serve('quack://0.0.0.0:%s/', token := '%s', allow_other_hostname := true);\n" "$PORT" "$TOKEN"
     exec sleep infinity
-} | duckdb -unsigned
+} | duckdb

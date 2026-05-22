@@ -25,7 +25,6 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Comparator;
-import java.util.Properties;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,17 +63,11 @@ final class TestDuckDbQuackCatalogServerSmoke
     @Test
     void clientAttachesDucklakeViaQuackAndRoundTripsAQuery() throws Exception
     {
-        Properties props = new Properties();
-        props.setProperty("allow_unsigned_extensions", "true");
-
-        try (Connection client = DriverManager.getConnection("jdbc:duckdb:", props);
+        try (Connection client = DriverManager.getConnection("jdbc:duckdb:");
                 Statement s = client.createStatement()) {
-            s.execute("INSTALL quack FROM core_nightly");
+            s.execute("INSTALL quack");
             s.execute("LOAD quack");
-            // FORCE INSTALL replaces any previously-installed core-repo ducklake
-            // with the core_nightly build that contains QuackMetadataManager
-            // (merged upstream 2026-05-12, duckdb/ducklake#1151).
-            s.execute("FORCE INSTALL ducklake FROM core_nightly");
+            s.execute("INSTALL ducklake");
             s.execute("LOAD ducklake");
             s.execute("CREATE SECRET (TYPE quack, TOKEN '" + server.getToken() + "')");
             s.execute("ATTACH '" + server.getDucklakeAttachUri() + "' AS lake "

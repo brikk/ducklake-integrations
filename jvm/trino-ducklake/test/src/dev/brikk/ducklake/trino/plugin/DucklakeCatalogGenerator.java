@@ -23,7 +23,6 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.List;
-import java.util.Properties;
 
 /**
  * Utility to generate a test Ducklake catalog using DuckDB's embedded JDBC driver.
@@ -160,13 +159,11 @@ public final class DucklakeCatalogGenerator
         // JdbcDucklakeCatalog issues its first SELECT. Doing it here keeps the
         // connector-side init script idempotent and front-loads any extension-
         // download cost into test setup (visible) rather than the first query.
-        Properties props = new Properties();
-        props.setProperty("allow_unsigned_extensions", "true");
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:", props);
+        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
                 Statement stmt = conn.createStatement()) {
-            stmt.execute("FORCE INSTALL quack FROM core_nightly");
+            stmt.execute("INSTALL quack");
             stmt.execute("LOAD quack");
-            stmt.execute("FORCE INSTALL ducklake FROM core_nightly");
+            stmt.execute("INSTALL ducklake");
             stmt.execute("LOAD ducklake");
             stmt.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '" + escapeSql(server.getToken()) + "')");
             stmt.execute("ATTACH '" + server.getDucklakeAttachUri() + "' AS lake "

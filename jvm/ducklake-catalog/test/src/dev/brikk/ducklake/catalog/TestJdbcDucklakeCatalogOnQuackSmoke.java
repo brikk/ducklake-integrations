@@ -99,12 +99,14 @@ public class TestJdbcDucklakeCatalogOnQuackSmoke
                 .contains("main");
     }
 
-    @Disabled("Quack RPC currently rejects (a) same-table multi-scan in attemptWriteTransaction's "
-            + "snapshot-read SELECT, and (b) UPDATE/DELETE on remote ducklake_* tables. "
-            + "JdbcDucklakeCatalog's SQL is intentionally not compromised to work around these "
-            + "— local DuckDB handles the same SQL fine (see TestJdbcDucklakeCatalogOnLocalDuckDbSmoke). "
-            + "Lift this @Disabled when upstream Quack adds multi-scan + write support; tracked in "
-            + "dev-docs/TODO-WRITE-MODE.md § Quack Catalog Backend.")
+    @Disabled("Verified against DuckDB 1.5.3 (2026-05-22): still fails with "
+            + "\"Not implemented Error: Multiple streaming scans or streaming scans + CTAS / insert in the "
+            + "same query are not currently supported\" in attemptWriteTransaction's snapshot-read SELECT "
+            + "(`SELECT ... WHERE snapshot_id = (SELECT max(snapshot_id) FROM ducklake_snapshot)`). Quack is "
+            + "still beta per the 1.5.3 announcement. JdbcDucklakeCatalog's SQL is intentionally not "
+            + "compromised to work around this — local DuckDB handles the same SQL fine (see "
+            + "TestJdbcDucklakeCatalogOnLocalDuckDbSmoke). Lift this @Disabled when upstream Quack adds "
+            + "multi-streaming-scan support; tracked in dev-docs/TODO-WRITE-MODE.md § Quack Catalog Backend.")
     @Test
     public void createSchemaCommitsAndListSchemasSeesIt()
     {

@@ -91,9 +91,9 @@ final class TestQuackBackedDuckDbCatalogUrl
         String sql = QuackBackedDuckDbCatalogUrl.parse(
                 "jdbc:duckdb:quack://h:9494?metadata_catalog=meta42", "secrettoken", "/tmp/data")
                 .connectionInitSql();
-        assertThat(sql).contains("FORCE INSTALL quack FROM core_nightly");
+        assertThat(sql).contains("INSTALL quack");
         assertThat(sql).contains("LOAD quack");
-        assertThat(sql).contains("FORCE INSTALL ducklake FROM core_nightly");
+        assertThat(sql).contains("INSTALL ducklake");
         assertThat(sql).contains("LOAD ducklake");
         assertThat(sql).contains("CREATE OR REPLACE SECRET (TYPE quack, TOKEN 'secrettoken')");
         assertThat(sql).contains("ATTACH 'ducklake:quack:h:9494' AS lake "

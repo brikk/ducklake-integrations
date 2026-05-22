@@ -122,6 +122,18 @@ public interface DucklakeCatalog
     List<DucklakePartitionSpec> getPartitionSpecs(long tableId, long snapshotId);
 
     /**
+     * Read the table's sort spec at the given snapshot, ordered by
+     * {@code sort_key_index}. Returns an empty list when the table has no
+     * {@code ducklake_sort_info} row active at the snapshot (which is the
+     * common case — sorted tables are opt-in). The catalog stores expression
+     * text in the writer's dialect (typically {@code "duckdb"}); callers
+     * choosing to translate the expression are responsible for downgrading
+     * to "no sort property" silently when interpretation fails, rather than
+     * misreporting an order.
+     */
+    List<DucklakeSortKey> getSortKeys(long tableId, long snapshotId);
+
+    /**
      * Load the top-level entries of one or more name maps. Returns a map keyed by
      * {@code mapping_id} where each value maps {@code target_field_id → source_name}
      * for non-hive-partition entries whose {@code parent_column} is NULL. Used by the

@@ -206,7 +206,7 @@ All in `.env`:
 | `POSTGRES_VERSION`     | `18-alpine`           |                                           |
 | `MINIO_TAG`            | release tag           | `minio/minio` image tag                   |
 | `MC_TAG`               | release tag           | `minio/mc` image tag (separate from server!) |
-| `DUCKDB_VERSION`       | `1.5.2`               | `duckdb` pip package version, matches the version the plugin is tested against |
+| `DUCKDB_VERSION`       | `1.5.3`               | `duckdb` pip package version, matches the version the plugin is tested against |
 | `POSTGRES_DB/USER/PASSWORD` | `ducklake` x3    | Catalog DB credentials                    |
 | `MINIO_ROOT_USER/PASSWORD`  | `minioadmin` x2  | MinIO root credentials                    |
 | `MINIO_BUCKET`         | `ducklake`            | Bucket holding all Parquet                |

@@ -48,6 +48,7 @@ REPOS=(
   "ducklake	https://github.com/duckdb/ducklake.git"
   "ducklake-web	https://github.com/duckdb/ducklake-web.git"
   "pg_ducklake	https://github.com/relytcloud/pg_ducklake.git"
+  "duckdb-quack https://github.com/duckdb/duckdb-quack.git"
 )
 
 clone_or_fetch() {

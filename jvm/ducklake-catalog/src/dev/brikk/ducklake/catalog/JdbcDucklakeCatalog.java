@@ -78,6 +78,8 @@ import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITIO
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_INFO;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SCHEMA_VERSIONS;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SORT_EXPRESSION;
+import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SORT_INFO;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SNAPSHOT_CHANGES;
 import static dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE;
@@ -137,9 +139,6 @@ public class JdbcDucklakeCatalog
             QuackBackedDuckDbCatalogUrl quack = QuackBackedDuckDbCatalogUrl.parse(
                     configuredUrl, config.getCatalogDatabasePassword(), config.getDataPath());
             hikariConfig.setJdbcUrl(QuackBackedDuckDbCatalogUrl.UNDERLYING_JDBC_URL);
-            // Required to load quack / ducklake from core_nightly — those extensions
-            // ship signed but with a key the embedded driver treats as non-default.
-            hikariConfig.addDataSourceProperty("allow_unsigned_extensions", "true");
             hikariConfig.setConnectionInitSql(quack.connectionInitSql());
             // The user/password slots aren't used at the JDBC layer for this backend;
             // the token is interpolated into the CREATE SECRET statement inside the
@@ -604,6 +603,34 @@ public class JdbcDucklakeCatalog
             specs.add(new DucklakePartitionSpec(entry.getKey(), tableIdByPartition.get(entry.getKey()), entry.getValue()));
         }
         return specs;
+    }
+
+    @Override
+    public List<DucklakeSortKey> getSortKeys(long tableId, long snapshotId)
+    {
+        var sortinfo = DUCKLAKE_SORT_INFO.as("sortinfo");
+        var sortexpr = DUCKLAKE_SORT_EXPRESSION.as("sortexpr");
+        List<DucklakeSortKey> keys = new ArrayList<>();
+        dsl.select(
+                        sortexpr.SORT_KEY_INDEX,
+                        sortexpr.EXPRESSION,
+                        sortexpr.DIALECT,
+                        sortexpr.SORT_DIRECTION,
+                        sortexpr.NULL_ORDER)
+                .from(sortinfo)
+                .innerJoin(sortexpr)
+                .on(sortinfo.SORT_ID.eq(sortexpr.SORT_ID))
+                .and(sortinfo.TABLE_ID.eq(sortexpr.TABLE_ID))
+                .where(sortinfo.TABLE_ID.eq(tableId))
+                .and(activeAt(sortinfo, snapshotId))
+                .orderBy(sortexpr.SORT_KEY_INDEX)
+                .forEach(r -> keys.add(new DucklakeSortKey(
+                        (int) orZero(r.get(sortexpr.SORT_KEY_INDEX)),
+                        r.get(sortexpr.EXPRESSION),
+                        r.get(sortexpr.DIALECT),
+                        DucklakeSortDirection.fromCatalog(r.get(sortexpr.SORT_DIRECTION)),
+                        DucklakeNullOrder.fromCatalog(r.get(sortexpr.NULL_ORDER)))));
+        return keys;
     }
 
     @Override

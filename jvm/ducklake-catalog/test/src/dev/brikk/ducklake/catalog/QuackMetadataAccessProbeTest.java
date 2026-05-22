@@ -27,7 +27,6 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Properties;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,15 +83,13 @@ final class QuackMetadataAccessProbeTest
     @Test
     void singleAttachExposesMetadataCatalogAsSiblingCatalog() throws Exception
     {
-        Properties props = new Properties();
-        props.setProperty("allow_unsigned_extensions", "true");
         String metadataCatalog = "probe_meta";
 
-        try (Connection client = DriverManager.getConnection("jdbc:duckdb:", props);
+        try (Connection client = DriverManager.getConnection("jdbc:duckdb:");
                 Statement s = client.createStatement()) {
-            s.execute("INSTALL quack FROM core_nightly");
+            s.execute("INSTALL quack");
             s.execute("LOAD quack");
-            s.execute("FORCE INSTALL ducklake FROM core_nightly");
+            s.execute("INSTALL ducklake");
             s.execute("LOAD ducklake");
             s.execute("CREATE SECRET (TYPE quack, TOKEN '" + server.getToken() + "')");
             s.execute("ATTACH '" + server.getDucklakeAttachUri() + "' AS lake "

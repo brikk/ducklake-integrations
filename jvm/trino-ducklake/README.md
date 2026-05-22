@@ -7,7 +7,7 @@ deployments) as catalog metadata backends. SQLite, and a remote-DuckDB backend
 over [Quack RPC](https://duckdb.org/2026/05/12/quack-remote-protocol) for shared
 DuckDB-as-catalog without filesystem mounting, are planned next.
 
-Tested with DuckDB 1.5.2 for cross-engine compatibility.
+Tested with DuckDB 1.5.3 for cross-engine compatibility.
 
 The [DuckLake spec](ducklake-web/docs/stable/specification/) is included as a submodule.
 All documentation and feature tables in this module are current against that version of the spec.
@@ -204,7 +204,7 @@ operators and functions are not available through Trino.
 | Views (Trino dialect) | Yes | |
 | Views (other dialects) | No | Filtered out; only Trino-created views exposed |
 | Puffin deletion vectors | Yes | DuckLake's Roaring-bitmap delete files (`write_deletion_vectors=true` on the writer) |
-| Sorted table optimizations | No | Tables are still readable; sort metadata ignored |
+| Sorted table optimizations | Yes | Catalog sort spec surfaces as `SortingProperty` so the planner can skip sort operators when `ORDER BY` matches the leading prefix |
 
 ## Write Operations
 

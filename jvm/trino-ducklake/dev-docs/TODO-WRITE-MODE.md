@@ -65,8 +65,8 @@ What landed (2026-05-19):
   `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`. Token rides in
   `ducklake.catalog.database-password`. `JdbcDucklakeCatalog` swaps the URL for
   a real `jdbc:duckdb:` (in-memory) connection and uses HikariCP's
-  `connectionInitSql` to install/load Quack + DuckLake from `core_nightly`,
-  create the Quack secret, ATTACH `ducklake:quack:...` with a unique
+  `connectionInitSql` to install/load Quack + DuckLake (both core extensions
+  as of DuckDB 1.5.3), create the Quack secret, ATTACH `ducklake:quack:...` with a unique
   `METADATA_CATALOG` name, and `USE <metadata_catalog>.main`. Bare references
   to `ducklake_*` then resolve via the metadata-catalog sibling that
   DuckLake-on-Quack publishes alongside the user catalog.

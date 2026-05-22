@@ -98,7 +98,7 @@ public class TestingDucklakeDuckDbQuackCatalogServer
         // Reuse the same image hash across test classes — Testcontainers keys
         // ImageFromDockerfile by the (name, deleteOnExit, files) tuple and skips
         // rebuilds when the inputs are unchanged. The image build pulls the
-        // DuckDB CLI binary and the Quack core_nightly extension; cost amortizes
+        // DuckDB CLI binary and the core Quack extension; cost amortizes
         // across the full test suite.
         return new ImageFromDockerfile("brikk-ducklake-quack-server", false)
                 .withFileFromClasspath("Dockerfile", "docker/quack-server/Dockerfile")

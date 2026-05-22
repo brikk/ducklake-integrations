@@ -94,7 +94,7 @@ ALTER TABLE events SET PARTITIONED BY (bucket(8, user_name));
 today (unknown transform). Tracked under
 [TODO-WRITE-MODE § Bucket Partitioning](TODO-WRITE-MODE.md#bucket-partitioning).
 
-### 2. Sorted Tables
+### 2. Sorted Tables — read-awareness shipped
 
 **Spec**: new `ducklake_sort_info` and `ducklake_sort_expression` tables.
 
@@ -102,11 +102,16 @@ today (unknown transform). Tracked under
 ALTER TABLE events SET SORTED BY (event_time ASC);
 ```
 
-**Impact**: low for reads — sorted tables read fine; sort metadata is ignored but
-harmless. For writes, Trino-written files won't be sorted; DuckDB compaction can
-re-sort them later. Tracked under
-[TODO-READ-MODE § Sorted-Table Awareness (Read)](TODO-READ-MODE.md#sorted-table-awareness-read)
-and [TODO-WRITE-MODE § Sorted Table Writes](TODO-WRITE-MODE.md#sorted-table-writes).
+**Impact**: reads honor the spec as of 2026-05-21 —
+`DucklakeMetadata.getTableProperties` surfaces the catalog sort spec as a
+`SortingProperty<ColumnHandle>` list, letting Trino's planner skip sort
+operators when an `ORDER BY` matches the leading prefix. Translation is
+prefix-only: any sort key the connector cannot interpret (foreign
+dialect, non-column expression, column dropped at the snapshot)
+truncates the result to the safe prefix rather than misreporting an
+order. Writes still don't apply the sort — Trino-emitted Parquet is
+unsorted; DuckDB compaction can re-sort later. Write side tracked under
+[TODO-WRITE-MODE § Sorted Table Writes](TODO-WRITE-MODE.md#sorted-table-writes).
 
 ### 3. Variant Type
 
