@@ -370,6 +370,22 @@ public class JdbcDucklakeCatalog
     {
         var file = DUCKLAKE_DATA_FILE.as("file");
         var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
+        // PATH / PATH_IS_RELATIVE / FOOTER_SIZE exist on BOTH sides of the LEFT
+        // JOIN. jOOQ's Record field lookup is name-based, so without explicit
+        // aliases the second occurrence of each name resolves to the first
+        // column with that name — silently returning the data-file's PATH for
+        // r.get(delfile.PATH) etc. This was invisible on PG (which renders
+        // qualifier-aware result-set metadata) but surfaced under the Quack
+        // wrapper's coerce step, where the resulting Records carry only the
+        // coerced Fields and name collisions become unambiguous wrong-result
+        // bugs. Alias the duplicates so each projected Field has a unique
+        // name; the mapper accesses through these aliased Field locals.
+        var dataFilePath = file.PATH.as("data_file_path");
+        var dataFilePathIsRelative = file.PATH_IS_RELATIVE.as("data_file_path_is_relative");
+        var dataFileFooterSize = file.FOOTER_SIZE.as("data_file_footer_size");
+        var deleteFilePath = delfile.PATH.as("delete_file_path");
+        var deleteFilePathIsRelative = delfile.PATH_IS_RELATIVE.as("delete_file_path_is_relative");
+        var deleteFileFooterSize = delfile.FOOTER_SIZE.as("delete_file_footer_size");
         // Multi-table JOIN — routed through `metadata` for Quack compatibility.
         return metadata.fetch(
                 dsl,
@@ -379,18 +395,18 @@ public class JdbcDucklakeCatalog
                                 file.BEGIN_SNAPSHOT,
                                 file.END_SNAPSHOT,
                                 file.FILE_ORDER,
-                                file.PATH,
-                                file.PATH_IS_RELATIVE,
+                                dataFilePath,
+                                dataFilePathIsRelative,
                                 file.FILE_FORMAT,
                                 file.RECORD_COUNT,
                                 file.FILE_SIZE_BYTES,
-                                file.FOOTER_SIZE,
+                                dataFileFooterSize,
                                 file.ROW_ID_START,
                                 file.PARTITION_ID,
                                 file.MAPPING_ID,
-                                delfile.PATH,
-                                delfile.PATH_IS_RELATIVE,
-                                delfile.FOOTER_SIZE,
+                                deleteFilePath,
+                                deleteFilePathIsRelative,
+                                deleteFileFooterSize,
                                 delfile.FORMAT)
                         .from(file)
                         .leftJoin(delfile)
@@ -405,17 +421,17 @@ public class JdbcDucklakeCatalog
                         orZero(r.get(file.BEGIN_SNAPSHOT)),
                         Optional.ofNullable(r.get(file.END_SNAPSHOT)),
                         orZero(r.get(file.FILE_ORDER)),
-                        r.get(file.PATH),
-                        Boolean.TRUE.equals(r.get(file.PATH_IS_RELATIVE)),
+                        r.get(dataFilePath),
+                        Boolean.TRUE.equals(r.get(dataFilePathIsRelative)),
                         r.get(file.FILE_FORMAT),
                         orZero(r.get(file.RECORD_COUNT)),
                         orZero(r.get(file.FILE_SIZE_BYTES)),
-                        orZero(r.get(file.FOOTER_SIZE)),
+                        orZero(r.get(dataFileFooterSize)),
                         orZero(r.get(file.ROW_ID_START)),
                         Optional.ofNullable(r.get(file.PARTITION_ID)),
-                        Optional.ofNullable(r.get(delfile.PATH)),
-                        Optional.ofNullable(r.get(delfile.PATH_IS_RELATIVE)),
-                        Optional.ofNullable(r.get(delfile.FOOTER_SIZE)),
+                        Optional.ofNullable(r.get(deleteFilePath)),
+                        Optional.ofNullable(r.get(deleteFilePathIsRelative)),
+                        Optional.ofNullable(r.get(deleteFileFooterSize)),
                         Optional.ofNullable(r.get(delfile.FORMAT)),
                         Optional.ofNullable(r.get(file.MAPPING_ID))));
     }
