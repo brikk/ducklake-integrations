@@ -14,7 +14,9 @@
 package dev.brikk.ducklake.catalog;
 
 import org.jooq.DSLContext;
+import org.jooq.Query;
 import org.jooq.Record;
+import org.jooq.RecordMapper;
 import org.jooq.ResultQuery;
 
 import java.util.List;
@@ -55,4 +57,29 @@ interface MetadataQuery
      * Fetch all rows from {@code query}. Empty list if no rows match.
      */
     <R extends Record> List<R> fetch(DSLContext dsl, ResultQuery<R> query);
+
+    /**
+     * Fetch all rows from {@code query} via {@code mapper}, mainly for ad-hoc
+     * projections — including multi-table JOINs, which the Quack RPC optimizer
+     * also rejects under attached metadata catalogs. On the Quack backend the
+     * inner SQL is rendered, wrapped in {@code quack_query_by_name}, and the
+     * raw result is re-coerced against {@code query.getSelect()} so the
+     * mapper's {@code Record} retains its original jOOQ {@code Field}
+     * metadata — field-typed access ({@code r.get(table.COLUMN_NAME)})
+     * works the same as on the direct path.
+     */
+    <T> List<T> fetch(DSLContext dsl, ResultQuery<?> query, RecordMapper<? super Record, T> mapper);
+
+    /**
+     * Execute a mutation (UPDATE / DELETE / INSERT / DDL). Returns the
+     * affected-row count when meaningful (UPDATE / DELETE); 0 for DDL or when
+     * a wrapped backend can't surface a count.
+     *
+     * <p>The Quack RPC binder rejects UPDATE / DELETE against tables exposed by
+     * an attached metadata catalog ({@code Binder Error: Can only update base
+     * table}). Routing through this method on the Quack backend wraps the
+     * inner SQL in {@code quack_query_by_name} so the mutation executes
+     * server-side against the real base table.
+     */
+    int execute(DSLContext dsl, Query mutation);
 }

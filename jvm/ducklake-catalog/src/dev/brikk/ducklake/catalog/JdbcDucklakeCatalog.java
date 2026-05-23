@@ -120,6 +120,7 @@ public class JdbcDucklakeCatalog
     private final SQLDialect dialect;
     private final Settings jooqSettings;
     private final DSLContext dsl;
+    private final MetadataQuery metadata;
 
     public JdbcDucklakeCatalog(DucklakeCatalogConfig config)
     {
@@ -128,6 +129,7 @@ public class JdbcDucklakeCatalog
         HikariConfig hikariConfig = new HikariConfig();
         String configuredUrl = config.getCatalogDatabaseUrl();
         String dialectInferenceUrl;
+        MetadataQuery metadataQuery;
         if (QuackBackedDuckDbCatalogUrl.matches(configuredUrl)) {
             // Synthetic URL — `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`.
             // Open a plain in-memory DuckDB JDBC connection and let HikariCP run a
@@ -144,6 +146,12 @@ public class JdbcDucklakeCatalog
             // the token is interpolated into the CREATE SECRET statement inside the
             // init script.
             dialectInferenceUrl = QuackBackedDuckDbCatalogUrl.UNDERLYING_JDBC_URL;
+            // Quack RPC's optimizer rejects SQL shapes that the local DuckDB binder
+            // happily plans against the Quack-attached metadata catalog (same-table
+            // multi-scan, multi-table JOINs). Route the call sites that hit those
+            // shapes through quack_query_by_name so the inner SQL is executed
+            // server-side as a single LogicalGet from the local plan's POV.
+            metadataQuery = new QuackWrappedMetadataQuery(quack.metadataCatalog());
         }
         else {
             hikariConfig.setJdbcUrl(configuredUrl);
@@ -154,6 +162,7 @@ public class JdbcDucklakeCatalog
                 hikariConfig.setPassword(config.getCatalogDatabasePassword());
             }
             dialectInferenceUrl = configuredUrl;
+            metadataQuery = new DirectMetadataQuery();
         }
         hikariConfig.setMaximumPoolSize(config.getMaxCatalogConnections());
         hikariConfig.setMinimumIdle(1);
@@ -178,6 +187,7 @@ public class JdbcDucklakeCatalog
                 // the rendered schema works for both — but is required for the latter.
                 .withRenderSchema(false);
         this.dsl = DSL.using(dataSource, dialect, jooqSettings);
+        this.metadata = metadataQuery;
 
         log.log(System.Logger.Level.INFO,
                 "Initialized Ducklake JDBC catalog: {0} (jOOQ dialect: {1})",
@@ -360,33 +370,36 @@ public class JdbcDucklakeCatalog
     {
         var file = DUCKLAKE_DATA_FILE.as("file");
         var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
-        return dsl.select(
-                        file.DATA_FILE_ID,
-                        file.TABLE_ID,
-                        file.BEGIN_SNAPSHOT,
-                        file.END_SNAPSHOT,
-                        file.FILE_ORDER,
-                        file.PATH,
-                        file.PATH_IS_RELATIVE,
-                        file.FILE_FORMAT,
-                        file.RECORD_COUNT,
-                        file.FILE_SIZE_BYTES,
-                        file.FOOTER_SIZE,
-                        file.ROW_ID_START,
-                        file.PARTITION_ID,
-                        file.MAPPING_ID,
-                        delfile.PATH,
-                        delfile.PATH_IS_RELATIVE,
-                        delfile.FOOTER_SIZE,
-                        delfile.FORMAT)
-                .from(file)
-                .leftJoin(delfile)
-                .on(file.DATA_FILE_ID.eq(delfile.DATA_FILE_ID))
-                .and(activeAt(delfile, snapshotId))
-                .where(file.TABLE_ID.eq(tableId))
-                .and(activeAt(file, snapshotId))
-                .orderBy(file.FILE_ORDER)
-                .fetch(r -> new DucklakeDataFile(
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        return metadata.fetch(
+                dsl,
+                dsl.select(
+                                file.DATA_FILE_ID,
+                                file.TABLE_ID,
+                                file.BEGIN_SNAPSHOT,
+                                file.END_SNAPSHOT,
+                                file.FILE_ORDER,
+                                file.PATH,
+                                file.PATH_IS_RELATIVE,
+                                file.FILE_FORMAT,
+                                file.RECORD_COUNT,
+                                file.FILE_SIZE_BYTES,
+                                file.FOOTER_SIZE,
+                                file.ROW_ID_START,
+                                file.PARTITION_ID,
+                                file.MAPPING_ID,
+                                delfile.PATH,
+                                delfile.PATH_IS_RELATIVE,
+                                delfile.FOOTER_SIZE,
+                                delfile.FORMAT)
+                        .from(file)
+                        .leftJoin(delfile)
+                        .on(file.DATA_FILE_ID.eq(delfile.DATA_FILE_ID))
+                        .and(activeAt(delfile, snapshotId))
+                        .where(file.TABLE_ID.eq(tableId))
+                        .and(activeAt(file, snapshotId))
+                        .orderBy(file.FILE_ORDER),
+                r -> new DucklakeDataFile(
                         orZero(r.get(file.DATA_FILE_ID)),
                         orZero(r.get(file.TABLE_ID)),
                         orZero(r.get(file.BEGIN_SNAPSHOT)),
@@ -444,18 +457,21 @@ public class JdbcDucklakeCatalog
 
         var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
         var file = DUCKLAKE_DATA_FILE.as("file");
-        return dsl.select(
-                        colstats.DATA_FILE_ID,
-                        colstats.MIN_VALUE,
-                        colstats.MAX_VALUE)
-                .from(colstats)
-                .innerJoin(file)
-                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
-                .where(colstats.TABLE_ID.eq(tableId))
-                .and(colstats.COLUMN_ID.eq(columnId))
-                .and(file.TABLE_ID.eq(tableId))
-                .and(activeAt(file, snapshotId))
-                .fetch()
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        return metadata.fetch(
+                        dsl,
+                        dsl.select(
+                                        colstats.DATA_FILE_ID,
+                                        colstats.MIN_VALUE,
+                                        colstats.MAX_VALUE)
+                                .from(colstats)
+                                .innerJoin(file)
+                                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                                .where(colstats.TABLE_ID.eq(tableId))
+                                .and(colstats.COLUMN_ID.eq(columnId))
+                                .and(file.TABLE_ID.eq(tableId))
+                                .and(activeAt(file, snapshotId)),
+                        r -> r)
                 .stream()
                 .filter(r -> isWithinBounds(
                         lowerBound,
@@ -488,20 +504,23 @@ public class JdbcDucklakeCatalog
 
         var colstats = DUCKLAKE_FILE_COLUMN_STATS.as("colstats");
         var file = DUCKLAKE_DATA_FILE.as("file");
-        dsl.select(
-                        colstats.COLUMN_ID,
-                        colstats.VALUE_COUNT,
-                        colstats.NULL_COUNT,
-                        colstats.COLUMN_SIZE_BYTES,
-                        colstats.MIN_VALUE,
-                        colstats.MAX_VALUE)
-                .from(colstats)
-                .innerJoin(file)
-                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
-                .where(colstats.TABLE_ID.eq(tableId))
-                .and(file.TABLE_ID.eq(tableId))
-                .and(activeAt(file, snapshotId))
-                .forEach(r -> {
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        metadata.fetch(
+                dsl,
+                dsl.select(
+                                colstats.COLUMN_ID,
+                                colstats.VALUE_COUNT,
+                                colstats.NULL_COUNT,
+                                colstats.COLUMN_SIZE_BYTES,
+                                colstats.MIN_VALUE,
+                                colstats.MAX_VALUE)
+                        .from(colstats)
+                        .innerJoin(file)
+                        .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                        .where(colstats.TABLE_ID.eq(tableId))
+                        .and(file.TABLE_ID.eq(tableId))
+                        .and(activeAt(file, snapshotId)),
+                r -> {
                     long columnId = orZero(r.get(colstats.COLUMN_ID));
                     long[] counts = countAccumulators.computeIfAbsent(columnId, k -> new long[3]);
                     counts[0] += orZero(r.get(colstats.VALUE_COUNT));
@@ -517,6 +536,7 @@ public class JdbcDucklakeCatalog
                     if (maxValue != null) {
                         maxAccumulators.merge(columnId, maxValue, (a, b) -> typedMax(a, b, columnType));
                     }
+                    return null;
                 });
 
         List<DucklakeColumnStats> result = new ArrayList<>();
@@ -572,20 +592,23 @@ public class JdbcDucklakeCatalog
 
         var partinfo = DUCKLAKE_PARTITION_INFO.as("partinfo");
         var partcol = DUCKLAKE_PARTITION_COLUMN.as("partcol");
-        dsl.select(
-                        partinfo.PARTITION_ID,
-                        partinfo.TABLE_ID,
-                        partcol.PARTITION_KEY_INDEX,
-                        partcol.COLUMN_ID,
-                        partcol.TRANSFORM)
-                .from(partinfo)
-                .innerJoin(partcol)
-                .on(partinfo.PARTITION_ID.eq(partcol.PARTITION_ID))
-                .and(partinfo.TABLE_ID.eq(partcol.TABLE_ID))
-                .where(partinfo.TABLE_ID.eq(tableId))
-                .and(activeAt(partinfo, snapshotId))
-                .orderBy(partinfo.PARTITION_ID, partcol.PARTITION_KEY_INDEX)
-                .forEach(r -> {
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        metadata.fetch(
+                dsl,
+                dsl.select(
+                                partinfo.PARTITION_ID,
+                                partinfo.TABLE_ID,
+                                partcol.PARTITION_KEY_INDEX,
+                                partcol.COLUMN_ID,
+                                partcol.TRANSFORM)
+                        .from(partinfo)
+                        .innerJoin(partcol)
+                        .on(partinfo.PARTITION_ID.eq(partcol.PARTITION_ID))
+                        .and(partinfo.TABLE_ID.eq(partcol.TABLE_ID))
+                        .where(partinfo.TABLE_ID.eq(tableId))
+                        .and(activeAt(partinfo, snapshotId))
+                        .orderBy(partinfo.PARTITION_ID, partcol.PARTITION_KEY_INDEX),
+                r -> {
                     long partitionId = orZero(r.get(partinfo.PARTITION_ID));
                     tableIdByPartition.put(partitionId, orZero(r.get(partinfo.TABLE_ID)));
                     DucklakePartitionTransform.ParsedTransform parsed =
@@ -596,6 +619,7 @@ public class JdbcDucklakeCatalog
                                     orZero(r.get(partcol.COLUMN_ID)),
                                     parsed.transform(),
                                     parsed.arity()));
+                    return null; // mapper return discarded — using fold-into-maps idiom
                 });
 
         List<DucklakePartitionSpec> specs = new ArrayList<>();
@@ -610,27 +634,30 @@ public class JdbcDucklakeCatalog
     {
         var sortinfo = DUCKLAKE_SORT_INFO.as("sortinfo");
         var sortexpr = DUCKLAKE_SORT_EXPRESSION.as("sortexpr");
-        List<DucklakeSortKey> keys = new ArrayList<>();
-        dsl.select(
-                        sortexpr.SORT_KEY_INDEX,
-                        sortexpr.EXPRESSION,
-                        sortexpr.DIALECT,
-                        sortexpr.SORT_DIRECTION,
-                        sortexpr.NULL_ORDER)
-                .from(sortinfo)
-                .innerJoin(sortexpr)
-                .on(sortinfo.SORT_ID.eq(sortexpr.SORT_ID))
-                .and(sortinfo.TABLE_ID.eq(sortexpr.TABLE_ID))
-                .where(sortinfo.TABLE_ID.eq(tableId))
-                .and(activeAt(sortinfo, snapshotId))
-                .orderBy(sortexpr.SORT_KEY_INDEX)
-                .forEach(r -> keys.add(new DucklakeSortKey(
+        // Multi-table JOIN — routed through `metadata` so the Quack RPC
+        // optimizer's multi-streaming-scan check doesn't fire. Pass-through
+        // on PG / local DuckDB.
+        return metadata.fetch(
+                dsl,
+                dsl.select(
+                                sortexpr.SORT_KEY_INDEX,
+                                sortexpr.EXPRESSION,
+                                sortexpr.DIALECT,
+                                sortexpr.SORT_DIRECTION,
+                                sortexpr.NULL_ORDER)
+                        .from(sortinfo)
+                        .innerJoin(sortexpr)
+                        .on(sortinfo.SORT_ID.eq(sortexpr.SORT_ID))
+                        .and(sortinfo.TABLE_ID.eq(sortexpr.TABLE_ID))
+                        .where(sortinfo.TABLE_ID.eq(tableId))
+                        .and(activeAt(sortinfo, snapshotId))
+                        .orderBy(sortexpr.SORT_KEY_INDEX),
+                r -> new DucklakeSortKey(
                         (int) orZero(r.get(sortexpr.SORT_KEY_INDEX)),
                         r.get(sortexpr.EXPRESSION),
                         r.get(sortexpr.DIALECT),
                         DucklakeSortDirection.fromCatalog(r.get(sortexpr.SORT_DIRECTION)),
-                        DucklakeNullOrder.fromCatalog(r.get(sortexpr.NULL_ORDER)))));
-        return keys;
+                        DucklakeNullOrder.fromCatalog(r.get(sortexpr.NULL_ORDER))));
     }
 
     @Override
@@ -640,23 +667,27 @@ public class JdbcDucklakeCatalog
 
         var partval = DUCKLAKE_FILE_PARTITION_VALUE.as("partval");
         var file = DUCKLAKE_DATA_FILE.as("file");
-        dsl.select(
-                        partval.DATA_FILE_ID,
-                        partval.PARTITION_KEY_INDEX,
-                        partval.PARTITION_VALUE)
-                .from(partval)
-                .innerJoin(file)
-                .on(partval.DATA_FILE_ID.eq(file.DATA_FILE_ID))
-                .and(partval.TABLE_ID.eq(file.TABLE_ID))
-                .where(partval.TABLE_ID.eq(tableId))
-                .and(activeAt(file, snapshotId))
-                .forEach(r -> {
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        metadata.fetch(
+                dsl,
+                dsl.select(
+                                partval.DATA_FILE_ID,
+                                partval.PARTITION_KEY_INDEX,
+                                partval.PARTITION_VALUE)
+                        .from(partval)
+                        .innerJoin(file)
+                        .on(partval.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                        .and(partval.TABLE_ID.eq(file.TABLE_ID))
+                        .where(partval.TABLE_ID.eq(tableId))
+                        .and(activeAt(file, snapshotId)),
+                r -> {
                     long dataFileId = orZero(r.get(partval.DATA_FILE_ID));
                     result.computeIfAbsent(dataFileId, k -> new ArrayList<>())
                             .add(new DucklakeFilePartitionValue(
                                     dataFileId,
                                     (int) orZero(r.get(partval.PARTITION_KEY_INDEX)),
                                     r.get(partval.PARTITION_VALUE)));
+                    return null;
                 });
 
         return result;
@@ -1047,11 +1078,15 @@ public class JdbcDucklakeCatalog
             DSLContext txDsl = forConnection(conn);
             long baseSnapshotId = -1;
             try {
-                // 1. Read current snapshot state
-                DucklakeSnapshotRecord snapshotRow = txDsl.selectFrom(snap)
-                        .where(snap.SNAPSHOT_ID.eq(
-                                DSL.select(DSL.max(snap.SNAPSHOT_ID)).from(snap)))
-                        .fetchOne();
+                // 1. Read current snapshot state. Routed through `metadata` because
+                // this is a same-table multi-scan (`WHERE id = (SELECT max(id) FROM
+                // same_table)`), which the Quack RPC optimizer rejects on attached
+                // metadata catalogs. On PG / local DuckDB the helper is a pass-through.
+                DucklakeSnapshotRecord snapshotRow = metadata.fetchOne(
+                        txDsl,
+                        txDsl.selectFrom(snap)
+                                .where(snap.SNAPSHOT_ID.eq(
+                                        DSL.select(DSL.max(snap.SNAPSHOT_ID)).from(snap))));
                 if (snapshotRow == null) {
                     throw new IllegalStateException("No snapshots found");
                 }
@@ -1704,43 +1739,40 @@ public class JdbcDucklakeCatalog
             DSLContext ctx = tx.dsl();
             long newSnapshotId = tx.getNewSnapshotId();
 
-            // End-snapshot the table row
-            ctx.update(tab)
+            // End-snapshot the table row. Routed through `metadata` because the
+            // Quack RPC binder rejects UPDATE on attached-metadata tables with
+            // "Can only update base table". Pass-through on PG / local DuckDB.
+            metadata.execute(ctx, ctx.update(tab)
                     .set(tab.END_SNAPSHOT, newSnapshotId)
                     .where(tab.TABLE_ID.eq(tableId))
-                    .and(tab.END_SNAPSHOT.isNull())
-                    .execute();
+                    .and(tab.END_SNAPSHOT.isNull()));
 
             // End-snapshot all active columns
-            ctx.update(col)
+            metadata.execute(ctx, ctx.update(col)
                     .set(col.END_SNAPSHOT, newSnapshotId)
                     .where(col.TABLE_ID.eq(tableId))
-                    .and(col.END_SNAPSHOT.isNull())
-                    .execute();
+                    .and(col.END_SNAPSHOT.isNull()));
 
             // End-snapshot all active data files
-            ctx.update(file)
+            metadata.execute(ctx, ctx.update(file)
                     .set(file.END_SNAPSHOT, newSnapshotId)
                     .where(file.TABLE_ID.eq(tableId))
-                    .and(file.END_SNAPSHOT.isNull())
-                    .execute();
+                    .and(file.END_SNAPSHOT.isNull()));
 
             // End-snapshot all active delete files (matched via data_file subquery)
-            ctx.update(delfile)
+            metadata.execute(ctx, ctx.update(delfile)
                     .set(delfile.END_SNAPSHOT, newSnapshotId)
                     .where(delfile.DATA_FILE_ID.in(
                             DSL.select(file.DATA_FILE_ID)
                                     .from(file)
                                     .where(file.TABLE_ID.eq(tableId))))
-                    .and(delfile.END_SNAPSHOT.isNull())
-                    .execute();
+                    .and(delfile.END_SNAPSHOT.isNull()));
 
             // End-snapshot partition info
-            ctx.update(partinfo)
+            metadata.execute(ctx, ctx.update(partinfo)
                     .set(partinfo.END_SNAPSHOT, newSnapshotId)
                     .where(partinfo.TABLE_ID.eq(tableId))
-                    .and(partinfo.END_SNAPSHOT.isNull())
-                    .execute();
+                    .and(partinfo.END_SNAPSHOT.isNull()));
 
             tx.incrementSchemaVersion(tableId);
             tx.recordChange(new WriteChange.DroppedTable(tableId));

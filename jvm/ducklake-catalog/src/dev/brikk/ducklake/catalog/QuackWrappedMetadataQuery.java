@@ -14,7 +14,11 @@
 package dev.brikk.ducklake.catalog;
 
 import org.jooq.DSLContext;
+import org.jooq.Field;
+import org.jooq.Query;
 import org.jooq.Record;
+import org.jooq.RecordMapper;
+import org.jooq.Result;
 import org.jooq.ResultQuery;
 
 import java.util.List;
@@ -80,6 +84,52 @@ final class QuackWrappedMetadataQuery
                 .stream()
                 .map(row -> row.into(recordType))
                 .collect(Collectors.toList());
+    }
+
+    @Override
+    public <T> List<T> fetch(DSLContext dsl, ResultQuery<?> query, RecordMapper<? super Record, T> mapper)
+    {
+        Field<?>[] fields = query.fields();
+        // Multi-table JOIN projections frequently have name collisions across
+        // sides (e.g. `file.path` + `delfile.path`). The wrapper's polymorphic
+        // output is forced to flat column names — duplicates throw
+        // "Binder Error: table quack_query_by_name has duplicate column name".
+        // Sidestep it by wrapping the inner SQL in a derived-table SELECT *
+        // with positional aliases (c0, c1, …), then coerce back to the
+        // original Field<?>[] (coerce is positional, so the mapper's
+        // r.get(originalField) still works).
+        String aliasedInner = aliasColumnsPositionally(dsl.renderInlined(query), fields.length);
+        String wrapped = wrap(aliasedInner);
+        return dsl.resultQuery(wrapped).coerce(fields).fetch().map(mapper);
+    }
+
+    private static String aliasColumnsPositionally(String innerSql, int columnCount)
+    {
+        StringBuilder aliases = new StringBuilder();
+        for (int i = 0; i < columnCount; i++) {
+            if (i > 0) {
+                aliases.append(", ");
+            }
+            aliases.append("c").append(i);
+        }
+        return "SELECT * FROM (" + innerSql + ") AS _q(" + aliases + ")";
+    }
+
+    @Override
+    public int execute(DSLContext dsl, Query mutation)
+    {
+        // The Quack server runs the inner DML via DuckDB's SendQuery and the
+        // table-function surfaces DuckDB's standard `Count BIGINT` shape — i.e.
+        // one row, one column carrying the affected-row count (or 0 for DDL).
+        // Read it back and return as int so callers preserve the
+        // Query.execute() contract on PG / local DuckDB.
+        String wrapped = wrap(dsl.renderInlined(mutation));
+        Result<Record> rows = dsl.fetch(wrapped);
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        Object value = rows.get(0).get(0);
+        return value instanceof Number n ? n.intValue() : 0;
     }
 
     private String wrap(String innerSql)

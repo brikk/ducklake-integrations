@@ -14,7 +14,9 @@
 package dev.brikk.ducklake.catalog;
 
 import org.jooq.DSLContext;
+import org.jooq.Query;
 import org.jooq.Record;
+import org.jooq.RecordMapper;
 import org.jooq.ResultQuery;
 
 import java.util.List;
@@ -36,5 +38,21 @@ final class DirectMetadataQuery
     public <R extends Record> List<R> fetch(DSLContext dsl, ResultQuery<R> query)
     {
         return query.fetch();
+    }
+
+    @Override
+    public <T> List<T> fetch(DSLContext dsl, ResultQuery<?> query, RecordMapper<? super Record, T> mapper)
+    {
+        // ResultQuery<?> doesn't carry a usable R for the typed fetch(RecordMapper)
+        // overload, but jOOQ's runtime mapper invocation only needs Record — so
+        // we route through DSLContext.fetch(ResultQuery) (which returns
+        // Result<Record>) and apply the mapper there.
+        return dsl.fetch(query).map(mapper);
+    }
+
+    @Override
+    public int execute(DSLContext dsl, Query mutation)
+    {
+        return mutation.execute();
     }
 }
