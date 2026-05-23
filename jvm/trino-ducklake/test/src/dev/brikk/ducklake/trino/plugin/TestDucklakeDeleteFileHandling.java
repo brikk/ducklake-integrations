@@ -73,7 +73,8 @@ public class TestDucklakeDeleteFileHandling
                     catalog,
                     new DucklakeMaterializedFileCache(),
                     DuckDbS3Config.fromCatalogConfig(java.util.Map.of()),
-                    config);
+                    config,
+                    new DucklakeDuckDbExecutorFactory(config));
 
             long snapshotId = catalog.getCurrentSnapshotId();
             DucklakeTable table = getTable(catalog, "test_schema", "simple_table", snapshotId);

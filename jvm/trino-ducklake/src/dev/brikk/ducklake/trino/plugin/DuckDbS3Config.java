@@ -62,12 +62,17 @@ record DuckDbS3Config(
     }
 
     /**
-     * Render a DuckDB {@code CREATE SECRET (TYPE S3, ...)} statement using these settings.
-     * Caller is expected to run it once per attached connection before {@code ATTACH 's3://...'}.
+     * Render a DuckDB {@code CREATE OR REPLACE SECRET (TYPE S3, ...)} statement
+     * using these settings. {@code OR REPLACE} makes this idempotent across
+     * concurrent callers — required on the Quack execution-engine path where
+     * the secret is server-instance-scoped and shared across sessions (without
+     * {@code OR REPLACE}, the second client to issue this statement against the
+     * Quack server would fail). Harmless on the in-process path where each
+     * split has its own fresh in-memory DuckDB.
      */
     String renderCreateSecretSql()
     {
-        StringBuilder sql = new StringBuilder("CREATE SECRET ducklake_s3 (TYPE S3");
+        StringBuilder sql = new StringBuilder("CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3");
         endpoint.ifPresent(e -> {
             sql.append(", ENDPOINT '").append(stripScheme(e).replace("'", "''")).append("'");
         });

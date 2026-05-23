@@ -122,6 +122,10 @@ public class DucklakeModule
         // DuckDB-format read cache (per-JVM)
         binder.bind(DucklakeMaterializedFileCache.class).in(Scopes.SINGLETON);
 
+        // DuckDB execution-engine factory (selects InProcess / Quack / Swanlake
+        // per ducklake.execution-engine config).
+        binder.bind(DucklakeDuckDbExecutorFactory.class).in(Scopes.SINGLETON);
+
         // Procedures (per-catalog, exposed under <catalog>.system.<name>).
         Multibinder<Procedure> procedureBinder = Multibinder.newSetBinder(binder, Procedure.class);
         procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure.class).in(Scopes.SINGLETON);

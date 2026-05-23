@@ -42,6 +42,10 @@ public class DucklakeConfig
     private DucklakeTemporalPartitionEncoding temporalPartitionEncoding = DucklakeTemporalPartitionEncoding.CALENDAR;
     private boolean temporalPartitionEncodingReadLeniency = true;
     private DataSize duckdbAutoHttpfsThreshold = DataSize.ofBytes(64L * 1024 * 1024);
+    private DucklakeExecutionEngine executionEngine = DucklakeExecutionEngine.DUCKDB_LOCAL;
+    private String quackHost;
+    private int quackPort = 9494;
+    private String quackToken;
 
     @NotNull
     public String getCatalogDatabaseUrl()
@@ -220,6 +224,69 @@ public class DucklakeConfig
     {
         this.duckdbAutoHttpfsThreshold = duckdbAutoHttpfsThreshold;
         return this;
+    }
+
+    @NotNull
+    public DucklakeExecutionEngine getExecutionEngine()
+    {
+        return executionEngine;
+    }
+
+    @Config("ducklake.execution-engine")
+    @ConfigDescription("Where the DuckDB-format read path executes: 'duckdb_local' (default — embedded DuckDB in the Trino worker JVM), 'quack' (out-of-process DuckDB reached over the Quack RPC protocol), or 'swanlake' (out-of-process DuckDB over Arrow Flight SQL — reserved). For 'quack', set ducklake.quack.host/port/token. The .db file must be reachable by the chosen engine — for 'quack' that means either a shared local path (multi-container pod) or s3:// access (not yet implemented on the quack path).")
+    public DucklakeConfig setExecutionEngine(DucklakeExecutionEngine executionEngine)
+    {
+        this.executionEngine = executionEngine;
+        return this;
+    }
+
+    public String getQuackHost()
+    {
+        return quackHost;
+    }
+
+    @Config("ducklake.quack.host")
+    @ConfigDescription("Hostname of the Quack-serving DuckDB instance used when ducklake.execution-engine=quack. Required for the quack engine; ignored otherwise.")
+    public DucklakeConfig setQuackHost(String quackHost)
+    {
+        this.quackHost = quackHost;
+        return this;
+    }
+
+    public int getQuackPort()
+    {
+        return quackPort;
+    }
+
+    @Config("ducklake.quack.port")
+    @ConfigDescription("Quack server port. Defaults to 9494.")
+    public DucklakeConfig setQuackPort(int quackPort)
+    {
+        this.quackPort = quackPort;
+        return this;
+    }
+
+    public String getQuackToken()
+    {
+        return quackToken;
+    }
+
+    @Config("ducklake.quack.token")
+    @ConfigDescription("Quack server auth token. Required when ducklake.execution-engine=quack. Min 4 characters (Quack server-side requirement).")
+    public DucklakeConfig setQuackToken(String quackToken)
+    {
+        this.quackToken = quackToken;
+        return this;
+    }
+
+    @AssertTrue(message = "ducklake.quack.host and ducklake.quack.token must be set when ducklake.execution-engine=quack")
+    public boolean isQuackEngineConfigComplete()
+    {
+        if (executionEngine != DucklakeExecutionEngine.QUACK) {
+            return true;
+        }
+        return quackHost != null && !quackHost.isBlank()
+                && quackToken != null && !quackToken.isBlank();
     }
 
     public DucklakeCatalogConfig toCatalogConfig()

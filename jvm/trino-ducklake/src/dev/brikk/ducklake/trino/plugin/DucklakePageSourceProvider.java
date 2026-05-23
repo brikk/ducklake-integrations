@@ -114,6 +114,7 @@ public class DucklakePageSourceProvider
     private final DucklakeMaterializedFileCache duckDbReadCache;
     private final DuckDbS3Config duckDbS3Config;
     private final long autoHttpfsThresholdBytes;
+    private final DucklakeDuckDbExecutorFactory executorFactory;
 
     @Inject
     public DucklakePageSourceProvider(
@@ -123,7 +124,8 @@ public class DucklakePageSourceProvider
             DucklakeCatalog catalog,
             DucklakeMaterializedFileCache duckDbReadCache,
             DuckDbS3Config duckDbS3Config,
-            DucklakeConfig ducklakeConfig)
+            DucklakeConfig ducklakeConfig,
+            DucklakeDuckDbExecutorFactory executorFactory)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
@@ -133,6 +135,7 @@ public class DucklakePageSourceProvider
         this.duckDbS3Config = requireNonNull(duckDbS3Config, "duckDbS3Config is null");
         this.autoHttpfsThresholdBytes = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
                 .getDuckdbAutoHttpfsThreshold().toBytes();
+        this.executorFactory = requireNonNull(executorFactory, "executorFactory is null");
     }
 
     @Override
@@ -592,7 +595,8 @@ public class DucklakePageSourceProvider
         TupleDomain<DucklakeColumnHandle> filePredicate = effectivePredicate.filter(
                 (col, _) -> fileColumns.contains(col));
 
-        ConnectorPageSource pageSource = new DuckDbFilePageSource(attachTarget, fileColumns, fileColumnTypes, filePredicate);
+        ConnectorPageSource pageSource = new DuckDbFilePageSource(
+                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate);
 
         if (rowIdOutputPosition >= 0) {
             pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());

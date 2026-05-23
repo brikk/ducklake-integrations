@@ -1,0 +1,88 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.brikk.ducklake.trino.plugin;
+
+import org.testcontainers.containers.BindMode;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.images.builder.ImageFromDockerfile;
+
+import java.nio.file.Path;
+
+/**
+ * Out-of-process DuckDB-serving-Quack fixture for exercising
+ * {@link QuackDuckDbExecutor}. Reuses the {@code brikk-ducklake-quack-server}
+ * image (the catalog-path entrypoint also serves arbitrary client SQL just
+ * fine for the data-path use case — no DuckLake-attached state needed) and
+ * additionally bind-mounts the host's data directory so the server can
+ * server-side {@code ATTACH '/data/&lt;name&gt;.db'} files written from the test.
+ *
+ * <p>Both the test JVM and the container see the {@code .db} files at the
+ * same path on their respective views. In production this maps to the
+ * multi-container pod model where a shared volume is mounted into each
+ * Quack-serving sidecar.
+ */
+final class TestingDucklakeQuackEngineServer
+        implements AutoCloseable
+{
+    private static final int CONTAINER_PORT = 9494;
+    private static final String DEFAULT_TOKEN = "ducklake-engine-token";
+
+    private final GenericContainer<?> container;
+    private final String token;
+
+    TestingDucklakeQuackEngineServer(Path sharedDataDir)
+    {
+        this.token = DEFAULT_TOKEN;
+        this.container = new GenericContainer<>(buildImage())
+                .withExposedPorts(CONTAINER_PORT)
+                .withEnv("QUACK_PORT", String.valueOf(CONTAINER_PORT))
+                .withEnv("QUACK_TOKEN", token)
+                .withFileSystemBind(sharedDataDir.toAbsolutePath().toString(), "/data", BindMode.READ_WRITE)
+                .withStartupAttempts(3)
+                .waitingFor(Wait.forListeningPort());
+        container.start();
+    }
+
+    String getHost()
+    {
+        return container.getHost();
+    }
+
+    int getMappedPort()
+    {
+        return container.getMappedPort(CONTAINER_PORT);
+    }
+
+    String getToken()
+    {
+        return token;
+    }
+
+    @Override
+    public void close()
+    {
+        container.stop();
+    }
+
+    private static ImageFromDockerfile buildImage()
+    {
+        // Reuses the catalog-path image — Testcontainers content-hashes the
+        // Dockerfile + files, so this builds once per test JVM across all
+        // fixtures that point at the same image inputs.
+        return new ImageFromDockerfile("brikk-ducklake-quack-server", false)
+                .withFileFromClasspath("Dockerfile", "docker/quack-server/Dockerfile")
+                .withFileFromClasspath("entrypoint.sh", "docker/quack-server/entrypoint.sh");
+    }
+}

@@ -107,7 +107,7 @@ public class TestDuckDbS3Config
         assertThat(sql).contains("URL_STYLE 'path'");
         // http:// inferred USE_SSL=false
         assertThat(sql).contains("USE_SSL false");
-        assertThat(sql).startsWith("CREATE SECRET ducklake_s3 (TYPE S3");
+        assertThat(sql).startsWith("CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3");
         assertThat(sql).endsWith(")");
     }
 

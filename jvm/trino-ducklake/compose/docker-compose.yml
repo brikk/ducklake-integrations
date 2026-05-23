@@ -85,30 +85,45 @@ services:
         exec python /bootstrap/init_ducklake.py
     restart: "no"
 
+  duckqk:
+    build:
+      context: ../../ducklake-catalog/testFixtures/resources/docker/quack-server
+      dockerfile: Dockerfile
+    container_name: trino-ducklake-duckqk
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      QUACK_PORT: "9494"
+      QUACK_TOKEN: ${QUACK_TOKEN:-ducklake-engine-token}
+    volumes:
+      # Shared with trino at the same path so materialize-mode .db files
+      # written by the Trino worker are visible to server-side ATTACH.
+      - ducklake-materialize:/tmp/ducklake-read
+    restart: unless-stopped
+
   trino:
     image: trinodb/trino:${TRINO_VERSION}
     container_name: trino-ducklake-trino
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+      duckqk:
+        condition: service_started
     ports:
       - "9080:8080"
-    # Container memory cap. Trino's image jvm.config uses MaxRAMPercentage to size
-    # the heap relative to this — at 3G that's roughly 2.4G heap, leaving room for
-    # native (DuckDB JNI, Arrow off-heap), metaspace, and code cache.
     mem_limit: 4g
     environment:
-      # Apache Arrow's MemoryUtil reaches into private DirectByteBuffer constructors
-      # for off-heap interop with DuckDB's Arrow C-data export. Required for any
-      # data_file_format = 'duckdb' read or write. Production Trino installs that
-      # use this connector need the same opens in their etc/jvm.config.
       JAVA_TOOL_OPTIONS: >-
         --add-opens=java.base/java.nio=ALL-UNNAMED
         --add-opens=java.base/java.lang=ALL-UNNAMED
     volumes:
       - ./trino/etc/catalog/ducklake.properties:/etc/trino/catalog/ducklake.properties:ro
       - ./trino/etc/catalog/ducklake_ovh.properties:/etc/trino/catalog/ducklake_ovh.properties:ro
+      - ./trino/etc/catalog/quack.properties:/etc/trino/catalog/quack.properties:ro
+      - ./trino/etc/catalog/quack_ovh.properties:/etc/trino/catalog/quack_ovh.properties:ro
       - ../build/trino-plugin/trino-ducklake-${PLUGIN_VERSION}:/usr/lib/trino/plugin/ducklake:ro
+      - ducklake-materialize:/tmp/ducklake-read
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]
       interval: 5s
@@ -119,3 +134,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  ducklake-materialize:

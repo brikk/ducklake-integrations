@@ -270,7 +270,8 @@ public class TestDucklakeInlinedDeleteHandling
                     catalog,
                     new DucklakeMaterializedFileCache(),
                     DuckDbS3Config.fromCatalogConfig(java.util.Map.of()),
-                    config);
+                    config,
+                    new DucklakeDuckDbExecutorFactory(config));
             return new Fixture(isolated, catalog, splitManager, pageSourceProvider);
         }
 
