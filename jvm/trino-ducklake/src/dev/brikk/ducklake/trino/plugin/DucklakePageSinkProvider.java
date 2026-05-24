@@ -40,6 +40,7 @@ public class DucklakePageSinkProvider
     private final JsonCodec<DucklakeWriteFragment> fragmentCodec;
     private final JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec;
     private final ParquetWriterConfig parquetWriterConfig;
+    private final long duckdbTargetWriteBytes;
     private final String trinoVersion;
     private final PageIndexerFactory pageIndexerFactory;
 
@@ -49,6 +50,7 @@ public class DucklakePageSinkProvider
             JsonCodec<DucklakeWriteFragment> fragmentCodec,
             JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec,
             ParquetWriterConfig parquetWriterConfig,
+            DucklakeConfig ducklakeConfig,
             NodeVersion nodeVersion,
             PageIndexerFactory pageIndexerFactory)
     {
@@ -56,6 +58,8 @@ public class DucklakePageSinkProvider
         this.fragmentCodec = requireNonNull(fragmentCodec, "fragmentCodec is null");
         this.deleteFragmentCodec = requireNonNull(deleteFragmentCodec, "deleteFragmentCodec is null");
         this.parquetWriterConfig = requireNonNull(parquetWriterConfig, "parquetWriterConfig is null");
+        this.duckdbTargetWriteBytes = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
+                .getDuckdbTargetWriteBytes().toBytes();
         this.trinoVersion = requireNonNull(nodeVersion, "nodeVersion is null").toString();
         this.pageIndexerFactory = requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
     }
@@ -115,6 +119,7 @@ public class DucklakePageSinkProvider
                 fileSystemFactory.create(session),
                 fragmentCodec,
                 parquetWriterConfig,
+                duckdbTargetWriteBytes,
                 trinoVersion,
                 pageIndexerFactory);
     }

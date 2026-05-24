@@ -88,6 +88,7 @@ public class DucklakePageSink
             TrinoFileSystem fileSystem,
             JsonCodec<DucklakeWriteFragment> fragmentCodec,
             ParquetWriterConfig parquetWriterConfig,
+            long duckdbTargetWriteBytes,
             String trinoVersion,
             PageIndexerFactory pageIndexerFactory)
     {
@@ -104,7 +105,12 @@ public class DucklakePageSink
                 .setBatchSize(parquetWriterConfig.getBatchSize())
                 .build();
 
-        this.targetMaxFileSize = parquetWriterConfig.getBlockSize().toBytes();
+        // Per-format rollover threshold. Parquet's block size targets compressed
+        // on-disk row-group size; DuckDB's target is logical input bytes (we can't
+        // probe on-disk size mid-write without a CHECKPOINT).
+        this.targetMaxFileSize = FORMAT_DUCKDB.equalsIgnoreCase(fileFormat)
+                ? duckdbTargetWriteBytes
+                : parquetWriterConfig.getBlockSize().toBytes();
 
         this.columnTypes = handle.columns().stream()
                 .map(DucklakeColumnHandle::columnType)

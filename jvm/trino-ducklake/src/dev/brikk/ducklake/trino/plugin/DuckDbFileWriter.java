@@ -116,6 +116,7 @@ final class DuckDbFileWriter
     private final DuckDBAppender appender;
 
     private long rowCount;
+    private long writtenBytes;
     private boolean closed;
 
     DuckDbFileWriter(
@@ -252,6 +253,7 @@ final class DuckDbFileWriter
             // cheap (Pages are ~1024–65536 rows) and lets DuckDB persist as we go.
             appender.flush();
             rowCount += positionCount;
+            writtenBytes += page.getSizeInBytes();
         }
         catch (SQLException e) {
             throw new IOException("Failed to append row to DuckDB file " + remoteLocation, e);
@@ -362,12 +364,7 @@ final class DuckDbFileWriter
     @Override
     public long getApproximateWrittenBytes()
     {
-        // The local file isn't flushed mid-stream — best signal we have without
-        // inspecting DuckDB internals is the row count's rough size estimate.
-        // For Phase 1 we never rotate (one .db per writer), so this only matters as
-        // a lower bound for the page-sink rotation check; returning 0 keeps writes
-        // in a single file until finish().
-        return 0L;
+        return writtenBytes;
     }
 
     @Override

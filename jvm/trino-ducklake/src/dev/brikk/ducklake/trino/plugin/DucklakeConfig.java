@@ -51,6 +51,7 @@ public class DucklakeConfig
     private String duckdbTempDirectory;
     private DataSize duckdbTempDirectoryMaxSize;
     private boolean duckdbEnableObjectCache = true;
+    private DataSize duckdbTargetWriteBytes = DataSize.ofBytes(512L * 1024 * 1024);
 
     @NotNull
     public String getCatalogDatabaseUrl()
@@ -346,6 +347,21 @@ public class DucklakeConfig
     public DucklakeConfig setDuckdbEnableObjectCache(boolean duckdbEnableObjectCache)
     {
         this.duckdbEnableObjectCache = duckdbEnableObjectCache;
+        return this;
+    }
+
+    @NotNull
+    @MinDataSize("1kB")
+    public DataSize getDuckdbTargetWriteBytes()
+    {
+        return duckdbTargetWriteBytes;
+    }
+
+    @Config("ducklake.duckdb.target-write-bytes")
+    @ConfigDescription("Approximate logical input bytes appended before the DuckDB-format writer rolls to a new .db file. On-disk size will be smaller depending on data compressibility — typically 3-5×.")
+    public DucklakeConfig setDuckdbTargetWriteBytes(DataSize duckdbTargetWriteBytes)
+    {
+        this.duckdbTargetWriteBytes = duckdbTargetWriteBytes;
         return this;
     }
 

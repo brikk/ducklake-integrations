@@ -166,6 +166,7 @@ final class DuckDbArrowStreamFileWriter
     private final Thread consumerThread;
 
     private long rowCount;
+    private long writtenBytes;
     private boolean closed;
 
     DuckDbArrowStreamFileWriter(
@@ -418,15 +419,16 @@ final class DuckDbArrowStreamFileWriter
             throw new IOException("Interrupted while feeding page to Arrow-stream writer", e);
         }
         rowCount += page.getPositionCount();
+        writtenBytes += page.getSizeInBytes();
     }
 
     @Override
     public long getApproximateWrittenBytes()
     {
-        // We don't have a meaningful incremental size for the local .db while it's
-        // being filled. Same as the Appender path: keep one writer per file by
-        // returning 0, so the page sink doesn't try to rotate.
-        return 0L;
+        // Logical input bytes appended (uncompressed). DuckDB's on-disk file is
+        // smaller after columnar compression — typically 3-5×. The page sink uses
+        // this to decide rollover at ducklake.duckdb.target-write-bytes.
+        return writtenBytes;
     }
 
     @Override
