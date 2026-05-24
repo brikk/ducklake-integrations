@@ -28,6 +28,23 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 - A `DucklakeFunctionProvider` (new) for DuckDB-namespaced functions registered via `ConnectorFunctionProvider`. Used for step 5 onward.
 - The handle's pushed-down state surfaces in the SQL we send to the executor at read time. Same shape regardless of in-process / Quack / Swanlake executor.
 
+## When pushdown is allowed to fire (mixed-format tables)
+
+DuckLake tables can carry mixed file formats — parquet and duckdb side by side, snapshot by snapshot. Pushdown gates per format.
+
+**Regime 1 — common-SQL functions** (`LIKE`, `UPPER`, `SUBSTRING`, basic math/date — anything in both engines' built-in set).
+- Push as a hint AND return as `remainingFilter`.
+- `.db` splits: DuckDB pre-filters server-side, fast path.
+- `.parquet` splits: Trino re-applies the same predicate above the scan, correct result.
+- No homogeneity check needed. Double-evaluation on `.db` splits is trivial — DuckDB already removed most rows.
+
+**Regime 2 — DuckDB-namespaced functions** (`cosine_distance`, `list_*`, `struct_extract`, …).
+- Trino has no implementation, so a parquet split has no way to evaluate the function above the scan.
+- `applyFilter` checks `ducklake_data_file` at plan time: every file for this scan must have `file_format = 'duckdb'`. If not, reject with a clear error pointing at the offending format mix.
+- If homogeneous: push to the executor's SQL AND remove from `remainingExpression` — we own the evaluation end-to-end.
+
+Skip the "route parquet through DuckDB too" alternative. Loses Trino's native parquet reader + Alluxio page-cache + soft-affinity work; undoes the layered design from `CONCEPT-duckdb-as-parquet-file-cache.md`.
+
 ## What's out of scope
 
 - Aggregate / window pushdown (`applyAggregation`). Different SPI, different design problem. Tracked separately.
