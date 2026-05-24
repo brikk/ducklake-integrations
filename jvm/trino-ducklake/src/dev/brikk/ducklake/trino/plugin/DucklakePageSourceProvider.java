@@ -633,19 +633,13 @@ public class DucklakePageSourceProvider
             default -> throw new TrinoException(NOT_SUPPORTED, "Unsupported duckdb_read_mode: " + mode);
         };
 
-        if (useHttpfs) {
-            String url = dataFileLocation.toString();
-            if (!url.startsWith("s3://") && !url.startsWith("s3a://") && !url.startsWith("s3n://")) {
-                // Local-FS targets cannot be reached via httpfs. This is unreachable in
-                // production (the connector requires an s3 data path) but defensive in
-                // case a future codepath ever produces a local Location for a duckdb file.
-                throw new TrinoException(
-                        NOT_SUPPORTED,
-                        "duckdb_read_mode=httpfs requires an s3:// data file path; got " + url);
-            }
+        String url = dataFileLocation.toString();
+        boolean isS3 = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://");
+        if (useHttpfs && isS3) {
             return new DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config);
         }
-
+        // httpfs against a non-s3 target degrades to materialize — the local path is
+        // already directly attachable, no need for a remote-streaming protocol.
         java.nio.file.Path localPath = duckDbReadCache.materialize(
                 fileSystem, dataFileLocation, split.fileSizeBytes());
         return new DuckDbAttachTarget.LocalPath(localPath);
@@ -890,14 +884,14 @@ public class DucklakePageSourceProvider
 
     private record DeleteFileColumn(String columnName, Type columnType, Field field) {}
 
-    private static final class DeleteRowFilterTransform
+    static final class DeleteRowFilterTransform
             implements Function<SourcePage, SourcePage>
     {
         private final Set<Long> deletedRows;
         private final long rowIdStart;
         private long nextRowOffset;
 
-        private DeleteRowFilterTransform(Set<Long> deletedRows, long rowIdStart)
+        DeleteRowFilterTransform(Set<Long> deletedRows, long rowIdStart)
         {
             this.deletedRows = Set.copyOf(requireNonNull(deletedRows, "deletedRows is null"));
             this.rowIdStart = rowIdStart;

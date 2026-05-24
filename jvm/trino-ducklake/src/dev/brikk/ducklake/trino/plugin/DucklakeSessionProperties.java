@@ -88,8 +88,8 @@ public class DucklakeSessionProperties
                         false),
                 stringProperty(
                         DUCKDB_READ_MODE,
-                        "Read strategy for duckdb-format data files: 'materialize' (download whole .db file to local tmp then ATTACH; warm reads are local), 'httpfs' (DuckDB streams blocks from S3 directly via the httpfs extension; no local copy — wins on cold one-shot reads of large files), or 'auto' (default; picks per-file based on the ducklake.duckdb.auto-httpfs-threshold config). No effect when data_file_format is 'parquet'.",
-                        READ_MODE_AUTO,
+                        "Read strategy for duckdb-format data files: 'httpfs' (default; DuckDB streams blocks from S3 directly via the httpfs extension and maintains its own warm cache across queries), 'materialize' (download whole .db file to local tmp then ATTACH; useful when many small reads dominate), or 'auto' (picks per-file based on ducklake.duckdb.auto-httpfs-threshold). No effect when data_file_format is 'parquet'.",
+                        READ_MODE_HTTPFS,
                         DucklakeSessionProperties::validateDuckDbReadMode,
                         false));
     }

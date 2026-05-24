@@ -66,12 +66,19 @@ final class QuackDuckDbExecutor
     private final String host;
     private final int port;
     private final String token;
+    private final DuckDbTuning tuning;
 
     QuackDuckDbExecutor(String host, int port, String token)
+    {
+        this(host, port, token, DuckDbTuning.defaults());
+    }
+
+    QuackDuckDbExecutor(String host, int port, String token, DuckDbTuning tuning)
     {
         this.host = requireNonNull(host, "host is null");
         this.port = port;
         this.token = requireNonNull(token, "token is null");
+        this.tuning = requireNonNull(tuning, "tuning is null");
         if (token.length() < 4) {
             throw new IllegalArgumentException(
                     "Quack auth token must be at least 4 characters (Quack server-side requirement)");
@@ -94,22 +101,16 @@ final class QuackDuckDbExecutor
                 init.execute("INSTALL quack");
                 init.execute("LOAD quack");
                 init.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '" + escapeLiteral(token) + "')");
-                // disable_ssl=true: the Quack server (our brikk-ducklake-quack-server
-                // image) listens on plain HTTP — quack_serve binds an http:// listener
-                // by default. Without this option, upstream Quack's URL parser
-                // (quack_storage.cpp:79) defaults enable_ssl to TRUE for any hostname
-                // that isn't "localhost" / "127.0.0.1" / "::1" — including the docker
-                // service name "quack" — so the client would try HTTPS to a plain-HTTP
-                // server and fail with a connect error. Production deployments that
-                // terminate TLS in front of the Quack server can drop this option (and
-                // we'd add a ducklake.quack.tls config knob to toggle it). For now the
-                // pod / compose model targets plain HTTP and we hard-code accordingly.
+                // disable_ssl=true: quack_serve binds plain HTTP; upstream URL parser
+                // defaults SSL on for non-localhost hosts. Plain HTTP within the pod.
                 init.execute(format(
                         "ATTACH 'quack:%s:%d' AS %s (disable_ssl true)",
                         host, port, ENGINE_CATALOG));
-                // For HttpfsS3 targets, the server (not the client) needs httpfs +
-                // S3 credentials to ATTACH the s3:// URL. Issue both via the wrapper
-                // so the SERVER's DuckDB instance gains those capabilities.
+                // Tuning applied server-side via the wrapper — affects the long-lived
+                // Quack server's DuckDB, not the ephemeral local client.
+                for (String tuningSql : DuckDbTuningSql.statements(tuning)) {
+                    drainWrappedQuery(init, tuningSql);
+                }
                 for (String serverInitStatement : serverInitStatementsFor(request.target())) {
                     drainWrappedQuery(init, serverInitStatement);
                 }

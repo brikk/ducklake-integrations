@@ -46,6 +46,11 @@ public class DucklakeConfig
     private String quackHost;
     private int quackPort = 9494;
     private String quackToken;
+    private DataSize duckdbMemoryLimit;
+    private Integer duckdbThreads;
+    private String duckdbTempDirectory;
+    private DataSize duckdbTempDirectoryMaxSize;
+    private boolean duckdbEnableObjectCache = true;
 
     @NotNull
     public String getCatalogDatabaseUrl()
@@ -277,6 +282,81 @@ public class DucklakeConfig
     {
         this.quackToken = quackToken;
         return this;
+    }
+
+    public DataSize getDuckdbMemoryLimit()
+    {
+        return duckdbMemoryLimit;
+    }
+
+    @Config("ducklake.duckdb.memory-limit")
+    @ConfigDescription("DuckDB engine memory_limit (per-split for duckdb_local; instance-wide for quack). Unset by default.")
+    public DucklakeConfig setDuckdbMemoryLimit(DataSize duckdbMemoryLimit)
+    {
+        this.duckdbMemoryLimit = duckdbMemoryLimit;
+        return this;
+    }
+
+    public Integer getDuckdbThreads()
+    {
+        return duckdbThreads;
+    }
+
+    @Config("ducklake.duckdb.threads")
+    @ConfigDescription("DuckDB engine thread count. Unset by default (DuckDB picks per CPU count).")
+    public DucklakeConfig setDuckdbThreads(Integer duckdbThreads)
+    {
+        this.duckdbThreads = duckdbThreads;
+        return this;
+    }
+
+    public String getDuckdbTempDirectory()
+    {
+        return duckdbTempDirectory;
+    }
+
+    @Config("ducklake.duckdb.temp-directory")
+    @ConfigDescription("DuckDB temp_directory (spill location). Unset by default.")
+    public DucklakeConfig setDuckdbTempDirectory(String duckdbTempDirectory)
+    {
+        this.duckdbTempDirectory = duckdbTempDirectory;
+        return this;
+    }
+
+    public DataSize getDuckdbTempDirectoryMaxSize()
+    {
+        return duckdbTempDirectoryMaxSize;
+    }
+
+    @Config("ducklake.duckdb.temp-directory-max-size")
+    @ConfigDescription("DuckDB max_temp_directory_size (cap on spill usage). Unset by default.")
+    public DucklakeConfig setDuckdbTempDirectoryMaxSize(DataSize duckdbTempDirectoryMaxSize)
+    {
+        this.duckdbTempDirectoryMaxSize = duckdbTempDirectoryMaxSize;
+        return this;
+    }
+
+    public boolean isDuckdbEnableObjectCache()
+    {
+        return duckdbEnableObjectCache;
+    }
+
+    @Config("ducklake.duckdb.enable-object-cache")
+    @ConfigDescription("Whether to enable DuckDB's enable_object_cache (parquet metadata reuse across queries). Default true.")
+    public DucklakeConfig setDuckdbEnableObjectCache(boolean duckdbEnableObjectCache)
+    {
+        this.duckdbEnableObjectCache = duckdbEnableObjectCache;
+        return this;
+    }
+
+    public DuckDbTuning toDuckDbTuning()
+    {
+        return new DuckDbTuning(
+                Optional.ofNullable(duckdbMemoryLimit),
+                duckdbThreads == null ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(duckdbThreads),
+                Optional.ofNullable(duckdbTempDirectory),
+                Optional.ofNullable(duckdbTempDirectoryMaxSize),
+                duckdbEnableObjectCache);
     }
 
     @AssertTrue(message = "ducklake.quack.host and ducklake.quack.token must be set when ducklake.execution-engine=quack")

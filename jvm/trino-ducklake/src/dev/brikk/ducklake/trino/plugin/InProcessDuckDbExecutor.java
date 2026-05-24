@@ -45,6 +45,18 @@ final class InProcessDuckDbExecutor
     private static final String ATTACHED_DB = "ducklake_in";
     private static final String ATTACHED_TABLE = "t";
 
+    private final DuckDbTuning tuning;
+
+    InProcessDuckDbExecutor()
+    {
+        this(DuckDbTuning.defaults());
+    }
+
+    InProcessDuckDbExecutor(DuckDbTuning tuning)
+    {
+        this.tuning = java.util.Objects.requireNonNull(tuning, "tuning is null");
+    }
+
     @Override
     public ExecutionContext execute(ExecutionRequest request)
             throws SQLException
@@ -56,6 +68,7 @@ final class InProcessDuckDbExecutor
         ArrowReader arrowReader = null;
         try {
             try (Statement attachStmt = connection.createStatement()) {
+                DuckDbTuningSql.applyDirect(attachStmt, tuning);
                 attachStmt.execute(buildAttachSql(request.target(), attachStmt));
             }
             String selectSql = buildSelectSql(request);

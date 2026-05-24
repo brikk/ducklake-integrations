@@ -52,7 +52,6 @@ public class TestDucklakeDuckDbReadMode
         extends AbstractTestQueryFramework
 {
     private static final String CATALOG_NAME = "duckdb-read-mode";
-    private static final String EXPECTED_HTTPFS_LOCAL_FS_ERROR = "requires an s3:// data file path";
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -106,18 +105,17 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
-    public void testHttpfsModeRejectsLocalFsPath()
+    public void testHttpfsModeFallsBackToMaterializeOnLocalFs()
     {
-        // The httpfs branch requires the data file to be on S3 (DuckDB's httpfs only
-        // speaks http/https/s3). On local FS it must fail clearly rather than silently
-        // fall back to materialize — that's the routing contract being pinned here.
+        // httpfs against a non-s3 path silently degrades to materialize — the local
+        // file is already directly attachable, no streaming protocol required.
         computeActual(writeDuckDbSession(),
                 "CREATE TABLE test_schema.read_mode_httpfs_localfs AS SELECT 1 AS id");
         try {
-            assertThatThrownBy(() -> computeActual(
+            var result = computeActual(
                     sessionWith(READ_MODE_HTTPFS),
-                    "SELECT * FROM test_schema.read_mode_httpfs_localfs"))
-                    .hasMessageContaining(EXPECTED_HTTPFS_LOCAL_FS_ERROR);
+                    "SELECT * FROM test_schema.read_mode_httpfs_localfs");
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
         }
         finally {
             tryDropTable("test_schema.read_mode_httpfs_localfs");
@@ -125,19 +123,17 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
-    public void testAutoModeWithLowThresholdRoutesToHttpfs()
+    public void testAutoModeWithLowThresholdFallsBackToMaterializeOnLocalFs()
     {
-        // 'auto' + threshold=1B + non-empty file = httpfs branch chosen. Confirms the
-        // threshold-comparison side of the auto heuristic. (The opposite case —
-        // 'auto' + small file under default 64MiB threshold = materialize — is already
-        // covered by every test in TestDucklakeDuckDbFormatRead.)
+        // 'auto' + threshold=1B picks httpfs by size; against a non-s3 path that
+        // degrades to materialize same as explicit httpfs would.
         computeActual(writeDuckDbSession(),
                 "CREATE TABLE test_schema.read_mode_auto_lo AS SELECT 1 AS id");
         try {
-            assertThatThrownBy(() -> computeActual(
+            var result = computeActual(
                     sessionWith(READ_MODE_AUTO),
-                    "SELECT * FROM test_schema.read_mode_auto_lo"))
-                    .hasMessageContaining(EXPECTED_HTTPFS_LOCAL_FS_ERROR);
+                    "SELECT * FROM test_schema.read_mode_auto_lo");
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
         }
         finally {
             tryDropTable("test_schema.read_mode_auto_lo");

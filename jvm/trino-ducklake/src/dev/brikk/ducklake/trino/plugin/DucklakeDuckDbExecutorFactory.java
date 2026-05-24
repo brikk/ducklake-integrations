@@ -43,8 +43,9 @@ final class DucklakeDuckDbExecutorFactory
 
     DucklakeDuckDbExecutor create()
     {
+        DuckDbTuning tuning = config.toDuckDbTuning();
         return switch (config.getExecutionEngine()) {
-            case DUCKDB_LOCAL -> new InProcessDuckDbExecutor();
+            case DUCKDB_LOCAL -> new InProcessDuckDbExecutor(tuning);
             case QUACK -> {
                 String host = config.getQuackHost();
                 String token = config.getQuackToken();
@@ -56,7 +57,7 @@ final class DucklakeDuckDbExecutorFactory
                     throw new TrinoException(CONFIGURATION_INVALID,
                             "ducklake.execution-engine=quack requires ducklake.quack.token");
                 }
-                yield new QuackDuckDbExecutor(host, config.getQuackPort(), token);
+                yield new QuackDuckDbExecutor(host, config.getQuackPort(), token, tuning);
             }
             case SWANLAKE -> throw new TrinoException(NOT_SUPPORTED,
                     "ducklake.execution-engine=swanlake is reserved but not yet implemented. "

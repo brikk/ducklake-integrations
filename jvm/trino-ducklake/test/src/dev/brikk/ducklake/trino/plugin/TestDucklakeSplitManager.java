@@ -50,7 +50,7 @@ public class TestDucklakeSplitManager
         DucklakeConfig config = DucklakeTestCatalogEnvironment.createDucklakeConfig();
 
         catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
-        splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config));
+        splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
     }
 
     @AfterEach

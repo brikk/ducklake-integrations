@@ -65,7 +65,7 @@ public class TestDucklakeDeleteFileHandling
 
         DucklakeCatalog catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
         try {
-            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config));
+            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
             DucklakePageSourceProvider pageSourceProvider = new DucklakePageSourceProvider(
                     new LocalFileSystemFactory(Path.of("/")),
                     new FileFormatDataSourceStats(),
