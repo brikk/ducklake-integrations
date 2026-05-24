@@ -250,7 +250,7 @@ public class TestDucklakePartitionPruning
     public void testSplitManagerPrunesByPartitionValue()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long regionColumnId = catalog.getTableColumns(partitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("region"))
@@ -381,7 +381,7 @@ public class TestDucklakePartitionPruning
     public void testSplitManagerPrunesByTemporalPartitionValue()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(temporalPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -424,7 +424,7 @@ public class TestDucklakePartitionPruning
         DucklakeConfig epochStrictConfig = DucklakeTestCatalogEnvironment.createDucklakeConfig()
                 .setTemporalPartitionEncoding("epoch")
                 .setTemporalPartitionEncodingReadLeniency(false);
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, epochStrictConfig, new DucklakePathResolver(catalog, epochStrictConfig), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, epochStrictConfig, new DucklakePathResolver(catalog, epochStrictConfig), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -451,7 +451,7 @@ public class TestDucklakePartitionPruning
         DucklakeConfig epochLenientConfig = DucklakeTestCatalogEnvironment.createDucklakeConfig()
                 .setTemporalPartitionEncoding("epoch")
                 .setTemporalPartitionEncodingReadLeniency(true);
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, epochLenientConfig, new DucklakePathResolver(catalog, epochLenientConfig), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, epochLenientConfig, new DucklakePathResolver(catalog, epochLenientConfig), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -482,8 +482,8 @@ public class TestDucklakePartitionPruning
                 .setTemporalPartitionEncoding("calendar")
                 .setTemporalPartitionEncodingReadLeniency(true);
 
-        DucklakeSplitManager strictSplitManager = new DucklakeSplitManager(catalog, calendarStrictConfig, new DucklakePathResolver(catalog, calendarStrictConfig), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
-        DucklakeSplitManager lenientSplitManager = new DucklakeSplitManager(catalog, calendarLenientConfig, new DucklakePathResolver(catalog, calendarLenientConfig), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager strictSplitManager = new DucklakeSplitManager(catalog, calendarStrictConfig, new DucklakePathResolver(catalog, calendarStrictConfig), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
+        DucklakeSplitManager lenientSplitManager = new DucklakeSplitManager(catalog, calendarLenientConfig, new DucklakePathResolver(catalog, calendarLenientConfig), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -510,7 +510,7 @@ public class TestDucklakePartitionPruning
     public void testTemporalPruningByYearOnly()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(temporalPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -575,7 +575,7 @@ public class TestDucklakePartitionPruning
     public void testDailyPrunesToSingleDay()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -608,7 +608,7 @@ public class TestDucklakePartitionPruning
     public void testDailyPrunesWithinSameMonth()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -641,7 +641,7 @@ public class TestDucklakePartitionPruning
     public void testDailyPrunesByMonthAcrossDays()
             throws Exception
     {
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long eventDateColumnId = catalog.getTableColumns(dailyPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("event_date"))
@@ -748,7 +748,7 @@ public class TestDucklakePartitionPruning
     {
         // This is the exact real-world pattern: WHERE inserted_at >= TIMESTAMP '...' AND inserted_at < TIMESTAMP '...'
         // The < produces an exclusive high bound. Without the boundary fix, day=8 would NOT be pruned.
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long insertedAtColumnId = catalog.getTableColumns(timestampPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("inserted_at"))
@@ -787,7 +787,7 @@ public class TestDucklakePartitionPruning
     {
         // Range: [2026-03-07T00:00:00Z, 2026-03-08T12:00:00Z) — exclusive high at NOON, not a day boundary
         // Day 8 should NOT be pruned because there's data before noon
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long insertedAtColumnId = catalog.getTableColumns(timestampPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("inserted_at"))
@@ -820,7 +820,7 @@ public class TestDucklakePartitionPruning
     {
         // Range: [2026-03-07T00:00:00Z, 2026-03-08T00:00:00Z] — INCLUSIVE high at midnight
         // Day 8 should be kept because midnight of March 8 is explicitly included
-        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
 
         long insertedAtColumnId = catalog.getTableColumns(timestampPartitionedTable.tableId(), snapshotId).stream()
                 .filter(c -> c.columnName().equals("inserted_at"))

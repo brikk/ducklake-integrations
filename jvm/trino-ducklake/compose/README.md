@@ -201,8 +201,8 @@ All in `.env`:
 
 | Variable               | Default               | Purpose                                   |
 |------------------------|-----------------------|-------------------------------------------|
-| `PLUGIN_VERSION`       | `480-1-ALPHA`         | Must match `:trino-ducklake` Gradle version (the assembled directory name) |
-| `TRINO_VERSION`        | `480`                 | `trinodb/trino` image tag                 |
+| `PLUGIN_VERSION`       | `481-1-ALPHA`         | Must match `:trino-ducklake` Gradle version (the assembled directory name) |
+| `TRINO_VERSION`        | `481`                 | `trinodb/trino` image tag                 |
 | `POSTGRES_VERSION`     | `18-alpine`           |                                           |
 | `MINIO_TAG`            | release tag           | `minio/minio` image tag                   |
 | `MC_TAG`               | release tag           | `minio/mc` image tag (separate from server!) |

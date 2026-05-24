@@ -16,7 +16,6 @@ package dev.brikk.ducklake.trino.plugin;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.airlift.slice.SizeOf;
-import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.predicate.TupleDomain;
 
@@ -28,6 +27,7 @@ import java.util.Set;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
+import static io.airlift.slice.SizeOf.sizeOf;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -70,9 +70,10 @@ public record DucklakeSplit(
         // The page source merges these into the same deleted-row set as any parquet
         // positional delete files. Empty for files without inlined deletions.
         @JsonProperty("inlinedDeletedRowPositions") Set<Long> inlinedDeletedRowPositions,
-        // Soft-affinity hint from CachingHostAddressProvider — preferred worker(s) for
-        // this split. Empty list means no preference (any worker).
-        @JsonProperty("addresses") List<HostAddress> addresses)
+        // Affinity key from SplitAffinityProvider. The engine routes splits with the
+        // same key to the same worker(s) across queries via a consistent-hash ring,
+        // enabling filesystem-cache warm reuse. Empty when caching is not enabled.
+        @JsonProperty("affinityKey") Optional<String> affinityKey)
         implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = instanceSize(DucklakeSplit.class);
@@ -93,8 +94,7 @@ public record DucklakeSplit(
         fieldIdToParquetSourceName = Map.copyOf(fieldIdToParquetSourceName);
         requireNonNull(inlinedDeletedRowPositions, "inlinedDeletedRowPositions is null");
         inlinedDeletedRowPositions = Set.copyOf(inlinedDeletedRowPositions);
-        requireNonNull(addresses, "addresses is null");
-        addresses = List.copyOf(addresses);
+        requireNonNull(affinityKey, "affinityKey is null");
     }
 
     // Convenience constructor without footer-size hints / partition values — used by
@@ -109,7 +109,7 @@ public record DucklakeSplit(
             String fileFormat,
             TupleDomain<DucklakeColumnHandle> fileStatisticsDomain)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of(), Map.of(), Set.of(), List.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, Map.of(), Map.of(), Map.of(), Set.of(), Optional.empty());
     }
 
     // Eight-arg legacy constructor (no partition values) — kept for existing call sites
@@ -125,7 +125,7 @@ public record DucklakeSplit(
             long footerSize,
             Map<String, Long> deleteFileFooterSizes)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of(), Map.of(), Set.of(), List.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, Map.of(), Map.of(), Set.of(), Optional.empty());
     }
 
     // Ten-arg constructor used during the partition-value-projection introduction —
@@ -142,7 +142,7 @@ public record DucklakeSplit(
             Map<String, Long> deleteFileFooterSizes,
             Map<Long, String> partitionValuesByColumnId)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, Map.of(), Set.of(), List.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, Map.of(), Set.of(), Optional.empty());
     }
 
     // Eleven-arg constructor — kept for callers that don't carry inlined-delete row positions.
@@ -159,10 +159,10 @@ public record DucklakeSplit(
             Map<Long, String> partitionValuesByColumnId,
             Map<Long, String> fieldIdToParquetSourceName)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, fieldIdToParquetSourceName, Set.of(), List.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, fieldIdToParquetSourceName, Set.of(), Optional.empty());
     }
 
-    // Twelve-arg constructor — kept for callers that don't yet supply soft-affinity addresses.
+    // Twelve-arg constructor — kept for callers that don't yet supply an affinity key.
     public DucklakeSplit(
             String dataFilePath,
             List<String> deleteFilePaths,
@@ -177,7 +177,7 @@ public record DucklakeSplit(
             Map<Long, String> fieldIdToParquetSourceName,
             Set<Long> inlinedDeletedRowPositions)
     {
-        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, fieldIdToParquetSourceName, inlinedDeletedRowPositions, List.of());
+        this(dataFilePath, deleteFilePaths, rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes, partitionValuesByColumnId, fieldIdToParquetSourceName, inlinedDeletedRowPositions, Optional.empty());
     }
 
     /**
@@ -197,9 +197,9 @@ public record DucklakeSplit(
     }
 
     @Override
-    public List<HostAddress> getAddresses()
+    public Optional<String> getAffinityKey()
     {
-        return addresses;
+        return affinityKey;
     }
 
     @Override
@@ -215,7 +215,6 @@ public record DucklakeSplit(
                 .mapToLong(entry -> SIZE_OF_LONG + estimatedSizeOf(entry.getValue()))
                 .sum();
         long inlinedDeletesRetained = (long) inlinedDeletedRowPositions.size() * SIZE_OF_LONG;
-        long addressesRetained = addresses.stream().mapToLong(HostAddress::getRetainedSizeInBytes).sum();
         return INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong(SizeOf::estimatedSizeOf).sum()
@@ -226,6 +225,6 @@ public record DucklakeSplit(
                 + partitionValuesRetained
                 + sourceNameRetained
                 + inlinedDeletesRetained
-                + addressesRetained;
+                + sizeOf(affinityKey, SizeOf::estimatedSizeOf);
     }
 }

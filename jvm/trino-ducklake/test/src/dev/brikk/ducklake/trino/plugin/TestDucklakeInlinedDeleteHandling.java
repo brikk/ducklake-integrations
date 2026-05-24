@@ -262,7 +262,7 @@ public class TestDucklakeInlinedDeleteHandling
 
             DucklakeCatalog catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
             DucklakeSplitManager splitManager = new DucklakeSplitManager(
-                    catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+                    catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
             DucklakePageSourceProvider pageSourceProvider = new DucklakePageSourceProvider(
                     new LocalFileSystemFactory(Path.of("/")),
                     new FileFormatDataSourceStats(),

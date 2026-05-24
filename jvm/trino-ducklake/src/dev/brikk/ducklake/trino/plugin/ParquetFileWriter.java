@@ -75,7 +75,7 @@ final class ParquetFileWriter
     @Override
     public long getApproximateWrittenBytes()
     {
-        return parquetWriter.getWrittenBytes() + parquetWriter.getBufferedBytes();
+        return parquetWriter.getEstimatedWrittenBytes();
     }
 
     @Override
@@ -86,7 +86,7 @@ final class ParquetFileWriter
 
         FileMetaData fileMetaData = parquetWriter.getFileMetaData();
         long recordCount = fileMetaData.getNum_rows();
-        long fileSize = parquetWriter.getWrittenBytes();
+        long fileSize = parquetWriter.getEstimatedWrittenBytes();
 
         long footerSize;
         try {

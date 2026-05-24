@@ -27,8 +27,7 @@ import dev.brikk.ducklake.catalog.DucklakePartitionSpec;
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform;
 import dev.brikk.ducklake.catalog.DucklakeSchema;
 import dev.brikk.ducklake.catalog.DucklakeTable;
-import io.trino.filesystem.cache.CachingHostAddressProvider;
-import io.trino.spi.HostAddress;
+import io.trino.filesystem.cache.SplitAffinityProvider;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
@@ -83,20 +82,20 @@ public class DucklakeSplitManager
     private final DucklakePathResolver pathResolver;
     private final DucklakeTemporalPartitionEncoding temporalPartitionEncoding;
     private final boolean temporalPartitionEncodingReadLeniency;
-    private final CachingHostAddressProvider cachingHostAddressProvider;
+    private final SplitAffinityProvider splitAffinityProvider;
 
     @Inject
     public DucklakeSplitManager(
             DucklakeCatalog catalog,
             DucklakeConfig config,
             DucklakePathResolver pathResolver,
-            CachingHostAddressProvider cachingHostAddressProvider)
+            SplitAffinityProvider splitAffinityProvider)
     {
         this.catalog = requireNonNull(catalog, "catalog is null");
         this.pathResolver = requireNonNull(pathResolver, "pathResolver is null");
         this.temporalPartitionEncoding = config.getTemporalPartitionEncoding();
         this.temporalPartitionEncodingReadLeniency = config.isTemporalPartitionEncodingReadLeniency();
-        this.cachingHostAddressProvider = requireNonNull(cachingHostAddressProvider, "cachingHostAddressProvider is null");
+        this.splitAffinityProvider = requireNonNull(splitAffinityProvider, "splitAffinityProvider is null");
     }
 
     @Override
@@ -582,13 +581,7 @@ public class DucklakeSplitManager
 
         Set<Long> inlinedDeletedRowPositions = inlinedDeletesByFileId.getOrDefault(primary.dataFileId(), Set.of());
 
-        // Soft-affinity hint: hash the file path so repeat reads of the same file
-        // land on the same worker (and therefore the same downstream cache state —
-        // Trino's parquet fs-cache for parquet, or the per-worker Quack sidecar for
-        // duckdb-format). Empty default list — provider returns empty when no
-        // affinity provider is installed, leaving scheduling unconstrained.
-        String splitKey = CachingHostAddressProvider.getSplitKey(dataFilePath, 0, primary.fileSizeBytes());
-        List<HostAddress> addresses = cachingHostAddressProvider.getHosts(splitKey, List.of());
+        Optional<String> affinityKey = splitAffinityProvider.getKey(dataFilePath, 0L, primary.fileSizeBytes());
 
         return new DucklakeSplit(
                 dataFilePath,
@@ -603,7 +596,7 @@ public class DucklakeSplitManager
                 partitionValuesByColumnId,
                 fieldIdToParquetSourceName,
                 inlinedDeletedRowPositions,
-                addresses);
+                affinityKey);
     }
 
     /**

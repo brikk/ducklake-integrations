@@ -202,7 +202,7 @@ public class DucklakeMergeSink
         parquetWriter.close();
 
         FileMetaData fileMetaData = parquetWriter.getFileMetaData();
-        long fileSize = parquetWriter.getWrittenBytes();
+        long fileSize = parquetWriter.getEstimatedWrittenBytes();
 
         // Compute footer size
         long footerSize;

@@ -277,7 +277,8 @@ public class DucklakeAddFilesProcedure
                     fileFormatDataSourceStats);
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(
                     dataSource,
-                    parquetReaderOptions.getMaxFooterReadSize(),
+                    parquetReaderOptions,
+                    Optional.empty(),
                     Optional.empty());
             FileMetadata fileMetadata = parquetMetadata.getFileMetaData();
 

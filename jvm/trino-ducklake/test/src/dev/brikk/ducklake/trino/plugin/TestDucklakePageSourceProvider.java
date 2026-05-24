@@ -65,7 +65,7 @@ public class TestDucklakePageSourceProvider
         DucklakeConfig config = DucklakeTestCatalogEnvironment.createDucklakeConfig();
 
         catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
-        splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+        splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
         pageSourceProvider = new DucklakePageSourceProvider(
                 new LocalFileSystemFactory(Path.of("/")),
                 new FileFormatDataSourceStats(),

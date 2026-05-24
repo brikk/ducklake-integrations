@@ -122,7 +122,7 @@ public class TestDucklakePuffinDeleteFileGuard
 
         DucklakeCatalog catalog = new JdbcDucklakeCatalog(config.toCatalogConfig());
         try {
-            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.DefaultCachingHostAddressProvider());
+            DucklakeSplitManager splitManager = new DucklakeSplitManager(catalog, config, new DucklakePathResolver(catalog, config), new io.trino.filesystem.cache.NoopSplitAffinityProvider());
             long snapshotId = catalog.getCurrentSnapshotId();
             DucklakeTable table = getTable(catalog, "test_schema", "simple_table", snapshotId);
             test.run(isolated, catalog, splitManager, table, snapshotId);

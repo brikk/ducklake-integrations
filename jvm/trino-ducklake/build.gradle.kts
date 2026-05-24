@@ -3,7 +3,7 @@ plugins {
     java
 }
 
-version = "480-1-ALPHA"
+version = "481-1-ALPHA"
 
 // Use Trino BOM for all managed dependency versions
 dependencies {

@@ -415,7 +415,8 @@ public class DucklakePageSourceProvider
             // Read Parquet metadata
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(
                     dataSource,
-                    parquetReaderOptions.getMaxFooterReadSize(),
+                    parquetReaderOptions,
+                    Optional.empty(),
                     Optional.empty());
             FileMetadata fileMetadata = parquetMetadata.getFileMetaData();
             MessageType fileSchema = fileMetadata.getSchema();
@@ -703,7 +704,8 @@ public class DucklakePageSourceProvider
 
             ParquetMetadata parquetMetadata = MetadataReader.readFooter(
                     dataSource,
-                    parquetReaderOptions.getMaxFooterReadSize(),
+                    parquetReaderOptions,
+                    Optional.empty(),
                     Optional.empty());
             FileMetadata fileMetadata = parquetMetadata.getFileMetaData();
             ParquetDataSourceId dataSourceId = dataSource.getId();
