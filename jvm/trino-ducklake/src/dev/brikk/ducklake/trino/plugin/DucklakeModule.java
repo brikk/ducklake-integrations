@@ -17,6 +17,7 @@ import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.Multibinder;
+import io.trino.filesystem.cache.SplitAffinityProvider;
 import io.trino.spi.procedure.Procedure;
 
 import java.util.Map;
@@ -34,6 +35,7 @@ import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorSplitManager;
 
+import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
@@ -76,6 +78,19 @@ public class DucklakeModule
 
         // Path resolver
         binder.bind(DucklakePathResolver.class).in(Scopes.SINGLETON);
+
+        // Always-on split affinity. FileSystemModule's setDefault() binds Noop; when
+        // fs.cache.enabled=true the Alluxio module's setBinding() supersedes both. We
+        // only install our setBinding() when caching is off — same key shape, so
+        // behavior is identical either way; the operator just doesn't have to configure
+        // fs.cache.directories etc. to get node pinning for DuckDB-format reads (which
+        // bypass TrinoFileSystem and gain nothing from the cache itself).
+        if (!Boolean.parseBoolean(catalogConfig.getOrDefault("fs.cache.enabled", "false"))) {
+            newOptionalBinder(binder, SplitAffinityProvider.class)
+                    .setBinding()
+                    .to(DucklakeAlwaysOnSplitAffinityProvider.class)
+                    .in(Scopes.SINGLETON);
+        }
 
         // Split manager
         binder.bind(ConnectorSplitManager.class)
