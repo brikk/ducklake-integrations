@@ -145,6 +145,7 @@ public class TestDucklakeDeleteFileHandling
                 SESSION,
                 split,
                 tableHandle,
+                java.util.Optional.empty(),
                 ImmutableList.of(column),
                 DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {

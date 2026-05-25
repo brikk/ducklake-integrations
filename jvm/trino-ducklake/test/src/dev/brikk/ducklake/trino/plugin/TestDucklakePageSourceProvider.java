@@ -288,7 +288,7 @@ public class TestDucklakePageSourceProvider
 
         long rows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(priceColumn), exclusiveFilter)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(priceColumn), exclusiveFilter)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -321,7 +321,7 @@ public class TestDucklakePageSourceProvider
 
         long filteredRows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(priceColumn), wideFilter)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(priceColumn), wideFilter)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -350,7 +350,7 @@ public class TestDucklakePageSourceProvider
 
         // Verify all values are null
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(missingColumn), DynamicFilter.EMPTY)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(missingColumn), DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -380,7 +380,7 @@ public class TestDucklakePageSourceProvider
         List<ColumnHandle> mixedColumns = ImmutableList.of(priceColumn, missingColumn);
         long rows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, mixedColumns, DynamicFilter.EMPTY)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), mixedColumns, DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -420,7 +420,7 @@ public class TestDucklakePageSourceProvider
 
         long rows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(idColumn, nameColumn, valueColumn), DynamicFilter.EMPTY)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(idColumn, nameColumn, valueColumn), DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -448,7 +448,7 @@ public class TestDucklakePageSourceProvider
 
         long rows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(nameColumn), DynamicFilter.EMPTY)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(nameColumn), DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
@@ -470,6 +470,7 @@ public class TestDucklakePageSourceProvider
                 SESSION,
                 split,
                 tableHandle,
+                java.util.Optional.empty(),
                 ImmutableList.of(column),
                 DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {

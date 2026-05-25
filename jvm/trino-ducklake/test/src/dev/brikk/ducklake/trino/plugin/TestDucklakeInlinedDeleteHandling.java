@@ -333,7 +333,7 @@ public class TestDucklakeInlinedDeleteHandling
     {
         long rows = 0;
         try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(
-                null, SESSION, split, tableHandle, ImmutableList.of(column), DynamicFilter.EMPTY)) {
+                null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of(column), DynamicFilter.EMPTY)) {
             while (!pageSource.isFinished()) {
                 var page = pageSource.getNextSourcePage();
                 if (page != null) {
