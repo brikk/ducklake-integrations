@@ -105,16 +105,71 @@ This is exactly how Iceberg / Hive / BigQuery push predicates that aren't pure c
 
 ---
 
-## 4. What we'd do if we add Lance
+## 4. Two routes for adding Lance
 
-- **`data_file_format = 'lance'`** as a third value alongside `parquet` / `duckdb`. Writer uses DuckDB's `lance` extension (`COPY ... TO 'file.lance' (FORMAT lance)`).
-- **Catalog records** the format in `ducklake_data_file` as it already does. No spec changes needed — the spec just calls it a `file_format` string.
-- **Regular SELECT** path: same shape as our existing duckdb-format read — open DuckDB (in-process or via Quack), `INSTALL lance; LOAD lance; ATTACH/SELECT FROM lance_scan('path')`. Predicate pushdown still works via the existing `DuckDbWhereClauseTranslator`.
-- **Vector / FTS / hybrid** path: add three `ConnectorTableFunction`s. Each one resolves the table's Lance files from the catalog, generates splits carrying the function args, the page source executes the corresponding `lance_*` function on the sidecar.
-- **Function namespace**: `my_catalog.system.lance_vector_search(...)`, parallel to our existing `my_catalog.system.add_files(...)`. Same registration mechanism.
-- **Cross-engine concern**: `'lance'` isn't a recognized `data_file_format` value in the DuckLake spec yet. Same caveat as `'duckdb'` already has — opt-in per table, only our connector + DuckDB-with-Lance will read it. Worth proposing upstream alongside our `'duckdb'` value.
+The DuckLake-spec side is the same either way: `data_file_format = 'lance'` as a third value alongside `parquet` / `duckdb`, recorded in `ducklake_data_file` exactly as today (no spec change needed — `file_format` is an arbitrary string). Same cross-engine caveat as our `'duckdb'` value already has: opt-in per table, only readers that understand `'lance'` will see it. Worth proposing upstream alongside our `'duckdb'` value.
 
-The most novel work would be the table-function infrastructure — we don't have any custom table functions today beyond `add_files` (which is a procedure, slightly different shape). When scoping this seriously the first concrete deliverable is the `ConnectorTableFunction` skeleton for `lance_vector_search`.
+What differs is the **read/write execution engine**.
+
+### 4.1 Route A — through DuckDB's Lance extension
+
+Lean on DuckDB as the single execution engine for non-parquet formats (already the model for `.db` files).
+
+- **Writer:** DuckDB's `lance` extension — `COPY ... TO 'file.lance' (FORMAT lance)`. Same in-process or Quack-sidecar pattern as the `.db` writer.
+- **Regular SELECT:** same shape as our existing duckdb-format read — open DuckDB, `INSTALL lance; LOAD lance;` then either `lance_scan('path')` or ATTACH-style read. Predicate pushdown via the existing `DuckDbWhereClauseTranslator`.
+- **Vector / FTS / hybrid:** add three `ConnectorTableFunction`s (`lance_vector_search`, `lance_fts`, `lance_hybrid_search`). Each resolves Lance files from the catalog, generates splits carrying function args, the page source runs the corresponding `lance_*` DuckDB function on the sidecar.
+- **Function namespace:** `my_catalog.system.lance_vector_search(...)`, parallel to our existing `my_catalog.system.add_files(...)`. Same registration mechanism.
+- **Concrete first deliverable:** the `ConnectorTableFunction` skeleton for `lance_vector_search`. We don't have any custom table functions today beyond `add_files` (a procedure — different shape), so this is the novel work.
+
+**Pros:** one execution engine, one S3 cred setup, one set of `--add-opens`, one extension-version matrix to track. Write and read share the toolchain. Quack already exists as our isolation knob if we want a process boundary.
+
+**Cons:** vector hot path goes Trino → DuckDB → lance-core (Rust via DuckDB extension), one more indirection layer than necessary. Bound to DuckDB's release cadence for the Lance extension.
+
+### 4.2 Route B — through `org.lance:lance-core` JNI directly
+
+Newly verified: the Lance Java SDK that the vendored trino-lance plugin already imports exposes the full vector + FTS + index surface; the plugin just doesn't wire it through. Inspected directly via `javap` against `lance-core-6.0.0.jar`.
+
+**`org.lance.ipc.ScanOptions.Builder` surface** (what's there, what the vendored plugin uses, what we'd add):
+
+| Builder method | Purpose | Vendor plugin |
+|---|---|---|
+| `columns(List<String>)` | column projection | ✓ |
+| `batchSize(long)` | batch tuning | ✓ |
+| `substraitFilter(ByteBuffer)` | scalar predicate pushdown | ✓ |
+| `limit(long)` | row limit | ✓ |
+| `withRowAddress(boolean)` | row addresses for MERGE | ✓ |
+| `nearest(Query)` | k-NN vector search | — |
+| `fullTextQuery(FullTextQuery)` | full-text (Tantivy/BM25) | — |
+| `prefilter(boolean)` | scalar-filter-before-ANN (hybrid) | — |
+| `useScalarIndex(boolean)` | opt in to btree/bitmap/inverted indexes | — |
+| `setColumnOrderings(List<ColumnOrdering>)` | ORDER BY pushdown | — |
+| `substraitAggregate(ByteBuffer)` | partial-aggregation pushdown | — |
+| `offset(long)` | pagination | — |
+| `filter(String)` | string-form predicate (alt to Substrait) | — |
+| `batchReadahead(int)` | scan tuning | — |
+| `withRowId(boolean)` | row IDs | — |
+
+`org.lance.ipc.Query` (vector query for `.nearest()`): `column` (String), `key` (float[]), `k` (int), `minimumNprobes`/`maximumNprobes`, `ef`, `refineFactor`, `distanceType`, `useIndex`, `queryParallelism`. Full HNSW/IVF tuning surface.
+
+`org.lance.ipc.FullTextQuery`: static factories `match`, `phrase`, `multiMatch`, `boost`, `booleanQuery` — Tantivy-style FTS with BM25.
+
+**What we'd build.** The vendored plugin's infrastructure already gives us: dataset/session caching (`LanceRuntime`), columnar Arrow→Page conversion (`LanceArrowToPageScanner`), Substrait predicate pushdown (`SubstraitExpressionBuilder`), INSERT via `org.lance.WriteFragmentBuilder` (`LancePageSink`), MERGE/UPDATE/DELETE, and time travel. License is Apache 2.0 — we can fork-and-extend or vendor-then-overlay cleanly.
+
+Shape of the fork/extension:
+
+- Extend `ScannerFactory.open(...)` (currently takes columns, storageOptions, substraitFilter, limit, userIdentity, datasetVersion) with `Optional<Query> nearest`, `Optional<FullTextQuery> fts`, `boolean prefilter`. `FragmentScannerFactory` plumbs these onto `ScanOptions.Builder` directly. Backward-compatible if added as optional.
+- Add three `ConnectorTableFunction`s (`lance_vector_search`, `lance_fts`, `lance_hybrid_search`) that build the appropriate `Query` / `FullTextQuery` and pass it via a new field on the table handle through split → page source → scanner factory.
+- Optional: `applyTopN` pushdown so a Trino-side `ORDER BY <distance_col> LIMIT k` synthesizes `Query(k)` without requiring users to call the table function explicitly. Stretch goal.
+
+**Pros:** native Lance path, no DuckDB indirection. Full surface (`prefilter`, `useScalarIndex`, `substraitAggregate`, `setColumnOrderings`) is sitting there to push down. We already vendor the plugin — extending it locally is a smaller delta than green-field.
+
+**Cons:** two execution engines (DuckDB for `.db` and parquet-side; lance-core JNI for `.lance`). Two storage-cred plumbing paths (lance-core takes `Map<String, String> storageOptions`, separate from our `DuckDbS3Config`). Maintenance burden if upstream vendor plugin evolves and we've forked. JNI imposes the same `--add-opens` requirement we already document for Arrow C-data — no new JVM-flag cost.
+
+### 4.3 Picking between A and B
+
+Current lean: **A** (single execution engine matches the `.db` story; matches the conversation that triggered this research). Route B becomes attractive if (a) DuckDB's Lance extension lags upstream Lance features we want, (b) the extra indirection layer shows up in measured vector-search latency, or (c) we end up wanting the `prefilter` / `substraitAggregate` / `setColumnOrderings` surface that the JNI exposes cleanly and the DuckDB extension may not.
+
+Worth a small benchmark when we pick this up: same dataset, same query vector, same k — Route A (Trino → DuckDB Lance extension) vs Route B (Trino → lance-core JNI) on cold and warm scans. Cold-start cost is where the DuckDB extension layer is likeliest to lose; warm scans probably wash out.
 
 ---
 
@@ -137,3 +192,7 @@ The most novel work would be the table-function infrastructure — we don't have
 - DuckDB Lance extension: https://duckdb.org/docs/current/core_extensions/lance
 - DuckDB Lance blog: https://duckdb.org/2026/05/21/test-driving-lance
 - DuckLake spec: `data_file_format` field (currently `'parquet'` per spec; `'duckdb'` is our extension)
+- Lance Java SDK Maven coordinates (Apache 2.0, in our local maven repo as of 2026-05-26):
+  - `org.lance:lance-core:6.0.0` — Dataset / Fragment / ScanOptions / LanceScanner / Query / FullTextQuery / VectorIndexParams; JNI binding over the Lance Rust core. Surface in §4.2 verified via `javap` on this jar.
+  - `org.lance:lance-namespace-apache-client:0.7.6` and `org.lance:lance-namespace-core:0.7.6` — Lance namespace catalog API (table discovery, declare/describe/list) and HTTP client.
+- Vendored Trino-Lance plugin: `vendor/lance-trino/` (Apache 2.0; columnar reader only — uses 5 of 16 `ScanOptions.Builder` methods, no vector / FTS / index pushdown wired through).
