@@ -364,7 +364,26 @@ public class TestTrinoFunctionAliases
                 c("truncate 1: positive", "truncate", 1,
                         "SELECT trino_truncate(3.7)", 3.0),
                 c("truncate 1: negative", "truncate", 1,
-                        "SELECT trino_truncate(-3.7)", -3.0));
+                        "SELECT trino_truncate(-3.7)", -3.0),
+                // Round 6b-core — crypto hashes (no extension)
+                // Macros return BLOB matching Trino's VARBINARY. Compare via hex roundtrip
+                // to keep assertions readable.
+                c("md5 1: empty", "md5", 1,
+                        "SELECT lower(hex(trino_md5('')))", "d41d8cd98f00b204e9800998ecf8427e"),
+                c("md5 1: abc", "md5", 1,
+                        "SELECT lower(hex(trino_md5('abc')))", "900150983cd24fb0d6963f7d28e17f72"),
+                c("md5 1: NULL propagates", "md5", 1,
+                        "SELECT trino_md5(NULL)", null),
+                c("sha1 1: empty", "sha1", 1,
+                        "SELECT lower(hex(trino_sha1('')))", "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+                c("sha1 1: abc", "sha1", 1,
+                        "SELECT lower(hex(trino_sha1('abc')))", "a9993e364706816aba3e25717850c26c9cd0d89d"),
+                c("sha256 1: empty", "sha256", 1,
+                        "SELECT lower(hex(trino_sha256('')))",
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+                c("sha256 1: abc", "sha256", 1,
+                        "SELECT lower(hex(trino_sha256('abc')))",
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

@@ -98,6 +98,110 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - 56 `trino_meta()` rows / ~47 function names across 5 categories (string, numeric, regex, encoding, distance).
 - 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
 
+---
+
+## Round 6+ — Easy adds via known-safe extensions
+
+Picked from the community-extensions audit (see [RESEARCH-function-community-extensions.md](RESEARCH-function-community-extensions.md)). Scope rule: each item is a macro-shape add (rename, optional unhex wrap), no new infrastructure required. Excluded: anything needing operator translation, table-function pushdown, or aggregate pushdown.
+
+**Skipped explicitly (per workload triage):**
+- `splink_udfs` — `soundex` is the only Trino-relevant entry, and it's niche. Defer indefinitely.
+- `datasketches` — sketch state is not wire-compatible with Trino's, so cross-engine upstream aggregation would diverge. We're not on aggregate pushdown yet anyway. Defer until aggregate pushdown lands.
+- `inet` operator pushdown — `contains(network, address)` → `network >>= addr` requires translator to learn DuckDB's `>>=` / `<<=` operators. Separate infrastructure round.
+- `netquack` `url_extract_parameter(url, name)` — requires correlated-subquery emission for the `extract_query_parameters(url)` table function. Separate infrastructure round.
+
+### Round 6a — Core DuckDB extras (no new extensions)
+
+Cheap wins we missed earlier.
+
+| Trino | DuckDB | Notes |
+|---|---|---|
+| `sign(x)` | `sign(x)` | ✅ Same -1/0/1. Verify NaN propagation in fixtures. |
+| `bit_length(string)` | `bit_length(string)` | ✅ Aligned. |
+| `pi()` / 0-arg | `pi()` | ✅ Aligned. Constant-folded both sides; pushing is trivially safe. |
+| `truncate(x, n)` (2-arg) | `trunc(x, n)` — verify if DuckDB has 2-arg form | ⚠️ DuckDB's `trunc` may be 1-arg only; verify before adding. |
+
+### Round 6b-core — Core DuckDB hash macros (NO new extension, 3 entries)
+
+**Promoted to front of queue** based on `ProbeHashNullHandling` findings (see [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)). Core DuckDB ships `md5`, `sha1`, `sha256` returning hex VARCHAR; wrap with `unhex(...)` to match Trino's VARBINARY return. NULL propagation empirically verified aligned (`md5(NULL) → NULL`, `md5('a' || NULL || 'c') → NULL`).
+
+| Trino | DuckDB macro body | Notes |
+|---|---|---|
+| `md5(varbinary) -> varbinary` | `unhex(md5(b))` | ✅ NULL-aligned. No extension needed. |
+| `sha1(varbinary) -> varbinary` | `unhex(sha1(b))` | ✅ |
+| `sha256(varbinary) -> varbinary` | `unhex(sha256(b))` | ✅ |
+
+### Round 6b-ext — Crypto extension (1 new ext, 5 entries) — **WAITING on catalog**
+
+Macro pattern: `CREATE OR REPLACE MACRO trino_<name>(...) AS unhex(crypto_hash('<algo>', ...));` — wraps hex VARCHAR back into BLOB matching Trino's VARBINARY return.
+
+Pre-step: extend `TrinoFunctionAliases` (or the executor attach) to `INSTALL crypto; LOAD crypto;` as best-effort, mirroring the ICU pattern.
+
+**⚠️ Catalog wait:** `crypto` was HTTP 404 on `extensions.duckdb.org` for DuckDB 1.5.3 (probed 2026-05-28). Likely cause is the community catalog hasn't yet cut a 1.5.3 build — not a permanent platform gap. Re-probe in a few days; the catalog catches up over time. See [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md).
+
+| Trino | DuckDB macro body | Notes |
+|---|---|---|
+| `sha512(varbinary) -> varbinary` | `unhex(crypto_hash('sha2-512', b))` | ✅ no core equivalent — extension required |
+| `hmac_md5(k, m) -> varbinary` | `unhex(crypto_hmac('md5', k, m))` | ✅ |
+| `hmac_sha1(k, m) -> varbinary` | `unhex(crypto_hmac('sha1', k, m))` | ✅ |
+| `hmac_sha256(k, m) -> varbinary` | `unhex(crypto_hmac('sha2-256', k, m))` | ✅ |
+| `hmac_sha512(k, m) -> varbinary` | `unhex(crypto_hmac('sha2-512', k, m))` | ✅ |
+
+Verification step before promoting to `PUSHABLE_FUNCTIONS`: probe hash output exact-bytes against Trino-reference vectors. Once aligned, ship.
+
+### Round 6c — Hashfuncs extension (1 new ext, ~2 new entries) — **WAITING on catalog**
+
+**⚠️ Catalog wait:** `hashfuncs` HTTP 404 for DuckDB 1.5.3 — community catalog likely hasn't cut a 1.5.3 build yet. Re-probe in a few days.
+
+| Trino | DuckDB macro body | Notes |
+|---|---|---|
+| `xxhash64(varbinary) -> varbinary` (8 bytes) | TBD — `xxh64(b)` returns UBIGINT; need to encode as 8-byte BLOB. Candidates: `unhex(printf('%016x', xxh64(b)))`, or a struct-cast trick. | ⚠️ Verify byte-order (Trino XXH64 → big-endian per impl? little-endian?). Probe before shipping. |
+| `murmur3(varbinary) -> varbinary` (16 bytes, x64 128-bit variant) | TBD — `murmurhash3_x64_128(b)` returns UHUGEINT; encode as 16-byte BLOB. Same byte-order question. | ⚠️ Same — verify byte-order vs Trino. |
+
+If byte-order verification fails, these become extension-required candidates instead.
+
+Pre-step: `INSTALL hashfuncs; LOAD hashfuncs;` best-effort.
+
+### Round 6d — NetQuack extension (1 new ext, 6 new entries) — **WAITING on catalog**
+
+**⚠️ Catalog wait:** `netquack` HTTP 404 for DuckDB 1.5.3 — same likely cause as crypto/hashfuncs. Re-probe in a few days.
+
+All straight macro renames. No type conversion.
+
+| Trino | DuckDB macro body | Notes |
+|---|---|---|
+| `url_extract_protocol(url)` | `extract_schema(url)` | ✅ |
+| `url_extract_host(url)` | `extract_host(url)` | ✅ |
+| `url_extract_port(url)` | `extract_port(url)` | ✅ |
+| `url_extract_path(url)` | `extract_path(url)` | ✅ |
+| `url_extract_query(url)` | `extract_query_string(url)` | ✅ Note the name diff. |
+| `url_extract_fragment(url)` | `extract_fragment(url)` | ✅ |
+
+Pre-step: `INSTALL netquack; LOAD netquack;` best-effort.
+
+Note: NetQuack also ships `base64_encode`/`base64_decode` that overlap core DuckDB's `to_base64`/`from_base64` (already in round 4). No additional value beyond URL parsing — we don't re-route through netquack for base64.
+
+### Round 6e (deferred — separate infra round) — Translator rewrites, not macros
+
+These need translator-level work because the shape change can't be expressed as a single macro substitution:
+
+- **`concat(a, b, c, ...)` → `(a || b || c || ...)` operator chain.** Empirically verified ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)): DuckDB's `concat` skips NULL while Trino's NULL-propagates, but the `||` operator NULL-propagates on both sides. The translator can rewrite a Trino `Call(concat, [args])` into a parenthesized `||` chain emitting the right semantics. Easy translator win — same code path that would also let us push the existing `||`-operator handling. Variadic, so any arity.
+- `contains(network, address)` → emit `network >>= addr` operator form (inet extension).
+- `url_extract_parameter(url, name)` → emit correlated subquery through `extract_query_parameters(url)` table function (netquack extension).
+- IPADDRESS / IPPREFIX type → connector-side type plumbing.
+
+Tracked here for visibility; not part of round 6 macro adds.
+
+### Extension load mechanism
+
+To avoid load-failure cascades:
+
+1. Extend `TrinoFunctionAliases` to load extensions in best-effort fashion alongside the existing `INSTALL icu; LOAD icu;` pair. New `INSTALL`/`LOAD` lines tagged best-effort by `isBestEffort()`.
+2. Each round 6 macro body references its extension's functions — `applyDirect()` will skip macro creation cleanly if the extension load failed, because the macro body will fail to bind. We want this: if an extension isn't available, the macros silently don't ship and the translator's parity check between Java `PUSHABLE_FUNCTIONS` and DuckDB `trino_meta()` flags the gap.
+3. Or — alternative — split the alias SQL into per-extension chunks and only register the corresponding `PUSHABLE_FUNCTIONS` entries when the extension load succeeds. More work, more correct under partial-loads.
+
+Pick the simpler form (1+2) for round 6; revisit if production deploys need partial-load guarantees.
+
 ### Test surface backing the pushdown layer
 
 - `TestDuckDbExpressionTranslator` — synthetic `ConnectorExpression` → SQL string assertions.

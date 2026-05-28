@@ -28,7 +28,7 @@ Pushdown rating in the Notes column where useful:
 | Operation | Trino | DuckDB | Done | Notes |
 |---|---|---|---|---|
 | String concat operator (NULL propagates) | `a \|\| b` | `a \|\| b` | | ✅ Both: any NULL operand → NULL. |
-| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls) | — | ❌ Trino `concat(NULL,'x')='NULL'... actually Trino `concat` returns NULL on NULL arg. DuckDB `concat` **silently skips NULLs** (returns 'x'). DO NOT translate `concat`. Map to `\|\|` chain if you need NULL-propagation. |
+| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls); `\|\|` operator chain has aligned NULL-propagation | translator rewrite — TBD | ❌ Verified empirically ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)): DuckDB `concat('a', NULL, 'c') = 'acd'`, `concat(NULL, NULL) = ''`. Trino would return NULL in both cases. Never push as `concat(...)`. ✅ Translator can safely rewrite Trino's `concat(a, b, c)` → DuckDB `(a \|\| b \|\| c)` — both engines NULL-propagate `\|\|` identically. Queued in [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) → "Round 6e — Translator rewrites". |
 | Multi-arg concat (NULL skipped) | — | `concat(value, ...)` | | ❌ DuckDB-only semantics; route through Trino `concat_ws` or chain `coalesce`. |
 | Concat with separator | `concat_ws(separator, s1, ..., sN)`, `concat_ws(sep, array(varchar))` | `concat_ws(separator, string, ...)` | yes r2 (2..5 arg) | ⚠️ Trino: NULL separator → NULL result; DuckDB: NULL separator → NULL result. NULL elements: Trino skips, DuckDB skips. Mostly aligned, but verify separator-NULL on the actual engine before pushing. Shipped as fixed-arity overloads 2..5. Array-form Trino-only. |
 | Lowercase | `lower(string) -> varchar` | `lower(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB does simple case folding; Trino does full case folding. Diverges on `'İ'` → DuckDB `'i'` vs Trino `'i'` + U+0307. ASCII safe. Pushed for perf with warn-on-emit; native extension is the durable fix. |
@@ -309,9 +309,9 @@ Pushdown rating in the Notes column where useful:
 
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
-| MD5 | `md5(binary) -> varbinary` | `md5(string) -> VARCHAR` (hex), `md5_number(string) -> HUGEINT` | ❌ Return-type mismatch: Trino → binary, DuckDB → hex string. Do not push raw. |
-| SHA-1 | `sha1(binary) -> varbinary` | `sha1(value) -> VARCHAR` | ❌ Same mismatch. |
-| SHA-256 | `sha256(binary) -> varbinary` | `sha256(value) -> VARCHAR` | ❌ Same mismatch. |
+| MD5 | `md5(binary) -> varbinary` | `md5(string) -> VARCHAR` (hex) wrapped in `unhex(...)` | yes r6 | ✅ Shipped via macro body `unhex(md5(b))` to convert DuckDB's hex-VARCHAR to BLOB matching Trino's VARBINARY. NULL propagation verified ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)). |
+| SHA-1 | `sha1(binary) -> varbinary` | `sha1(value) -> VARCHAR` wrapped in `unhex(...)` | yes r6 | ✅ Same pattern. |
+| SHA-256 | `sha256(binary) -> varbinary` | `sha256(value) -> VARCHAR` wrapped in `unhex(...)` | yes r6 | ✅ Same pattern. |
 | SHA-512 | `sha512(binary) -> varbinary` | `crypto_hash('sha2-512', x) -> VARCHAR` (crypto) | ⚠️ Available with `crypto`; output is hex VARCHAR, so cast to VARBINARY (or compare against hex form) before equating to Trino's. |
 | CRC32 | `crc32(binary) -> bigint` | — | ❌ Trino-only — no extension cover. |
 | xxhash64 | `xxhash64(binary) -> varbinary` | `xxh64(x)` (hashfuncs); core `hash(value)` is not xxhash | ✅ Push as `xxh64` when `hashfuncs` is loaded. Core `hash` is non-crypto generic and not interchangeable. |

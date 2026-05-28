@@ -203,6 +203,22 @@ CREATE OR REPLACE MACRO trino_cbrt(x) AS cbrt(x);
 -- (truncate toward zero, integer result for double input — both return DOUBLE).
 CREATE OR REPLACE MACRO trino_truncate(x) AS trunc(x);
 
+-- ---- Round 6b-core: cryptographic hashes (md5 / sha1 / sha256) ----
+
+-- DuckDB core md5/sha1/sha256 return hex VARCHAR; Trino returns VARBINARY.
+-- Wrap with unhex(...) to produce a BLOB matching Trino's wire shape.
+-- NULL handling verified aligned (md5(NULL) → NULL; md5('a' || NULL || 'c') → NULL).
+-- See REPORT-hash-null-handling.md.
+-- sha512 / HMAC family require the crypto extension and are queued in
+-- TODO-pushdown-duckdb.md → "Round 6b-ext", currently blocked on extension
+-- availability for our platform.
+
+CREATE OR REPLACE MACRO trino_md5(b) AS unhex(md5(b));
+
+CREATE OR REPLACE MACRO trino_sha1(b) AS unhex(sha1(b));
+
+CREATE OR REPLACE MACRO trino_sha256(b) AS unhex(sha256(b));
+
 -- ---- Catalog of aliased functions ----
 --
 -- One row per (trino_name, arg_count) the translator may push down. The
@@ -274,5 +290,9 @@ SELECT * FROM (
         ('degrees',      1, 'numeric'),
         ('radians',      1, 'numeric'),
         ('cbrt',         1, 'numeric'),
-        ('truncate',     1, 'numeric')
+        ('truncate',     1, 'numeric'),
+        -- Round 6b-core — crypto hashes (no extension)
+        ('md5',          1, 'hash'),
+        ('sha1',         1, 'hash'),
+        ('sha256',       1, 'hash')
 ) AS t(trino_name, arg_count, category);

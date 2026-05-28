@@ -135,7 +135,11 @@ final class DuckDbExpressionTranslator
             new NameArity("degrees", 1),
             new NameArity("radians", 1),
             new NameArity("cbrt", 1),
-            new NameArity("truncate", 1));
+            new NameArity("truncate", 1),
+            // Round 6b-core — crypto hashes (no extension)
+            new NameArity("md5", 1),
+            new NameArity("sha1", 1),
+            new NameArity("sha256", 1));
 
     /**
      * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}
