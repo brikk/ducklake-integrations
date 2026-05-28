@@ -173,6 +173,71 @@ public class TestDucklakeDuckDbReadMode
         }
     }
 
+    @Test
+    public void testFunctionPredicatePushesDownThroughTrinoMacro()
+    {
+        // End-to-end proof that the trino_* macro layer fires for a real query.
+        // The predicate WHERE lower(name) = 'apple' is what Trino's planner hands to
+        // applyFilter as a ConnectorExpression; DuckDbExpressionTranslator rewrites
+        // it to trino_lower("name") = 'apple' on the handle, the page source
+        // appends that string to the WHERE clause sent to DuckDB, and DuckDB
+        // resolves it through the trino_lower MACRO installed by
+        // trino-function-aliases.sql. Correct result = the whole chain works.
+        //
+        // We keep the same conjuncts in remainingExpression (Regime 1 in
+        // dev-docs/TODO-pushdown-duckdb.md), so this test does not rely on
+        // pushdown for correctness — it asserts correctness AND, by virtue of
+        // running on the duckdb-format path, exercises the macro at runtime.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.fn_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('Apple' AS VARCHAR)), "
+                        + "  (2, CAST('banana' AS VARCHAR)), "
+                        + "  (3, CAST('Cherry' AS VARCHAR))"
+                        + ") AS t(id, name)");
+        try {
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id, name FROM test_schema.fn_pushdown WHERE lower(name) = 'apple'");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(1)).isEqualTo("Apple");
+
+            // Combine TupleDomain pushdown (id IN (1,3)) with function pushdown.
+            MaterializedResult combined = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.fn_pushdown WHERE id IN (1, 3) AND lower(name) = 'cherry'");
+            assertThat(combined.getRowCount()).isEqualTo(1);
+            assertThat(combined.getMaterializedRows().getFirst().getField(0)).isEqualTo(3);
+        }
+        finally {
+            tryDropTable("test_schema.fn_pushdown");
+        }
+    }
+
+    @Test
+    public void testUnknownFunctionPredicateDoesNotExplode()
+    {
+        // Negative case: a function not in trino_meta (regexp_extract) must NOT
+        // be pushed; Trino-side filtering still works. The query must succeed.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.fn_unknown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('abc-123' AS VARCHAR)), "
+                        + "  (2, CAST('xyz-999' AS VARCHAR))"
+                        + ") AS t(id, name)");
+        try {
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.fn_unknown WHERE regexp_extract(name, '\\d+') = '123'");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+        }
+        finally {
+            tryDropTable("test_schema.fn_unknown");
+        }
+    }
+
     private void tryDropTable(String tableName)
     {
         try {

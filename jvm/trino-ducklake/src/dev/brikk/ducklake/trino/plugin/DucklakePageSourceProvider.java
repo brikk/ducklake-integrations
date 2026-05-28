@@ -198,11 +198,15 @@ public class DucklakePageSourceProvider
                         fileSystem);
             }
             if (DucklakeSessionProperties.FORMAT_DUCKDB.equalsIgnoreCase(format)) {
+                List<String> pushedExpressions = (table instanceof DucklakeTableHandle dh)
+                        ? dh.pushedExpressions()
+                        : List.of();
                 return createDuckDbPageSource(
                         dataFileLocation,
                         ducklakeColumns,
                         ducklakeSplit,
                         effectivePredicate,
+                        pushedExpressions,
                         fileSystem,
                         session);
             }
@@ -564,6 +568,7 @@ public class DucklakePageSourceProvider
             List<DucklakeColumnHandle> columns,
             DucklakeSplit split,
             TupleDomain<DucklakeColumnHandle> effectivePredicate,
+            List<String> pushedExpressions,
             TrinoFileSystem fileSystem,
             ConnectorSession session)
             throws IOException
@@ -599,7 +604,7 @@ public class DucklakePageSourceProvider
                 (col, _) -> fileColumns.contains(col));
 
         ConnectorPageSource pageSource = new DuckDbFilePageSource(
-                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate);
+                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, pushedExpressions);
 
         if (rowIdOutputPosition >= 0) {
             pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());

@@ -73,13 +73,15 @@ final class DuckDbFilePageSource
             DuckDbAttachTarget attachTarget,
             List<DucklakeColumnHandle> columns,
             List<Type> columnTypes,
-            TupleDomain<DucklakeColumnHandle> effectivePredicate)
+            TupleDomain<DucklakeColumnHandle> effectivePredicate,
+            List<String> pushedExpressions)
     {
         this.executor = requireNonNull(executor, "executor is null");
         this.request = new DucklakeDuckDbExecutor.ExecutionRequest(
                 requireNonNull(attachTarget, "attachTarget is null"),
                 List.copyOf(requireNonNull(columns, "columns is null")),
-                requireNonNull(effectivePredicate, "effectivePredicate is null"));
+                requireNonNull(effectivePredicate, "effectivePredicate is null"),
+                List.copyOf(requireNonNull(pushedExpressions, "pushedExpressions is null")));
         this.converter = new DucklakeArrowToPageConverter(columnTypes);
         this.emptyProjection = this.request.isEmptyProjection();
     }

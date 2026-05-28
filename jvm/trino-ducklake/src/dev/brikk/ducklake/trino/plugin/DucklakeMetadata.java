@@ -573,46 +573,65 @@ public class DucklakeMetadata
         DucklakeTableHandle table = (DucklakeTableHandle) handle;
 
         TupleDomain<ColumnHandle> summary = constraint.getSummary();
+
+        TupleDomain<DucklakeColumnHandle> newEnforced;
+        TupleDomain<DucklakeColumnHandle> newUnenforced;
         if (summary.isAll()) {
-            return Optional.empty();
+            // No TupleDomain pushdown to do — but we still need to check the
+            // expression below for function-shape predicates.
+            newEnforced = TupleDomain.all();
+            newUnenforced = TupleDomain.all();
         }
+        else {
+            TupleDomain<DucklakeColumnHandle> newPredicate = extractDucklakePredicate(summary);
 
-        TupleDomain<DucklakeColumnHandle> newPredicate = extractDucklakePredicate(summary);
+            // Classify predicates as enforced (partition-prunable) or unenforced (best-effort)
+            List<DucklakePartitionSpec> partitionSpecs = catalog.getPartitionSpecs(
+                    table.tableId(), table.snapshotId());
 
-        // Classify predicates as enforced (partition-prunable) or unenforced (best-effort)
-        List<DucklakePartitionSpec> partitionSpecs = catalog.getPartitionSpecs(
-                table.tableId(), table.snapshotId());
+            ImmutableMap.Builder<DucklakeColumnHandle, Domain> enforced = ImmutableMap.builder();
+            ImmutableMap.Builder<DucklakeColumnHandle, Domain> unenforced = ImmutableMap.builder();
 
-        ImmutableMap.Builder<DucklakeColumnHandle, Domain> enforced = ImmutableMap.builder();
-        ImmutableMap.Builder<DucklakeColumnHandle, Domain> unenforced = ImmutableMap.builder();
-
-        if (!newPredicate.isNone()) {
-            for (Map.Entry<DucklakeColumnHandle, Domain> entry : newPredicate.getDomains().orElse(Map.of()).entrySet()) {
-                switch (classifyColumnConstraint(partitionSpecs, entry.getKey())) {
-                    case FULLY_ENFORCED -> enforced.put(entry.getKey(), entry.getValue());
-                    case PARTIALLY_ENFORCED -> {
-                        // Keep in both predicates: connector can use partition transforms for pruning,
-                        // but engine must still evaluate original predicate for correctness.
-                        enforced.put(entry.getKey(), entry.getValue());
-                        unenforced.put(entry.getKey(), entry.getValue());
+            if (!newPredicate.isNone()) {
+                for (Map.Entry<DucklakeColumnHandle, Domain> entry : newPredicate.getDomains().orElse(Map.of()).entrySet()) {
+                    switch (classifyColumnConstraint(partitionSpecs, entry.getKey())) {
+                        case FULLY_ENFORCED -> enforced.put(entry.getKey(), entry.getValue());
+                        case PARTIALLY_ENFORCED -> {
+                            // Keep in both predicates: connector can use partition transforms for pruning,
+                            // but engine must still evaluate original predicate for correctness.
+                            enforced.put(entry.getKey(), entry.getValue());
+                            unenforced.put(entry.getKey(), entry.getValue());
+                        }
+                        case NOT_ENFORCED -> unenforced.put(entry.getKey(), entry.getValue());
                     }
-                    case NOT_ENFORCED -> unenforced.put(entry.getKey(), entry.getValue());
                 }
             }
-        }
 
-        TupleDomain<DucklakeColumnHandle> newEnforced = newPredicate.isNone()
-                ? TupleDomain.none()
-                : toTupleDomain(enforced.buildOrThrow());
-        TupleDomain<DucklakeColumnHandle> newUnenforced = newPredicate.isNone()
-                ? TupleDomain.all()
-                : toTupleDomain(unenforced.buildOrThrow());
+            newEnforced = newPredicate.isNone()
+                    ? TupleDomain.none()
+                    : toTupleDomain(enforced.buildOrThrow());
+            newUnenforced = newPredicate.isNone()
+                    ? TupleDomain.all()
+                    : toTupleDomain(unenforced.buildOrThrow());
+        }
 
         TupleDomain<DucklakeColumnHandle> combinedEnforced = table.enforcedPredicate().intersect(newEnforced);
         TupleDomain<DucklakeColumnHandle> combinedUnenforced = table.unenforcedPredicate().intersect(newUnenforced);
 
+        // Function-shape pushdown: anything DuckDbExpressionTranslator recognises in
+        // constraint.getExpression() becomes a SQL fragment AND-ed into the WHERE clause
+        // the .db reader sends to DuckDB. We also keep the same expression in
+        // remainingExpression so Trino re-evaluates it above the scan — see
+        // dev-docs/TODO-pushdown-duckdb.md, "Regime 1 — common-SQL functions". Double
+        // evaluation on .db splits is cheap, parquet splits keep working unchanged.
+        List<String> newExpressionClauses = DuckDbExpressionTranslator.translateConjuncts(
+                constraint.getExpression(), constraint.getAssignments());
+        List<String> combinedExpressions = mergePushedExpressions(
+                table.pushedExpressions(), newExpressionClauses);
+
         if (combinedEnforced.equals(table.enforcedPredicate())
-                && combinedUnenforced.equals(table.unenforcedPredicate())) {
+                && combinedUnenforced.equals(table.unenforcedPredicate())
+                && combinedExpressions.equals(table.pushedExpressions())) {
             return Optional.empty();
         }
 
@@ -622,7 +641,8 @@ public class DucklakeMetadata
                 table.tableId(),
                 table.snapshotId(),
                 combinedUnenforced,
-                combinedEnforced);
+                combinedEnforced,
+                combinedExpressions);
 
         // Fully enforced predicates are omitted from remaining filter.
         // Partially enforced predicates (e.g. temporal transforms) remain so engine verifies exact semantics.
@@ -633,6 +653,20 @@ public class DucklakeMetadata
                 remainingFilter,
                 constraint.getExpression(),
                 false));
+    }
+
+    private static List<String> mergePushedExpressions(List<String> existing, List<String> additions)
+    {
+        if (additions.isEmpty()) {
+            return existing;
+        }
+        ImmutableList.Builder<String> merged = ImmutableList.<String>builder().addAll(existing);
+        for (String clause : additions) {
+            if (!existing.contains(clause)) {
+                merged.add(clause);
+            }
+        }
+        return merged.build();
     }
 
     private static ConstraintEnforcement classifyColumnConstraint(

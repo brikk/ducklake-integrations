@@ -19,10 +19,20 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
 
+import java.util.List;
+
 import static java.util.Objects.requireNonNull;
 
 /**
  * Handle for a Ducklake table, including snapshot context and pushed-down predicates.
+ *
+ * <p>{@code pushedExpressions} carries function-shape predicates that
+ * {@link DuckDbExpressionTranslator} successfully translated into DuckDB SQL
+ * fragments (e.g. {@code trino_lower("name") = 'apple'}). They are AND-ed into
+ * the WHERE clause sent to DuckDB on the {@code .db} read path. For mixed-format
+ * tables, the same conjuncts are also returned in {@code remainingExpression}
+ * so Trino re-applies them above the scan — double evaluation on {@code .db}
+ * splits is cheap because the result set is already reduced.
  */
 public record DucklakeTableHandle(
         @JsonProperty("schemaName") String schemaName,
@@ -30,7 +40,8 @@ public record DucklakeTableHandle(
         @JsonProperty("tableId") long tableId,
         @JsonProperty("snapshotId") long snapshotId,
         @JsonProperty("unenforcedPredicate") TupleDomain<DucklakeColumnHandle> unenforcedPredicate,
-        @JsonProperty("enforcedPredicate") TupleDomain<DucklakeColumnHandle> enforcedPredicate)
+        @JsonProperty("enforcedPredicate") TupleDomain<DucklakeColumnHandle> enforcedPredicate,
+        @JsonProperty("pushedExpressions") List<String> pushedExpressions)
         implements ConnectorTableHandle
 {
     @JsonCreator
@@ -40,11 +51,23 @@ public record DucklakeTableHandle(
         requireNonNull(tableName, "tableName is null");
         requireNonNull(unenforcedPredicate, "unenforcedPredicate is null");
         requireNonNull(enforcedPredicate, "enforcedPredicate is null");
+        pushedExpressions = pushedExpressions == null ? List.of() : List.copyOf(pushedExpressions);
+    }
+
+    public DucklakeTableHandle(
+            String schemaName,
+            String tableName,
+            long tableId,
+            long snapshotId,
+            TupleDomain<DucklakeColumnHandle> unenforcedPredicate,
+            TupleDomain<DucklakeColumnHandle> enforcedPredicate)
+    {
+        this(schemaName, tableName, tableId, snapshotId, unenforcedPredicate, enforcedPredicate, List.of());
     }
 
     public DucklakeTableHandle(String schemaName, String tableName, long tableId, long snapshotId)
     {
-        this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all());
+        this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all(), List.of());
     }
 
     public SchemaTableName getSchemaTableName()

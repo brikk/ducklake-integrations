@@ -24,8 +24,6 @@ import java.io.IOException;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.Optional;
-
 import static java.lang.String.format;
 
 /**
@@ -69,6 +67,7 @@ final class InProcessDuckDbExecutor
         try {
             try (Statement attachStmt = connection.createStatement()) {
                 DuckDbTuningSql.applyDirect(attachStmt, tuning);
+                TrinoFunctionAliases.applyDirect(attachStmt);
                 attachStmt.execute(buildAttachSql(request.target(), attachStmt));
             }
             String selectSql = buildSelectSql(request);
@@ -117,28 +116,8 @@ final class InProcessDuckDbExecutor
 
     private static String buildSelectSql(ExecutionRequest request)
     {
-        StringBuilder sql = new StringBuilder("SELECT ");
-        if (request.isEmptyProjection()) {
-            // COUNT(*) and similar collapse to no projected columns. We still need a
-            // SELECT clause that yields one row per file row so deletes can be
-            // applied by row position downstream — emit a constant, ignored by the
-            // converter.
-            sql.append("1");
-        }
-        else {
-            var columns = request.projectedColumns();
-            for (int i = 0; i < columns.size(); i++) {
-                if (i > 0) {
-                    sql.append(", ");
-                }
-                String name = columns.get(i).columnName().replace("\"", "\"\"");
-                sql.append('"').append(name).append('"');
-            }
-        }
-        sql.append(" FROM ").append(ATTACHED_DB).append(".main.").append(ATTACHED_TABLE);
-        Optional<String> whereClause = DuckDbWhereClauseTranslator.toWhereClause(request.pushedPredicate());
-        whereClause.ifPresent(w -> sql.append(" WHERE ").append(w));
-        return sql.toString();
+        return DuckDbSelectSqlBuilder.buildSelectSql(
+                ATTACHED_DB + ".main." + ATTACHED_TABLE, request);
     }
 
     private static String describeAttachTarget(DuckDbAttachTarget target)

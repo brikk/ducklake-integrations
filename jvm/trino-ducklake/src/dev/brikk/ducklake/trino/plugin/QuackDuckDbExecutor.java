@@ -28,7 +28,6 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.HexFormat;
 import java.util.Locale;
-import java.util.Optional;
 
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -111,6 +110,19 @@ final class QuackDuckDbExecutor
                 for (String tuningSql : DuckDbTuningSql.statements(tuning)) {
                     drainWrappedQuery(init, tuningSql);
                 }
+                for (String aliasSql : TrinoFunctionAliases.statements()) {
+                    try {
+                        drainWrappedQuery(init, aliasSql);
+                    }
+                    catch (SQLException e) {
+                        if (TrinoFunctionAliases.isBestEffort(aliasSql)) {
+                            log.warn("trino-function-aliases best-effort statement failed server-side: %s — %s",
+                                    aliasSql.lines().findFirst().orElse(aliasSql), e.getMessage());
+                            continue;
+                        }
+                        throw e;
+                    }
+                }
                 for (String serverInitStatement : serverInitStatementsFor(request.target())) {
                     drainWrappedQuery(init, serverInitStatement);
                 }
@@ -191,24 +203,8 @@ final class QuackDuckDbExecutor
 
     private String buildInnerSelectSql(ExecutionRequest request, String serverAlias)
     {
-        StringBuilder inner = new StringBuilder("SELECT ");
-        if (request.isEmptyProjection()) {
-            inner.append("1");
-        }
-        else {
-            var columns = request.projectedColumns();
-            for (int i = 0; i < columns.size(); i++) {
-                if (i > 0) {
-                    inner.append(", ");
-                }
-                String name = columns.get(i).columnName().replace("\"", "\"\"");
-                inner.append('"').append(name).append('"');
-            }
-        }
-        inner.append(" FROM ").append(serverAlias).append(".main.").append(ATTACHED_TABLE);
-        Optional<String> whereClause = DuckDbWhereClauseTranslator.toWhereClause(request.pushedPredicate());
-        whereClause.ifPresent(w -> inner.append(" WHERE ").append(w));
-        return inner.toString();
+        return DuckDbSelectSqlBuilder.buildSelectSql(
+                serverAlias + ".main." + ATTACHED_TABLE, request);
     }
 
     /**

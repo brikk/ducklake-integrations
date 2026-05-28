@@ -64,19 +64,37 @@ interface DucklakeDuckDbExecutor
      * {@link DuckDbWhereClauseTranslator}) and what to name the server-side
      * ATTACH alias.
      *
-     * @param target           where the {@code .db} file is reachable from
-     * @param projectedColumns the columns Trino asked for; empty means
-     *                         {@code COUNT(*)}-style — caller wants only row
-     *                         counts, executor should emit a single-column
-     *                         result so position counts flow downstream
-     * @param pushedPredicate  pre-filtered (non-pushed predicates re-apply
-     *                         above the page source)
+     * @param target            where the {@code .db} file is reachable from
+     * @param projectedColumns  the columns Trino asked for; empty means
+     *                          {@code COUNT(*)}-style — caller wants only row
+     *                          counts, executor should emit a single-column
+     *                          result so position counts flow downstream
+     * @param pushedPredicate   pre-filtered TupleDomain (non-pushed predicates
+     *                          re-apply above the page source)
+     * @param pushedExpressions function-shape SQL fragments already translated
+     *                          to DuckDB (e.g. {@code trino_lower("c") = 'a'});
+     *                          AND-ed into the WHERE alongside the
+     *                          TupleDomain-derived clause
      */
     record ExecutionRequest(
             DuckDbAttachTarget target,
             List<DucklakeColumnHandle> projectedColumns,
-            TupleDomain<DucklakeColumnHandle> pushedPredicate)
+            TupleDomain<DucklakeColumnHandle> pushedPredicate,
+            List<String> pushedExpressions)
     {
+        public ExecutionRequest
+        {
+            pushedExpressions = pushedExpressions == null ? List.of() : List.copyOf(pushedExpressions);
+        }
+
+        public ExecutionRequest(
+                DuckDbAttachTarget target,
+                List<DucklakeColumnHandle> projectedColumns,
+                TupleDomain<DucklakeColumnHandle> pushedPredicate)
+        {
+            this(target, projectedColumns, pushedPredicate, List.of());
+        }
+
         public boolean isEmptyProjection()
         {
             return projectedColumns.isEmpty();
