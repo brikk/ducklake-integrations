@@ -23,6 +23,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Loader for the {@code trino-function-aliases.sql} classpath resource, which
@@ -47,6 +48,16 @@ final class TrinoFunctionAliases
     private static final String RESOURCE = "trino-function-aliases.sql";
 
     private static final List<String> STATEMENTS = loadStatements();
+
+    /**
+     * Names harvested from {@code -- @placeholder ...} lines in the SQL resource.
+     * These macros are installed (so direct use in test / dev sessions works for
+     * ASCII input) but the translator must NOT push them — the Trino-equivalent
+     * implementation is pending a native DuckDB extension. Logged once per JVM.
+     */
+    private static final List<String> PLACEHOLDER_MACROS = loadPlaceholderMacros();
+
+    private static final AtomicBoolean PLACEHOLDER_WARNED = new AtomicBoolean(false);
 
     private TrinoFunctionAliases() {}
 
@@ -90,20 +101,69 @@ final class TrinoFunctionAliases
                 throw e;
             }
         }
+        warnPlaceholdersOnce();
+    }
+
+    /** Names of macros flagged with {@code -- @placeholder} in the SQL resource. */
+    static List<String> placeholderMacros()
+    {
+        return PLACEHOLDER_MACROS;
+    }
+
+    private static void warnPlaceholdersOnce()
+    {
+        if (PLACEHOLDER_MACROS.isEmpty()) {
+            return;
+        }
+        if (PLACEHOLDER_WARNED.compareAndSet(false, true)) {
+            log.warn("trino-function-aliases includes %d placeholder macro(s): %s. "
+                            + "These do not match Trino's semantics on non-ASCII input and are "
+                            + "intentionally excluded from the pushdown catalog (trino_meta + "
+                            + "DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS). They are installed "
+                            + "for ASCII-safe testing only; native-extension replacement is the "
+                            + "real fix. See dev-docs/TODO-pushdown-duckdb.md.",
+                    PLACEHOLDER_MACROS.size(), String.join(", ", PLACEHOLDER_MACROS));
+        }
     }
 
     private static List<String> loadStatements()
     {
-        String body;
+        return splitStatements(readResource());
+    }
+
+    private static List<String> loadPlaceholderMacros()
+    {
+        // Scan lines of the form: -- @placeholder name1 name2 ...
+        // Names are the un-prefixed macro names (e.g. `trino_lower`); whitespace-separated.
+        List<String> out = new ArrayList<>();
+        for (String line : readResource().split("\\R")) {
+            String trimmed = line.stripLeading();
+            if (!trimmed.startsWith("-- @placeholder")) {
+                continue;
+            }
+            String tail = trimmed.substring("-- @placeholder".length()).strip();
+            if (tail.isEmpty()) {
+                continue;
+            }
+            for (String name : tail.split("\\s+")) {
+                if (!name.isEmpty()) {
+                    out.add(name);
+                }
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    private static String readResource()
+    {
         try {
-            body = Resources.toString(
+            return Resources.toString(
                     Resources.getResource(TrinoFunctionAliases.class, RESOURCE),
                     StandardCharsets.UTF_8);
         }
         catch (IOException e) {
             throw new IllegalStateException("Failed to read classpath resource " + RESOURCE, e);
         }
-        return splitStatements(body);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 **Status:** Canonical reference, not exhaustive. Updated as new pushdown candidates are added.
 **Sources:** Trino 481 docs (`vendor/docs.trino.io/481/functions/`); DuckDB LTS docs (`vendor/duckdb-web/docs/lts/sql/functions/`).
+**Companion doc:** [RESEARCH-function-community-extensions.md](RESEARCH-function-community-extensions.md) — DuckDB community / core extensions (`crypto`, `hashfuncs`, `datasketches`, `netquack`, `splink_udfs`, core `inet`, …) that fill many "Trino-only" gaps below.
 **Convention:** Each row is one logical operation. "Trino" and "DuckDB" columns show the function name and signature in that engine. If the engines disagree on a detail (NULL handling, Unicode, type signature), note it in the Notes column. `—` means the engine doesn't have it.
 
 A Doris column will be added later when we extend to that connector; leave the schema as it is for now.
@@ -11,92 +12,99 @@ Pushdown rating in the Notes column where useful:
 - ⚠️ translatable with caveat (note the caveat)
 - ❌ do not translate — semantics differ, or one engine doesn't have it
 
+**Done column** (added Mar 2026, tables where we have shipped at least one entry):
+- `yes rN` — registered in `trino_meta()` and `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`. The number is the round it shipped in. See [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) for round-by-round detail.
+- `yes rN ⚠️ placeholder` — macro is installed and PUSHABLE (so we can performance-test pushdown), but DuckDB's built-in diverges from Trino on specific non-ASCII inputs. `DuckDbExpressionTranslator` logs a one-shot WARN per name when emitting one of these. Native extension (Rust template: https://github.com/duckdb/extension-template-rs) is the durable fix. See [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md) for the divergence catalog.
+- `ext TBD` — *deprecated marker*: previously used when placeholders were excluded from pushdown. As of round 4 placeholders are pushable with warn-on-emit instead; no rows currently carry this marker.
+- `—` — not implemented; not on the immediate roadmap.
+- blank — not applicable (operator-shape, lambda-shape, or one-engine-only).
+
 ---
 
 ## Scalar functions
 
 ### String functions
 
-| Operation | Trino | DuckDB | Notes |
-|---|---|---|---|
-| String concat operator (NULL propagates) | `a \|\| b` | `a \|\| b` | ✅ Both: any NULL operand → NULL. |
-| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls) | ❌ Trino `concat(NULL,'x')='NULL'... actually Trino `concat` returns NULL on NULL arg. DuckDB `concat` **silently skips NULLs** (returns 'x'). DO NOT translate `concat`. Map to `\|\|` chain if you need NULL-propagation. |
-| Multi-arg concat (NULL skipped) | — | `concat(value, ...)` | ❌ DuckDB-only semantics; route through Trino `concat_ws` or chain `coalesce`. |
-| Concat with separator | `concat_ws(separator, s1, ..., sN)`, `concat_ws(sep, array(varchar))` | `concat_ws(separator, string, ...)` | ⚠️ Trino: NULL separator → NULL result; DuckDB: NULL separator → NULL result. NULL elements: Trino skips, DuckDB skips. Mostly aligned, but verify separator-NULL on the actual engine before pushing. |
-| Lowercase | `lower(string) -> varchar` | `lower(string)` | ⚠️ Both ASCII-fold by default. Trino documents Unicode-aware lower-casing in 4xx releases; DuckDB lowercases ASCII only unless the `icu` extension is loaded. Push only when input is ASCII-safe, or block when collation matters. |
-| Uppercase | `upper(string) -> varchar` | `upper(string)` | Same caveat as `lower`. |
-| Character length (code points) | `length(string) -> bigint` | `length(string)` | ⚠️ Both return count of code points (NOT bytes) for varchar. NULL → NULL in both. Trino has no separate `octet_length`; DuckDB has `strlen(string)` for bytes. |
-| Byte length | `length(varbinary) -> bigint` | `strlen(string)`, `octet_length(blob)` | ✅ Map Trino `length(varbinary)` → DuckDB `octet_length`. |
-| Grapheme cluster length | — | `length_grapheme(string)` | ❌ DuckDB-only. |
-| Substring (start) | `substring(string, start) -> varchar`, `substr(string, start)` | `substring(string, start)`, `substr(...)` | ✅ Both 1-based; negative start counts from end in both. Verify both treat `start=0` identically (Trino: undefined-ish, DuckDB: behaves like 1) before pushing zero. |
-| Substring (start, length) | `substring(string, start, length)` | `substring(string, start, length)` | ✅ Aligned for positive args. |
-| Left N chars | — | `left(string, count)` | ❌ DuckDB-only (Trino uses `substring(s,1,n)`). |
-| Right N chars | — | `right(string, count)` | ❌ DuckDB-only. |
-| Trim both | `trim(string)`, `trim([LEADING\|TRAILING\|BOTH] chars FROM string)` | `trim(string[, characters])` | ✅ When trimming spaces only, both equivalent. For custom char-set trim, Trino uses SQL grammar; DuckDB takes a positional arg — translate carefully. |
-| Trim left | `ltrim(string)` | `ltrim(string[, characters])` | ✅ Space-trim aligned. |
-| Trim right | `rtrim(string)` | `rtrim(string[, characters])` | ✅ Space-trim aligned. |
-| Left pad | `lpad(string, size, padstring) -> varchar` | `lpad(string, count, character)` | ⚠️ Trino: `size` is code-point count of result; DuckDB: same. Both truncate to fit. Behavior on empty pad differs — Trino raises; DuckDB returns NULL-ish. Verify. |
-| Right pad | `rpad(string, size, padstring)` | `rpad(string, count, character)` | Same caveat as `lpad`. |
-| Replace (no replacement, i.e. remove) | `replace(string, search) -> varchar` | — | ❌ Trino single-arg form; DuckDB requires 3 args. Map by passing `''` as replacement. |
-| Replace | `replace(string, search, replace)` | `replace(string, source, target)` | ✅ Same semantics: replace all occurrences, NULL → NULL. |
-| Reverse | `reverse(string)` | `reverse(string)` | ✅ Both Unicode-code-point reverse. |
-| Repeat | — (via `repeat` for arrays only) | `repeat(string, count)` | ❌ Trino has `repeat` only for arrays; use `array_join(repeat(s,n),'')` if needed. |
-| Position of substring (1-based) | `strpos(string, substring) -> bigint`, `position(substring IN string)` | `instr(string, search_string)`, `strpos`, `position(s IN t)` | ✅ Both 1-based, 0 if not found. Trino `strpos(s, sub, instance)` 3-arg form has no DuckDB equivalent. |
-| Position of N-th occurrence | `strpos(string, substring, instance)` | — | ❌ Trino-only. |
-| Starts with | `starts_with(string, substring) -> boolean` | `starts_with(string, search_string)`, `s ^@ t`, `prefix(s, t)` | ✅ Aligned. |
-| Ends with | — | `ends_with(string, search_string)`, `suffix(s, t)` | ❌ Trino has no native `ends_with`; can be expressed via `substring` or `like '%x'`. |
-| Contains substring | — (use `LIKE '%x%'` or `strpos > 0`) | `contains(string, search_string)` | ❌ DuckDB has explicit `contains`; for pushdown translate Trino's `strpos(x) > 0` → DuckDB `contains` (safe) or leave both as `LIKE '%x%'`. |
-| Split by delimiter (returns array) | `split(string, delimiter) -> array(varchar)`, `split(s, d, limit)` | `string_split(s, sep)`, `split(s, sep)` | ⚠️ Limit form is Trino-only. Empty-string delimiter behavior differs — Trino splits to character array; DuckDB returns a single-element array. |
-| Split, get part at index | `split_part(string, delimiter, index) -> varchar` | `split_part(string, separator, index)` | ⚠️ Both 1-based; out-of-bounds: Trino returns NULL, DuckDB returns empty string. ❌ for pushdown unless wrap in NULLIF. |
-| Split to map | `split_to_map(string, entryDelim, kvDelim)` | — | ❌ Trino-only. |
-| Lev distance | `levenshtein_distance(s1, s2) -> bigint` | `levenshtein(s1, s2)` | ⚠️ Same algorithm, different name. Verify behavior on unequal-length strings. |
-| Hamming distance | `hamming_distance(s1, s2) -> bigint` | `hamming(s1, s2)` | ✅ Same. Both require equal length; behavior on unequal differs. |
-| Damerau-Lev distance | — | `damerau_levenshtein(s1, s2)` | ❌ DuckDB-only. |
-| Jaccard / Jaro / Jaro-Winkler | — | `jaccard`, `jaro_similarity`, `jaro_winkler_similarity` | ❌ DuckDB-only. |
-| ASCII code of first char | `codepoint(string) -> integer` | `ascii(string)`, `unicode(string)`, `ord(string)` | ⚠️ Trino `codepoint` requires single-char varchar(1); DuckDB `unicode` takes any varchar and uses first char. NOT 1:1. |
-| Char from code | `chr(n) -> varchar` | `chr(code_point)` | ✅ Aligned for valid code points. |
-| Translate chars | `translate(source, from, to) -> varchar` | `translate(string, from, to)` | ✅ Same algorithm: char-by-char replacement, extra `from` chars deleted. |
+| Operation | Trino | DuckDB | Done | Notes |
+|---|---|---|---|---|
+| String concat operator (NULL propagates) | `a \|\| b` | `a \|\| b` | | ✅ Both: any NULL operand → NULL. |
+| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls) | — | ❌ Trino `concat(NULL,'x')='NULL'... actually Trino `concat` returns NULL on NULL arg. DuckDB `concat` **silently skips NULLs** (returns 'x'). DO NOT translate `concat`. Map to `\|\|` chain if you need NULL-propagation. |
+| Multi-arg concat (NULL skipped) | — | `concat(value, ...)` | | ❌ DuckDB-only semantics; route through Trino `concat_ws` or chain `coalesce`. |
+| Concat with separator | `concat_ws(separator, s1, ..., sN)`, `concat_ws(sep, array(varchar))` | `concat_ws(separator, string, ...)` | yes r2 (2..5 arg) | ⚠️ Trino: NULL separator → NULL result; DuckDB: NULL separator → NULL result. NULL elements: Trino skips, DuckDB skips. Mostly aligned, but verify separator-NULL on the actual engine before pushing. Shipped as fixed-arity overloads 2..5. Array-form Trino-only. |
+| Lowercase | `lower(string) -> varchar` | `lower(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB does simple case folding; Trino does full case folding. Diverges on `'İ'` → DuckDB `'i'` vs Trino `'i'` + U+0307. ASCII safe. Pushed for perf with warn-on-emit; native extension is the durable fix. |
+| Uppercase | `upper(string) -> varchar` | `upper(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB `upper('ß')` = `'ẞ'` (U+1E9E); Trino's Java = `'SS'`. ASCII safe. Pushed with warn-on-emit. |
+| Character length (code points) | `length(string) -> bigint` | `length(string)` | yes r1 | ⚠️ Both return count of code points (NOT bytes) for varchar. NULL → NULL in both. Trino has no separate `octet_length`; DuckDB has `strlen(string)` for bytes. |
+| Byte length | `length(varbinary) -> bigint` | `strlen(string)`, `octet_length(blob)` | — | ✅ Map Trino `length(varbinary)` → DuckDB `octet_length`. |
+| Grapheme cluster length | — | `length_grapheme(string)` | | ❌ DuckDB-only. |
+| Substring (start) | `substring(string, start) -> varchar`, `substr(string, start)` | `substring(string, start)`, `substr(...)` | yes r1 | ✅ Both 1-based; negative start counts from end in both. Verify both treat `start=0` identically (Trino: undefined-ish, DuckDB: behaves like 1) before pushing zero. |
+| Substring (start, length) | `substring(string, start, length)` | `substring(string, start, length)` | yes r1 | ✅ Aligned for positive args. |
+| Left N chars | — | `left(string, count)` | | ❌ DuckDB-only (Trino uses `substring(s,1,n)`). |
+| Right N chars | — | `right(string, count)` | | ❌ DuckDB-only. |
+| Trim both | `trim(string)`, `trim([LEADING\|TRAILING\|BOTH] chars FROM string)` | `trim(string[, characters])` | yes r1 (Java whitespace set) | ✅ Macro passes the full Java `Character.isWhitespace` set via the `characters` arg (helper `trino__java_whitespace_chars()`). Strips tab/LF/CR/FF/EM SPACE/Unicode separators; correctly leaves NBSP/figure space/narrow NBSP. Custom-char trim grammar still not pushed. |
+| Trim left | `ltrim(string)` | `ltrim(string[, characters])` | yes r1 (Java whitespace set) | ✅ Same — full Java whitespace set. |
+| Trim right | `rtrim(string)` | `rtrim(string[, characters])` | yes r1 (Java whitespace set) | ✅ Same. |
+| Left pad | `lpad(string, size, padstring) -> varchar` | `lpad(string, count, character)` | yes r2 | ⚠️ Trino: `size` is code-point count of result; DuckDB: same. Both truncate to fit. Behavior on empty pad differs — Trino raises; DuckDB returns NULL-ish. Verify. |
+| Right pad | `rpad(string, size, padstring)` | `rpad(string, count, character)` | yes r2 | Same caveat as `lpad`. |
+| Replace (no replacement, i.e. remove) | `replace(string, search) -> varchar` | — | — | ❌ Trino single-arg form; DuckDB requires 3 args. Map by passing `''` as replacement. |
+| Replace | `replace(string, search, replace)` | `replace(string, source, target)` | yes r1 | ✅ Same semantics: replace all occurrences, NULL → NULL. |
+| Reverse | `reverse(string)` | `reverse(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB reverse is grapheme-cluster-aware; Trino reverse is code-point-only. Diverges on combining marks and ZWJ sequences. ASCII safe. Pushed for perf with warn-on-emit; native extension needed for codepoint-strict reverse. |
+| Repeat | — (via `repeat` for arrays only) | `repeat(string, count)` | | ❌ Trino has `repeat` only for arrays; use `array_join(repeat(s,n),'')` if needed. |
+| Position of substring (1-based) | `strpos(string, substring) -> bigint`, `position(substring IN string)` | `instr(string, search_string)`, `strpos`, `position(s IN t)` | yes r1 (`strpos`/2) | ✅ Both 1-based, 0 if not found. Trino `strpos(s, sub, instance)` 3-arg form has no DuckDB equivalent. `position(... IN ...)` operator-form deferred. |
+| Position of N-th occurrence | `strpos(string, substring, instance)` | — | | ❌ Trino-only. |
+| Starts with | `starts_with(string, substring) -> boolean` | `starts_with(string, search_string)`, `s ^@ t`, `prefix(s, t)` | yes r1 | ✅ Aligned. |
+| Ends with | — | `ends_with(string, search_string)`, `suffix(s, t)` | | ❌ Trino has no native `ends_with`; can be expressed via `substring` or `like '%x'`. |
+| Contains substring | — (use `LIKE '%x%'` or `strpos > 0`) | `contains(string, search_string)` | | ❌ DuckDB has explicit `contains`; for pushdown translate Trino's `strpos(x) > 0` → DuckDB `contains` (safe) or leave both as `LIKE '%x%'`. |
+| Split by delimiter (returns array) | `split(string, delimiter) -> array(varchar)`, `split(s, d, limit)` | `string_split(s, sep)`, `split(s, sep)` | — | ⚠️ Limit form is Trino-only. Empty-string delimiter behavior differs — Trino splits to character array; DuckDB returns a single-element array. |
+| Split, get part at index | `split_part(string, delimiter, index) -> varchar` | `split_part(string, separator, index)` | — | ⚠️ Both 1-based; out-of-bounds: Trino returns NULL, DuckDB returns empty string. ❌ for pushdown unless wrap in NULLIF. |
+| Split to map | `split_to_map(string, entryDelim, kvDelim)` | — | | ❌ Trino-only. |
+| Lev distance | `levenshtein_distance(s1, s2) -> bigint` | `levenshtein(s1, s2)` | yes r4 | ⚠️ Same algorithm, different name. Renamed via macro body. Verify behavior on unequal-length strings — both engines compute insertions+deletions+substitutions. |
+| Hamming distance | `hamming_distance(s1, s2) -> bigint` | `hamming(s1, s2)` | yes r4 | ✅ Same algorithm, different name. Renamed via macro. Both raise on unequal-length input. |
+| Damerau-Lev distance | — | `damerau_levenshtein(s1, s2)` | | ❌ DuckDB-only. |
+| Jaccard / Jaro / Jaro-Winkler | — | `jaccard`, `jaro_similarity`, `jaro_winkler_similarity` | | ❌ DuckDB-only. |
+| ASCII code of first char | `codepoint(string) -> integer` | `ascii(string)`, `unicode(string)`, `ord(string)` | | ⚠️ Trino `codepoint` requires single-char varchar(1); DuckDB `unicode` takes any varchar and uses first char. NOT 1:1. |
+| Char from code | `chr(n) -> varchar` | `chr(code_point)` | yes r4 | ✅ Aligned for valid code points. |
+| Translate chars | `translate(source, from, to) -> varchar` | `translate(string, from, to)` | yes r3 | ✅ Same algorithm: char-by-char replacement, extra `from` chars deleted. |
 | Unicode normalize | `normalize(string[, form])` | `nfc_normalize(string)` | ⚠️ DuckDB only NFC; Trino has NFC/NFD/NFKC/NFKD. Push only when both sides agree on form=NFC. |
-| Soundex | `soundex(char) -> string` | — | ❌ Trino-only. |
-| Word stem | `word_stem(word[, lang]) -> varchar` | — | ❌ Trino-only. |
-| Luhn check | `luhn_check(string) -> boolean` | — | ❌ Trino-only. |
-| Format with `printf`-style | `format(format, args...) -> varchar` | `printf(format, ...)`, `format(format, ...)` | ❌ Different format specifications (Trino: Java `Formatter`; DuckDB: fmt/printf). Do not push. |
-| To UTF-8 bytes | `to_utf8(string) -> varbinary` | `encode(string)` | ⚠️ Names differ; semantics match. |
-| From UTF-8 bytes | `from_utf8(binary[, replace])` | `decode(blob)` | ⚠️ Names differ. Behavior on invalid UTF-8 differs — Trino has a replacement-char form; DuckDB errors. |
-| URL decode | `url_decode(value) -> varchar` | `url_decode(string)` | ✅ Aligned (RFC 3986 percent-encoding). |
-| URL encode | `url_encode(value) -> varchar` | `url_encode(string)` | ✅ Aligned. |
-| Hex encode | `to_hex(binary) -> varchar` | `hex(blob)`, `to_hex(string)` | ✅ Aligned. |
-| Hex decode | `from_hex(string) -> varbinary` | `unhex(value)`, `from_hex(value)` | ✅ Aligned. |
-| Base64 encode | `to_base64(binary) -> varchar` | `to_base64(blob)`, `base64(blob)` | ✅ Aligned (standard alphabet). |
-| Base64 decode | `from_base64(string) -> varbinary` | `from_base64(string)` | ✅ Aligned. |
+| Soundex | `soundex(char) -> string` | `soundex(s)` (splink_udfs); also `double_metaphone(s)` for a stronger encoder | — | ✅ Pushable when `splink_udfs` is loaded. See [community-extensions § Splink UDFs](RESEARCH-function-community-extensions.md#splink-udfs). |
+| Word stem | `word_stem(word[, lang]) -> varchar` | — | | ❌ Trino-only. |
+| Luhn check | `luhn_check(string) -> boolean` | — | | ❌ Trino-only. |
+| Format with `printf`-style | `format(format, args...) -> varchar` | `printf(format, ...)`, `format(format, ...)` | | ❌ Different format specifications (Trino: Java `Formatter`; DuckDB: fmt/printf). Do not push. |
+| To UTF-8 bytes | `to_utf8(string) -> varbinary` | `encode(string)` | — | ⚠️ Names differ; semantics match. |
+| From UTF-8 bytes | `from_utf8(binary[, replace])` | `decode(blob)` | — | ⚠️ Names differ. Behavior on invalid UTF-8 differs — Trino has a replacement-char form; DuckDB errors. |
+| URL decode | `url_decode(value) -> varchar` | `url_decode(string)` | yes r4 | ✅ Aligned (RFC 3986 percent-encoding). |
+| URL encode | `url_encode(value) -> varchar` | `url_encode(string)` | yes r4 | ✅ Aligned. |
+| Hex encode | `to_hex(binary) -> varchar` | `hex(blob)`, `to_hex(string)` | yes r4 | ✅ Aligned. Macro body calls DuckDB `hex`. |
+| Hex decode | `from_hex(string) -> varbinary` | `unhex(value)`, `from_hex(value)` | yes r4 | ✅ Aligned. Macro body calls DuckDB `unhex`; returns BLOB. |
+| Base64 encode | `to_base64(binary) -> varchar` | `to_base64(blob)`, `base64(blob)` | yes r4 | ✅ Aligned (standard alphabet). |
+| Base64 decode | `from_base64(string) -> varbinary` | `from_base64(string)` | yes r4 | ✅ Aligned. |
 | Base64URL encode | `to_base64url(binary)` | — | ❌ Trino-only (URL-safe alphabet). |
 | Base32 encode | `to_base32(binary)` | — | ❌ Trino-only. |
 | Strip accents | — | `strip_accents(string)` | ❌ DuckDB-only. |
 
 ### Numeric / math functions
 
-| Operation | Trino | DuckDB | Notes |
-|---|---|---|---|
-| Abs | `abs(x) -> [same]` | `abs(x)`, `@(x)` | ✅ Aligned. Watch INT overflow: `abs(MIN_INT)` — Trino throws, DuckDB throws. |
-| Ceiling | `ceil(x)`, `ceiling(x)` | `ceil(x)`, `ceiling(x)` | ✅ Aligned. |
-| Floor | `floor(x)` | `floor(x)` | ✅ Aligned. |
-| Round half-up | `round(x)`, `round(x, d)` | `round(v, s)` | ⚠️ Trino: `round` is half-up. DuckDB: `round` is half-away-from-zero (since 0.10) — verify per version. Also `round_even` in DuckDB for banker's rounding. Do NOT push when `d > 0` until verified. |
-| Round half-even | — (no direct) | `round_even(v, s)` | ❌ DuckDB-only. |
-| Truncate toward zero | `truncate(x)` | `trunc(x)` | ⚠️ Different names; same semantics. |
-| Sign | `sign(x) -> [same]` | `sign(x)` | ⚠️ Both return -1/0/1. For floats, NaN behavior differs: Trino NaN→NaN; DuckDB NaN→NaN. Verify. |
-| Mod | `mod(n, m) -> [same]`, `n % m` | `n % m`, `mod(n, m)` via `fmod` for floats | ⚠️ Integer `%`: both follow truncated division (sign follows dividend). Float `%`: Trino uses IEEE `remainder`-ish; DuckDB has `fmod`. ❌ Do not push float `%` until aligned. |
-| Power | `pow(x, p) -> double`, `power(x, p)` | `pow(x, y)`, `power(x, y)` | ✅ Aligned. |
-| Sqrt | `sqrt(x) -> double` | `sqrt(x)` | ✅ Aligned. NaN on negative in both. |
-| Cube root | `cbrt(x) -> double` | `cbrt(x)` | ✅ Aligned. |
-| Exp | `exp(x) -> double` | `exp(x)` | ✅ Aligned. |
-| Natural log | `ln(x) -> double` | `ln(x)` | ✅ Aligned. NaN on x≤0 in both. |
-| Log base 2 | `log2(x) -> double` | `log2(x)` | ✅ Aligned. |
-| Log base 10 | `log10(x) -> double` | `log10(x)`, `log(x)` (single-arg) | ⚠️ DuckDB `log(x)` = log10 (PostgreSQL convention). Trino `log(b, x)` is log-base-b. ❌ Do not push `log(x)` — semantics collide. |
-| Log base b | `log(b, x) -> double` | — (use `ln(x)/ln(b)`) | ❌ DuckDB has no 2-arg `log`. |
-| Pi / e | `pi() -> double`, `e() -> double` | `pi()` | ⚠️ DuckDB has no `e()`; use `exp(1)`. |
-| Trig (sin/cos/tan/asin/acos/atan/atan2) | `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)` | same names; also `cot`, `asinh`, `acosh`, `atanh` | ✅ Aligned for the common set. DuckDB has extras Trino lacks. |
-| Hyperbolic | `sinh`, `cosh`, `tanh` | `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | ⚠️ Inverse hyperbolics DuckDB-only. |
-| Degrees / radians | `degrees(x)`, `radians(x)` | `degrees(x)`, `radians(x)` | ✅ Aligned. |
+| Operation | Trino | DuckDB | Done | Notes |
+|---|---|---|---|---|
+| Abs | `abs(x) -> [same]` | `abs(x)`, `@(x)` | yes r2 | ✅ Aligned. Watch INT overflow: `abs(MIN_INT)` — Trino throws, DuckDB throws. |
+| Ceiling | `ceil(x)`, `ceiling(x)` | `ceil(x)`, `ceiling(x)` | yes r2 | ✅ Aligned. |
+| Floor | `floor(x)` | `floor(x)` | yes r2 | ✅ Aligned. |
+| Round half-up | `round(x)`, `round(x, d)` | `round(v, s)` | — | ⚠️ Trino: `round` is half-up. DuckDB: `round` is half-away-from-zero (since 0.10) — verify per version. Also `round_even` in DuckDB for banker's rounding. Do NOT push when `d > 0` until verified. |
+| Round half-even | — (no direct) | `round_even(v, s)` | | ❌ DuckDB-only. |
+| Truncate toward zero | `truncate(x)` | `trunc(x)` | yes r5 | ⚠️ Different names; same semantics. Renamed via macro body. |
+| Sign | `sign(x) -> [same]` | `sign(x)` | — | ⚠️ Both return -1/0/1. For floats, NaN behavior differs: Trino NaN→NaN; DuckDB NaN→NaN. Verify. |
+| Mod | `mod(n, m) -> [same]`, `n % m` | `n % m`, `mod(n, m)` via `fmod` for floats | yes r2 (int only) | ⚠️ Integer `%`: both follow truncated division (sign follows dividend). Float `%`: Trino uses IEEE `remainder`-ish; DuckDB has `fmod`. ❌ Do not push float `%` until aligned. Macro is type-agnostic; translator must gate by arg type. |
+| Power | `pow(x, p) -> double`, `power(x, p)` | `pow(x, y)`, `power(x, y)` | yes r2 | ✅ Aligned. |
+| Sqrt | `sqrt(x) -> double` | `sqrt(x)` | yes r3 | ✅ Aligned. NaN on negative in both. |
+| Cube root | `cbrt(x) -> double` | `cbrt(x)` | yes r5 | ✅ Aligned. |
+| Exp | `exp(x) -> double` | `exp(x)` | yes r3 | ✅ Aligned. |
+| Natural log | `ln(x) -> double` | `ln(x)` | yes r3 | ✅ Aligned. NaN on x≤0 in both. |
+| Log base 2 | `log2(x) -> double` | `log2(x)` | yes r3 | ✅ Aligned. |
+| Log base 10 | `log10(x) -> double` | `log10(x)`, `log(x)` (single-arg) | yes r3 | ⚠️ DuckDB `log(x)` = log10 (PostgreSQL convention). Trino `log(b, x)` is log-base-b. Shipped as explicit `trino_log10` → `log10` to avoid the `log` collision; do not push the single-arg `log(x)`. |
+| Log base b | `log(b, x) -> double` | — (use `ln(x)/ln(b)`) | | ❌ DuckDB has no 2-arg `log`. |
+| Pi / e | `pi() -> double`, `e() -> double` | `pi()` | — | ⚠️ DuckDB has no `e()`; use `exp(1)`. |
+| Trig (sin/cos/tan/asin/acos/atan/atan2) | `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)` | same names; also `cot`, `asinh`, `acosh`, `atanh` | yes r5 | ✅ Aligned for the common set. DuckDB has extras Trino lacks. |
+| Hyperbolic | `sinh`, `cosh`, `tanh` | `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | yes r5 (forward only) | ⚠️ Forward hyperbolics shipped. Inverse hyperbolics DuckDB-only — not pushed. |
+| Degrees / radians | `degrees(x)`, `radians(x)` | `degrees(x)`, `radians(x)` | yes r5 | ✅ Aligned. |
 | NaN / infinity | `is_nan(x)`, `is_finite(x)`, `is_infinite(x)`, `nan()`, `infinity()` | `isnan(x)`, `isfinite(x)`, `isinf(x)`, `'nan'::double`, `'infinity'::double` | ⚠️ Function names differ; behavior aligned. Comparisons with NaN: BOTH treat `NaN = NaN` as `true` for grouping/distinct (Trino since recent versions; DuckDB consistent) — verify in pushdown tests. |
 | Random | `rand()`, `random()`, `random(n)`, `random(m,n)` | `random()` (returns [0,1) double) | ❌ Non-deterministic. Do not push. |
 | Width bucket | `width_bucket(x, b1, b2, n)`, `width_bucket(x, bins)` | `equi_width_bins(min, max, bincount)` | ⚠️ Different shape; not 1:1. Do not push. |
@@ -155,19 +163,19 @@ Pushdown rating in the Notes column where useful:
 
 ### Pattern matching (LIKE) and regular expressions
 
-| Operation | Trino | DuckDB | Notes |
-|---|---|---|---|
-| LIKE | `string LIKE pattern [ESCAPE c]` | `string LIKE target` | ✅ **Highest-priority pushdown** (per [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md)). Wildcards `%` and `_` aligned. ESCAPE clause aligned. NULL handling aligned. |
-| NOT LIKE | `string NOT LIKE pattern` | `string NOT LIKE target` | ✅ Same. |
-| ILIKE (case-insensitive) | — | `string ILIKE target`, `ilike_escape(...)` | ❌ Trino has no native ILIKE (use `lower(s) LIKE lower(p)`). DuckDB native ILIKE — map carefully. |
-| SIMILAR TO (POSIX-ish) | `string SIMILAR TO pattern` | `string SIMILAR TO regex` | ⚠️ Both use a SQL-standard SIMILAR TO. Verify subtle differences in `*`/`+`/`?` quantifier scoping before pushing. |
-| Regex match (contains) | `regexp_like(string, pattern) -> boolean` | `regexp_matches(string, pattern[, options])` | ⚠️ Both use **RE2** engine (Trino via Re2J; DuckDB via google/re2). Syntax aligned. Trino's pattern is case-sensitive by default; DuckDB likewise unless `'i'` option. ✅ Safe to push when no options used. |
-| Regex full match | — (use `^...$`) | `regexp_full_match(string, regex[, options])` | ⚠️ DuckDB-specific. Translate Trino `regexp_like(s, '^p$')` → DuckDB `regexp_full_match(s, 'p')`. |
-| Regex count | `regexp_count(string, pattern) -> bigint` | — (use `len(regexp_extract_all(...))`) | ❌ Trino-only direct form. |
-| Regex extract (first match) | `regexp_extract(string, pattern)`, `regexp_extract(s, p, group)` | `regexp_extract(string, regex[, group][, options])` | ⚠️ Default group: Trino = 0 (whole match), DuckDB = 0. ✅ Aligned for 2- and 3-arg form. |
-| Regex extract all | `regexp_extract_all(string, pattern[, group])` | `regexp_extract_all(string, regex[, group][, options])` | ⚠️ Empty-match handling differs; verify before pushing. |
-| Regex replace | `regexp_replace(s, p)`, `regexp_replace(s, p, repl)`, `regexp_replace(s, p, fn)` | `regexp_replace(s, p, repl[, options])` | ⚠️ Trino's no-replacement form removes matches (DuckDB needs explicit `''`). Lambda form is Trino-only. Backreference syntax aligned (`\1`,`\2`). |
-| Regex split | `regexp_split(string, pattern)` | `regexp_split_to_array(s, r[, options])`, `string_split_regex`, `regexp_split_to_table` | ⚠️ Name differs. Push as renamed call. |
+| Operation | Trino | DuckDB | Done | Notes |
+|---|---|---|---|---|
+| LIKE | `string LIKE pattern [ESCAPE c]` | `string LIKE target` | — | ✅ **Highest-priority pushdown** (per [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md)). Wildcards `%` and `_` aligned. ESCAPE clause aligned. NULL handling aligned. Arrives as a Trino-internal pattern function, not a plain `Call` — translator needs a special case. |
+| NOT LIKE | `string NOT LIKE pattern` | `string NOT LIKE target` | — | ✅ Same. |
+| ILIKE (case-insensitive) | — | `string ILIKE target`, `ilike_escape(...)` | | ❌ Trino has no native ILIKE (use `lower(s) LIKE lower(p)`). DuckDB native ILIKE — map carefully. |
+| SIMILAR TO (POSIX-ish) | `string SIMILAR TO pattern` | `string SIMILAR TO regex` | — | ⚠️ Both use a SQL-standard SIMILAR TO. Verify subtle differences in `*`/`+`/`?` quantifier scoping before pushing. |
+| Regex match (contains) | `regexp_like(string, pattern) -> boolean` | `regexp_matches(string, pattern[, options])` | yes r3 | ⚠️ Both use **RE2** engine (Trino via Re2J; DuckDB via google/re2). Syntax aligned. Trino's pattern is case-sensitive by default; DuckDB likewise unless `'i'` option. ✅ Safe to push when no options used. Shipped via rename (macro body calls DuckDB `regexp_matches`). |
+| Regex full match | — (use `^...$`) | `regexp_full_match(string, regex[, options])` | | ⚠️ DuckDB-specific. Translate Trino `regexp_like(s, '^p$')` → DuckDB `regexp_full_match(s, 'p')`. |
+| Regex count | `regexp_count(string, pattern) -> bigint` | — (use `len(regexp_extract_all(...))`) | | ❌ Trino-only direct form. |
+| Regex extract (first match) | `regexp_extract(string, pattern)`, `regexp_extract(s, p, group)` | `regexp_extract(string, regex[, group][, options])` | yes r3 (2- and 3-arg) | ⚠️ Default group: Trino = 0 (whole match), DuckDB = 0. ✅ Aligned for 2- and 3-arg form. Note: DuckDB reserves `group`; macro parameter named `group_index`. |
+| Regex extract all | `regexp_extract_all(string, pattern[, group])` | `regexp_extract_all(string, regex[, group][, options])` | — | ⚠️ Empty-match handling differs; verify before pushing. |
+| Regex replace | `regexp_replace(s, p)`, `regexp_replace(s, p, repl)`, `regexp_replace(s, p, fn)` | `regexp_replace(s, p, repl[, options])` | — | ⚠️ Trino's no-replacement form removes matches (DuckDB needs explicit `''`). Lambda form is Trino-only. Backreference syntax aligned (`\1`,`\2`). |
+| Regex split | `regexp_split(string, pattern)` | `regexp_split_to_array(s, r[, options])`, `string_split_regex`, `regexp_split_to_table` | — | ⚠️ Name differs. Push as renamed call. |
 | Regex position | `regexp_position(s, p[, start[, occurrence]])` | — | ❌ Trino-only. |
 | Escape regex special chars | — | `regexp_escape(string)` | ❌ DuckDB-only. |
 
@@ -297,17 +305,19 @@ Pushdown rating in the Notes column where useful:
 
 ### Hash / digest
 
+> Two community extensions close most of this gap: **crypto** (cryptographic hashes + HMAC) and **hashfuncs** (non-crypto: xxHash, MurmurHash3, RapidHash). See [RESEARCH-function-community-extensions.md § Crypto](RESEARCH-function-community-extensions.md#crypto) and [§ Hashfuncs](RESEARCH-function-community-extensions.md#hashfuncs).
+
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
 | MD5 | `md5(binary) -> varbinary` | `md5(string) -> VARCHAR` (hex), `md5_number(string) -> HUGEINT` | ❌ Return-type mismatch: Trino → binary, DuckDB → hex string. Do not push raw. |
 | SHA-1 | `sha1(binary) -> varbinary` | `sha1(value) -> VARCHAR` | ❌ Same mismatch. |
 | SHA-256 | `sha256(binary) -> varbinary` | `sha256(value) -> VARCHAR` | ❌ Same mismatch. |
-| SHA-512 | `sha512(binary) -> varbinary` | — | ❌ Trino-only. |
-| CRC32 | `crc32(binary) -> bigint` | — | ❌ Trino-only. |
-| xxhash64 | `xxhash64(binary) -> varbinary` | `hash(value)` (UBIGINT, not xxhash) | ❌ DuckDB's `hash` is not cryptographic and not xxhash-compatible. Do not equate. |
-| spooky_hash_v2 | `spooky_hash_v2_32(binary)`, `spooky_hash_v2_64(binary)` | — | ❌ Trino-only. |
-| murmur3 | `murmur3(binary) -> varbinary` | — | ❌ Trino-only. |
-| HMAC | `hmac_md5`, `hmac_sha1`, `hmac_sha256`, `hmac_sha512` | — | ❌ Trino-only. |
+| SHA-512 | `sha512(binary) -> varbinary` | `crypto_hash('sha2-512', x) -> VARCHAR` (crypto) | ⚠️ Available with `crypto`; output is hex VARCHAR, so cast to VARBINARY (or compare against hex form) before equating to Trino's. |
+| CRC32 | `crc32(binary) -> bigint` | — | ❌ Trino-only — no extension cover. |
+| xxhash64 | `xxhash64(binary) -> varbinary` | `xxh64(x)` (hashfuncs); core `hash(value)` is not xxhash | ✅ Push as `xxh64` when `hashfuncs` is loaded. Core `hash` is non-crypto generic and not interchangeable. |
+| spooky_hash_v2 | `spooky_hash_v2_32(binary)`, `spooky_hash_v2_64(binary)` | — | ❌ Trino-only — no extension cover. |
+| murmur3 | `murmur3(binary) -> varbinary` (128-bit) | `murmurhash3_x64_128(x)` / `murmurhash3_128(x)` (hashfuncs); `murmurhash3_32(x)` for 32-bit | ✅ Push as `murmurhash3_x64_128` when `hashfuncs` is loaded. |
+| HMAC | `hmac_md5`, `hmac_sha1`, `hmac_sha256`, `hmac_sha512` | `crypto_hmac('md5'\|'sha1'\|'sha2-256'\|'sha2-512', key, msg)` (crypto) | ✅ All four pushable when `crypto` is loaded; output is hex VARCHAR. |
 | Non-crypto generic hash | — | `hash(value, ...)` | ❌ DuckDB-only; not pushdown-safe. |
 
 ### UUID
@@ -321,16 +331,29 @@ Pushdown rating in the Notes column where useful:
 
 ### URL
 
+> The community **NetQuack** extension supplies all the `url_extract_*` operations. See [RESEARCH-function-community-extensions.md § NetQuack](RESEARCH-function-community-extensions.md#netquack).
+
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
-| Extract protocol/host/port/path/query/fragment/parameter | `url_extract_protocol/host/port/path/query/fragment/parameter` | — | ❌ Trino-only. |
+| Extract protocol | `url_extract_protocol(url)` | `extract_schema(url)` (netquack) | ✅ Pushable when `netquack` is loaded. |
+| Extract host | `url_extract_host(url)` | `extract_host(url)` (netquack) | ✅ Pushable. |
+| Extract port | `url_extract_port(url)` | `extract_port(url)` (netquack) | ✅ Pushable. |
+| Extract path | `url_extract_path(url)` | `extract_path(url)` (netquack) | ✅ Pushable. |
+| Extract query | `url_extract_query(url)` | `extract_query_string(url)` (netquack) | ✅ Pushable. |
+| Extract fragment | `url_extract_fragment(url)` | `extract_fragment(url)` (netquack) | ✅ Pushable. |
+| Extract parameter | `url_extract_parameter(url, name)` | join through `extract_query_parameters(url)` table function (netquack) | ⚠️ Different shape — Trino scalar vs DuckDB table function. Wrap in a correlated subquery to push. |
 | URL encode / decode | `url_encode(value)`, `url_decode(value)` | `url_encode(string)`, `url_decode(string)` | ✅ Aligned (also listed in String table). |
 
 ### IP address
 
+> DuckDB's **core `inet` extension** provides a unified `INET` type (IPv4 + IPv6 with optional CIDR), subnet operators, and host/netmask/network/broadcast helpers. See [RESEARCH-function-community-extensions.md § Inet](RESEARCH-function-community-extensions.md#inet-core-extension--not-community). The community **NetQuack** extension supplies textual IP validators / classifiers (`is_valid_ip`, `is_private_ip`, `ip_version`, `ipcalc`).
+
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
-| Subnet contains address | `contains(network, address) -> boolean` | — | ❌ Trino-only. DuckDB has no IP type. |
+| IPADDRESS / IPPREFIX type | `IPADDRESS`, `IPPREFIX` | `INET` (core `inet` extension) | ⚠️ DuckDB has **one** type that covers both IPv4 and IPv6 and embeds CIDR; Trino splits address vs prefix into two types. Pushable when the catalog loads `inet`. |
+| Subnet contains address | `contains(network, address) -> boolean` | `network >>= address` (core `inet`) | ✅ Pushable as the `>>=` operator once `inet` is loaded. DuckDB also exposes the inverse `<<=` (contained-by). |
+| Host / network / broadcast / netmask | — | `host(INET)`, `network(INET)`, `broadcast(INET)`, `netmask(INET)` | ❌ DuckDB-only direct names; Trino does not expose these. |
+| IP version (4 vs 6) | — | `ip_version(varchar)` (netquack) | ❌ Neither has a built-in family discriminator on the typed value; route via VARCHAR + netquack if needed. |
 
 ### Binary / blob
 
@@ -392,12 +415,13 @@ Pushdown rating in the Notes column where useful:
 | Entropy | — | `entropy(x)` | ❌ DuckDB-only. |
 | Median / mode / MAD | — | `median(x)`, `mode(x)`, `mad(x)` | ❌ DuckDB-only direct. Trino uses `approx_percentile` for median. |
 | Quantile (continuous / discrete) | `approx_percentile(...)` | `quantile_cont(x, pos)`, `quantile_disc(x, pos)` | ❌ Different shape (DuckDB exact, Trino approximate by default). |
-| Approx distinct (HLL) | `approx_distinct(x[, e]) -> bigint`, `approx_set`, `merge(HyperLogLog)` | `approx_count_distinct(x)`, `list_approx_count_distinct(list)` | ⚠️ Names differ; HLL state types are not interchangeable. Push only as cardinality call, not state. |
-| Approx most frequent | `approx_most_frequent(buckets, value, capacity)` | — | ❌ Trino-only. |
+| Approx distinct (HLL) | `approx_distinct(x[, e]) -> bigint`, `approx_set`, `merge(HyperLogLog)` | `approx_count_distinct(x)`, `list_approx_count_distinct(list)`; also `datasketch_hll*` and `datasketch_cpc*` for a richer sketch surface (datasketches) | ⚠️ Names differ; HLL state types are not interchangeable across engines. Push only as cardinality call, not state. The `datasketches` extension adds confidence bounds and CPC if needed. |
+| Approx most frequent | `approx_most_frequent(buckets, value, capacity)` | `datasketch_frequent_items(lg_max_k, column)` + `datasketch_frequent_items_get_frequent(sketch, error_type)` (datasketches) | ✅ Pushable as the canonical Frequent-Items sketch when `datasketches` is loaded. See [community-extensions § DataSketches](RESEARCH-function-community-extensions.md#datasketches). |
 | Bitwise aggregates | `bitwise_and_agg(x)`, `bitwise_or_agg(x)`, `bitwise_xor_agg(x)` | `bit_and(arg)`, `bit_or(arg)`, `bit_xor(arg)`, `bitstring_agg(arg[, min, max])` | ⚠️ Names differ; semantics aligned. |
 | Reduce (aggregate lambda) | `reduce_agg(input, init, inputFn, combineFn)` | — | ❌ Trino-only. |
-| Sketch (theta) | `theta_sketch_union`, `theta_sketch_cardinality` | — | ❌ Trino-only. |
-| t-digest / q-digest | `tdigest_agg`, `qdigest_agg`, `value_at_quantile`, `quantile_at_value` | — | ❌ Trino-only sketches. |
+| Sketch (theta) | `theta_sketch_union`, `theta_sketch_cardinality` | `datasketch_theta*` family (datasketches): `_union`, `_intersect`, `_a_not_b`, `_estimate` | ✅ Pushable when `datasketches` is loaded. ⚠️ Serialized sketch states are **not** wire-compatible with Trino's — only computed-cardinality / set-op paths are safe to push, not sketch values crossing engine boundaries. |
+| t-digest | `tdigest_agg`, `value_at_quantile`, `quantile_at_value` | `datasketch_tdigest` + `datasketch_tdigest_quantile` / `_rank` / `_cdf` / `_pmf` (datasketches) | ✅ Pushable when `datasketches` is loaded. Same state-incompatibility caveat as theta. |
+| q-digest | `qdigest_agg` and read-side scalars | — (no qdigest in datasketches; use KLL, classic Quantiles, or REQ as substitutes) | ⚠️ No exact qdigest port. `datasketch_kll*` is the modern Apache-recommended replacement; `datasketch_quantiles*` / `datasketch_req*` are alternatives. ❌ Cannot push as Trino qdigest semantics. |
 
 > Many statistical aggregates are niche on both sides; see source docs for the long tail (60+ entries in Trino aggregate.html, 40+ in DuckDB aggregates.md).
 
@@ -427,7 +451,7 @@ Any aggregate function (`sum`, `avg`, `count`, etc.) can also be used as a windo
 ## Notes on intentional omissions
 
 - **Geospatial** — Trino has a large ST_* set (`ST_Point`, `ST_Contains`, `ST_Buffer`, …). DuckDB has these via the `spatial` extension. Deferred — not in the pushdown path for our first phase.
-- **HyperLogLog / qdigest / tdigest / setdigest / Theta sketch** — Trino-only sketch types with their own state serialization. State is not interchangeable with DuckDB's `approx_count_distinct`. Cardinality result can be pushed; sketch state cannot.
+- **HyperLogLog / qdigest / tdigest / setdigest / Theta sketch** — Trino has its own state serialization. The DuckDB **`datasketches`** community extension supplies the Apache DataSketches port for HLL, CPC, KLL, classic Quantiles, REQ, T-Digest, Theta, and Frequent Items — see [RESEARCH-function-community-extensions.md § DataSketches](RESEARCH-function-community-extensions.md#datasketches). Cardinality / quantile / set-op results can be pushed when the extension is loaded; **sketch state is still not interchangeable across engines**, so cross-engine sketch transport requires re-aggregation.
 - **AI / ML functions** — `ai_analyze_sentiment`, `ai_classify`, `ai_extract`, `ai_fix_grammar`, `ai_gen`, `ai_mask`, `ai_translate`, `learn_classifier`, `classify`, `learn_regressor`, `regress`, `features`, `learn_libsvm_*` are Trino-only. Do not push.
 - **Color** — `color()`, `bar()`, `render()`, `rgb()` are Trino terminal-rendering functions. Do not push.
 - **Datasketches** — `theta_sketch_*` — see HyperLogLog above.

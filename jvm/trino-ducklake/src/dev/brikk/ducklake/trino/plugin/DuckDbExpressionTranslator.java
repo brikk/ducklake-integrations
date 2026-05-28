@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.expression.Call;
@@ -56,6 +57,8 @@ import java.util.Set;
  */
 final class DuckDbExpressionTranslator
 {
+    private static final Logger log = Logger.get(DuckDbExpressionTranslator.class);
+
     /**
      * The set of {@code (trino_name, arg_count)} pairs we have macros for in
      * {@code trino-function-aliases.sql}. Mirrored here so the translator does
@@ -65,6 +68,12 @@ final class DuckDbExpressionTranslator
      */
     static final Set<NameArity> PUSHABLE_FUNCTIONS = Set.of(
             // Round 1 — string
+            //   lower/1, upper/1, reverse/1 are placeholders: DuckDB's built-in
+            //   diverges from Trino on Unicode inputs. Kept here so we can push
+            //   them for performance testing; warn-on-emit (see PLACEHOLDER_TRINO_NAMES
+            //   below) fires a one-shot WARN per name when the translator emits one.
+            //   Native extension is the real fix. REPORT-string-unicode-audit.md
+            //   has the divergence catalog.
             new NameArity("lower", 1),
             new NameArity("upper", 1),
             new NameArity("length", 1),
@@ -89,7 +98,68 @@ final class DuckDbExpressionTranslator
             new NameArity("ceil", 1),
             new NameArity("floor", 1),
             new NameArity("mod", 2),
-            new NameArity("power", 2));
+            new NameArity("power", 2),
+            // Round 3 — numeric (math)
+            new NameArity("sqrt", 1),
+            new NameArity("exp", 1),
+            new NameArity("ln", 1),
+            new NameArity("log2", 1),
+            new NameArity("log10", 1),
+            // Round 3 — string
+            new NameArity("translate", 3),
+            // Round 3 — regex (RE2 on both sides)
+            new NameArity("regexp_like", 2),
+            new NameArity("regexp_extract", 2),
+            new NameArity("regexp_extract", 3),
+            // Round 4 — encoding / distance / char-from-code
+            new NameArity("chr", 1),
+            new NameArity("url_encode", 1),
+            new NameArity("url_decode", 1),
+            new NameArity("to_hex", 1),
+            new NameArity("from_hex", 1),
+            new NameArity("to_base64", 1),
+            new NameArity("from_base64", 1),
+            new NameArity("levenshtein_distance", 2),
+            new NameArity("hamming_distance", 2),
+            // Round 5 — trig / hyperbolic / angle / cube root / truncate
+            new NameArity("sin", 1),
+            new NameArity("cos", 1),
+            new NameArity("tan", 1),
+            new NameArity("asin", 1),
+            new NameArity("acos", 1),
+            new NameArity("atan", 1),
+            new NameArity("atan2", 2),
+            new NameArity("sinh", 1),
+            new NameArity("cosh", 1),
+            new NameArity("tanh", 1),
+            new NameArity("degrees", 1),
+            new NameArity("radians", 1),
+            new NameArity("cbrt", 1),
+            new NameArity("truncate", 1));
+
+    /**
+     * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}
+     * in {@code trino-function-aliases.sql}). When the translator emits a SQL
+     * fragment for one of these, it logs a one-shot WARN per name so callers see
+     * which divergent placeholder fired — useful during perf characterization
+     * and as a loud signal for production deployments before the native
+     * DuckDB extension lands.
+     */
+    private static final Set<String> PLACEHOLDER_TRINO_NAMES = derivePlaceholderTrinoNames();
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> PLACEHOLDER_EMISSION_WARNED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static Set<String> derivePlaceholderTrinoNames()
+    {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String macroName : TrinoFunctionAliases.placeholderMacros()) {
+            if (macroName.startsWith("trino_")) {
+                out.add(macroName.substring("trino_".length()));
+            }
+        }
+        return java.util.Set.copyOf(out);
+    }
 
     private DuckDbExpressionTranslator() {}
 
@@ -284,7 +354,22 @@ final class DuckDbExpressionTranslator
             sql.append(arg);
         }
         sql.append(')');
+        warnOnPlaceholderEmissionOnce(trinoName);
         return sql.toString();
+    }
+
+    private static void warnOnPlaceholderEmissionOnce(String trinoName)
+    {
+        if (!PLACEHOLDER_TRINO_NAMES.contains(trinoName)) {
+            return;
+        }
+        if (PLACEHOLDER_EMISSION_WARNED.putIfAbsent(trinoName, Boolean.TRUE) == null) {
+            log.warn("Pushdown emitted placeholder macro trino_%s — DuckDB result diverges from "
+                            + "Trino on specific non-ASCII inputs; OK for ASCII data, NOT a "
+                            + "correctness guarantee for arbitrary inputs. Replace with native "
+                            + "extension before production. See dev-docs/REPORT-string-unicode-audit.md.",
+                    trinoName);
+        }
     }
 
     private static String joinBinary(

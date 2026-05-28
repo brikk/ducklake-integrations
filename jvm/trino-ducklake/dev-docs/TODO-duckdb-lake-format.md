@@ -234,3 +234,14 @@ what's tracked here:
 - High-cardinality partitioned writes (current implementation works for low-cardinality; many-partition workloads may need a writer-side DuckDB instance pool)
 
 These belong in their own design + tracking document when work starts.
+
+## OTHER RESEARCH
+
+is this duckdb cache extension useful? https://duckdb.org/community_extensions/extensions/cache_httpfs
+and this https://duckdb.org/community_extensions/extensions/cache_prewarm
+
+and other file formats
+arrow - https://duckdb.org/community_extensions/extensions/nanoarrow
+lance - https://duckdb.org/docs/current/core_extensions/lance
+vortex - https://duckdb.org/docs/current/core_extensions/vortex
+

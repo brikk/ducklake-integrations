@@ -177,17 +177,17 @@ public class TestDucklakeDuckDbReadMode
     public void testFunctionPredicatePushesDownThroughTrinoMacro()
     {
         // End-to-end proof that the trino_* macro layer fires for a real query.
-        // The predicate WHERE lower(name) = 'apple' is what Trino's planner hands to
-        // applyFilter as a ConnectorExpression; DuckDbExpressionTranslator rewrites
-        // it to trino_lower("name") = 'apple' on the handle, the page source
-        // appends that string to the WHERE clause sent to DuckDB, and DuckDB
-        // resolves it through the trino_lower MACRO installed by
-        // trino-function-aliases.sql. Correct result = the whole chain works.
+        // length/1 and substring/3 are both in PUSHABLE_FUNCTIONS, so Trino's
+        // applyFilter hands the ConnectorExpression to DuckDbExpressionTranslator,
+        // which emits trino_length("name") / trino_substring("name", 1, 1) into the
+        // WHERE clause the page source sends to DuckDB. The macros resolve
+        // server-side via trino-function-aliases.sql. Correct result = the whole
+        // chain works.
         //
-        // We keep the same conjuncts in remainingExpression (Regime 1 in
-        // dev-docs/TODO-pushdown-duckdb.md), so this test does not rely on
-        // pushdown for correctness — it asserts correctness AND, by virtue of
-        // running on the duckdb-format path, exercises the macro at runtime.
+        // Translated conjuncts are also kept in remainingExpression (Regime 1 in
+        // dev-docs/TODO-pushdown-duckdb.md), so correctness does not depend on the
+        // pushdown firing — but the test runs on the duckdb-format path, so the
+        // macro DOES execute on every row and a missing macro would fail the query.
         computeActual(writeDuckDbSession(),
                 "CREATE TABLE test_schema.fn_pushdown AS "
                         + "SELECT * FROM (VALUES "
@@ -196,17 +196,20 @@ public class TestDucklakeDuckDbReadMode
                         + "  (3, CAST('Cherry' AS VARCHAR))"
                         + ") AS t(id, name)");
         try {
+            // length(name) = 5 → only 'Apple' matches (5 code points).
             MaterializedResult result = computeActual(
                     sessionWith(READ_MODE_MATERIALIZE),
-                    "SELECT id, name FROM test_schema.fn_pushdown WHERE lower(name) = 'apple'");
+                    "SELECT id, name FROM test_schema.fn_pushdown WHERE length(name) = 5");
             assertThat(result.getRowCount()).isEqualTo(1);
             assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
             assertThat(result.getMaterializedRows().getFirst().getField(1)).isEqualTo("Apple");
 
             // Combine TupleDomain pushdown (id IN (1,3)) with function pushdown.
+            // substring(name, 1, 1) = 'C' → only 'Cherry' matches, and id=3 ∈ {1,3}.
             MaterializedResult combined = computeActual(
                     sessionWith(READ_MODE_MATERIALIZE),
-                    "SELECT id FROM test_schema.fn_pushdown WHERE id IN (1, 3) AND lower(name) = 'cherry'");
+                    "SELECT id FROM test_schema.fn_pushdown WHERE id IN (1, 3) "
+                            + "AND substring(name, 1, 1) = 'C'");
             assertThat(combined.getRowCount()).isEqualTo(1);
             assertThat(combined.getMaterializedRows().getFirst().getField(0)).isEqualTo(3);
         }
@@ -216,25 +219,28 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
-    public void testUnknownFunctionPredicateDoesNotExplode()
+    public void testPlaceholderLowerPushdownIsCorrectForAsciiData()
     {
-        // Negative case: a function not in trino_meta (regexp_extract) must NOT
-        // be pushed; Trino-side filtering still works. The query must succeed.
+        // lower/1 IS in PUSHABLE_FUNCTIONS as a placeholder — the translator pushes
+        // it (and fires a one-shot WARN), and DuckDB resolves trino_lower via the
+        // installed macro. ASCII data is in the safe range; the test confirms the
+        // result is correct, which validates the macro install + push + WARN path.
+        // Divergent Unicode inputs are documented separately in REPORT-string-unicode-audit.md.
         computeActual(writeDuckDbSession(),
-                "CREATE TABLE test_schema.fn_unknown AS "
+                "CREATE TABLE test_schema.fn_placeholder AS "
                         + "SELECT * FROM (VALUES "
-                        + "  (1, CAST('abc-123' AS VARCHAR)), "
-                        + "  (2, CAST('xyz-999' AS VARCHAR))"
+                        + "  (1, CAST('Apple' AS VARCHAR)), "
+                        + "  (2, CAST('banana' AS VARCHAR))"
                         + ") AS t(id, name)");
         try {
             MaterializedResult result = computeActual(
                     sessionWith(READ_MODE_MATERIALIZE),
-                    "SELECT id FROM test_schema.fn_unknown WHERE regexp_extract(name, '\\d+') = '123'");
+                    "SELECT id FROM test_schema.fn_placeholder WHERE lower(name) = 'apple'");
             assertThat(result.getRowCount()).isEqualTo(1);
             assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
         }
         finally {
-            tryDropTable("test_schema.fn_unknown");
+            tryDropTable("test_schema.fn_placeholder");
         }
     }
 

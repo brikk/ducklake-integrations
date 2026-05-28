@@ -51,35 +51,38 @@ public class TestDuckDbExpressionTranslator
             "id", ID_COLUMN);
 
     @Test
-    public void testEqualOnLowerFunction()
+    public void testEqualOnPushableFunction()
     {
-        // WHERE lower(name) = 'apple'
+        // WHERE length(name) = 5
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
-                call(new FunctionName("lower"), VARCHAR,
+                call(new FunctionName("length"), BIGINT,
                         new Variable("name", VARCHAR)),
-                varcharConst("apple"));
+                new Constant(5L, BIGINT));
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
-        assertThat(conjuncts).containsExactly("(trino_lower(\"name\") = 'apple')");
+        assertThat(conjuncts).containsExactly("(trino_length(\"name\") = 5)");
     }
 
     @Test
     public void testAndOfPushableAndNonPushable()
     {
-        // WHERE lower(name) = 'apple' AND someUnknownFunc(name) = 'x'
+        // WHERE length(name) = 5 AND some_unmapped_function(name) = 'x'
+        // length/1 is in PUSHABLE_FUNCTIONS; some_unmapped_function is not in the
+        // catalog at all, so the translator must skip it.
         ConnectorExpression pushable = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
-                call(new FunctionName("lower"), VARCHAR,
+                call(new FunctionName("length"), BIGINT,
                         new Variable("name", VARCHAR)),
-                varcharConst("apple"));
+                new Constant(5L, BIGINT));
         ConnectorExpression notPushable = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
-                call(new FunctionName("trino_secret_function"), VARCHAR,
+                call(new FunctionName("some_unmapped_function"), VARCHAR,
                         new Variable("name", VARCHAR)),
                 varcharConst("x"));
         ConnectorExpression and = call(StandardFunctions.AND_FUNCTION_NAME, BOOLEAN, pushable, notPushable);
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(and, ASSIGNMENTS);
-        // The pushable conjunct survives; the non-pushable one is silently dropped.
-        assertThat(conjuncts).containsExactly("(trino_lower(\"name\") = 'apple')");
+        // The pushable conjunct survives; the unrecognised conjunct is silently dropped
+        // and Trino re-evaluates it above the scan.
+        assertThat(conjuncts).containsExactly("(trino_length(\"name\") = 5)");
     }
 
     @Test
@@ -109,11 +112,11 @@ public class TestDuckDbExpressionTranslator
     @Test
     public void testTopLevelAndIsDecomposed()
     {
-        // WHERE lower(name) = 'a' AND id < 10
+        // WHERE length(name) = 5 AND id < 10
         ConnectorExpression pushable1 = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
-                call(new FunctionName("lower"), VARCHAR,
+                call(new FunctionName("length"), BIGINT,
                         new Variable("name", VARCHAR)),
-                varcharConst("a"));
+                new Constant(5L, BIGINT));
         ConnectorExpression pushable2 = call(StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME, BOOLEAN,
                 new Variable("id", BIGINT),
                 new Constant(10L, BIGINT));
@@ -121,16 +124,16 @@ public class TestDuckDbExpressionTranslator
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(and, ASSIGNMENTS);
         assertThat(conjuncts).containsExactly(
-                "(trino_lower(\"name\") = 'a')",
+                "(trino_length(\"name\") = 5)",
                 "(\"id\" < 10)");
     }
 
     @Test
     public void testUnknownFunctionNotPushed()
     {
-        // Function with arity matching a real macro but a different name → not pushed.
+        // Function we haven't added to trino_meta → not pushed.
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
-                call(new FunctionName("regexp_extract"), VARCHAR,
+                call(new FunctionName("some_unmapped_function"), VARCHAR,
                         new Variable("name", VARCHAR)),
                 varcharConst("a"));
 
@@ -139,14 +142,30 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
-    public void testWrongArityNotPushed()
+    public void testPlaceholderFunctionIsPushedWithWarning()
     {
-        // lower/2 is not in trino_meta — only lower/1 is.
+        // lower/1 IS in PUSHABLE_FUNCTIONS as a placeholder — pushed for performance
+        // characterization, but the translator logs a one-shot WARN per name. The
+        // emit-side warning is not asserted by this test (avoiding a log-capture
+        // dependency); we just confirm the SQL is emitted.
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
                 call(new FunctionName("lower"), VARCHAR,
+                        new Variable("name", VARCHAR)),
+                varcharConst("apple"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_lower(\"name\") = 'apple')");
+    }
+
+    @Test
+    public void testWrongArityNotPushed()
+    {
+        // length/2 is not in trino_meta — only length/1 is.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("length"), BIGINT,
                         new Variable("name", VARCHAR),
                         varcharConst("extra")),
-                varcharConst("a"));
+                new Constant(5L, BIGINT));
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
         assertThat(conjuncts).isEmpty();
@@ -215,20 +234,27 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
-    public void testTrinoMetaJavaSetMatchesDocumentedRoundOneAndTwo()
+    public void testTrinoMetaJavaSetContainsRepresentativeEntries()
     {
         // Tripwire: the Java-side PUSHABLE_FUNCTIONS must match the trino_meta() rows
         // in trino-function-aliases.sql. The full parity-with-DuckDB check is in
         // TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta — this is a
         // cheaper smoke check that a few well-known entries are present.
+        // lower/upper/reverse are PUSHABLE PLACEHOLDERS: pushed for perf with warn-on-emit.
         assertThat(DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS)
                 .contains(
-                        new DuckDbExpressionTranslator.NameArity("lower", 1),
+                        new DuckDbExpressionTranslator.NameArity("length", 1),
                         new DuckDbExpressionTranslator.NameArity("substring", 2),
                         new DuckDbExpressionTranslator.NameArity("substring", 3),
                         new DuckDbExpressionTranslator.NameArity("starts_with", 2),
                         new DuckDbExpressionTranslator.NameArity("abs", 1),
-                        new DuckDbExpressionTranslator.NameArity("power", 2));
+                        new DuckDbExpressionTranslator.NameArity("power", 2),
+                        new DuckDbExpressionTranslator.NameArity("regexp_like", 2),
+                        new DuckDbExpressionTranslator.NameArity("lower", 1),
+                        new DuckDbExpressionTranslator.NameArity("upper", 1),
+                        new DuckDbExpressionTranslator.NameArity("reverse", 1),
+                        new DuckDbExpressionTranslator.NameArity("chr", 1),
+                        new DuckDbExpressionTranslator.NameArity("levenshtein_distance", 2));
     }
 
     // --- Helpers ------------------------------------------------------------
