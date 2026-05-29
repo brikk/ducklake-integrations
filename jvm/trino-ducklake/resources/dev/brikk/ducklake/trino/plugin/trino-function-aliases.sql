@@ -290,6 +290,62 @@ CREATE OR REPLACE MACRO trino_date_trunc(unit, x) AS date_trunc(unit, x);
 -- date_diff('month', '2024-01-31', '2024-02-01') = 1 in both engines.
 CREATE OR REPLACE MACRO trino_date_diff(unit, t1, t2) AS date_diff(unit, t1, t2);
 
+-- ---- Round 6j (step 4 chunk 1) — Date/time Tier A (DATE-only) + Tier B (DATE or TIMESTAMP) ----
+--
+-- The Java-side TYPE_GATES registry in DuckDbExpressionTranslator restricts pushing
+-- these to safe argument types (DATE, or DATE+TIMESTAMP for Tier B). TIMESTAMP WITH
+-- TIME ZONE is excluded until step 4 chunk 3 ships the session-TZ plumbing. See
+-- dev-docs/PLAN-pushdown-datetime.md and dev-docs/REPORT-datetime-tz-handling.md.
+
+-- Tier A — DATE-only, TZ-irrelevant.
+--
+-- day_of_week: Trino is 1=Mon, 7=Sun (ISO). DuckDB's bare dayofweek() is
+-- 0=Sun, 6=Sat (non-ISO) — the wrong mapping. isodow() gives the ISO 1..7
+-- numbering that aligns with Trino. Fixture pins '2024-01-07' (Sunday → 7).
+CREATE OR REPLACE MACRO trino_day_of_week(d) AS isodow(d);
+
+-- day_of_year: aligned, 1..366. Leap-day fixture pins '2024-02-29' → 60.
+-- DuckDB exposes this as a bare `dayofyear` function (single token, no underscore).
+CREATE OR REPLACE MACRO trino_day_of_year(d) AS dayofyear(d);
+
+-- last_day_of_month: returns DATE. Leap-day fixture pins '2024-02-15' → '2024-02-29'.
+-- DuckDB calls this `last_day` (no _of_month suffix).
+CREATE OR REPLACE MACRO trino_last_day_of_month(d) AS last_day(d);
+
+-- week / week_of_year: both Trino names mean ISO week (1..53). DuckDB's bare
+-- `week(d)` IS already ISO-aligned (probed: week('2023-01-01') = 52,
+-- week('2024-12-30') = 1) — there is no separate `isoweek` function. Pressure
+-- point: '2024-12-30' is a Monday but falls in ISO week 1 of 2025.
+-- (Trino has no `iso_week` function name — `week`/`week_of_year` already cover it.)
+CREATE OR REPLACE MACRO trino_week(d) AS week(d);
+CREATE OR REPLACE MACRO trino_week_of_year(d) AS week(d);
+
+-- year_of_week / yow: ISO-week-numbering year, NOT calendar year. '2024-12-30' → 2025.
+-- DuckDB has no bare `isoyear` function; reach it via extract('isoyear' FROM d),
+-- which is documented and ISO-aligned. Cast to BIGINT to match Trino's return type.
+-- (Trino has no `iso_year` function — `year_of_week` is the documented spelling.)
+CREATE OR REPLACE MACRO trino_year_of_week(d) AS extract('isoyear' FROM d)::BIGINT;
+CREATE OR REPLACE MACRO trino_yow(d)          AS extract('isoyear' FROM d)::BIGINT;
+
+-- Tier B — DATE or TIMESTAMP (no TZ). Wall-clock components are TZ-invariant
+-- in both engines, so these are safe without session-TZ plumbing.
+--
+-- hour/minute/second: read directly from the wall clock.
+CREATE OR REPLACE MACRO trino_hour(t) AS hour(t);
+CREATE OR REPLACE MACRO trino_minute(t) AS minute(t);
+CREATE OR REPLACE MACRO trino_second(t) AS second(t);
+
+-- millisecond: Trino returns the milliseconds-OF-SECOND (0..999), NOT total
+-- millis since epoch. DuckDB's extract('millisecond' FROM t) returns the same
+-- millis-of-second range, cast to BIGINT to match Trino's return type.
+CREATE OR REPLACE MACRO trino_millisecond(t) AS extract('millisecond' FROM t)::BIGINT;
+
+-- to_unixtime: seconds since 1970-01-01 UTC as DOUBLE. For TIMESTAMP (no TZ)
+-- input both engines interpret the value as already-UTC and produce identical
+-- epoch seconds — wall-clock-invariant. (from_unixtime returns WTZ in Trino and
+-- is Tier C; not in this round.)
+CREATE OR REPLACE MACRO trino_to_unixtime(t) AS epoch(t)::DOUBLE;
+
 -- ---- Catalog of aliased functions ----
 --
 -- One row per (trino_name, arg_count) the translator may push down. The
@@ -388,5 +444,18 @@ SELECT * FROM (
         ('if',           2, 'conditional'),
         ('if',           3, 'conditional'),
         ('date_trunc',   2, 'date'),
-        ('date_diff',    3, 'date')
+        ('date_diff',    3, 'date'),
+        -- Round 6j (step 4 chunk 1) — Tier A date (DATE-only) + Tier B (DATE or TIMESTAMP)
+        ('day_of_week',       1, 'date'),
+        ('day_of_year',       1, 'date'),
+        ('last_day_of_month', 1, 'date'),
+        ('week',              1, 'date'),
+        ('week_of_year',      1, 'date'),
+        ('year_of_week',      1, 'date'),
+        ('yow',               1, 'date'),
+        ('hour',              1, 'date'),
+        ('minute',            1, 'date'),
+        ('second',            1, 'date'),
+        ('millisecond',       1, 'date'),
+        ('to_unixtime',       1, 'date')
 ) AS t(trino_name, arg_count, category);

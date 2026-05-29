@@ -72,7 +72,7 @@ Tier C correctness gate, in code: did `SET TimeZone = '<normalised>'` succeed? I
 
 | Tier | Argument shape | Functions | TZ work needed | Status |
 |---|---|---|---|---|
-| **A** | `DATE` only | `year/month/day/quarter` (re-gated), `day_of_week`, `day_of_year`, `day_of_month`, `week`, `week_of_year`, `iso_week`, `iso_year`, `last_day_of_month`, `date_trunc` (DATE), `date_diff` (DATE) | None | Ship first |
+| **A** | `DATE` only | `year/month/day/quarter` (re-gated), `day_of_week`, `day_of_year`, `week`, `week_of_year`, `year_of_week` / `yow`, `last_day_of_month`, `date_trunc` (DATE), `date_diff` (DATE) | None | Ship first (✅ shipped in chunk 1 — note: original plan listed `iso_week`/`iso_year` which are not actual Trino function names; corrected to `week`/`week_of_year`/`year_of_week`/`yow` during implementation) |
 | **B** | `DATE` or `TIMESTAMP(p)` (no TZ) | A + `hour`, `minute`, `second`, `millisecond`, `to_unixtime`, `from_unixtime`, `date_trunc` (TS), `date_diff` (TS), `date_add` | None | Ship after A |
 | **C** | `TIMESTAMP(p) WITH TIME ZONE` | B + `at_timezone`, `with_timezone`, `year/month/...` on WTZ | Session-TZ propagation + `SET TimeZone` at attach + ICU required | Ship behind a session-flag initially; promote after the cross-engine semantic corpus passes |
 | **D** | Format/parse, locale-sensitive | `format_datetime`, `parse_datetime`, `date_format`, `date_parse` with non-ISO patterns | Trino uses Joda format strings; DuckDB uses strftime. Not interchangeable. | **Never push** without a native extension that owns the format spec |
@@ -101,17 +101,17 @@ Things that look the same on the surface but aren't.
 - DuckDB `isodow(x)`: **1=Monday, 7=Sunday** (ISO). ← what we want.
 - Macro body: `CREATE OR REPLACE MACRO trino_day_of_week(x) AS isodow(x);`
 
-### `week`, `week_of_year`, `iso_week`
+### `week`, `week_of_year` (Trino has no `iso_week`)
 
-- Trino `week(x)` and `week_of_year(x)` are ISO week (1–53).
-- DuckDB `week(x)`: ISO week (verify against 2024-01-01 and 2023-01-01 edge cases — see corpus below).
-- DuckDB `isoweek(x)`: explicit ISO; use this in the macro to be unambiguous.
-- Macro body: `trino_week(x) AS isoweek(x);` `trino_iso_week(x) AS isoweek(x);`
+- Trino: `week(x)` and `week_of_year(x)` both return ISO week (1–53).
+- DuckDB: bare `week(x)` is already ISO-aligned — verified empirically (probe results: `week('2023-01-01') = 52`, `week('2024-12-30') = 1`). No separate `isoweek` function exists in DuckDB.
+- Macro body shipped in chunk 1: `trino_week(d) AS week(d);` (and `trino_week_of_year` identically).
 
-### `iso_year`
+### `year_of_week` / `yow` (Trino has no `iso_year`)
 
-- Trino `year_of_week(x)` / `yow(x)` — ISO week-numbering year, NOT calendar year. `2024-12-30` → `2025`.
-- DuckDB `isoyear(x)`. Direct rename.
+- Trino: `year_of_week(x)` / `yow(x)` — ISO week-numbering year, NOT calendar year. `2024-12-30` → `2025`.
+- DuckDB: no bare `isoyear()` function — reach it via `extract('isoyear' FROM x)`. Cast to BIGINT to align Trino's return type.
+- Macro body shipped in chunk 1: `trino_year_of_week(d) AS extract('isoyear' FROM d)::BIGINT;` (and `trino_yow` identically).
 
 ### `date_trunc(unit, x)` unit strings
 
@@ -170,10 +170,10 @@ The Trino test runner sets a session TZ. Pick `America/Los_Angeles` for these:
 
 ### Year-numbering edge cases
 
-8. `DATE '2024-01-01'` (Monday) — ISO week 1 of 2024. `iso_year = 2024`.
-9. `DATE '2024-12-30'` (Monday) — ISO week 1 of **2025**. `iso_year = 2025`. The classic "ISO year ≠ calendar year" trap.
-10. `DATE '2023-01-01'` (Sunday) — ISO week 52 of **2022**. `iso_year = 2022`.
-11. `DATE '2024-12-31'` (Tuesday) — ISO week 1 of 2025 still. `year = 2024`, `iso_year = 2025`.
+8. `DATE '2024-01-01'` (Monday) — ISO week 1 of 2024. `year_of_week = 2024`.
+9. `DATE '2024-12-30'` (Monday) — ISO week 1 of **2025**. `year_of_week = 2025`. The classic "ISO year ≠ calendar year" trap.
+10. `DATE '2023-01-01'` (Sunday) — ISO week 52 of **2022**. `year_of_week = 2022`.
+11. `DATE '2024-12-31'` (Tuesday) — ISO week 1 of 2025 still. `year = 2024`, `year_of_week = 2025`.
 
 ### Day-of-week numbering
 
@@ -219,8 +219,8 @@ The Trino test runner sets a session TZ. Pick `America/Los_Angeles` for these:
 All four questions probed via `ProbeDuckDbTimeZoneHandling`; findings written into [REPORT-datetime-tz-handling.md](REPORT-datetime-tz-handling.md). Summary:
 
 1. **DuckLake TIMESTAMPTZ storage shape** — **instant only**; writer's session zone is dropped at storage. Round-trip confirmed identical for plain DuckDB AND full DuckLake-format. Reader's `TimeZone` controls all rendering and extraction. → Tier C correctness lives entirely on the session-`TimeZone` knob.
-2. **`SET TimeZone` without ICU** — **named IANA zones work** (UTC, GMT, EST, America/Los_Angeles, Europe/Berlin, Asia/Singapore, Pacific/Chatham); **fixed-offset shapes do NOT** (`+05:00`, `-08:00` etc. → `Unknown TimeZone`). ICU appears already bundled in the JDBC driver — explicit `LOAD icu` is a no-op for zone resolution. → Don't gate Tier C on `LOAD icu`; gate on `SET TimeZone` success. Normalise Trino's `TimeZoneKey` to a DuckDB-acceptable string (probably `Etc/GMT±N` for offset shapes — table TBD).
-3. **Embedded `jdbc:duckdb:` default `TimeZone`** — **inherits the JVM's system zone**, not UTC. Probed on a Costa Rica box, DuckDB reported `America/Costa_Rica`. → **Silent portability bomb across CI/dev/prod**. `SET TimeZone` on attach is non-optional even for Tier A/B work; we need a deterministic baseline.
-4. **In-process vs. Quack parity** — in-process confirmed (Singapore session returns `year(TIMESTAMPTZ '2024-12-31 22:00:00+00') = 2025`, the year-boundary smoking gun). Quack-container parity to be verified during the step-4 implementation PR via `-Dducklake.test.catalog-backend=DUCKDB_QUACK`; expected to pass since Quack uses the same DuckDB build.
+2. **`SET TimeZone` without ICU + `Etc/GMT±N`** — named IANA zones work without `LOAD icu` (ICU is bundled in the JDBC driver). Bare fixed-offset shapes (`+05:00`, `-08:00`) FAIL, but **`Etc/GMT±N` translation works** with the documented POSIX sign inversion (`+05:00` → `Etc/GMT-5`); empirically pinned across 11 shapes including `Etc/GMT-14`. Integer hours only — fractional offsets (`Etc/GMT-5:30`) fail; those need their named IANA zone instead. → Three-rule normaliser validated in Q3 below.
+3. **Embedded `jdbc:duckdb:` default `TimeZone`** — **inherits the JVM's system zone**, not UTC (probed on Costa Rica → DuckDB reported `America/Costa_Rica`). Silent portability bomb across CI/dev/prod. → `SET TimeZone` on attach is non-optional even for Tier A/B work. **Trino→DuckDB propagation mechanism validated end-to-end** for 12 of 14 representative `TimeZoneKey` shapes — every named IANA and every integer-hour offset matches `java.time` ground truth exactly. The 2 fractional bare-offset cases fail cleanly with a DuckDB error (refusal, not silent divergence). Production normaliser is the three-rule function from the probe.
+4. **In-process vs. Quack parity** — **confirmed empirically.** Spun the Quack testcontainer (`TestingDucklakeQuackEngineServer`), shipped `SET TimeZone` + `SELECT year(TIMESTAMPTZ ...)` server-side via `quack_query_by_name`, results match in-process byte-for-byte across UTC / LA / Singapore (year-boundary smoking gun fires identically through the RPC). → `SET TimeZone` lands on both executors with one shared implementation pattern (same precedent as `TrinoFunctionAliases.applyDirect`).
 
 `ProbeDuckDbTimeZoneHandling` should be deleted after the step-4 PR bakes these findings into shipped tests, per the deleted-probe precedent in [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md).

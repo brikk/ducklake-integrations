@@ -319,6 +319,128 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testYearOfWeekPredicatePushesDown()
+    {
+        // End-to-end proof for the round-6j year_of_week macro on the duckdb-format
+        // read path. Pressure point: '2024-12-30' is a Monday but ISO week 1 of
+        // 2025 — so year_of_week returns 2025 while year returns 2024. A regression
+        // that aliased year_of_week to year would silently miss this row.
+        // (Trino spells it `year_of_week`; DuckDB has no bare `isoyear` function
+        // so the macro routes through `extract('isoyear' FROM d)`.)
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.year_of_week_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, DATE '2024-12-29'), "  // Sunday → ISO week 52 of 2024
+                        + "  (2, DATE '2024-12-30'), "  // Monday → ISO week 1 of 2025 (forward boundary)
+                        + "  (3, DATE '2025-01-05'), "  // Sunday → ISO week 1 of 2025
+                        + "  (4, DATE '2025-01-06'), "  // Monday → ISO week 2 of 2025
+                        + "  (5, DATE '2021-01-01'), "  // Friday → ISO week 53 of 2020 (backward boundary)
+                        + "  (6, DATE '2020-12-31')"    // Thursday → also ISO week 53 of 2020
+                        + ") AS t(id, d)");
+        try {
+            // year_of_week(d) = 2025 → rows 2, 3, 4 (the Sunday 2025-01-05 still falls
+            // in ISO week 1 of 2025). Row 1 stays under year_of_week 2024.
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.year_of_week_pushdown WHERE year_of_week(d) = 2025 ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(3);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
+            assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo(4);
+
+            // Cross-check that calendar year() still disagrees with year_of_week() on row 2.
+            MaterializedResult calendarYear = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.year_of_week_pushdown "
+                            + "WHERE year(d) = 2024 AND year_of_week(d) = 2025");
+            assertThat(calendarYear.getRowCount()).isEqualTo(1);
+            assertThat(calendarYear.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+
+            // Backward-boundary smoking gun: rows 5 and 6 have calendar years 2021/2020
+            // but BOTH belong to ISO year 2020. A regression that aliased year_of_week
+            // to year() would split them between 2021 and 2020 here.
+            MaterializedResult backward = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.year_of_week_pushdown "
+                            + "WHERE year_of_week(d) = 2020 AND week(d) = 53 ORDER BY id");
+            assertThat(backward.getRowCount()).isEqualTo(2);
+            assertThat(backward.getMaterializedRows().get(0).getField(0)).isEqualTo(5);
+            assertThat(backward.getMaterializedRows().get(1).getField(0)).isEqualTo(6);
+        }
+        finally {
+            tryDropTable("test_schema.year_of_week_pushdown");
+        }
+    }
+
+    @Test
+    public void testDayOfWeekIsoNumberingPushesDown()
+    {
+        // End-to-end proof that day_of_week emits ISO 1=Mon..7=Sun. A regression
+        // that used DuckDB's bare dayofweek() (0=Sun..6=Sat) would return 0 for
+        // Sunday and the WHERE clause would match nothing.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.dow_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, DATE '2024-01-07'), "  // Sunday → ISO 7 (NOT 0)
+                        + "  (2, DATE '2024-01-08'), "  // Monday → ISO 1
+                        + "  (3, DATE '2024-01-13')"    // Saturday → ISO 6
+                        + ") AS t(id, d)");
+        try {
+            // day_of_week(d) = 7 → Sunday → id=1.
+            MaterializedResult sunday = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.dow_pushdown WHERE day_of_week(d) = 7");
+            assertThat(sunday.getRowCount()).isEqualTo(1);
+            assertThat(sunday.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+            // day_of_week(d) = 1 → Monday → id=2.
+            MaterializedResult monday = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.dow_pushdown WHERE day_of_week(d) = 1");
+            assertThat(monday.getRowCount()).isEqualTo(1);
+            assertThat(monday.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.dow_pushdown");
+        }
+    }
+
+    @Test
+    public void testHourExtractPushesDownOnTimestamp()
+    {
+        // End-to-end proof for the Tier B hour() macro on a TIMESTAMP (no TZ)
+        // column. Wall-clock components are TZ-invariant in both engines, so the
+        // result must match Trino regardless of session zone (the duckdb-format
+        // path runs the predicate on DuckDB's side; a divergence would surface
+        // here as a missed row).
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.hour_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, TIMESTAMP '2024-12-31 22:30:00'), "
+                        + "  (2, TIMESTAMP '2024-12-31 23:30:00'), "
+                        + "  (3, TIMESTAMP '2025-01-01 00:30:00')"
+                        + ") AS t(id, ts)");
+        try {
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.hour_pushdown WHERE hour(ts) = 22");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+            // Combine with minute() to exercise two Tier B extractors in one predicate.
+            MaterializedResult combined = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.hour_pushdown "
+                            + "WHERE hour(ts) = 23 AND minute(ts) = 30");
+            assertThat(combined.getRowCount()).isEqualTo(1);
+            assertThat(combined.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.hour_pushdown");
+        }
+    }
+
+    @Test
     public void testBetweenPredicateReturnsCorrectRows()
     {
         // BETWEEN is grammar in both engines; Trino's planner typically decomposes

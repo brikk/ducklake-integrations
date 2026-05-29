@@ -28,6 +28,7 @@ import io.trino.spi.type.DateType;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.IntegerType;
 import io.trino.spi.type.SmallintType;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
@@ -162,7 +163,108 @@ final class DuckDbExpressionTranslator
             new NameArity("if", 2),
             new NameArity("if", 3),
             new NameArity("date_trunc", 2),
-            new NameArity("date_diff", 3));
+            new NameArity("date_diff", 3),
+            // Round 6j (step 4 chunk 1) — Tier A: DATE-only date functions. Type gate
+            // restricts the arg to DATE; non-DATE inputs fall through to "don't push"
+            // (see TYPE_GATES below). All seven map to DuckDB's ISO-aligned functions
+            // (isodow/isoweek/isoyear/...) so the Trino semantics carry through.
+            new NameArity("day_of_week", 1),
+            new NameArity("day_of_year", 1),
+            new NameArity("last_day_of_month", 1),
+            new NameArity("week", 1),
+            new NameArity("week_of_year", 1),
+            new NameArity("year_of_week", 1),
+            new NameArity("yow", 1),
+            // Round 6j — Tier B: DATE or TIMESTAMP (no TZ). Wall-clock components are
+            // TZ-invariant in both engines, so these are safe without session-TZ
+            // plumbing. TIMESTAMP WITH TIME ZONE inputs are excluded by the type gate;
+            // they'll join in chunk 3 behind a session-property flag.
+            new NameArity("hour", 1),
+            new NameArity("minute", 1),
+            new NameArity("second", 1),
+            new NameArity("millisecond", 1),
+            new NameArity("to_unixtime", 1));
+
+    /**
+     * Sparse map of per-entry argument-type gates. {@link #PUSHABLE_FUNCTIONS}
+     * remains the binary "is this (name, arity) pushable at all" set; this
+     * registry adds finer-grained "and only when the argument types are these"
+     * conditions on the subset of entries that need it. Entries without a row
+     * here implicitly accept any argument types (preserving the behaviour of
+     * the string/numeric/regex catalog that shipped without type gating).
+     *
+     * <p>Originally added in step 4 chunk 1 for the date/time tier rollout —
+     * date functions must reject {@code TIMESTAMP WITH TIME ZONE} arguments
+     * until the session-TZ plumbing (chunk 2) lands and Tier C ships (chunk 3).
+     * See {@code dev-docs/TODO-pushdown-datetime.md} and
+     * {@code dev-docs/PLAN-pushdown-datetime.md}.
+     */
+    private static final Map<NameArity, ArgTypeGate> TYPE_GATES = buildTypeGates();
+
+    private static Map<NameArity, ArgTypeGate> buildTypeGates()
+    {
+        Map<NameArity, ArgTypeGate> gates = new java.util.HashMap<>();
+        // Re-gates of the round-6g/6i entries — these previously pushed for any
+        // arg type, which would have silently diverged on TIMESTAMP WITH TIME ZONE
+        // inputs (per dev-docs/REPORT-datetime-tz-handling.md, the year/hour result
+        // depends on session TimeZone for WTZ values, and the connector does not
+        // yet set TimeZone on attach). The gate restricts arg-0 (or arg-1/arg-2 for
+        // date_trunc/date_diff) to DATE or TIMESTAMP no-TZ, which are wall-clock
+        // invariant.
+        ArgTypeGate arg0DateOrTimestamp = arg(0, DateType.class, TimestampType.class);
+        for (String name : List.of("year", "month", "day", "quarter")) {
+            gates.put(new NameArity(name, 1), arg0DateOrTimestamp);
+        }
+        // date_trunc(unit, x) — gate the second arg (the date/timestamp).
+        gates.put(new NameArity("date_trunc", 2), arg(1, DateType.class, TimestampType.class));
+        // date_diff(unit, t1, t2) — gate both date-shape args.
+        gates.put(new NameArity("date_diff", 3), args -> {
+            Type t1 = args.get(1).getType();
+            Type t2 = args.get(2).getType();
+            return (t1 instanceof DateType || t1 instanceof TimestampType)
+                    && (t2 instanceof DateType || t2 instanceof TimestampType);
+        });
+        // Round 6j Tier A — DATE-only.
+        ArgTypeGate arg0Date = arg(0, DateType.class);
+        for (String name : List.of("day_of_week", "day_of_year", "last_day_of_month",
+                "week", "week_of_year", "year_of_week", "yow")) {
+            gates.put(new NameArity(name, 1), arg0Date);
+        }
+        // Round 6j Tier B — DATE or TIMESTAMP (no TZ).
+        for (String name : List.of("hour", "minute", "second", "millisecond", "to_unixtime")) {
+            gates.put(new NameArity(name, 1), arg0DateOrTimestamp);
+        }
+        return Map.copyOf(gates);
+    }
+
+    /**
+     * Sparse-registry helper: matches when the argument at {@code index} has a
+     * runtime {@link Type} that is an instance of one of {@code allowed}. List
+     * sizing is the caller's responsibility — entries with arity gates already
+     * gate by the {@link NameArity} key, so this only fires when the right number
+     * of args is present.
+     */
+    private static ArgTypeGate arg(int index, Class<?>... allowed)
+    {
+        return args -> {
+            if (index >= args.size()) {
+                return false;
+            }
+            Type t = args.get(index).getType();
+            for (Class<?> cls : allowed) {
+                if (cls.isInstance(t)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+    }
+
+    @FunctionalInterface
+    interface ArgTypeGate
+    {
+        boolean accepts(List<ConnectorExpression> args);
+    }
 
     /**
      * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}
@@ -416,10 +518,17 @@ final class DuckDbExpressionTranslator
         }
 
         // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
-        // Only push if (name, arity) is in our brain.
-        if (name.getCatalogSchema().isEmpty()
-                && PUSHABLE_FUNCTIONS.contains(new NameArity(name.getName(), args.size()))) {
-            return translateMacroCall(name.getName(), args, assignments);
+        // Only push if (name, arity) is in our brain, AND the optional argument-type
+        // gate (TYPE_GATES) accepts the actual call's argument types.
+        if (name.getCatalogSchema().isEmpty()) {
+            NameArity key = new NameArity(name.getName(), args.size());
+            if (PUSHABLE_FUNCTIONS.contains(key)) {
+                ArgTypeGate gate = TYPE_GATES.get(key);
+                if (gate != null && !gate.accepts(args)) {
+                    return null;
+                }
+                return translateMacroCall(name.getName(), args, assignments);
+            }
         }
         return null;
     }

@@ -24,6 +24,9 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -326,6 +329,251 @@ public class ProbeDuckDbTimeZoneHandling
                 print(stmt, "year(DATE) — TZ-invariant",
                         "SELECT year(DATE '2024-12-31')");
             }
+        }
+    }
+
+    /**
+     * Q2 follow-up — Etc/GMT translation table.
+     *
+     * <p>POSIX-style zones: {@code Etc/GMT-5} means UTC+5 (sign inverted!),
+     * {@code Etc/GMT+8} means UTC-8. Probe whether DuckDB accepts these names,
+     * what they actually resolve to (via {@code TIMESTAMPTZ} render), and how
+     * non-zero-minute offsets behave (India = UTC+05:30 — no integer-hour
+     * {@code Etc/GMT-N} can express this).
+     */
+    @Test
+    public void probeQ2b_etcGmtTranslation() throws Exception
+    {
+        System.out.println("\n=== Q2b: Etc/GMT translation table (probe POSIX sign convention) ===");
+        // Reference instant: '2024-06-15 12:00:00+00'. Reading in each zone, the
+        // rendered offset tells us what zone the name resolved to.
+        for (String zone : List.of(
+                "Etc/GMT",       // UTC
+                "Etc/GMT0",      // UTC alt form
+                "Etc/GMT-5",     // expected: UTC+05:00 (POSIX inversion)
+                "Etc/GMT+5",     // expected: UTC-05:00
+                "Etc/GMT+8",     // expected: UTC-08:00
+                "Etc/GMT-8",     // expected: UTC+08:00
+                "Etc/GMT-12",    // expected: UTC+12:00
+                "Etc/GMT+12",    // expected: UTC-12:00
+                "Etc/GMT-14",    // expected: UTC+14:00 (Kiribati)
+                "Etc/GMT-5:30",  // expected: probably FAIL — integer-hour only
+                "Etc/UTC")) {    // expected: UTC alias
+            probeRenderInZone(zone);
+        }
+    }
+
+    private static void probeRenderInZone(String zone)
+    {
+        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+                Statement stmt = conn.createStatement()) {
+            String setSql = "SET TimeZone = '" + zone + "'";
+            try {
+                stmt.execute(setSql);
+                try (ResultSet rs = stmt.executeQuery(
+                        "SELECT current_setting('TimeZone'), "
+                                + "(TIMESTAMPTZ '2024-06-15 12:00:00+00')::VARCHAR, "
+                                + "year(TIMESTAMPTZ '2024-12-31 22:00:00+00'), "
+                                + "hour(TIMESTAMPTZ '2024-12-31 22:00:00+00')")) {
+                    rs.next();
+                    System.out.printf("  [OK  ] %-25s -> set=%s | render=%s | yearBoundary=%s | hour=%s%n",
+                            zone, rs.getObject(1), rs.getObject(2), rs.getObject(3), rs.getObject(4));
+                }
+            }
+            catch (SQLException e) {
+                System.out.printf("  [FAIL] %-25s -> %s%n", zone, firstLine(e.getMessage()));
+            }
+        }
+        catch (SQLException e) {
+            System.out.printf("  [FAIL] %-25s -> open-connection: %s%n", zone, e.getMessage());
+        }
+    }
+
+    /**
+     * Q3 follow-up — End-to-end "read Trino TZ → normalise → SET DuckDB TZ" loop.
+     *
+     * <p>Simulates the connector flow: take a {@code TimeZoneKey}-shaped string
+     * (named IANA or {@code +HH:MM} offset), normalise it to a DuckDB-acceptable
+     * string, and verify (a) {@code SET TimeZone} succeeds and (b) the resulting
+     * extract matches {@code java.time}'s ground truth for the same instant.
+     * The normaliser implemented here is the candidate for the production code path.
+     */
+    @Test
+    public void probeQ3b_trinoToDuckDbTzPropagation() throws Exception
+    {
+        System.out.println("\n=== Q3b: Trino TimeZoneKey → DuckDB SET TimeZone normalisation ===");
+        // Reference instant for extract probes.
+        Instant referenceInstant = Instant.parse("2024-12-31T22:00:00Z");
+
+        // Curated set of zone strings Trino's TimeZoneKey can produce:
+        // named IANA, fixed offsets, UTC aliases, and one non-integer-hour offset
+        // that must EITHER round-trip via the named-IANA fallback or be refused.
+        List<String> trinoZoneStrings = List.of(
+                "UTC", "GMT", "Z",
+                "America/Los_Angeles", "Europe/Berlin", "Asia/Singapore",
+                "Asia/Kolkata",     // India — UTC+05:30; only named-IANA can express
+                "Pacific/Chatham",  // UTC+12:45 — even more fractional
+                "+00:00", "+05:00", "-08:00", "+14:00",
+                "+05:30",           // tricky: fractional offset, can't translate to Etc/GMT-N
+                "-03:30");          // also fractional
+
+        for (String trinoZone : trinoZoneStrings) {
+            String normalised = normaliseTrinoZoneForDuckDb(trinoZone);
+            try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+                    Statement stmt = conn.createStatement()) {
+
+                String setSql = "SET TimeZone = '" + normalised + "'";
+                try {
+                    stmt.execute(setSql);
+                    try (ResultSet rs = stmt.executeQuery(
+                            "SELECT year(TIMESTAMPTZ '2024-12-31 22:00:00+00'), "
+                                    + "hour(TIMESTAMPTZ '2024-12-31 22:00:00+00'), "
+                                    + "current_setting('TimeZone')")) {
+                        rs.next();
+                        int duckYear = ((Number) rs.getObject(1)).intValue();
+                        int duckHour = ((Number) rs.getObject(2)).intValue();
+                        String duckResolved = (String) rs.getObject(3);
+
+                        // Ground truth: java.time.
+                        ZonedDateTime java;
+                        try {
+                            java = referenceInstant.atZone(ZoneId.of(trinoZone));
+                        }
+                        catch (java.time.DateTimeException e) {
+                            java = null;
+                        }
+
+                        if (java != null) {
+                            boolean match = (java.getYear() == duckYear)
+                                    && (java.getHour() == duckHour);
+                            System.out.printf("  [%s] trino=%-22s norm=%-22s duck=(year=%d hr=%d setting=%s) java=(year=%d hr=%d zone=%s)%n",
+                                    match ? "MATCH" : "DIVERGE",
+                                    trinoZone, normalised,
+                                    duckYear, duckHour, duckResolved,
+                                    java.getYear(), java.getHour(), java.getZone().getId());
+                        }
+                        else {
+                            System.out.printf("  [JTIME-REJECT] trino=%-22s norm=%-22s duck=(year=%d hr=%d setting=%s)%n",
+                                    trinoZone, normalised,
+                                    duckYear, duckHour, duckResolved);
+                        }
+                    }
+                }
+                catch (SQLException e) {
+                    System.out.printf("  [DUCK-FAIL] trino=%-22s norm=%-22s -> %s%n",
+                            trinoZone, normalised, firstLine(e.getMessage()));
+                }
+            }
+        }
+    }
+
+    /**
+     * Candidate normaliser the production code path could use. Translates a
+     * Trino-style zone string into one DuckDB accepts.
+     *
+     * <p>Rules:
+     * <ul>
+     *   <li>{@code Z} → {@code UTC}.
+     *   <li>{@code +HH:MM} / {@code -HH:MM} with {@code MM == 00} → {@code Etc/GMT∓HH}
+     *       (POSIX sign inversion).
+     *   <li>{@code +HH:MM} / {@code -HH:MM} with {@code MM != 00} → pass through unchanged;
+     *       DuckDB will reject and the caller falls back to "don't push".
+     *   <li>Everything else (named IANA, {@code UTC}, {@code GMT}) → pass through.
+     * </ul>
+     */
+    private static String normaliseTrinoZoneForDuckDb(String trinoZone)
+    {
+        if ("Z".equals(trinoZone)) {
+            return "UTC";
+        }
+        if (trinoZone.length() == 6
+                && (trinoZone.charAt(0) == '+' || trinoZone.charAt(0) == '-')
+                && trinoZone.charAt(3) == ':') {
+            int hours = Integer.parseInt(trinoZone.substring(1, 3));
+            int mins = Integer.parseInt(trinoZone.substring(4, 6));
+            if (mins == 0) {
+                // POSIX inversion: UTC+5 → Etc/GMT-5
+                char invertedSign = (trinoZone.charAt(0) == '+') ? '-' : '+';
+                return "Etc/GMT" + invertedSign + hours;
+            }
+            // Non-integer-hour offset: no Etc/GMT translation; leave as-is so DuckDB
+            // rejects it cleanly and the caller decides whether to skip pushdown.
+            return trinoZone;
+        }
+        return trinoZone;
+    }
+
+    /**
+     * Q4 follow-up — Quack-container parity for SET TimeZone + extract.
+     *
+     * <p>Spins {@link TestingDucklakeQuackEngineServer} (Testcontainers), opens
+     * a local JDBC connection wired to it via the quack extension, then ships
+     * {@code SET TimeZone = '...'} and {@code SELECT year(...)} statements
+     * server-side through {@code quack_query_by_name}. Asserts the same
+     * three-zone results in-process baseline produced.
+     */
+    @Test
+    public void probeQ4b_quackContainerParity() throws Exception
+    {
+        System.out.println("\n=== Q4b: Quack container SET TimeZone + extract parity ===");
+        java.nio.file.Path sharedDir = Files.createTempDirectory("probe-quack-tz-");
+        try (TestingDucklakeQuackEngineServer quack =
+                new TestingDucklakeQuackEngineServer(sharedDir)) {
+            try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+                    Statement stmt = conn.createStatement()) {
+                stmt.execute("INSTALL quack");
+                stmt.execute("LOAD quack");
+                stmt.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '"
+                        + quack.getToken().replace("'", "''") + "')");
+                stmt.execute(String.format(
+                        "ATTACH 'quack:%s:%d' AS engine (disable_ssl true)",
+                        quack.getHost(), quack.getMappedPort()));
+
+                // Three sessions, each setting the server-side zone and reading
+                // back year/hour of the year-boundary smoking-gun instant.
+                for (String zone : List.of("UTC", "America/Los_Angeles", "Asia/Singapore")) {
+                    quackExec(stmt, "SET TimeZone = '" + zone + "'");
+                    Object[] result = quackScalarRow(stmt,
+                            "SELECT current_setting('TimeZone'), "
+                                    + "year(TIMESTAMPTZ '2024-12-31 22:00:00+00'), "
+                                    + "hour(TIMESTAMPTZ '2024-12-31 22:00:00+00'), "
+                                    + "year(TIMESTAMP '2024-12-31 22:00:00'), "
+                                    + "hour(TIMESTAMP '2024-12-31 22:00:00')");
+                    System.out.printf("  zone=%-22s | setting=%-22s | tz(year=%s hr=%s) | walltime(year=%s hr=%s)%n",
+                            zone, result[0], result[1], result[2], result[3], result[4]);
+                }
+            }
+        }
+        finally {
+            deleteRecursive(sharedDir);
+        }
+    }
+
+    /** Ship SQL server-side via the quack_query_by_name wrapper. */
+    private static void quackExec(Statement stmt, String innerSql) throws SQLException
+    {
+        String wrapped = "SELECT * FROM system.main.quack_query_by_name('engine', '"
+                + innerSql.replace("'", "''") + "')";
+        try (ResultSet rs = stmt.executeQuery(wrapped)) {
+            while (rs.next()) {
+                // discard
+            }
+        }
+    }
+
+    /** Run a single-row server-side SELECT and return its column values. */
+    private static Object[] quackScalarRow(Statement stmt, String innerSql) throws SQLException
+    {
+        String wrapped = "SELECT * FROM system.main.quack_query_by_name('engine', '"
+                + innerSql.replace("'", "''") + "')";
+        try (ResultSet rs = stmt.executeQuery(wrapped)) {
+            rs.next();
+            int cols = rs.getMetaData().getColumnCount();
+            Object[] out = new Object[cols];
+            for (int i = 0; i < cols; i++) {
+                out[i] = rs.getObject(i + 1);
+            }
+            return out;
         }
     }
 

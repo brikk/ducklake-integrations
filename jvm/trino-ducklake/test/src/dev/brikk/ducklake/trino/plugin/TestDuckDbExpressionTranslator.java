@@ -33,7 +33,11 @@ import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.DateType.DATE;
+import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,9 +52,18 @@ public class TestDuckDbExpressionTranslator
             new DucklakeColumnHandle(101L, "name", VARCHAR, true);
     private static final DucklakeColumnHandle ID_COLUMN =
             new DucklakeColumnHandle(102L, "id", BIGINT, true);
+    private static final DucklakeColumnHandle DATE_COLUMN =
+            new DucklakeColumnHandle(103L, "d", DATE, true);
+    private static final DucklakeColumnHandle TS_COLUMN =
+            new DucklakeColumnHandle(104L, "ts", TIMESTAMP_MILLIS, true);
+    private static final DucklakeColumnHandle TSTZ_COLUMN =
+            new DucklakeColumnHandle(105L, "tstz", TIMESTAMP_TZ_MILLIS, true);
     private static final Map<String, ColumnHandle> ASSIGNMENTS = ImmutableMap.of(
             "name", NAME_COLUMN,
-            "id", ID_COLUMN);
+            "id", ID_COLUMN,
+            "d", DATE_COLUMN,
+            "ts", TS_COLUMN,
+            "tstz", TSTZ_COLUMN);
 
     @Test
     public void testEqualOnPushableFunction()
@@ -569,6 +582,205 @@ public class TestDuckDbExpressionTranslator
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
         assertThat(conjuncts).isEmpty();
+    }
+
+    // --- Step 4 chunk 1: date/time type-gate tests --------------------------
+    //
+    // The translator's TYPE_GATES map restricts certain (name, arity) entries
+    // to specific argument types. These tests pin both sides of the gate:
+    // positive (correct type → push) and negative (TIMESTAMP WITH TIME ZONE
+    // → don't push, because the session-TZ plumbing for Tier C hasn't shipped).
+
+    @Test
+    public void testYearOnDatePushes()
+    {
+        // WHERE year(d) = 2024  (Tier B-allowed shape: DATE)
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("d", DATE)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_year(\"d\") = 2024)");
+    }
+
+    @Test
+    public void testYearOnTimestampPushes()
+    {
+        // WHERE year(ts) = 2024  (Tier B-allowed shape: TIMESTAMP no-TZ)
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("ts", TIMESTAMP_MILLIS)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_year(\"ts\") = 2024)");
+    }
+
+    @Test
+    public void testYearOnTimestampWithTimeZoneDoesNotPush()
+    {
+        // The whole point of the type gate. year(timestamp_with_time_zone) silently
+        // diverges because the result depends on the session TimeZone, which the
+        // connector does not yet set on attach. Tier C ships behind a session flag
+        // in chunk 3; until then this conjunct must stay unpushed and Trino
+        // re-evaluates it above the scan.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testHourOnTimestampPushes()
+    {
+        // WHERE hour(ts) = 22 — Tier B function on a TIMESTAMP no-TZ column.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("hour"), BIGINT, new Variable("ts", TIMESTAMP_MILLIS)),
+                new Constant(22L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_hour(\"ts\") = 22)");
+    }
+
+    @Test
+    public void testHourOnTimestampWithTimeZoneDoesNotPush()
+    {
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("hour"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(22L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDayOfWeekOnDatePushes()
+    {
+        // WHERE day_of_week(d) = 7  (ISO Sunday — Tier A, DATE-only)
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("day_of_week"), BIGINT, new Variable("d", DATE)),
+                new Constant(7L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_day_of_week(\"d\") = 7)");
+    }
+
+    @Test
+    public void testDayOfWeekOnTimestampDoesNotPush()
+    {
+        // Tier A is gated strictly to DATE. Trino's day_of_week ACCEPTS timestamp
+        // input, but DuckDB's bare isodow may handle it differently across versions;
+        // until probed, we stay conservative and don't push on TIMESTAMP inputs.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("day_of_week"), BIGINT, new Variable("ts", TIMESTAMP_MILLIS)),
+                new Constant(7L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testYearOfWeekSmokingGunDoesNotPushOnTimestampWithTimeZone()
+    {
+        // The ISO-year ≠ calendar-year case ('2024-12-30' → year_of_week 2025) is
+        // the pressure-point fixture. On a TIMESTAMP WITH TIME ZONE column we
+        // additionally have the year-boundary cross-zone hazard (an instant near
+        // midnight may render in a different calendar year under different session
+        // TZs). Both reasons → not pushable yet.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year_of_week"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(2025L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDateTruncOnDatePushes()
+    {
+        // WHERE date_trunc('month', d) = ... — second arg is DATE → push.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_trunc"), DATE,
+                        varcharConst("month"),
+                        new Variable("d", DATE)),
+                new Variable("d", DATE));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_date_trunc('month', \"d\") = \"d\")");
+    }
+
+    @Test
+    public void testDateTruncOnTimestampWithTimeZoneDoesNotPush()
+    {
+        // Pre-chunk-3 latent bug fix: date_trunc previously pushed for ANY arg type.
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_trunc"), TIMESTAMP_TZ_MILLIS,
+                        varcharConst("month"),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS)));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDateDiffOnDatesPushes()
+    {
+        // WHERE date_diff('day', d1, d2) = ... — both date args are DATE → push.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_diff"), BIGINT,
+                        varcharConst("day"),
+                        new Variable("d", DATE),
+                        new Variable("d", DATE)),
+                new Constant(0L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly(
+                "(trino_date_diff('day', \"d\", \"d\") = 0)");
+    }
+
+    @Test
+    public void testDateDiffMixedTimestampWithTimeZoneDoesNotPush()
+    {
+        // Even one TIMESTAMP WTZ arg blocks pushdown — date_diff with mixed
+        // wall-clock vs. instant semantics is exactly the case the type gate exists
+        // to prevent silent divergence on.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_diff"), BIGINT,
+                        varcharConst("day"),
+                        new Variable("ts", TIMESTAMP_MILLIS),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(0L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testToUnixtimeOnTimestampPushes()
+    {
+        // WHERE to_unixtime(ts) = 0 — Tier B, DOUBLE return.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("to_unixtime"), DOUBLE, new Variable("ts", TIMESTAMP_MILLIS)),
+                new Constant(0.0, DOUBLE));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_to_unixtime(\"ts\") = 0.0)");
+    }
+
+    @Test
+    public void testLengthOnVarcharStillPushesAfterTypeGateLanded()
+    {
+        // Regression guard: the sparse TYPE_GATES registry must NOT affect entries
+        // that have no gate. length/1 has no gate → must still push for any arg
+        // type (in practice always VARCHAR-typed at the call site, but the
+        // translator must not gain a new "ungated entries are now restricted" bug).
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("length"), BIGINT, new Variable("name", VARCHAR)),
+                new Constant(5L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_length(\"name\") = 5)");
     }
 
     @Test

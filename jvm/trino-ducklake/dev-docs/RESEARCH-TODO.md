@@ -271,6 +271,53 @@ for the connection-ID lifecycle. Cross-reference with the
 record finding in this entry; if not, escalate to a code-level spike
 against a live Quack server.
 
+### datafusion-maintenance-ops-reference
+
+**Source:** `datafusion-ducklake/` PRs #122 (`4be0758`, 2026-05-28) and
+#123 (`f8804af`, 2026-05-29), plus `examples/maintenance_demo.{rs,sql}`
+and `examples/orphan_cleanup_demo.{rs,sql}`.
+**Kind:** reference pointer (not a new gap — gap already tracked in
+`TODO-WRITE-MODE.md §M8`).
+**Impact:** write-path maintenance ops; specifically the future M8 work.
+**Our state:** `expire_snapshots`, `cleanup_old_files`, and
+`delete_orphaned_files` listed in `TODO-WRITE-MODE.md §M8 Maintenance
+Operations` — not implemented. Commit-Failure File Cleanup section
+defers explicitly to M8.
+**Proposed next step:** when M8 is picked up, lean on the Rust impl as
+a reference for non-obvious semantics:
+
+1. **Three-phase split**: tombstone (DROP TABLE; soft-delete preserves
+   time travel) → expire (DELETEs unreachable metadata + INSERTs
+   orphaned paths into `ducklake_files_scheduled_for_deletion`) →
+   cleanup (`object_store.delete()` then deletes bookkeeping rows).
+   Mirrors upstream DuckDB's `FileSystem::RemoveFiles` semantics; only
+   the storage backend differs.
+2. **Criteria enums**: `ExpireCriteria::{Versions(Vec<i64>),
+   OlderThan(DateTime<Utc>)}` for expire; `CleanupCriteria::{All,
+   OlderThan(DateTime<Utc>)}` for cleanup + orphan-sweep. Mirrors
+   upstream's named-parameter shapes.
+3. **In-flight write guard**: `delete_orphaned_files` `OlderThan` filter
+   applies to `object_store::ObjectMeta.last_modified`, **not** to
+   catalog `schedule_start`. This protects in-flight writes that haven't
+   registered metadata yet. Upstream does the same — `last_modified <
+   older_than`.
+4. **Suffix filter**: `.parquet` filter at storage-listing time.
+   Matches upstream; avoids deleting `_SUCCESS` markers, logs, etc.
+5. **Orphan-sweep referenced-set**: UNION ALL across data files, delete
+   files, and pending scheduled-for-deletion rows. The third one is
+   non-obvious — a file that's been expired but not yet cleaned up is
+   still "referenced" for the purpose of orphan reclamation.
+6. **Parity harness**: `examples/maintenance_demo.sql` and
+   `examples/orphan_cleanup_demo.sql` drive the same lifecycle through
+   the official DuckDB+DuckLake extension. Our cross-engine compatibility
+   suite (`TestDucklakeCrossEngineCompatibility`) should add equivalent
+   side-by-side coverage when M8 lands — the upstream extension is the
+   oracle.
+
+Out of scope for the pointer: their multicatalog `catalog_id` schema
+extension on `ducklake_files_scheduled_for_deletion`. We are single-catalog
+per connector instance; the official schema applies as-is.
+
 ## Closed (escalated to working TODO)
 
 *(none yet)*

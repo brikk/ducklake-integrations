@@ -26,7 +26,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
    - **`concat` shipped as translator rewrite** (round 6e): `Call(concat, [a,b,c])` → `(a || b || c)` when return type is `VARCHAR`. DuckDB's `concat` skips NULL; the `||` operator NULL-propagates in both engines and matches Trino's `concat` semantics.
    - Not yet shipped: `position` (operator-form; needs translator special case).
    - Regex (RE2 on both): `regexp_like/2`, `regexp_extract/{2,3}`. `regexp_like` exercises the rename pattern (Trino `regexp_like` → DuckDB `regexp_matches` via macro body).
-4. ⏳ **Date / time** — risky because of timezone, locale, calendar. Do one function at a time, with cross-engine semantic tests. Skip anything that touches session timezone interpretation until we've verified the alignment. Plan + test corpus in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md). Tiered rollout (A: DATE only → B: TIMESTAMP no-TZ → C: TIMESTAMP WTZ behind session flag → D: format/parse never push). First commit fixes the latent type-gate bug in existing `year/month/day/quarter`/`date_trunc`/`date_diff` entries (they currently push for any arg type, would silently diverge on TIMESTAMP WTZ).
+4. ⏳ **Date / time** — risky because of timezone, locale, calendar. Plan in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md). Empirical TZ findings in [REPORT-datetime-tz-handling.md](REPORT-datetime-tz-handling.md). **Chunk tracker for pickup work in [TODO-pushdown-datetime.md](TODO-pushdown-datetime.md)** — read it, do chunk N. Chunks: 1 = translator type-gate + Tier A (DATE) + Tier B (TIMESTAMP no-TZ); 2 = session-TZ plumbing + normaliser in production; 3 = Tier C (TIMESTAMP WTZ) + session-property gate + probe cleanup.
 5. ⏳ **DuckDB-namespaced exclusives** — vector / JSON / list / struct / regex variants that exist in DuckDB but not in Trino. Register through `ConnectorFunctionProvider`, route through the same translator. Lower-risk than #4 because we own both ends of the semantic contract. Not started.
 6. ⏳ **Lance table functions** when we get there. Sits on top of the infrastructure above.
 
@@ -91,13 +91,13 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
   - `lower/1`, `upper/1`, `reverse/1` shipped as **pushable placeholders** with one-shot warn-on-emit (round 4 — see [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md)). Native extension required for full Trino-equivalent semantics on non-ASCII input.
   - `chr`, `url_encode/decode`, `to_hex/from_hex`, `to_base64/from_base64`, `levenshtein_distance`, `hamming_distance` (round 4).
   - Still deferred: `concat` (NULL-propagation differs), `position` (operator-form).
-- Step 4 (date / time) — not started; plan + cross-engine test corpus drafted in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md). First step-4 PR fixes the latent type-gate bug in the round-6g/6i date macros before adding new entries.
+- Step 4 (date / time) — **chunk 1 shipped** (round 6j); chunks 2 & 3 pending. Chunk 1 added the translator's argument-type-gate registry (closes a latent bug where `year/month/day/quarter`/`date_trunc`/`date_diff` would push for any arg type — silent divergence on TIMESTAMP WITH TIME ZONE), plus 12 new pushable entries: Tier A (DATE-only) `day_of_week`, `day_of_year`, `last_day_of_month`, `week`, `week_of_year`, `year_of_week`, `yow`; Tier B (DATE or TIMESTAMP no-TZ) `hour`, `minute`, `second`, `millisecond`, `to_unixtime`. Planned in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md), empirical TZ findings in [REPORT-datetime-tz-handling.md](REPORT-datetime-tz-handling.md), chunk tracker in [TODO-pushdown-datetime.md](TODO-pushdown-datetime.md).
 - Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
 - Step 6 (Lance table functions) — not started.
 
-### Catalog totals (as of round 6i)
+### Catalog totals (as of round 6j)
 
-- 78 `trino_meta()` rows / ~62 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional).
+- 90 `trino_meta()` rows / ~74 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional). Round 6j (step 4 chunk 1) added 12 date/time entries with the translator's first argument-type gate; see [TODO-pushdown-datetime.md](TODO-pushdown-datetime.md) for the chunk 2 & 3 plan.
 - 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
 - Round 6a shipped: `sign/1`, `bit_length/1`, `pi/0`, `bitwise_xor/2`, `regexp_replace/{2,3}` (with `'g'` flag for Trino-aligned global default).
 - Round 6b-core shipped: `md5/1`, `sha1/1`, `sha256/1` (via `unhex(...)` wrap for VARBINARY return type).
@@ -105,6 +105,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Round 6g shipped (macros): bitwise function-form `bitwise_and/or/not/left_shift/right_shift` + date convenience `year/month/day/quarter`.
 - Round 6h shipped (translator): `$cast` / `$try_cast` for primitive types (BOOLEAN/TINYINT/SMALLINT/INTEGER/BIGINT/DOUBLE/VARCHAR/DATE), plus `$negate` (unary minus).
 - Round 6i shipped (macros): `if/{2,3}`, `date_trunc/2`, `date_diff/3`. Plus end-to-end verification that `BETWEEN` already pushes (Trino's planner decomposes to `≥ AND ≤` before `applyFilter`, so the existing comparison + AND translators handle it without code change).
+- Round 6j shipped (step 4 chunk 1, translator + macros): argument-type-gate registry in the translator (sparse `TYPE_GATES` map keyed by `NameArity`, accepts/rejects entries based on actual call argument types — closes the latent bug where date macros pushed for any arg type). Re-gated `year/month/day/quarter`/`date_trunc`/`date_diff` to `{DATE, TIMESTAMP no-TZ}`. Added Tier A (DATE-only): `day_of_week/1` (`isodow`, ISO 1=Mon..7=Sun, avoiding DuckDB's bare 0=Sun trap), `day_of_year/1`, `last_day_of_month/1`, `week/1`, `week_of_year/1`, `year_of_week/1`, `yow/1`. Added Tier B (DATE or TIMESTAMP no-TZ): `hour/1`, `minute/1`, `second/1`, `millisecond/1` (millis-of-second 0..999), `to_unixtime/1`. TIMESTAMP WITH TIME ZONE deferred to chunk 3 (needs session-TZ plumbing from chunk 2).
 
 ---
 

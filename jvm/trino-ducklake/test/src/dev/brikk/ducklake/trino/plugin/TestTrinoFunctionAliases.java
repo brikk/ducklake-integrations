@@ -457,7 +457,74 @@ public class TestTrinoFunctionAliases
                         "SELECT trino_date_diff('day', DATE '2024-01-01', DATE '2024-01-15')", 14L),
                 c("date_diff 3: month boundary", "date_diff", 3,
                         // Both engines count boundary crossings, not whole units elapsed.
-                        "SELECT trino_date_diff('month', DATE '2024-01-31', DATE '2024-02-01')", 1L));
+                        "SELECT trino_date_diff('month', DATE '2024-01-31', DATE '2024-02-01')", 1L),
+                // Round 6j (step 4 chunk 1) — Tier A: DATE-only date functions
+                //
+                // day_of_week: Trino is 1=Mon..7=Sun (ISO). Sunday is the divergence
+                // smoking gun — DuckDB's bare dayofweek() would return 0 here.
+                c("day_of_week 1: Sunday → 7 (ISO, NOT 0)", "day_of_week", 1,
+                        "SELECT trino_day_of_week(DATE '2024-01-07')", 7L),
+                c("day_of_week 1: Monday → 1", "day_of_week", 1,
+                        "SELECT trino_day_of_week(DATE '2024-01-08')", 1L),
+                c("day_of_year 1: leap-day", "day_of_year", 1,
+                        "SELECT trino_day_of_year(DATE '2024-02-29')", 60L),
+                c("day_of_year 1: end of leap year (366)", "day_of_year", 1,
+                        "SELECT trino_day_of_year(DATE '2024-12-31')", 366L),
+                c("last_day_of_month 1: leap February", "last_day_of_month", 1,
+                        "SELECT CAST(trino_last_day_of_month(DATE '2024-02-15') AS VARCHAR)",
+                        "2024-02-29"),
+                c("last_day_of_month 1: non-leap century February", "last_day_of_month", 1,
+                        // 1900 is divisible by 100 but NOT 400 → not a leap year.
+                        "SELECT CAST(trino_last_day_of_month(DATE '1900-02-15') AS VARCHAR)",
+                        "1900-02-28"),
+                // ISO week / year — calendar year ≠ ISO year on '2024-12-30' (Monday
+                // of ISO week 1 of 2025). This is the classic "ISO year ≠ calendar
+                // year" trap; if it ever flips back we've broken the alignment.
+                c("week 1: ISO week 1 starts Monday", "week", 1,
+                        "SELECT trino_week(DATE '2024-01-01')", 1L),
+                c("week 1: 2024-12-30 → ISO week 1 of 2025", "week", 1,
+                        "SELECT trino_week(DATE '2024-12-30')", 1L),
+                c("week_of_year 1: alias of week", "week_of_year", 1,
+                        "SELECT trino_week_of_year(DATE '2023-01-01')", 52L),
+                c("week 1: ISO week 53 (only exists in ISO numbering)", "week", 1,
+                        // 2021-01-01 is a Friday in ISO week 53 of 2020. Week 53
+                        // only exists in years whose Jan 1 lands Thu (regular) or
+                        // Wed/Thu (leap) — a clean ISO-vs-Gregorian smoking gun
+                        // that a non-ISO `week()` would never produce.
+                        "SELECT trino_week(DATE '2021-01-01')", 53L),
+                c("year_of_week 1: ISO year ≠ calendar year (forward)", "year_of_week", 1,
+                        // Calendar year 2024 but ISO year 2025 because the week
+                        // containing this Monday extends into 2025. Trino spells
+                        // this `year_of_week`; DuckDB exposes it via extract('isoyear').
+                        "SELECT trino_year_of_week(DATE '2024-12-30')", 2025L),
+                c("year_of_week 1: ISO year ≠ calendar year (backward)", "year_of_week", 1,
+                        // 2021-01-01 is a Friday → ISO week 53 of 2020. Calendar
+                        // year says 2021 but ISO year says 2020. Pairs with the
+                        // forward case above so any regression that swapped
+                        // year_of_week for year() shows up immediately.
+                        "SELECT trino_year_of_week(DATE '2021-01-01')", 2020L),
+                c("year_of_week 1: leading days of Jan belong to prior ISO year", "year_of_week", 1,
+                        // 2023-01-01 is a Sunday → ISO week 52 of 2022.
+                        "SELECT trino_year_of_week(DATE '2023-01-01')", 2022L),
+                c("yow 1: short alias of year_of_week", "yow", 1,
+                        "SELECT trino_yow(DATE '2024-12-30')", 2025L),
+                c("yow 1: short alias on backward boundary", "yow", 1,
+                        "SELECT trino_yow(DATE '2021-01-01')", 2020L),
+                // Round 6j — Tier B: DATE or TIMESTAMP (no TZ)
+                c("hour 1: from TIMESTAMP", "hour", 1,
+                        "SELECT trino_hour(TIMESTAMP '2024-12-31 22:30:45')", 22L),
+                c("minute 1: from TIMESTAMP", "minute", 1,
+                        "SELECT trino_minute(TIMESTAMP '2024-12-31 22:30:45')", 30L),
+                c("second 1: from TIMESTAMP", "second", 1,
+                        "SELECT trino_second(TIMESTAMP '2024-12-31 22:30:45')", 45L),
+                c("millisecond 1: millis-of-second (0..999)", "millisecond", 1,
+                        // Trino's millisecond() returns the milliseconds component of
+                        // the second, NOT total millis since epoch.
+                        "SELECT trino_millisecond(TIMESTAMP '2024-06-15 12:00:00.123')", 123L),
+                c("to_unixtime 1: epoch", "to_unixtime", 1,
+                        "SELECT trino_to_unixtime(TIMESTAMP '1970-01-01 00:00:00')", 0.0),
+                c("to_unixtime 1: one second before epoch", "to_unixtime", 1,
+                        "SELECT trino_to_unixtime(TIMESTAMP '1969-12-31 23:59:59')", -1.0));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

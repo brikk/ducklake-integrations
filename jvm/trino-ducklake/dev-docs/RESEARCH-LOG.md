@@ -6,6 +6,152 @@ for procedure. Action items found during a run live in
 
 ---
 
+## 2026-05-29 — `datafusion-ducklake` focused refresh
+
+**Trigger:** user pulled fresh `vendor/datafusion-ducklake` and asked for a
+scoped survey of what changed since the previous baseline. No refresh of
+`ducklake/`, `pg_ducklake/`, `duckdb-quack/`, `ducklake-web/`, or
+`duckdb-web/` this run.
+
+**Surveyed repos and new baselines:**
+
+| Repo | Baseline this run | Surveyed up to | Active branches checked |
+|---|---|---|---|
+| `datafusion-ducklake/` | `origin/main@536729a8` (v0.2.1, 2026-05-19) | `origin/main@f1af7dd5` (post-v0.2.1, 2026-05-29 — no new tag yet) | `main` only |
+
+9 incoming commits, 10,496 LOC added across 32 files. No new release tag —
+`v0.2.1` is still the latest tag; everything in this window is unreleased.
+1 CI tweak (skip), 1 writer-DDL spec-alignment bug-fix (not portable to us),
+and 7 substantive feature PRs.
+
+### Substantive findings
+
+**#115 / #121 / #124 — DuckLake row lineage (`rowid` virtual column).**
+Three PRs land the official row-lineage feature end-to-end in Rust:
+
+- #115 (2026-05-20, `83e3972`) plumbs `row_id_start` + `record_count` from
+  `ducklake_data_file` through all four metadata providers, defines
+  `ROW_ID_PARQUET_FIELD_ID = 2_147_483_540` (the Iceberg-reserved field-id
+  DuckLake uses to tag the embedded `_ducklake_internal_row_id` column that
+  UPDATE / compaction writes), and adds `RowIdExec` to inject a synthetic
+  BIGINT `rowid` column (= `row_id_start + position` per file). Opt-in via
+  `DuckLakeCatalog::with_row_lineage(true)`.
+- #121 (2026-05-28, `0d3921f`) brings the Postgres writer to parity with
+  the SQLite writer: bootstraps `ducklake_table_stats`
+  (`record_count, next_row_id, file_size_bytes`), and `register_data_file`
+  hands out non-overlapping row-id ranges in-transaction. `Replace`
+  clears `record_count`/`file_size_bytes` but leaves `next_row_id`
+  untouched — rowids monotonic across the whole table lifetime, not per
+  generation.
+- #124 (2026-05-29, `f1af7dd`) closes the last gap: the multicatalog
+  reader's `get_table_files_for_select` was hard-coding `row_id_start`,
+  `snapshot_id`, and `max_row_count` to `None`; PR #124 projects the real
+  values, matching the single-catalog Postgres reader verbatim.
+
+**Verdict:** Rust is now ahead of us on this surface. We track `$row_id`
+in `DESIGN-virtual-columns.md` and under "Add DuckDB-equivalent virtual
+columns" in `TODO-READ-MODE.md`, but the JVM Trino side does not expose a
+virtual `rowid` column yet. The Rust `RowIdExec` + `ROW_ID_PARQUET_FIELD_ID`
+detection logic is a clean reference impl when we pick this up — copy the
+semantics, not the code. **No new RESEARCH-TODO needed** — gap already
+tracked in the working TODO and DESIGN.
+
+**#122 / #123 — Official maintenance ops (`expire_snapshots`,
+`cleanup_old_files`, `delete_orphaned_files`, single-catalog `DROP TABLE`).**
+
+- #122 (2026-05-28, `4be0758`) ports upstream's two-phase vacuum to both
+  SQLite single-catalog and Postgres multicatalog paths. Three-phase
+  delete philosophy preserved: DROP TABLE tombstones (soft-delete,
+  time-travel preserved), `expire_snapshots` deletes unreachable metadata
+  rows and inserts orphaned paths into `ducklake_files_scheduled_for_deletion`,
+  `cleanup_old_files` does the actual `object_store.delete()` then deletes
+  the bookkeeping rows. `ExpireCriteria::{Versions, OlderThan}` +
+  `CleanupCriteria::{All, OlderThan}` mirror upstream's named parameters.
+- #123 (2026-05-29, `f8804af`) ports the third official command
+  `ducklake_delete_orphaned_files` — storage-listing sweep, subtracts
+  every path referenced by the metadata (data files + delete files +
+  pending scheduled-for-deletion rows), deletes whatever's left. The
+  `OlderThan` filter is applied to `object_store::ObjectMeta.last_modified`
+  (in-flight write protection), matching upstream's `last_modified <
+  older_than` guard. `.parquet`-suffix filter at listing time also matches
+  upstream.
+
+Side-by-side validated against the official DuckDB+DuckLake extension via
+`examples/maintenance_demo.sql` + `examples/orphan_cleanup_demo.sql` —
+behaviour matches modulo cosmetic differences (upstream's DELETE+INSERT
+vs their Replace being one snapshot).
+
+**Verdict:** Rust is now ahead of us on the M8 maintenance surface. We
+already track `expire_snapshots`, `cleanup_old_files`, and
+`delete_orphaned_files` in `TODO-WRITE-MODE.md §M8`, plus a Commit-Failure
+File Cleanup section that explicitly defers to M8. **No new RESEARCH-TODO
+needed** — but added a reference pointer for when we pick up M8 (see
+[`datafusion-maintenance-ops-reference`](RESEARCH-TODO.md#datafusion-maintenance-ops-reference)).
+
+**#117 / #120 — Multicatalog Phase 1 + `drop_table_in_catalog`.**
+
+Non-spec extension for RuntimeDB's per-tenant catalog isolation. Adds
+`MulticatalogManager`, `PostgresMetadataWriter`, `MulticatalogProvider`,
+and `initialize_multicatalog_schema`. New tables: `ducklake_catalog`,
+`ducklake_catalog_{snapshot,schema}_map`, per-catalog
+`ducklake_schema_versions`, plus a `schema_version` column on
+`ducklake_snapshot` and a `catalog_id` column on
+`ducklake_files_scheduled_for_deletion` (documented divergence from the
+official single-catalog schema). FOR UPDATE on the catalog row (30s
+`lock_timeout`) serialises concurrent writers. Cross-catalog
+`table_id`/`schema_id` rejected at write time.
+
+**Verdict:** Not a DuckLake spec feature, not a gap on our side.
+Multi-tenant isolation, if it ever became relevant for us, would more
+naturally live on the layer above the connector (one Trino catalog
+instance per tenant). Worth noting only because the Rust schema for
+`ducklake_files_scheduled_for_deletion` now diverges from upstream —
+a future cross-engine compatibility check on that table needs to handle
+the optional `catalog_id` column. **No new RESEARCH-TODO** — flagged in
+COMPARE.
+
+**#116 — Writer DDL spec-alignment fix.** `SqliteMetadataWriter` had been
+DDL-bootstrapping `ducklake_column` without `parent_column`,
+`initial_default`, `default_value`, `default_value_type`,
+`default_value_dialect`, panicking every read. CI missed it because
+`write-sqlite` wasn't on the test step. Not portable to us (we attach to
+an existing catalog; our jOOQ-generated `DucklakeColumnRecord` carries
+all five columns). Worth being aware of as a sign their backend-CI
+matrix is incomplete (encryption / postgres / mysql writer fixtures still
+not covered). **Parity — no action.**
+
+**#118 — CI bump (`ubuntu-latest-m` → `ubuntu-latest`).** Skip.
+
+### Documents touched this run
+
+- `jvm/trino-ducklake/dev-docs/COMPARE-datafusion-ducklake.md` —
+  refresh-date header; TL;DR rewritten to reflect that Rust is no
+  longer purely read-focused; three new capability rows (row lineage,
+  maintenance ops, multi-tenant catalog isolation); writer-DDL bug note
+  added under "doc-vs-code mismatch"; two new "ideas worth stealing"
+  entries pointing at `src/maintenance.rs` + `src/row_id.rs` as
+  reference impls; test-LOC counts bumped (~9.2k → ~13.4k).
+- `jvm/trino-ducklake/dev-docs/RESEARCH-LOG.md` — this entry.
+- `jvm/trino-ducklake/dev-docs/RESEARCH-TODO.md` — appended one new
+  reference-pointer item; the substantive gaps (row lineage, M8 ops) are
+  already tracked in `DESIGN-virtual-columns.md` / `TODO-READ-MODE.md` /
+  `TODO-WRITE-MODE.md §M8` and don't need duplicating.
+
+### Items added to RESEARCH-TODO this run
+
+- [`datafusion-maintenance-ops-reference`](RESEARCH-TODO.md#datafusion-maintenance-ops-reference)
+
+### Next-run baselines
+
+| Repo | Branch | SHA |
+|---|---|---|
+| `datafusion-ducklake/` | `main` | `f1af7dd5a29482bce40acf8edf28175f48c23753` |
+
+(All other repos: no refresh this run; baselines from the 2026-05-22 entry
+still apply.)
+
+---
+
 ## 2026-05-22 — Quack catalog blockers, focused pass
 
 **Trigger:** DuckDB bumped to 1.5.3 stable. Re-running

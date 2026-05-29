@@ -4,17 +4,27 @@ Snapshot of the Rust [`datafusion-ducklake`](https://github.com/) project review
 our JVM implementation (`ducklake-catalog` + `trino-ducklake`). The goal is to flag real
 spec-level conflicts, call out ideas worth stealing, and record where we're ahead.
 
-Last refreshed against upstream `main` at `536729a` (v0.2.1, 2026-05-05).
+Last refreshed against upstream `main` at `f1af7dd` (post-v0.2.1, 2026-05-29). 9 commits
+since the previous baseline (`536729a`, v0.2.1) — 1 CI tweak + 8 substantive feature PRs
+(row lineage, multicatalog Phase 1, three official maintenance ops, and a writer-side
+spec-alignment fix).
 
 ## TL;DR
 
-No real spec-level conflicts — both honor the same DuckLake catalog schema, validity
-ranges, and `path_is_relative` contract. The Rust project is a **read-focused DataFusion
-extension**; this repo is a **full-lifecycle Trino connector**. Rust is ahead on test
-breadth and backend coverage; we're ahead on depth (writes, temporal partitioning, views,
-cross-engine compatibility). The Rust project's own `CLAUDE.md` still describes itself as
-read-only, but its code has started a write path (`metadata_writer*`, `table_writer.rs`,
-`insert_exec.rs`); their docs lag their code.
+Still no real spec-level conflicts — both honor the same DuckLake catalog schema,
+validity ranges, and `path_is_relative` contract. The shape of the comparison shifted
+this refresh: the Rust project has stopped being purely read-focused and is now actively
+porting the official write/maintenance surface (`expire_snapshots`, `cleanup_old_files`,
+`delete_orphaned_files`, `DROP TABLE`, row lineage). It also gained a
+project-specific multi-tenant catalog isolation layer (`MulticatalogManager`) that is
+**not** a DuckLake spec feature — orthogonal extension for the RuntimeDB use case.
+
+Net: we're still ahead on the depth axes we were ahead on (full DDL/DML/MERGE, temporal
+partitioning, views, snapshot-lineage conflict detection, cross-engine compatibility),
+but the Rust side has caught up — and in some cases moved ahead — on row lineage and
+the official maintenance verbs, both of which we track in `TODO-WRITE-MODE.md §M8` and
+`TODO-READ-MODE.md` (Virtual Columns) but have not implemented. Their implementations
+are now solid reference points when we pick those up.
 
 ## Implementation conflicts (disagreements about DuckLake behavior)
 
@@ -36,6 +46,9 @@ read-only, but its code has started a write path (`metadata_writer*`, `table_wri
 | Path validation (null-byte, traversal) | `validate_path()` guards | Assumes trusted catalog | Rust more defensive |
 | Unsigned range validation on writes | None | `DucklakeUnsignedRangeChecker` rejects out-of-range SMALLINT/INTEGER/BIGINT/DECIMAL(20,0) writes into uint8/uint16/uint32/uint64 columns at page-sink time, before silent Parquet-truncation can corrupt the uint catalog column | JVM ahead |
 | Catalog backends | DuckDB (bundled), SQLite, Postgres, MySQL | JDBC (Postgres in prod; SQLite/DuckDB promised) | Rust wider today |
+| Row lineage (`rowid` virtual column) | Opt-in via `DuckLakeCatalog::with_row_lineage(true)`; appends BIGINT `rowid` at end of schema. `RowIdExec` injects `row_id_start + position` per file; also detects the embedded `_ducklake_internal_row_id` column (Iceberg-reserved field-id `2_147_483_540`) that UPDATE / compaction writes. Catalog plumbing (`row_id_start`, `record_count`, `ducklake_table_stats(next_row_id)`) is wired in all 4 providers + SQLite & Postgres writers. Multicatalog reader projects the same fields (#124, 2026-05-29). | Tracked in `DESIGN-virtual-columns.md` as `$row_id` and listed in `TODO-READ-MODE.md` under "Add DuckDB-equivalent virtual columns" — **not implemented**. We do plumb `row_id_start` through `DucklakeSplit.rowIdStart()` (the catalog reader has it), but no virtual-column exposure on the Trino side. | **Rust ahead** — but our DESIGN doc already exists; Rust's `src/row_id.rs` is a clean reference impl when we pick up the work. |
+| Official maintenance ops (`expire_snapshots`, `cleanup_old_files`, `delete_orphaned_files`, `DROP TABLE` tombstone) | All four landed in 2026-05-28/29 (PRs #122, #123). `ExpireCriteria::{Versions, OlderThan}` + `CleanupCriteria::{All, OlderThan}` mirror upstream's two-phase vacuum; `OlderThan` filter is `last_modified` against `object_store::ObjectMeta` (in-flight write protection), not catalog `schedule_start`. Sqlite single-catalog + Postgres multicatalog code paths share `src/maintenance.rs` (290 LOC) with backend-scoped variants. `.parquet`-suffix filter at storage-listing time matches upstream. Side-by-side validated against the official DuckDB+DuckLake extension via `examples/maintenance_demo.sql` + `examples/orphan_cleanup_demo.sql`. | Tracked in `TODO-WRITE-MODE.md §M8 Maintenance Operations` — **not implemented.** `expire_snapshots`, `cleanup_old_files`, and `delete_orphaned_files` are on the M8 list; the Commit-Failure File Cleanup section notes "self-served from M8". | **Rust ahead** — they ported the official semantics including the `last_modified` vs catalog-side `schedule_start` distinction. When we implement M8, the choice of criteria enums and the two-phase split is worth mirroring. |
+| Multi-tenant catalog isolation (per-tenant `catalog_id` partitioning of a shared metadata DB) | Added in PR #117 (2026-05-25) as `MulticatalogManager` + `PostgresMetadataWriter` + `MulticatalogProvider` + `initialize_multicatalog_schema`. Adds `ducklake_catalog` + `ducklake_catalog_{snapshot,schema}_map` + per-catalog `ducklake_schema_versions` + a `catalog_id` column on `ducklake_files_scheduled_for_deletion` (a documented divergence from the official single-catalog schema). FOR UPDATE on the catalog row (30s `lock_timeout`) serialises concurrent writers; cross-catalog table_id/schema_id rejected at write time. `drop_catalog` and `drop_table_in_catalog` (PR #120) tombstone per catalog. | Single-catalog only. Multi-tenant isolation, if needed, would live on the layer above (one connector instance per tenant, or per-tenant schema namespacing). | **Non-spec extension**, not a gap on our side. Worth noting only because it diverges the Rust schema from the official `ducklake_files_scheduled_for_deletion` shape, which a future cross-engine compatibility check should account for. |
 
 ### A doc-vs-code mismatch on the Rust side
 
@@ -45,6 +58,17 @@ positional deletes are **per data file** (`(file_path, pos)` tuples). Reading th
 file's Parquet stream), so the behavior is actually spec-correct — only the doc phrasing is
 loose. Worth a direct source read before copying any ideas verbatim, since a future reader
 of their docs could be misled.
+
+A spec-alignment bug they caught and fixed (PR #116, 2026-05-20) is worth knowing about
+even though it doesn't affect us: their `SqliteMetadataWriter` had been bootstrapping
+`ducklake_column` without `parent_column`, `initial_default`, `default_value`,
+`default_value_type`, `default_value_dialect`, so the reader's `SQL_GET_TABLE_COLUMNS`
+panicked on every catalog they wrote. CI missed it because `write-sqlite` wasn't enabled
+on the test step. Our jOOQ-generated `DucklakeColumnRecord` carries all five of those
+columns (we attach to an existing DuckLake catalog rather than DDL-bootstrap our own),
+so we never had the bug. The fact that CI for the encryption / postgres / mysql writer
+fixtures still doesn't cover their schemas is documented in the PR — analogous gaps may
+still ship invisibly there until backend-specific CI is added.
 
 ### A README-vs-spec mismatch on our side — fixed
 
@@ -81,6 +105,17 @@ multi-snapshot deletes actually live) is still not read by either implementation
    backends land, this is the pattern.
 5. **Encryption tests** (Parquet Modular Encryption). Our README does not list PME yet; if
    we target S3-enterprise deployments it's worth tracking.
+6. **`src/maintenance.rs` as a reference for our M8 work.** Their `ExpireCriteria` /
+   `CleanupCriteria` enum split, the `last_modified` vs catalog-side `schedule_start`
+   distinction (in-flight write guard), the storage-listing `.parquet` filter, and the
+   side-by-side `examples/maintenance_demo.sql` / `examples/orphan_cleanup_demo.sql`
+   parity harness against the official DuckDB extension are all directly applicable.
+   When we pick up M8, copy the semantics — the implementation language won't matter.
+7. **`src/row_id.rs` as a reference for our `$row_id` virtual column.** The
+   `ROW_ID_PARQUET_FIELD_ID = 2_147_483_540` reserved field-id detection (for files
+   written by UPDATE / compaction with embedded rowids vs the synthetic
+   `row_id_start + offset` path) is the spec-correct way to handle the two cases. Maps
+   to our `DESIGN-virtual-columns.md` § 3.2 (`$row_id` as a scalar BIGINT).
 
 ## Things we already do better
 
@@ -121,12 +156,12 @@ Still open:
 
 | | Rust | JVM (this repo) |
 |---|---|---|
-| Integration test LOC | ~9,231 across 19 files | ~10,215 across 24 files |
+| Integration test LOC | ~13,425 across 26 files (was ~9,231 / 19 in v0.2.1; +4,200 from multicatalog + maintenance + row-id suites this refresh) | ~10,215 across 24 files |
 | Unit tests in source files | 11 files with `#[cfg(test)]` | N/A — separated out |
 | `.slt` suite | 248 files / 47 categories / ~18,740 LOC | none |
 | Per-backend metadata-provider tests | Postgres / MySQL / SQLite, Testcontainers | Postgres only (Testcontainers) |
 | Concurrent-access tests | `concurrent_tests.rs` + `concurrent_write_tests.rs` (~877 LOC) | Implicit via Trino runtime; no dedicated suite |
-| Write/DDL lifecycle | Partial (insert path started) | Full (DDL, DML, MERGE — ~2.4k LOC across 3 classes) |
+| Write/DDL lifecycle | Insert path + DROP TABLE + multicatalog Phase 1 + three official maintenance ops | Full (DDL, DML, MERGE — ~2.4k LOC across 3 classes). M8 maintenance ops still open. |
 | Partition pruning tests | None | `TestDucklakePartitionPruning` + matcher tests (~1.4k LOC) |
 | Time-travel / snapshot pinning | Not meaningful — latest-only | Dedicated integration test |
 | Cross-engine compatibility | Adapter-based (`.slt` replay through DataFusion) | Direct DuckDB↔Trino round-trip tests |

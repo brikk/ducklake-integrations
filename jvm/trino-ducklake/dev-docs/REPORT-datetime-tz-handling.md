@@ -22,11 +22,11 @@ All three writer-zone rows produce **identical** rendering and extraction in any
 
 **Implication for pushdown.** Tier C correctness requires the connector to set DuckDB's `TimeZone` to match Trino's session `TimeZoneKey` on every attach, before any predicate executes. Without it, `year(timestamptz_col) = 2024` could push and silently return rows from `2025` (when the reader session is east of UTC and the boundary crosses).
 
-## Q2 — `SET TimeZone` without ICU
+## Q2 — `SET TimeZone` without ICU + `Etc/GMT` translation table
 
-**Question.** Does `SET TimeZone = '...'` work without an explicit `INSTALL icu; LOAD icu`? Which zone shapes are accepted?
+**Question.** Does `SET TimeZone = '...'` work without an explicit `INSTALL icu; LOAD icu`? Which zone shapes are accepted? Can fixed offsets be translated to `Etc/GMT±N`?
 
-**Answer — named IANA zones work; fixed-offset shapes do NOT.**
+**Answer — named IANA zones work; fixed-offset shapes do NOT; `Etc/GMT±N` translation works with POSIX sign inversion.**
 
 | Zone literal | Without ICU loaded | After `INSTALL icu; LOAD icu` |
 |---|---|---|
@@ -43,11 +43,30 @@ All three writer-zone rows produce **identical** rendering and extraction in any
 
 Explicit `LOAD icu` does **not** change the accepted set in either direction — the duckdb-jdbc bundle already includes ICU functionality at startup (this is a known property of the Maven-published artifact; the explicit `LOAD icu` becomes a no-op). The error message suggests `GMT0` for `+00:00`, which hints DuckDB recognises a small POSIX-style zone set that does not include the `±HH:MM` shape Trino sometimes hands us.
 
-**Implication for pushdown.** The connector must normalise Trino's `TimeZoneKey` to a string DuckDB accepts before emitting `SET TimeZone`. Concretely:
-- Trino's `TimeZoneKey` covers both **named** zones (`America/Los_Angeles`, `UTC`) and **fixed-offset** zones (`+05:00`, `-08:00`).
-- For named zones: pass through verbatim.
-- For fixed-offset zones: translate `+HH:MM` / `-HH:MM` to the GMT-form DuckDB accepts (e.g. `+05:00` → `Etc/GMT-5` — note POSIX sign inversion). Verify the translation table empirically before shipping (probe extension to Q2 in a follow-up).
-- Or, the conservative shortcut: refuse Tier C pushdown when the Trino session zone isn't a named IANA zone DuckDB accepts. Log a one-shot WARN; Trino re-evaluates above the scan.
+### `Etc/GMT±N` translation table (probed empirically)
+
+POSIX-style `Etc/GMT±N` zones translate fixed offsets — with the documented sign inversion (a positive UTC offset gets a negative `Etc/GMT-N`). The probe set `TimeZone = 'Etc/GMT-N'` and rendered the reference instant `2024-06-15 12:00:00+00`:
+
+| Set `TimeZone` value | Rendered offset (= actual UTC offset) | Verdict |
+|---|---|---|
+| `Etc/GMT` | `+00:00` | UTC alias — OK |
+| `Etc/GMT0` | `+00:00` | UTC alias — OK |
+| `Etc/UTC` | `+00:00` | UTC alias — OK |
+| `Etc/GMT-5` | `+05:00` | UTC+5 (POSIX inversion) — OK |
+| `Etc/GMT+5` | `-05:00` | UTC-5 — OK |
+| `Etc/GMT-8` | `+08:00` | UTC+8 (Singapore-like) — OK |
+| `Etc/GMT+8` | `-08:00` | UTC-8 (LA-non-DST) — OK |
+| `Etc/GMT-12` | `+12:00` | far-east — OK |
+| `Etc/GMT+12` | `-12:00` | OK |
+| `Etc/GMT-14` | `+14:00` | Kiribati range — OK |
+| `Etc/GMT-5:30` | — | FAIL — `Unknown TimeZone 'Etc/GMT-5:30'!` |
+
+Integer hours only. Fractional offsets (India UTC+05:30, Newfoundland UTC-03:30, Chatham UTC+12:45) cannot be expressed as `Etc/GMT±N` and must be served by their named IANA zones (`Asia/Kolkata`, `America/St_Johns`, `Pacific/Chatham`) instead.
+
+**Implication for pushdown.** The connector must normalise Trino's `TimeZoneKey` to a string DuckDB accepts before emitting `SET TimeZone`. The candidate normaliser, validated end-to-end in Q3 below, has three rules:
+1. `Z` → `UTC`.
+2. `±HH:MM` with `MM == 00` → `Etc/GMT∓HH` (POSIX sign inversion).
+3. Anything else (named IANA, `UTC`, `GMT`, fractional offset) → pass through unchanged. DuckDB accepts the named cases; the fractional cases get cleanly rejected, and the caller falls back to "don't push Tier C this query."
 
 ## Q3 — embedded `jdbc:duckdb:` default `TimeZone`
 
@@ -66,11 +85,44 @@ A query whose result depends on session zone (which is most `TIMESTAMPTZ` querie
 
 The same applies to the in-process executor and (presumably) Quack; see Q4.
 
+## Q3 (extended) — Trino `TimeZoneKey` → DuckDB `SET TimeZone` propagation
+
+**Question.** Can the connector mechanically read Trino's session zone, normalise it, and `SET TimeZone` on DuckDB such that subsequent extracts match what Trino itself would compute? Probe via a candidate normaliser run against a curated set of `TimeZoneKey`-shaped inputs, with `java.time` as the ground truth (since Trino's runtime uses `java.time` for the same calculations).
+
+**Answer — works end-to-end for every named IANA zone and every integer-hour offset; cleanly refuses fractional offsets.**
+
+14 inputs covering the realistic `TimeZoneKey` shape space, extracting `year(TIMESTAMPTZ '2024-12-31 22:00:00+00')` and `hour(...)`. Verdict = result match between DuckDB extract and `Instant.atZone(ZoneId.of(trinoZone))`:
+
+| Trino zone | Normalised → DuckDB | DuckDB (year/hr) | java.time (year/hr) | Verdict |
+|---|---|---|---|---|
+| `UTC` | `UTC` | 2024 / 22 | 2024 / 22 | MATCH |
+| `GMT` | `GMT` | 2024 / 22 | 2024 / 22 | MATCH |
+| `Z` | `UTC` | 2024 / 22 | 2024 / 22 | MATCH |
+| `America/Los_Angeles` | passthrough | 2024 / 14 | 2024 / 14 | MATCH |
+| `Europe/Berlin` | passthrough | 2024 / 23 | 2024 / 23 | MATCH |
+| `Asia/Singapore` | passthrough | **2025 / 6** | **2025 / 6** | MATCH (year-boundary smoking gun) |
+| `Asia/Kolkata` (UTC+05:30) | passthrough | 2025 / 3 | 2025 / 3 | MATCH (fractional offset survives via named IANA) |
+| `Pacific/Chatham` (UTC+12:45) | passthrough | 2025 / 11 | 2025 / 11 | MATCH |
+| `+00:00` | `Etc/GMT-0` | 2024 / 22 | 2024 / 22 | MATCH |
+| `+05:00` | `Etc/GMT-5` | 2025 / 3 | 2025 / 3 | MATCH |
+| `-08:00` | `Etc/GMT+8` | 2024 / 14 | 2024 / 14 | MATCH |
+| `+14:00` | `Etc/GMT-14` | 2025 / 12 | 2025 / 12 | MATCH |
+| `+05:30` | `+05:30` (no translation possible) | — | (n/a) | DUCK-FAIL — `Unknown TimeZone '+05:30'!` |
+| `-03:30` | `-03:30` | — | (n/a) | DUCK-FAIL |
+
+**Take.** The three-rule normaliser is correct as designed: every integer-hour offset and every named IANA zone produces extracts that exactly match `java.time`. Fractional bare-offset shapes (`+05:30`, `-03:30`) fail cleanly with a useful DuckDB error message — the right outcome, because there's no integer-hour `Etc/GMT-N` that means UTC+5:30. The two callers of this normaliser are:
+- **The attach hook** — try `SET TimeZone = '<normalised>'`. On failure, log a one-shot WARN and disable Tier C pushdown for this attach.
+- **Per-query gate** (optional second layer) — if the session zone is fractional-offset bare-form, refuse Tier C even on a successful attach (a session that bound a non-fractional zone but later switched to one would otherwise leak).
+
+In practice fractional offsets in Trino almost always arrive as the corresponding named IANA zone (`Asia/Kolkata` rather than `+05:30`), so the failure mode is narrow.
+
 ## Q4 — `InProcessDuckDbExecutor` vs. `QuackDuckDbExecutor` parity
 
 **Question.** Does `SET TimeZone` + extract behave identically on both executor paths?
 
-**In-process — confirmed.** Probe ran the extract sequence inside the in-process JDBC driver across three session zones; results matched the documented DuckDB semantics in every case:
+**Answer — yes, byte-for-byte parity confirmed.**
+
+In-process probe across three session zones:
 
 | Session `TimeZone` | `year(TIMESTAMPTZ '2024-12-31 22:00:00+00')` | `hour(...)` |
 |---|---|---|
@@ -78,29 +130,27 @@ The same applies to the in-process executor and (presumably) Quack; see Q4.
 | `America/Los_Angeles` | 2024 | 14 |
 | `Asia/Singapore` | **2025** | **6** |
 
-The Singapore result is the smoking gun for the year-boundary test case in `PLAN-pushdown-datetime.md` — the same instant produces a different `year()` depending on session zone.
+Quack-container probe (`ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity`): spins `TestingDucklakeQuackEngineServer`, opens a local JDBC client wired to it via the quack extension, ships `SET TimeZone = '...'` and `SELECT year(TIMESTAMPTZ ...)` server-side via `quack_query_by_name`, reads back through Arrow:
 
-`TIMESTAMP` (no TZ) and `DATE` returned `2024 / 22` and `2024` in every session, confirming the wall-clock-invariant claim.
+| Session `TimeZone` (server-side) | Quack `year(TIMESTAMPTZ)` | Quack `hour(TIMESTAMPTZ)` | Quack `year(TIMESTAMP)` | Quack `hour(TIMESTAMP)` |
+|---|---|---|---|---|
+| `UTC` | 2024 | 22 | 2024 | 22 |
+| `America/Los_Angeles` | 2024 | 14 | 2024 | 22 |
+| `Asia/Singapore` | **2025** | **6** | 2024 | 22 |
 
-**Quack — not probed in this round.** The Quack executor runs DuckDB in a separate process via a Testcontainers-managed container; running the probe inside the Quack process requires spinning the container. The published Quack image bundles the same DuckDB build the project's JDBC driver uses, so parity is the expected outcome — but **verifying this is the step-4 implementation PR's job**, not this report's. Concrete check for that PR:
+**Every cell matches in-process.** The Singapore year-boundary smoking gun fires through Quack RPC just as it does locally — same behaviour, same DuckDB underneath. Wall-clock columns (`TIMESTAMP` no-TZ) are session-zone invariant on both paths, as expected.
 
-```
-./gradlew -Dducklake.test.catalog-backend=DUCKDB_QUACK :trino-ducklake:test \
-    --tests "*TestDucklakeDuckDbReadMode*"
-```
-
-After Tier-C `SET TimeZone` plumbing is wired, add a test that asserts the same year-boundary smoking gun returns the right row through the Quack backend. If results diverge from in-process, the divergence is most likely (a) a different DuckDB binary in the container image, or (b) the container's `LD_LIBRARY_PATH` not exposing ICU. Both are fixable inside the container's Dockerfile; neither is a plan-blocker.
+This was the most consequential validation: it pins parity for both halves of the executor abstraction so the step-4 implementation PR can land `SET TimeZone` on attach knowing both backends honour it. The `TrinoFunctionAliases.applyDirect` pattern that already runs identically on both executors is the precedent — add `SET TimeZone` to the same hook and both paths inherit it.
 
 ## Implications summary (for the step-4 implementation PR)
 
-1. **Set `TimeZone` on every attach, unconditionally.** Even Tier A/B work benefits from a deterministic baseline. Lands alongside the existing `TrinoFunctionAliases.applyDirect(stmt)` call in both `InProcessDuckDbExecutor:70` and `QuackDuckDbExecutor` (similar attach hook).
-2. **Normalise Trino's `TimeZoneKey` before emitting SQL.** Named IANA zones pass through; fixed-offset zones either get translated to `Etc/GMT±N` or block Tier C pushdown (TBD).
-3. **No ICU dependency to assert.** ICU is already in the JDBC bundle and behaves as if loaded at startup. The existing best-effort `INSTALL icu; LOAD icu` in `TrinoFunctionAliases` is harmless but not load-bearing for zone resolution. Note for the step-4 PR: don't gate Tier C pushdown on `LOAD icu` success — gate it on `SET TimeZone` success instead.
+1. **Set `TimeZone` on every attach, unconditionally.** Even Tier A/B work benefits from a deterministic baseline (the Costa Rica → CI default-divergence story from Q3). Lands alongside the existing `TrinoFunctionAliases.applyDirect(stmt)` call in both `InProcessDuckDbExecutor:70` and the equivalent server-side hook in `QuackDuckDbExecutor`. Q4b confirms both paths honour `SET TimeZone` byte-for-byte identically.
+2. **Use the validated three-rule normaliser** (Q3 table): `Z` → `UTC`; `±HH:MM` with `MM == 00` → `Etc/GMT∓HH` (POSIX inversion); everything else passes through. Validated against `java.time` ground truth for 12 of 14 representative shapes; the remaining 2 (fractional bare offsets) fail cleanly with a useful DuckDB error.
+3. **No ICU dependency to assert.** ICU is already in the JDBC bundle and behaves as if loaded at startup. The existing best-effort `INSTALL icu; LOAD icu` in `TrinoFunctionAliases` is harmless but not load-bearing for zone resolution. Don't gate Tier C pushdown on `LOAD icu` success — gate on `SET TimeZone` success.
 4. **DuckLake storage drops the zone.** Tier C correctness lives entirely on the session-`TimeZone` knob. There is no per-column zone metadata to interrogate.
 5. **`ProbeDuckDbTimeZoneHandling` deletion**: delete the probe class once the step-4 implementation PR lands and its findings are baked into shipped tests. Matches the deleted-probe precedent in [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md).
 
 ## Open follow-up probes (NOT blockers for the step-4 PR)
 
-- Fixed-offset zone translation table: probe `Etc/GMT+5` / `Etc/GMT-5` etc. against expected Trino offsets to pin the sign convention before emitting normalised SQL.
-- DST history accuracy: probe a date in `Europe/Moscow` pre-2014 (Russia's permanent DST change) — does DuckDB's ICU agree with Trino's `java.time` tz database version? Likely yes (both use IANA), but worth one explicit check.
-- Quack-container in-process probe parity: re-run `ProbeDuckDbTimeZoneHandling`-equivalent SQL inside the Quack container during the step-4 PR's verification step.
+- **DST history accuracy across engines.** Both DuckDB ICU and Trino `java.time` use IANA, but the tzdb version they were built against can differ. Probe a date in `Europe/Moscow` pre-2014 (Russia's permanent DST change) and `America/Mexico_City` pre-2022 (DST abolition) — if DuckDB and `java.time` disagree on the offset for any historical instant, we have to either pin tzdb versions in the Quack container build or refuse to push for the affected window. Low-risk but cheap to verify.
+- **Mid-query session-zone change.** Trino allows `SET SESSION timezone = ...` within a query batch. The connector currently picks up the session at `applyFilter` time; if the session changes between the WHERE-clause planning and the page-source's executor attach, the zone the translator assumed might not match the zone the executor sets. Verify whether the in-flight session is stable across that boundary.
