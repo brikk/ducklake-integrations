@@ -94,15 +94,16 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
 - Step 6 (Lance table functions) — not started.
 
-### Catalog totals (as of round 6h)
+### Catalog totals (as of round 6i)
 
-- 74 `trino_meta()` rows / ~60 function names across 7 categories (string, numeric, regex, encoding, distance, hash, date).
+- 78 `trino_meta()` rows / ~62 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional).
 - 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
 - Round 6a shipped: `sign/1`, `bit_length/1`, `pi/0`, `bitwise_xor/2`, `regexp_replace/{2,3}` (with `'g'` flag for Trino-aligned global default).
 - Round 6b-core shipped: `md5/1`, `sha1/1`, `sha256/1` (via `unhex(...)` wrap for VARBINARY return type).
 - Round 6f shipped (translator): arithmetic ops `$add/$subtract/$multiply/$divide/$modulo`, `$coalesce` (variadic), `$nullif`, `$identical` (IS NOT DISTINCT FROM).
 - Round 6g shipped (macros): bitwise function-form `bitwise_and/or/not/left_shift/right_shift` + date convenience `year/month/day/quarter`.
 - Round 6h shipped (translator): `$cast` / `$try_cast` for primitive types (BOOLEAN/TINYINT/SMALLINT/INTEGER/BIGINT/DOUBLE/VARCHAR/DATE), plus `$negate` (unary minus).
+- Round 6i shipped (macros): `if/{2,3}`, `date_trunc/2`, `date_diff/3`. Plus end-to-end verification that `BETWEEN` already pushes (Trino's planner decomposes to `≥ AND ≤` before `applyFilter`, so the existing comparison + AND translators handle it without code change).
 
 ---
 

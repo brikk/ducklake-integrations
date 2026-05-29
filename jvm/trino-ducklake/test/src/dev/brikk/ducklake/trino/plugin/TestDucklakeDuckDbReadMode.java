@@ -219,6 +219,31 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testBetweenPredicateReturnsCorrectRows()
+    {
+        // BETWEEN is grammar in both engines; Trino's planner typically decomposes
+        // `x BETWEEN a AND b` into `x >= a AND x <= b` before applyFilter — both
+        // halves then push through TupleDomain (range constraint). No translator
+        // code is needed; this test confirms correctness end-to-end on the
+        // duckdb-format path.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.between_pushdown AS "
+                        + "SELECT * FROM (VALUES (1), (2), (3), (4), (5)) AS t(id)");
+        try {
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.between_pushdown WHERE id BETWEEN 2 AND 4 ORDER BY id");
+            assertThat(result.getRowCount()).isEqualTo(3);
+            assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(2);
+            assertThat(result.getMaterializedRows().get(1).getField(0)).isEqualTo(3);
+            assertThat(result.getMaterializedRows().get(2).getField(0)).isEqualTo(4);
+        }
+        finally {
+            tryDropTable("test_schema.between_pushdown");
+        }
+    }
+
+    @Test
     public void testArithmeticAndCoalescePushdownReturnsCorrectRows()
     {
         // End-to-end proof for the round-6e translator additions:

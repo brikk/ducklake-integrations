@@ -157,7 +157,12 @@ final class DuckDbExpressionTranslator
             new NameArity("year", 1),
             new NameArity("month", 1),
             new NameArity("day", 1),
-            new NameArity("quarter", 1));
+            new NameArity("quarter", 1),
+            // Round 6i — conditional + date arithmetic
+            new NameArity("if", 2),
+            new NameArity("if", 3),
+            new NameArity("date_trunc", 2),
+            new NameArity("date_diff", 3));
 
     /**
      * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}

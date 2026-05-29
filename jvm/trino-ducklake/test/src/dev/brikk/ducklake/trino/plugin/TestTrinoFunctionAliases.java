@@ -433,7 +433,31 @@ public class TestTrinoFunctionAliases
                 c("quarter 1: Q1", "quarter", 1,
                         "SELECT trino_quarter(DATE '2024-02-15')", 1L),
                 c("quarter 1: Q3", "quarter", 1,
-                        "SELECT trino_quarter(DATE '2024-08-15')", 3L));
+                        "SELECT trino_quarter(DATE '2024-08-15')", 3L),
+                // Round 6i — conditional + date arithmetic
+                c("if 2: true branch", "if", 2,
+                        "SELECT trino_if(true, 'yes')", "yes"),
+                c("if 2: false returns NULL", "if", 2,
+                        "SELECT trino_if(false, 'yes')", null),
+                c("if 3: true branch", "if", 3,
+                        "SELECT trino_if(true, 'a', 'b')", "a"),
+                c("if 3: false branch", "if", 3,
+                        "SELECT trino_if(false, 'a', 'b')", "b"),
+                c("date_trunc 2: month on DATE returns TIMESTAMP-typed value", "date_trunc", 2,
+                        // DuckDB's date_trunc returns TIMESTAMP even for DATE input; Trino's
+                        // returns DATE in the same case. The values are numerically equivalent
+                        // — for typical WHERE predicates DuckDB auto-casts DATE to TIMESTAMP
+                        // at midnight so comparisons align. Pinning the actual format here.
+                        "SELECT CAST(trino_date_trunc('month', DATE '2024-03-15') AS VARCHAR)",
+                        "2024-03-01 00:00:00"),
+                c("date_trunc 2: day on TIMESTAMP", "date_trunc", 2,
+                        "SELECT CAST(trino_date_trunc('day', TIMESTAMP '2024-01-15 12:34:56') AS VARCHAR)",
+                        "2024-01-15 00:00:00"),
+                c("date_diff 3: days", "date_diff", 3,
+                        "SELECT trino_date_diff('day', DATE '2024-01-01', DATE '2024-01-15')", 14L),
+                c("date_diff 3: month boundary", "date_diff", 3,
+                        // Both engines count boundary crossings, not whole units elapsed.
+                        "SELECT trino_date_diff('month', DATE '2024-01-31', DATE '2024-02-01')", 1L));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

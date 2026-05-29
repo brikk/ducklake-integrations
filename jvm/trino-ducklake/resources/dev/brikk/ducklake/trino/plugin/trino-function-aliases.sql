@@ -262,6 +262,34 @@ CREATE OR REPLACE MACRO trino_month(x) AS month(x);
 CREATE OR REPLACE MACRO trino_day(x) AS day(x);
 CREATE OR REPLACE MACRO trino_quarter(x) AS quarter(x);
 
+-- ---- Round 6i — Conditional `if` + date arithmetic ----
+
+-- if(cond, then[, else]) — Trino's if function. Both engines align on the
+-- 3-arg form; for Trino's 2-arg form (returns NULL when false) we wrap with an
+-- explicit NULL else.
+CREATE OR REPLACE MACRO trino_if
+    (cond, t)    AS if(cond, t, NULL),
+    (cond, t, f) AS if(cond, t, f);
+
+-- date_trunc(unit, x) — both engines aligned for the common unit names:
+-- 'second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'.
+-- DuckDB adds 'microseconds', 'milliseconds', 'decade', 'century', 'millennium'
+-- which Trino lacks; calling with those from Trino-side will error in DuckDB
+-- (Trino's planner wouldn't generate them, so this is theoretical).
+--
+-- ⚠️ Return-type caveat: DuckDB's date_trunc always returns TIMESTAMP, even on
+-- DATE input. Trino's date_trunc preserves the input type (DATE → DATE for
+-- unit ≥ day). For predicates like `date_trunc(unit, col) = literal`, DuckDB
+-- auto-casts DATE literals to TIMESTAMP at midnight so the comparison still
+-- aligns. If a future use case puts the result in a place where DATE vs
+-- TIMESTAMP matters at the type level, revisit.
+CREATE OR REPLACE MACRO trino_date_trunc(unit, x) AS date_trunc(unit, x);
+
+-- date_diff(unit, t1, t2) — both engines return the integer count of unit
+-- boundaries crossed, not whole units elapsed. e.g.
+-- date_diff('month', '2024-01-31', '2024-02-01') = 1 in both engines.
+CREATE OR REPLACE MACRO trino_date_diff(unit, t1, t2) AS date_diff(unit, t1, t2);
+
 -- ---- Catalog of aliased functions ----
 --
 -- One row per (trino_name, arg_count) the translator may push down. The
@@ -355,5 +383,10 @@ SELECT * FROM (
         ('year',         1, 'date'),
         ('month',        1, 'date'),
         ('day',          1, 'date'),
-        ('quarter',      1, 'date')
+        ('quarter',      1, 'date'),
+        -- Round 6i — conditional + date arithmetic
+        ('if',           2, 'conditional'),
+        ('if',           3, 'conditional'),
+        ('date_trunc',   2, 'date'),
+        ('date_diff',    3, 'date')
 ) AS t(trino_name, arg_count, category);
