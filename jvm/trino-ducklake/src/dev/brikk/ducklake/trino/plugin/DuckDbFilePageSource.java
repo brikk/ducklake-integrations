@@ -25,6 +25,7 @@ import org.apache.arrow.vector.ipc.ArrowReader;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Optional;
 
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
@@ -74,14 +75,16 @@ final class DuckDbFilePageSource
             List<DucklakeColumnHandle> columns,
             List<Type> columnTypes,
             TupleDomain<DucklakeColumnHandle> effectivePredicate,
-            List<String> pushedExpressions)
+            List<String> pushedExpressions,
+            Optional<String> duckDbTimeZone)
     {
         this.executor = requireNonNull(executor, "executor is null");
         this.request = new DucklakeDuckDbExecutor.ExecutionRequest(
                 requireNonNull(attachTarget, "attachTarget is null"),
                 List.copyOf(requireNonNull(columns, "columns is null")),
                 requireNonNull(effectivePredicate, "effectivePredicate is null"),
-                List.copyOf(requireNonNull(pushedExpressions, "pushedExpressions is null")));
+                List.copyOf(requireNonNull(pushedExpressions, "pushedExpressions is null")),
+                requireNonNull(duckDbTimeZone, "duckDbTimeZone is null"));
         this.converter = new DucklakeArrowToPageConverter(columnTypes);
         this.emptyProjection = this.request.isEmptyProjection();
     }

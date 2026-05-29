@@ -19,6 +19,7 @@ import org.apache.arrow.vector.ipc.ArrowReader;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Execution-engine strategy for the DuckDB-format read path. Owns the JDBC /
@@ -75,16 +76,30 @@ interface DucklakeDuckDbExecutor
      *                          to DuckDB (e.g. {@code trino_lower("c") = 'a'});
      *                          AND-ed into the WHERE alongside the
      *                          TupleDomain-derived clause
+     * @param duckDbTimeZone    optional DuckDB-acceptable zone identifier the
+     *                          executor should pass to {@code SET TimeZone}
+     *                          immediately after attach; carries Trino's session
+     *                          {@code TimeZoneKey} after normalisation through
+     *                          {@link TrinoTimeZoneNormaliser}. Empty when the
+     *                          caller has no session (most tests). When present
+     *                          the executor MAY fail to apply it (e.g.
+     *                          fractional-offset zone that DuckDB rejects) —
+     *                          such failure is logged and execution continues
+     *                          without a {@code SET TimeZone}, compromising
+     *                          Tier C pushdown correctness for this attach but
+     *                          leaving Tier A/B unaffected.
      */
     record ExecutionRequest(
             DuckDbAttachTarget target,
             List<DucklakeColumnHandle> projectedColumns,
             TupleDomain<DucklakeColumnHandle> pushedPredicate,
-            List<String> pushedExpressions)
+            List<String> pushedExpressions,
+            Optional<String> duckDbTimeZone)
     {
         public ExecutionRequest
         {
             pushedExpressions = pushedExpressions == null ? List.of() : List.copyOf(pushedExpressions);
+            duckDbTimeZone = duckDbTimeZone == null ? Optional.empty() : duckDbTimeZone;
         }
 
         public ExecutionRequest(
@@ -92,7 +107,16 @@ interface DucklakeDuckDbExecutor
                 List<DucklakeColumnHandle> projectedColumns,
                 TupleDomain<DucklakeColumnHandle> pushedPredicate)
         {
-            this(target, projectedColumns, pushedPredicate, List.of());
+            this(target, projectedColumns, pushedPredicate, List.of(), Optional.empty());
+        }
+
+        public ExecutionRequest(
+                DuckDbAttachTarget target,
+                List<DucklakeColumnHandle> projectedColumns,
+                TupleDomain<DucklakeColumnHandle> pushedPredicate,
+                List<String> pushedExpressions)
+        {
+            this(target, projectedColumns, pushedPredicate, pushedExpressions, Optional.empty());
         }
 
         public boolean isEmptyProjection()

@@ -17,8 +17,8 @@ These three docs together are the full context. The agent doing the work does NO
 ## Status
 
 - Chunk 1 — ✅ shipped (round 6j). 12 new macros, type-gate registry in translator, 13 unit tests, 3 e2e tests, 775 total tests green. See "Chunk 1 — shipped notes" below.
-- Chunk 2 — ⏳ not started (no longer blocked).
-- Chunk 3 — ⏳ not started (blocked by Chunk 2).
+- Chunk 2 — ✅ shipped. `TrinoTimeZoneNormaliser` in production, threaded through `DucklakePageSourceProvider → DuckDbFilePageSource → ExecutionRequest`, `SET TimeZone` applied at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor` (via `quack_query_by_name`), 14 normaliser unit tests + 2 executor-level integration tests (positive LA, positive Singapore, parity through Quack, control mismatch) + 1 Trino-runner stability test (Tier A/B results invariant across 4 session zones). 791 total tests green. See "Chunk 2 — shipped notes" below.
+- Chunk 3 — ⏳ not started (no longer blocked).
 
 ### Chunk 1 — shipped notes
 
@@ -28,6 +28,19 @@ The actual implementation differed from the original plan in two places worth re
 2. **DuckDB function names corrected via probe.** The Plan's candidate macro bodies referenced DuckDB functions that do not exist as bare names (`isoweek`, `isoyear`, `last_day_of_month`, `day_of_year`). Probed empirically — DuckDB's `week()` is already ISO-aligned, `last_day` (no `_of_month` suffix) returns the right value, `dayofyear` (single token) works, and there is no bare `isoyear` — reach it via `extract('isoyear' FROM d)::BIGINT`. Macro bodies in `trino-function-aliases.sql` use the actual function names.
 
 Sparse type-gate registry: `TYPE_GATES` is a `Map<NameArity, ArgTypeGate>` that complements `PUSHABLE_FUNCTIONS` (still a `Set<NameArity>` — preserves the existing `testJavaPushableSetMatchesDuckDbMeta` parity guard's contract). Entries without a gate implicitly accept any types (preserves shipped string/numeric/regex behaviour). The Chunk 2 session-property gate for Tier C can layer on top of this same registry — add an `ArgTypeGate` that also consults the session property; no further refactor needed.
+
+### Chunk 2 — shipped notes
+
+Implementation details worth recording for the Chunk 3 agent:
+
+1. **Normaliser API**: `TrinoTimeZoneNormaliser.normalise(String)` returns a string DuckDB *might* accept. Pass-through is used for unknown shapes (fractional bare offsets like `+05:30`); the caller catches DuckDB's `Unknown TimeZone` exception and one-shot-warns. This keeps the "what zones DuckDB knows" knowledge inside DuckDB itself rather than maintaining a list on the Java side. Three-rule contract: `Z` → `UTC`; `±HH:00` → `Etc/GMT∓HH` (POSIX inversion); everything else passes through.
+2. **`ExecutionRequest` extended (record)**: added `Optional<String> duckDbTimeZone` as a fifth component, with two new overloaded constructors that default it to `Optional.empty()` so existing test fixtures (`TestDucklakeDuckDbExecutorBackends.bothBackendsHonourEmptyProjection` and similar) continue to compile + pass without modification.
+3. **In-process attach hook**: `InProcessDuckDbExecutor.execute` runs `applySessionTimeZone(stmt, request.duckDbTimeZone())` immediately after `TrinoFunctionAliases.applyDirect` and the file ATTACH. One-shot warn per (normalised) zone string on `SQLException`; cached in a `ConcurrentHashMap<String, Boolean>` field — survives across executor instances (a new fresh DuckDB connection per split would otherwise re-fire the warn for every split with a problematic zone).
+4. **Quack attach hook**: `QuackDuckDbExecutor.execute` runs `applyServerSideTimeZone(init, request.duckDbTimeZone())` after the server-side `ATTACH`. Uses `drainWrappedQuery(stmt, "SET TimeZone = '...'")` — same `quack_query_by_name`-wrapper pattern the function-aliases loop uses. Persistence across calls in the same client session was the most consequential unknown going in; the executor-level integration test (`sessionTimeZonePropagatesToBothBackends`) pins that persistence is real, with a control case where LA-zone request + Singapore-rendered cast predicate returns zero rows — proves DuckDB consulted the requested zone and not some incidental default.
+5. **No connection pool, no key changes**: each split spins a fresh DuckDB connection (Q4 / chunk 0 survey), so per-split `SET TimeZone` carries no cross-session leak risk. The chunk 3 agent can rely on this invariant.
+6. **Tier A/B regression check**: `TestDucklakeDuckDbReadMode#testTierABPushdownStableUnderSessionTimeZoneChange` iterates UTC / LA / Berlin / Singapore session zones against the shipped Tier A/B macros (`day_of_week`, `year_of_week`, `hour`) on DATE / TIMESTAMP-no-TZ columns — all four zones produce identical row counts, confirming the chunk 2 plumbing doesn't break wall-clock invariance.
+
+**For chunk 3**: the type-gate registry from chunk 1 is the right hook for the session-property gate. Suggested shape — add an `ArgTypeGate` factory that consults `session.getProperty(PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, Boolean.class)`. The gate sits inside `translateConjuncts`, which today receives `Map<String, ColumnHandle> assignments` but no session. The lightest-touch refactor: extend `translateConjuncts` to also accept the session (or just the boolean property value), thread through `DucklakeMetadata.applyFilter` (which already has the session). Tier C `year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff` then get gates that ALSO accept `TimestampWithTimeZoneType` when the property is on. New Tier C-only entries (`at_timezone`, `with_timezone`, `from_unixtime`) get their own entries with the same conditional gate.
 
 ---
 

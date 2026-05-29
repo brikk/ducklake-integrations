@@ -603,8 +603,19 @@ public class DucklakePageSourceProvider
         TupleDomain<DucklakeColumnHandle> filePredicate = effectivePredicate.filter(
                 (col, _) -> fileColumns.contains(col));
 
+        // Carry Trino's session zone through to the executor so it can run
+        // `SET TimeZone` on attach. Required for Tier C correctness (TIMESTAMP
+        // WITH TIME ZONE pushdown) and harmlessly deterministic for Tier A/B
+        // (DuckDB's default zone is the JVM system TZ — Costa Rica on a dev box,
+        // UTC in CI — so an explicit SET is the only way to make duckdb-format
+        // reads reproducible across deployment environments). See
+        // dev-docs/REPORT-datetime-tz-handling.md.
+        Optional<String> duckDbTimeZone = Optional.ofNullable(
+                TrinoTimeZoneNormaliser.normalise(session.getTimeZoneKey().getId()));
+
         ConnectorPageSource pageSource = new DuckDbFilePageSource(
-                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, pushedExpressions);
+                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, pushedExpressions,
+                duckDbTimeZone);
 
         if (rowIdOutputPosition >= 0) {
             pageSource = new RowIdInjectingPageSource(pageSource, fileColumns.size(), rowIdOutputPosition, split.rowIdStart());

@@ -69,6 +69,7 @@ final class InProcessDuckDbExecutor
                 DuckDbTuningSql.applyDirect(attachStmt, tuning);
                 TrinoFunctionAliases.applyDirect(attachStmt);
                 attachStmt.execute(buildAttachSql(request.target(), attachStmt));
+                applySessionTimeZone(attachStmt, request.duckDbTimeZone());
             }
             String selectSql = buildSelectSql(request);
             statement = connection.createStatement();
@@ -138,6 +139,45 @@ final class InProcessDuckDbExecutor
                 r.close();
             }
             catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> TIMEZONE_FAILURE_WARNED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Best-effort {@code SET TimeZone = '<zone>'} after attach. Empty Optional
+     * is a no-op (test harness paths without a session). On SQLException we log
+     * a one-shot WARN per (already-normalised) zone string and proceed — the
+     * connection is still usable for Tier A/B work which doesn't care about the
+     * session zone. Tier C correctness is compromised for this split, but
+     * Tier C functions stay off the pushdown surface until chunk 3 anyway,
+     * so the only visible effect today is that {@code current_setting('TimeZone')}
+     * on the executor side reflects the JVM system default rather than Trino's
+     * session zone.
+     */
+    private static void applySessionTimeZone(Statement stmt, java.util.Optional<String> zone)
+    {
+        if (zone.isEmpty()) {
+            return;
+        }
+        String z = zone.get();
+        // Single-quote escape: defence in depth — the normaliser only emits values
+        // from a fixed grammar (IANA zone names, Etc/GMT±N, the original Trino
+        // string for fractional offsets), none of which contain quotes, but the
+        // string comes from session config and we treat it as untrusted by habit.
+        String sql = "SET TimeZone = '" + z.replace("'", "''") + "'";
+        try {
+            stmt.execute(sql);
+        }
+        catch (SQLException e) {
+            if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, Boolean.TRUE) == null) {
+                log.warn("DuckDB rejected SET TimeZone for normalised zone '%s' (in-process): %s. "
+                                + "Subsequent splits with the same zone proceed without an explicit "
+                                + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "
+                                + "See dev-docs/REPORT-datetime-tz-handling.md.",
+                        z, e.getMessage().lines().findFirst().orElse(e.getMessage()));
             }
         }
     }

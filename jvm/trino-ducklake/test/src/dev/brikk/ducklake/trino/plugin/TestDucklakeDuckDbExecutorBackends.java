@@ -30,6 +30,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import static io.trino.spi.type.IntegerType.INTEGER;
@@ -170,6 +171,113 @@ final class TestDucklakeDuckDbExecutorBackends
 
         assertThat(inProcessRows).isEqualTo(3L);
         assertThat(quackRows).isEqualTo(inProcessRows);
+    }
+
+    @Test
+    void sessionTimeZonePropagatesToBothBackends() throws Exception
+    {
+        // End-to-end proof that ExecutionRequest.duckDbTimeZone causes both
+        // executors to issue `SET TimeZone = '<zone>'` server-side after attach.
+        //
+        // Observation strategy: a pushed CAST(timestamptz_col AS VARCHAR)
+        // predicate. The rendering of TIMESTAMPTZ in DuckDB depends on the
+        // session TimeZone, so the predicate matches the row iff DuckDB actually
+        // set the requested zone. A control case with the wrong rendering must
+        // match zero rows — proves the zone is being consulted, not ignored.
+        //
+        // We don't go through Trino here (no QueryRunner); this is an
+        // executor-level integration test that pins the wire-up.
+
+        Path tzDb = sharedDir.resolve("tz.db");
+        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:" + tzDb.toAbsolutePath());
+                Statement s = conn.createStatement()) {
+            s.execute("CREATE TABLE " + TABLE_NAME + " (id INTEGER, ts TIMESTAMPTZ)");
+            // Same instant written from a UTC session.
+            s.execute("SET TimeZone = 'UTC'");
+            s.execute("INSERT INTO " + TABLE_NAME
+                    + " VALUES (1, TIMESTAMPTZ '2024-06-15 12:00:00+00')");
+        }
+
+        Path inProcessPath = tzDb;
+        Path quackPath = Path.of("/data/tz.db");
+        List<DucklakeColumnHandle> projection = List.of(
+                new DucklakeColumnHandle(1, "id", INTEGER, false));
+
+        // --- Positive case: LA-zone request + LA-rendered cast predicate matches.
+        DucklakeDuckDbExecutor.ExecutionRequest laMatch = new DucklakeDuckDbExecutor.ExecutionRequest(
+                new DuckDbAttachTarget.LocalPath(inProcessPath),
+                projection,
+                TupleDomain.all(),
+                List.of("CAST(\"ts\" AS VARCHAR) = '2024-06-15 05:00:00-07'"),
+                Optional.of("America/Los_Angeles"));
+        try (DucklakeDuckDbExecutor.ExecutionContext ctx =
+                new InProcessDuckDbExecutor().execute(laMatch)) {
+            assertThat(countRows(ctx.arrowReader()))
+                    .as("in-process: SET TimeZone='America/Los_Angeles' must take effect so the "
+                            + "CAST(ts AS VARCHAR) predicate matches the LA-rendered string")
+                    .isEqualTo(1L);
+        }
+        DucklakeDuckDbExecutor.ExecutionRequest laMatchQuack = new DucklakeDuckDbExecutor.ExecutionRequest(
+                new DuckDbAttachTarget.LocalPath(quackPath),
+                projection,
+                TupleDomain.all(),
+                List.of("CAST(\"ts\" AS VARCHAR) = '2024-06-15 05:00:00-07'"),
+                Optional.of("America/Los_Angeles"));
+        try (DucklakeDuckDbExecutor.ExecutionContext ctx =
+                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken())
+                        .execute(laMatchQuack)) {
+            assertThat(countRows(ctx.arrowReader()))
+                    .as("Quack: SET TimeZone='America/Los_Angeles' issued via quack_query_by_name "
+                            + "must persist for the subsequent SELECT in the same client session")
+                    .isEqualTo(1L);
+        }
+
+        // --- Singapore-zone request + Singapore-rendered cast predicate matches.
+        DucklakeDuckDbExecutor.ExecutionRequest sg = new DucklakeDuckDbExecutor.ExecutionRequest(
+                new DuckDbAttachTarget.LocalPath(inProcessPath),
+                projection,
+                TupleDomain.all(),
+                List.of("CAST(\"ts\" AS VARCHAR) = '2024-06-15 20:00:00+08'"),
+                Optional.of("Asia/Singapore"));
+        try (DucklakeDuckDbExecutor.ExecutionContext ctx =
+                new InProcessDuckDbExecutor().execute(sg)) {
+            assertThat(countRows(ctx.arrowReader()))
+                    .as("Singapore session zone produces a different rendering of the same instant")
+                    .isEqualTo(1L);
+        }
+
+        // --- Control: LA zone, but Singapore-rendered predicate — must NOT match.
+        // If this matched, the zone wouldn't be consulted; the test would pass for
+        // the wrong reason (DuckDB rendering in some other default zone that happens
+        // to coincide). This pins "the zone we requested is the zone DuckDB used."
+        DucklakeDuckDbExecutor.ExecutionRequest mismatched = new DucklakeDuckDbExecutor.ExecutionRequest(
+                new DuckDbAttachTarget.LocalPath(inProcessPath),
+                projection,
+                TupleDomain.all(),
+                List.of("CAST(\"ts\" AS VARCHAR) = '2024-06-15 20:00:00+08'"),
+                Optional.of("America/Los_Angeles"));
+        try (DucklakeDuckDbExecutor.ExecutionContext ctx =
+                new InProcessDuckDbExecutor().execute(mismatched)) {
+            assertThat(countRows(ctx.arrowReader()))
+                    .as("LA session zone must NOT render the instant the way Singapore does")
+                    .isEqualTo(0L);
+        }
+    }
+
+    @Test
+    void executionRequestWithoutTimeZoneStillWorks() throws Exception
+    {
+        // Backward-compat: callers that don't supply a zone (every test fixture
+        // until this chunk) must still execute correctly. The executor sees an
+        // empty Optional and skips SET TimeZone entirely.
+        DucklakeDuckDbExecutor.ExecutionRequest noZone = new DucklakeDuckDbExecutor.ExecutionRequest(
+                new DuckDbAttachTarget.LocalPath(dbFile),
+                List.of(new DucklakeColumnHandle(1, "id", INTEGER, false)),
+                TupleDomain.all());
+        try (DucklakeDuckDbExecutor.ExecutionContext ctx =
+                new InProcessDuckDbExecutor().execute(noZone)) {
+            assertThat(countRows(ctx.arrowReader())).isEqualTo(3L);
+        }
     }
 
     private static List<List<Object>> drain(ArrowReader reader, int columnCount) throws IOException

@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import io.trino.Session;
+import io.trino.spi.type.TimeZoneKey;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
@@ -437,6 +438,54 @@ public class TestDucklakeDuckDbReadMode
         }
         finally {
             tryDropTable("test_schema.hour_pushdown");
+        }
+    }
+
+    @Test
+    public void testTierABPushdownStableUnderSessionTimeZoneChange()
+    {
+        // Chunk 2 plumbing wired Trino's session TimeZoneKey through the page
+        // source provider so both executors run `SET TimeZone = '<normalised>'`
+        // on attach. Tier A/B functions are wall-clock invariant (DATE / TIMESTAMP
+        // no-TZ extracts ignore session zone in both engines), so the same
+        // queries that worked under the JVM-default zone must keep producing
+        // identical results under any other zone. A regression that broke the
+        // SET TimeZone wiring (e.g. malformed SQL, wrong-shape normaliser
+        // output) would either fail the attach or shift the date components.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.tz_stable AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, DATE '2024-01-07', TIMESTAMP '2024-12-31 22:30:00'), "
+                        + "  (2, DATE '2024-12-30', TIMESTAMP '2024-06-15 12:00:00')"
+                        + ") AS t(id, d, ts)");
+        try {
+            for (String zoneId : new String[]{
+                    "UTC", "America/Los_Angeles", "Europe/Berlin", "Asia/Singapore"}) {
+                Session zonedSession = Session.builder(sessionWith(READ_MODE_MATERIALIZE))
+                        .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(zoneId))
+                        .build();
+                // Tier A (DATE-only): day_of_week ISO numbering must stay stable.
+                MaterializedResult dow = computeActual(zonedSession,
+                        "SELECT id FROM test_schema.tz_stable WHERE day_of_week(d) = 7");
+                assertThat(dow.getRowCount()).as("zone=%s: ISO Sunday match must be stable", zoneId).isEqualTo(1);
+                assertThat(dow.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+                // Tier A: year_of_week boundary ('2024-12-30' Monday → ISO year 2025)
+                // is wall-clock-invariant for a DATE column. Must hold under every session zone.
+                MaterializedResult yow = computeActual(zonedSession,
+                        "SELECT id FROM test_schema.tz_stable WHERE year_of_week(d) = 2025");
+                assertThat(yow.getRowCount()).as("zone=%s: ISO year smoking gun must be stable", zoneId).isEqualTo(1);
+                assertThat(yow.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+
+                // Tier B (TIMESTAMP no-TZ): hour() reads the wall clock directly.
+                MaterializedResult hr = computeActual(zonedSession,
+                        "SELECT id FROM test_schema.tz_stable WHERE hour(ts) = 22");
+                assertThat(hr.getRowCount()).as("zone=%s: wall-clock hour must be stable", zoneId).isEqualTo(1);
+                assertThat(hr.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+            }
+        }
+        finally {
+            tryDropTable("test_schema.tz_stable");
         }
     }
 

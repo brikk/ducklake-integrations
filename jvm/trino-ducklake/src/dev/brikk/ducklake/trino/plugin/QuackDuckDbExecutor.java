@@ -128,6 +128,7 @@ final class QuackDuckDbExecutor
                 }
                 String attachServerSide = buildServerSideAttachSql(request.target(), serverAlias);
                 drainWrappedQuery(init, attachServerSide);
+                applyServerSideTimeZone(init, request.duckDbTimeZone());
             }
             String selectSql = wrapAsSelect(buildInnerSelectSql(request, serverAlias));
             statement = connection.createStatement();
@@ -259,6 +260,41 @@ final class QuackDuckDbExecutor
     private static String escapeLiteral(String value)
     {
         return value.replace("'", "''");
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> TIMEZONE_FAILURE_WARNED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Best-effort server-side {@code SET TimeZone = '<zone>'} via
+     * {@code quack_query_by_name}. The Quack server holds a long-lived DuckDB
+     * instance across many client RPCs, but each {@code quack_query_by_name}
+     * call lands in the same server-side {@code Connection} for this client
+     * session (verified empirically in
+     * {@code ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity}), so the
+     * setting persists for the subsequent SELECT in the same {@link #execute}
+     * call. Failure handling mirrors {@link InProcessDuckDbExecutor}: one-shot
+     * WARN per normalised zone, proceed without setting.
+     */
+    private static void applyServerSideTimeZone(Statement stmt, java.util.Optional<String> zone)
+    {
+        if (zone.isEmpty()) {
+            return;
+        }
+        String z = zone.get();
+        String innerSql = "SET TimeZone = '" + escapeLiteral(z) + "'";
+        try {
+            drainWrappedQuery(stmt, innerSql);
+        }
+        catch (SQLException e) {
+            if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, Boolean.TRUE) == null) {
+                log.warn("Quack server-side DuckDB rejected SET TimeZone for normalised zone '%s': %s. "
+                                + "Subsequent splits with the same zone proceed without an explicit "
+                                + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "
+                                + "See dev-docs/REPORT-datetime-tz-handling.md.",
+                        z, e.getMessage().lines().findFirst().orElse(e.getMessage()));
+            }
+        }
     }
 
     private static void closeQuietly(AutoCloseable... resources)
