@@ -334,6 +334,9 @@ final class DuckDbExpressionTranslator
             String inner = translateOrNull(args.get(0), assignments);
             return inner == null ? null : "(" + inner + " IS NULL)";
         }
+        if (name.equals(StandardFunctions.LIKE_FUNCTION_NAME) && args.size() == 2) {
+            return translateLike(args.get(0), args.get(1), assignments);
+        }
         String operator = comparisonOperator(name);
         if (operator != null && args.size() == 2) {
             String left = translateOrNull(args.get(0), assignments);
@@ -405,6 +408,58 @@ final class DuckDbExpressionTranslator
             return translateMacroCall(name.getName(), args, assignments);
         }
         return null;
+    }
+
+    /**
+     * Trino delivers LIKE as {@code Call($like, [value, Constant(LikePattern)])}.
+     * {@code io.trino.type.LikePattern} lives in {@code trino-main}, not
+     * {@code trino-spi}, so we can't import it on the production classpath —
+     * accessed reflectively via {@link LikePatternAccessor}. NOT LIKE arrives as
+     * {@code Call($not, [Call($like, ...)])} and is handled by the existing
+     * {@code $not} branch recursing into us. Wildcards ({@code %}, {@code _}),
+     * ESCAPE semantics, and NULL handling are aligned between DuckDB and Trino
+     * (see {@code dev-docs/RESEARCH-function-mapping.md}), so a direct emit is
+     * lossless. Returns null when value/pattern is not translatable (including
+     * NULL pattern, dynamic pattern expression, etc.).
+     */
+    private static String translateLike(
+            ConnectorExpression value,
+            ConnectorExpression patternArg,
+            Map<String, ColumnHandle> assignments)
+    {
+        if (!(patternArg instanceof Constant constant)) {
+            return null;
+        }
+        Object patternValue = constant.getValue();
+        if (patternValue == null) {
+            return null;
+        }
+        LikePatternAccessor.Extracted extracted = LikePatternAccessor.extract(patternValue);
+        if (extracted == null) {
+            return null;
+        }
+        String translatedValue = translateOrNull(value, assignments);
+        if (translatedValue == null) {
+            return null;
+        }
+        StringBuilder out = new StringBuilder("(")
+                .append(translatedValue)
+                .append(" LIKE '")
+                .append(extracted.pattern().replace("'", "''"))
+                .append('\'');
+        if (extracted.escape() != null) {
+            char escape = extracted.escape();
+            out.append(" ESCAPE '");
+            if (escape == '\'') {
+                out.append("''");
+            }
+            else {
+                out.append(escape);
+            }
+            out.append('\'');
+        }
+        out.append(')');
+        return out.toString();
     }
 
     private static String translateCast(
@@ -527,4 +582,68 @@ final class DuckDbExpressionTranslator
     }
 
     record NameArity(String name, int arity) {}
+
+    /**
+     * Reflective bridge to {@code io.trino.type.LikePattern}. That class lives in
+     * {@code trino-main}, not {@code trino-spi}, so it is not importable on the
+     * plugin's compile classpath. The runtime instance arrives via the SPI as
+     * the value of a {@code Constant} of {@code LikePatternType}; we reflect on
+     * the instance's own class to read its pattern string and optional escape
+     * character. Methods are cached per class (single class in practice, but
+     * defensive against classloader topology in Trino plugin isolation). If the
+     * upstream class shape changes, {@link #extract} returns null and the LIKE
+     * conjunct stays unpushed.
+     */
+    private static final class LikePatternAccessor
+    {
+        private static final java.util.concurrent.ConcurrentHashMap<Class<?>, MethodPair> CACHE =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private static final MethodPair MISSING = new MethodPair(null, null);
+
+        static Extracted extract(Object likePattern)
+        {
+            MethodPair methods = CACHE.computeIfAbsent(likePattern.getClass(), LikePatternAccessor::resolve);
+            if (methods.getPattern() == null || methods.getEscape() == null) {
+                return null;
+            }
+            try {
+                String pattern = (String) methods.getPattern().invoke(likePattern);
+                if (pattern == null) {
+                    return null;
+                }
+                Object escapeOpt = methods.getEscape().invoke(likePattern);
+                Character escape = null;
+                if (escapeOpt instanceof Optional<?> opt && opt.isPresent()) {
+                    Object inner = opt.get();
+                    if (inner instanceof Character c) {
+                        escape = c;
+                    }
+                    else {
+                        return null;
+                    }
+                }
+                return new Extracted(pattern, escape);
+            }
+            catch (ReflectiveOperationException ignored) {
+                return null;
+            }
+        }
+
+        private static MethodPair resolve(Class<?> clazz)
+        {
+            if (!"io.trino.type.LikePattern".equals(clazz.getName())) {
+                return MISSING;
+            }
+            try {
+                return new MethodPair(clazz.getMethod("getPattern"), clazz.getMethod("getEscape"));
+            }
+            catch (NoSuchMethodException ignored) {
+                return MISSING;
+            }
+        }
+
+        private record MethodPair(java.lang.reflect.Method getPattern, java.lang.reflect.Method getEscape) {}
+
+        record Extracted(String pattern, Character escape) {}
+    }
 }

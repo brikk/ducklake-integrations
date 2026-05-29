@@ -168,8 +168,8 @@ This table is 4-column (no separate Done column); shipped rows are flagged inlin
 
 | Operation | Trino | DuckDB | Done | Notes |
 |---|---|---|---|---|
-| LIKE | `string LIKE pattern [ESCAPE c]` | `string LIKE target` | — | ✅ **Highest-priority pushdown** (per [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md)). Wildcards `%` and `_` aligned. ESCAPE clause aligned. NULL handling aligned. Arrives as a Trino-internal pattern function, not a plain `Call` — translator needs a special case. |
-| NOT LIKE | `string NOT LIKE pattern` | `string NOT LIKE target` | — | ✅ Same. |
+| LIKE | `string LIKE pattern [ESCAPE c]` | `string LIKE target` | yes step 1 | ✅ Translator branch on `$like`. Pattern arrives as a `Constant` of `LikePatternType` whose value is an `io.trino.type.LikePattern`; that class lives in `trino-main` (not `trino-spi`), so `DuckDbExpressionTranslator` reads `getPattern()` / `getEscape()` reflectively (`LikePatternAccessor`). Emits `(value LIKE 'pattern' [ESCAPE 'c'])`. Wildcards `%` / `_` aligned. ESCAPE aligned. NULL handling aligned. Dynamic pattern (non-`Constant`) stays unpushed. |
+| NOT LIKE | `string NOT LIKE pattern` | `string NOT LIKE target` | yes step 1 | ✅ Arrives as `Call($not, [Call($like, ...)])`; the existing `$not` branch recurses into the LIKE handler — no extra code. |
 | ILIKE (case-insensitive) | — | `string ILIKE target`, `ilike_escape(...)` | | ❌ Trino has no native ILIKE (use `lower(s) LIKE lower(p)`). DuckDB native ILIKE — map carefully. |
 | SIMILAR TO (POSIX-ish) | `string SIMILAR TO pattern` | `string SIMILAR TO regex` | — | ⚠️ Both use a SQL-standard SIMILAR TO. Verify subtle differences in `*`/`+`/`?` quantifier scoping before pushing. |
 | Regex match (contains) | `regexp_like(string, pattern) -> boolean` | `regexp_matches(string, pattern[, options])` | yes r3 | ⚠️ Both use **RE2** engine (Trino via Re2J; DuckDB via google/re2). Syntax aligned. Trino's pattern is case-sensitive by default; DuckDB likewise unless `'i'` option. ✅ Safe to push when no options used. Shipped via rename (macro body calls DuckDB `regexp_matches`). |

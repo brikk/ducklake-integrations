@@ -23,6 +23,8 @@ import io.trino.spi.expression.FunctionName;
 import io.trino.spi.expression.StandardFunctions;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.type.BooleanType;
+import io.trino.type.LikePattern;
+import io.trino.type.LikePatternType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -405,6 +407,106 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
+    public void testLikeNoEscape()
+    {
+        // WHERE name LIKE 'App%'
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                likeConst("App%", Optional.empty()));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(\"name\" LIKE 'App%')");
+    }
+
+    @Test
+    public void testLikeWithEscape()
+    {
+        // WHERE name LIKE 'A\%' ESCAPE '\'
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                likeConst("A\\%", Optional.of('\\')));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(\"name\" LIKE 'A\\%' ESCAPE '\\')");
+    }
+
+    @Test
+    public void testLikePatternEscapesSingleQuote()
+    {
+        // Pattern containing a single quote must be doubled in emitted SQL.
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                likeConst("o'%", Optional.empty()));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(\"name\" LIKE 'o''%')");
+    }
+
+    @Test
+    public void testLikeEscapeCharIsSingleQuote()
+    {
+        // The escape character itself is a single quote — must be doubled inside the ESCAPE clause.
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                likeConst("a'%", Optional.of('\'')));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(\"name\" LIKE 'a''%' ESCAPE '''')");
+    }
+
+    @Test
+    public void testLikeOnPushableFunctionExpression()
+    {
+        // WHERE lower(name) LIKE 'app%'  — value side is itself a translated call.
+        ConnectorExpression lowerCall = call(new FunctionName("lower"), VARCHAR,
+                new Variable("name", VARCHAR));
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                lowerCall,
+                likeConst("app%", Optional.empty()));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(trino_lower(\"name\") LIKE 'app%')");
+    }
+
+    @Test
+    public void testNotLikeRecursesThroughNotBranch()
+    {
+        // NOT LIKE arrives as Call($not, [Call($like, ...)]). The existing $not handler
+        // recurses into our new LIKE branch automatically — no separate code path needed.
+        ConnectorExpression like = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                likeConst("App%", Optional.empty()));
+        ConnectorExpression notLike = call(StandardFunctions.NOT_FUNCTION_NAME, BOOLEAN, like);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(notLike, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(NOT (\"name\" LIKE 'App%'))");
+    }
+
+    @Test
+    public void testLikeWithNonConstantPatternNotPushed()
+    {
+        // Dynamic pattern (a column) → not pushable; whole conjunct dropped.
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                new Variable("name", VARCHAR));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testLikeWithUntranslatableValueNotPushed()
+    {
+        // Value side references an unmapped variable → translation fails for that subterm.
+        ConnectorExpression expression = call(StandardFunctions.LIKE_FUNCTION_NAME, BOOLEAN,
+                new Variable("not_present", VARCHAR),
+                likeConst("App%", Optional.empty()));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
     public void testTrinoMetaJavaSetContainsRepresentativeEntries()
     {
         // Tripwire: the Java-side PUSHABLE_FUNCTIONS must match the trino_meta() rows
@@ -444,5 +546,14 @@ public class TestDuckDbExpressionTranslator
     private static ConnectorExpression boolConst(boolean b)
     {
         return new Constant(b, BooleanType.BOOLEAN);
+    }
+
+    private static ConnectorExpression likeConst(String pattern, Optional<Character> escape)
+    {
+        // Trino delivers LIKE patterns as a Constant of LikePatternType whose value
+        // is a compiled io.trino.type.LikePattern. The translator only reads the
+        // pattern string and optional escape character — RE2 matcher state is
+        // irrelevant for pushdown emission.
+        return new Constant(LikePattern.compile(pattern, escape), LikePatternType.LIKE_PATTERN);
     }
 }

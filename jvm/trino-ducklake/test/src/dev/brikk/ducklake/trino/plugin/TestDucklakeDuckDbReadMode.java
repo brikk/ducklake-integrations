@@ -219,6 +219,44 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testLikePredicatePushesDown()
+    {
+        // End-to-end proof for the LIKE translator branch. Trino delivers LIKE
+        // as Call($like, [value, Constant(LikePattern)]); DuckDbExpressionTranslator
+        // emits `("name" LIKE 'App%')` directly into the WHERE clause sent to
+        // DuckDB. No macro is involved — it's a translator emit. NOT LIKE travels
+        // through the existing $not handler and reuses the LIKE branch.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.like_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('Apple' AS VARCHAR)), "
+                        + "  (2, CAST('Application' AS VARCHAR)), "
+                        + "  (3, CAST('banana' AS VARCHAR)), "
+                        + "  (4, CAST('Cherry' AS VARCHAR))"
+                        + ") AS t(id, name)");
+        try {
+            // name LIKE 'App%' → only 'Apple' (id=1) and 'Application' (id=2) match.
+            MaterializedResult like = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.like_pushdown WHERE name LIKE 'App%' ORDER BY id");
+            assertThat(like.getRowCount()).isEqualTo(2);
+            assertThat(like.getMaterializedRows().get(0).getField(0)).isEqualTo(1);
+            assertThat(like.getMaterializedRows().get(1).getField(0)).isEqualTo(2);
+
+            // name NOT LIKE 'App%' → 'banana' (id=3) and 'Cherry' (id=4) survive.
+            MaterializedResult notLike = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.like_pushdown WHERE name NOT LIKE 'App%' ORDER BY id");
+            assertThat(notLike.getRowCount()).isEqualTo(2);
+            assertThat(notLike.getMaterializedRows().get(0).getField(0)).isEqualTo(3);
+            assertThat(notLike.getMaterializedRows().get(1).getField(0)).isEqualTo(4);
+        }
+        finally {
+            tryDropTable("test_schema.like_pushdown");
+        }
+    }
+
+    @Test
     public void testBetweenPredicateReturnsCorrectRows()
     {
         // BETWEEN is grammar in both engines; Trino's planner typically decomposes

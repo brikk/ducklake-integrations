@@ -14,7 +14,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 
 ## Priority order
 
-1. ⏳ **`LIKE` / `NOT LIKE`** — extremely common, perfectly defined in both engines, near-zero risk. Likely single biggest win for selective queries. Not started — `LIKE` arrives as a Trino-internal pattern function, not as a plain `Call`; translator needs a special case.
+1. ✅ **`LIKE` / `NOT LIKE`** — extremely common, perfectly defined in both engines, near-zero risk. Likely single biggest win for selective queries. Shipped: translator branch on `$like` reads `io.trino.type.LikePattern` reflectively (the class lives in `trino-main`, not `trino-spi`) and emits `(value LIKE 'pattern' [ESCAPE 'c'])`. `NOT LIKE` reuses the existing `$not` recursion. Dynamic pattern (non-`Constant`) and NULL pattern stay unpushed.
 2. ✅ **Numeric / comparison expressions in predicates** — `col + 1 > 5`, `col % 10 = 0`, etc. Same shape, mostly trivial. Pin overflow + decimal semantics.
    - Comparison operators (`=`, `<>`, `<`, `<=`, `>`, `>=`, `IS NULL`, `NOT`, `AND`, `OR`) — translated by `DuckDbExpressionTranslator` directly.
    - **Arithmetic operators (`$add`, `$subtract`, `$multiply`, `$divide`, `$modulo`)** — translated directly to infix SQL (`+`, `-`, `*`, `/`, `%`). Shipped round 6f.
@@ -83,7 +83,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 
 - Step 0 (this doc, mapping table) — drafted.
 - Pushdown infrastructure (translator + alias layer + applyFilter wiring + Java↔DuckDB parity test) — **shipped**.
-- Step 1 (LIKE) — not started.
+- Step 1 (LIKE / NOT LIKE) — **shipped**; translator branch on `$like` with reflective `LikePattern` access (the class is in `trino-main`, not `trino-spi`). `NOT LIKE` reuses the existing `$not` recursion. Unit tests cover wildcard, ESCAPE, single-quote escaping in pattern and escape char, function-expression on the value side, dynamic-pattern rejection. End-to-end test in `TestDucklakeDuckDbReadMode#testLikePredicatePushesDown`.
 - Step 2 (numeric / comparison) — **partial**; comparisons + 25 numeric macros shipped (abs/ceil/floor/mod/power/sqrt/exp/ln/log2/log10 + sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/degrees/radians/cbrt/truncate); arithmetic operator translation (`$add`, `$subtract`, etc.) still deferred.
 - Step 3 (string basics) — **shipped**; 15 string macros + 3 regex macros + 7 encoding/distance macros, including:
   - Trim family with full Java whitespace set (round 4 fix).
