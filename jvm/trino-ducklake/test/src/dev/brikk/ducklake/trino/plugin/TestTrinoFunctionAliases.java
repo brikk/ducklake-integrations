@@ -408,7 +408,32 @@ public class TestTrinoFunctionAliases
                         // DuckDB default is FIRST match; macro forces 'g' so 'aaa' → 'bbb' (not 'baa').
                         "SELECT trino_regexp_replace('aaa', 'a', 'b')", "bbb"),
                 c("regexp_replace 3: backreferences", "regexp_replace", 3,
-                        "SELECT trino_regexp_replace('abc', '(a)(b)', '\\2\\1')", "bac"));
+                        "SELECT trino_regexp_replace('abc', '(a)(b)', '\\2\\1')", "bac"),
+                // Round 6g — bitwise function-form
+                c("bitwise_and 2", "bitwise_and", 2,
+                        // 12 = 0b1100, 10 = 0b1010, AND = 0b1000 = 8
+                        "SELECT trino_bitwise_and(12, 10)", 8),
+                c("bitwise_or 2", "bitwise_or", 2,
+                        // 12 = 0b1100, 10 = 0b1010, OR = 0b1110 = 14
+                        "SELECT trino_bitwise_or(12, 10)", 14),
+                c("bitwise_not 1: ~0 (8-bit conceptual = -1 in 2's-complement)", "bitwise_not", 1,
+                        // For DuckDB INTEGER (4 bytes), ~0 = -1.
+                        "SELECT trino_bitwise_not(0)", -1),
+                c("bitwise_left_shift 2: 1 << 4", "bitwise_left_shift", 2,
+                        "SELECT trino_bitwise_left_shift(1, 4)", 16),
+                c("bitwise_right_shift 2: 16 >> 2", "bitwise_right_shift", 2,
+                        "SELECT trino_bitwise_right_shift(16, 2)", 4),
+                // Round 6g — date convenience
+                c("year 1: from DATE", "year", 1,
+                        "SELECT trino_year(DATE '2024-01-15')", 2024L),
+                c("month 1: from DATE", "month", 1,
+                        "SELECT trino_month(DATE '2024-01-15')", 1L),
+                c("day 1: from DATE", "day", 1,
+                        "SELECT trino_day(DATE '2024-01-15')", 15L),
+                c("quarter 1: Q1", "quarter", 1,
+                        "SELECT trino_quarter(DATE '2024-02-15')", 1L),
+                c("quarter 1: Q3", "quarter", 1,
+                        "SELECT trino_quarter(DATE '2024-08-15')", 3L));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

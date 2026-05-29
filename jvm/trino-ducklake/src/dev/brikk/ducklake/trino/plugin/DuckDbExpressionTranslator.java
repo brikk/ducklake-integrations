@@ -146,7 +146,18 @@ final class DuckDbExpressionTranslator
             new NameArity("pi", 0),
             new NameArity("bitwise_xor", 2),
             new NameArity("regexp_replace", 2),
-            new NameArity("regexp_replace", 3));
+            new NameArity("regexp_replace", 3),
+            // Round 6g — bitwise function-form
+            new NameArity("bitwise_and", 2),
+            new NameArity("bitwise_or", 2),
+            new NameArity("bitwise_not", 1),
+            new NameArity("bitwise_left_shift", 2),
+            new NameArity("bitwise_right_shift", 2),
+            // Round 6g — date convenience
+            new NameArity("year", 1),
+            new NameArity("month", 1),
+            new NameArity("day", 1),
+            new NameArity("quarter", 1));
 
     /**
      * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}
@@ -370,6 +381,17 @@ final class DuckDbExpressionTranslator
             }
             return "nullif(" + left + ", " + right + ")";
         }
+        if (name.equals(StandardFunctions.NEGATE_FUNCTION_NAME) && args.size() == 1) {
+            // Arithmetic unary minus. Trino encodes `-x` as $negate.
+            String inner = translateOrNull(args.get(0), assignments);
+            return inner == null ? null : "(-" + inner + ")";
+        }
+        if (name.equals(StandardFunctions.CAST_FUNCTION_NAME) && args.size() == 1) {
+            return translateCast(call, args.get(0), "CAST", assignments);
+        }
+        if (name.equals(StandardFunctions.TRY_CAST_FUNCTION_NAME) && args.size() == 1) {
+            return translateCast(call, args.get(0), "TRY_CAST", assignments);
+        }
 
         // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
         // Only push if (name, arity) is in our brain.
@@ -377,6 +399,39 @@ final class DuckDbExpressionTranslator
                 && PUSHABLE_FUNCTIONS.contains(new NameArity(name.getName(), args.size()))) {
             return translateMacroCall(name.getName(), args, assignments);
         }
+        return null;
+    }
+
+    private static String translateCast(
+            Call call,
+            ConnectorExpression operand,
+            String castKeyword,
+            Map<String, ColumnHandle> assignments)
+    {
+        String targetType = duckdbTypeName(call.getType());
+        if (targetType == null) {
+            return null;
+        }
+        String inner = translateOrNull(operand, assignments);
+        return inner == null ? null : castKeyword + "(" + inner + " AS " + targetType + ")";
+    }
+
+    /**
+     * Map a Trino {@link Type} to the DuckDB type name to use inside a CAST.
+     * Conservative: only primitive numeric / boolean / varchar / date are handled;
+     * timestamp precision + decimal scale + nested types are unsupported here so
+     * the translator fails the cast cleanly and stays unpushed.
+     */
+    private static String duckdbTypeName(Type type)
+    {
+        if (type instanceof BooleanType) return "BOOLEAN";
+        if (type instanceof TinyintType) return "TINYINT";
+        if (type instanceof SmallintType) return "SMALLINT";
+        if (type instanceof IntegerType) return "INTEGER";
+        if (type instanceof BigintType) return "BIGINT";
+        if (type instanceof DoubleType) return "DOUBLE";
+        if (type instanceof VarcharType) return "VARCHAR";
+        if (type instanceof DateType) return "DATE";
         return null;
     }
 

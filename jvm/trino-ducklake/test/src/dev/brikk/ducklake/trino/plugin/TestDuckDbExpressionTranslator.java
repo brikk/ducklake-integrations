@@ -349,6 +349,62 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
+    public void testNegateUnaryMinus()
+    {
+        // WHERE -id = -5  →  ((-"id") = -5)
+        ConnectorExpression negate = call(StandardFunctions.NEGATE_FUNCTION_NAME, BIGINT,
+                new Variable("id", BIGINT));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                negate,
+                new Constant(-5L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("((-\"id\") = -5)");
+    }
+
+    @Test
+    public void testCastToBigint()
+    {
+        // WHERE CAST(name AS BIGINT) > 0  — Trino encodes CAST as $cast with result type
+        ConnectorExpression cast = new Call(BIGINT, StandardFunctions.CAST_FUNCTION_NAME,
+                List.of(new Variable("name", VARCHAR)));
+        ConnectorExpression expression = call(StandardFunctions.GREATER_THAN_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                cast,
+                new Constant(0L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(CAST(\"name\" AS BIGINT) > 0)");
+    }
+
+    @Test
+    public void testTryCastToInteger()
+    {
+        // WHERE TRY_CAST(name AS INTEGER) IS NULL
+        ConnectorExpression tryCast = new Call(io.trino.spi.type.IntegerType.INTEGER,
+                StandardFunctions.TRY_CAST_FUNCTION_NAME,
+                List.of(new Variable("name", VARCHAR)));
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN, tryCast);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(TRY_CAST(\"name\" AS INTEGER) IS NULL)");
+    }
+
+    @Test
+    public void testCastToUnsupportedTypeIsSkipped()
+    {
+        // CAST to a type we don't map (e.g. an unsupported nested type) → translation fails.
+        // Using TIMESTAMP_MICROS as a proxy for "not in duckdbTypeName()" — currently unsupported.
+        ConnectorExpression cast = new Call(io.trino.spi.type.TimestampType.TIMESTAMP_MICROS,
+                StandardFunctions.CAST_FUNCTION_NAME,
+                List.of(new Variable("name", VARCHAR)));
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN, cast);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        // Whole conjunct dropped because the inner $cast failed.
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
     public void testTrinoMetaJavaSetContainsRepresentativeEntries()
     {
         // Tripwire: the Java-side PUSHABLE_FUNCTIONS must match the trino_meta() rows

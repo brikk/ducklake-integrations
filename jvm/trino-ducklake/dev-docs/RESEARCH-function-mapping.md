@@ -121,6 +121,8 @@ Pushdown rating in the Notes column where useful:
 
 ⚠️ **Whole category is high-risk for pushdown.** Trino has rich `TIMESTAMP WITH TIME ZONE` vs `TIMESTAMP` distinction; DuckDB has `TIMESTAMP` and `TIMESTAMPTZ`. Calendar = proleptic Gregorian in both. Week numbering (`week()`/`week_of_year`) follows ISO-8601 in BOTH (Mon-start, week 01 contains Jan 4). Default DOW base: Trino `day_of_week` = 1..7 with Monday=1; DuckDB `dayofweek` from `date_part('dow', ...)` = 0..6 with **Sunday=0** — ❌ do not map directly. Use `isodow` in DuckDB (1..7, Monday=1) to match Trino.
 
+This table is 4-column (no separate Done column); shipped rows are flagged inline in the Notes with a leading `yes r6:` token.
+
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
 | Current date | `current_date` | `current_date`, `today()` | ⚠️ Both session-local. Do not push if behavior must match a specific timezone definition. |
@@ -136,13 +138,13 @@ Pushdown rating in the Notes column where useful:
 | Date format | `date_format(timestamp, format) -> varchar`, `format_datetime(timestamp, format)` | `strftime(date, format)` | ❌ Format strings differ entirely: Trino uses JodaTime/MySQL format; DuckDB uses strftime. Do not push. |
 | Parse date/time from string | `parse_datetime(string, format) -> timestamp`, `from_iso8601_*` | `strptime(text, format)`, `try_strptime`, ISO via cast | ❌ Format syntax differs. Push only ISO-8601 case (Trino `from_iso8601_timestamp(s)` ≈ DuckDB `s::timestamp`). |
 | Extract field | `extract(field FROM x)` | `extract(part FROM x)`, `date_part(part, x)` | ⚠️ Field names mostly aligned (`year, month, day, hour, minute, second`). `dow`/`day_of_week` differ — see header. `quarter` aligned. |
-| Year / month / day convenience | `year(x)`, `month(x)`, `day(x)` | — (use `year(x)` is also in DuckDB? actually `date_part('year', x)`) | ⚠️ DuckDB exposes `year`, `month`, `day` as functions too. Map directly; same semantics. |
+| Year / month / day convenience | `year(x)`, `month(x)`, `day(x)` | `year(x)`, `month(x)`, `day(x)` | **yes r6**: ✅ Shipped via direct macro passthrough. Both engines align on DATE and TIMESTAMP input. |
 | Day of week | `day_of_week(x) -> bigint`, `dow(x)` | `date_part('isodow', x)` (1..7, Mon=1) OR `dayofweek(x)`/`date_part('dow', x)` (0..6, Sun=0) | ❌ **CRITICAL pushdown trap.** Trino `day_of_week` returns 1..7 Mon=1. DuckDB `date_part('dow', x)` returns 0..6 Sun=0. Map Trino → `date_part('isodow', x)`. |
 | Day of year | `day_of_year(x)`, `doy(x)` | `date_part('doy', x)`, `dayofyear(x)` | ✅ 1..366 in both. |
 | Day of month | `day_of_month(x)` | `date_part('day', x)` | ✅ Aligned. |
 | Week | `week(x)`, `week_of_year(x)` | `date_part('week', x)`, `weekofyear(x)` | ⚠️ Both ISO-8601. Verify the boundary cases (Jan 1 of a year that belongs to ISO week 52/53 of the prior year). |
 | Year of week | `year_of_week(x)`, `yow(x)` | `date_part('isoyear', x)` | ✅ ISO-year aligned. |
-| Quarter | `quarter(x)` | `date_part('quarter', x)`, `quarter(x)` | ✅ Aligned. |
+| Quarter | `quarter(x)` | `date_part('quarter', x)`, `quarter(x)` | **yes r6**: ✅ Shipped via direct macro passthrough. |
 | Hour / minute / second / millisecond | `hour(x)`, `minute(x)`, `second(x)`, `millisecond(x)` | `date_part('hour'...)`, also direct `hour(x)` etc. | ✅ Aligned. |
 | Timezone hour / minute | `timezone_hour(timestamp)`, `timezone_minute(timestamp)` | — | ❌ Trino-only; emulate via `date_part('timezone_hour', x)` in DuckDB. |
 | At time zone | `at_timezone(timestamp(p), zone)`, `with_timezone(timestamp(p), zone)` | `timezone(text, timestamp)`, `x AT TIME ZONE z` | ⚠️ Both support `AT TIME ZONE`. `at_timezone` vs `timezone` arg order differs. Push only as `AT TIME ZONE`. |
@@ -266,8 +268,8 @@ Pushdown rating in the Notes column where useful:
 
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
-| Cast | `cast(value AS type)`, `cast(value) -> type` (functional) | `CAST(value AS type)`, `value::type` | ✅ Aligned grammar. Type-name spelling differs (`varchar` vs `VARCHAR`, `double` vs `DOUBLE`). Push as `CAST` with type renamed via translator. |
-| Try cast | `try_cast(value AS type)` | `TRY_CAST(value AS type)` | ✅ Aligned. |
+| Cast | `cast(value AS type)`, `cast(value) -> type` (functional) | `CAST(value AS type)`, `value::type` | **yes r6 (primitive types)**: ✅ Translator handles `$cast` standard function; emits `CAST(expr AS <ducktype>)` for BOOLEAN/TINYINT/SMALLINT/INTEGER/BIGINT/DOUBLE/VARCHAR/DATE. TIMESTAMP precision + DECIMAL scale + nested types fail cleanly (unpushed). |
+| Try cast | `try_cast(value AS type)` | `TRY_CAST(value AS type)` | **yes r6 (primitive types)**: ✅ Same as `cast` — translator handles `$try_cast` standard function; emits `TRY_CAST(...)` for the same primitive set. |
 | Format number to string | `format_number(number) -> varchar` | — | ❌ Trino-only. |
 | Parse data size | `parse_data_size(string)` | — | ❌ Trino-only. |
 | Typeof | `typeof(expr) -> varchar` | `typeof(expression)` | ⚠️ Returns engine-specific type names. Do not push when comparing strings. |
@@ -295,12 +297,12 @@ Pushdown rating in the Notes column where useful:
 
 | Operation | Trino | DuckDB | Done | Notes |
 |---|---|---|---|---|
-| AND | `bitwise_and(x, y) -> bigint` | `x & y`, `bit_and(x)` (aggregate) | translator rewrite — TBD | ⚠️ Trino has no `&` operator on integers; uses function form. DuckDB scalar form is operator-only — needs translator rewrite (queued in [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) round 6e). |
-| OR | `bitwise_or(x, y) -> bigint` | `x \| y` | translator rewrite — TBD | Same shape difference. |
+| AND | `bitwise_and(x, y) -> bigint` | `x & y`, `bit_and(x)` (aggregate) | yes r6 | ✅ Shipped via macro body `x & y` — DuckDB macros embed the operator. |
+| OR | `bitwise_or(x, y) -> bigint` | `x \| y` | yes r6 | ✅ Shipped via macro body `x \| y`. |
 | XOR | `bitwise_xor(x, y) -> bigint` | `xor(x, y)`, `x # y` | yes r6 | ✅ Shipped via macro body `xor(x, y)`. (DuckDB also has `#` operator; `^` is exponentiation in DuckDB — don't confuse.) |
-| NOT | `bitwise_not(x) -> bigint` | `~x` | translator rewrite — TBD | ⚠️ Trino function vs DuckDB operator. |
-| Left shift | `bitwise_left_shift(value, shift)` | `value << shift` | translator rewrite — TBD | ✅ Aligned semantics; operator-only in DuckDB. |
-| Right shift (logical) | `bitwise_right_shift(value, shift)` | `value >> shift` | translator rewrite — TBD | ⚠️ Verify signed/unsigned semantics for negative integers — they CAN differ. |
+| NOT | `bitwise_not(x) -> bigint` | `~x` | yes r6 | ✅ Shipped via macro body `~x` (unary). |
+| Left shift | `bitwise_left_shift(value, shift)` | `value << shift` | yes r6 | ✅ Shipped via macro body `v << s`. |
+| Right shift (logical) | `bitwise_right_shift(value, shift)` | `value >> shift` | yes r6 ⚠️ | ⚠️ Shipped, but verify signed/unsigned semantics for negative integers — they CAN differ between engines. Safe for typical positive-integer use. |
 | Right shift (arithmetic) | `bitwise_right_shift_arithmetic(value, shift)` | — | | ❌ Trino-only direct; DuckDB `>>` is arithmetic for signed. |
 | Bit count (popcount) | `bit_count(x, bits) -> bigint` | `bit_count(x)`, `bit_count(bitstring)` | — | ⚠️ Trino requires explicit bit-width arg; DuckDB infers. Do not push without matching width. |
 

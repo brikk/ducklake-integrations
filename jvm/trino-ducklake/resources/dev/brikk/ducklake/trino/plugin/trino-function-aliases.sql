@@ -242,6 +242,26 @@ CREATE OR REPLACE MACRO trino_regexp_replace
     (s, pattern)              AS regexp_replace(s, pattern, '', 'g'),
     (s, pattern, replacement) AS regexp_replace(s, pattern, replacement, 'g');
 
+-- ---- Round 6g — Bitwise function-form to operator-form ----
+-- Trino exposes bitwise ops as function calls; DuckDB exposes them as operators.
+-- Macros bridge the shape. Trino-aligned for typical positive-integer use.
+-- ⚠️ bitwise_right_shift on negative integers: research note says signed/unsigned
+-- semantics CAN differ between engines. Verify before relying on negative inputs.
+CREATE OR REPLACE MACRO trino_bitwise_and(x, y) AS x & y;
+CREATE OR REPLACE MACRO trino_bitwise_or(x, y) AS x | y;
+CREATE OR REPLACE MACRO trino_bitwise_not(x) AS ~x;
+CREATE OR REPLACE MACRO trino_bitwise_left_shift(v, s) AS v << s;
+CREATE OR REPLACE MACRO trino_bitwise_right_shift(v, s) AS v >> s;
+
+-- ---- Round 6g — Date convenience ----
+-- Both engines expose year/month/day/quarter as direct functions over DATE
+-- and TIMESTAMP. Aligned per research mapping (year/month/day "Map directly;
+-- same semantics", quarter "Aligned").
+CREATE OR REPLACE MACRO trino_year(x) AS year(x);
+CREATE OR REPLACE MACRO trino_month(x) AS month(x);
+CREATE OR REPLACE MACRO trino_day(x) AS day(x);
+CREATE OR REPLACE MACRO trino_quarter(x) AS quarter(x);
+
 -- ---- Catalog of aliased functions ----
 --
 -- One row per (trino_name, arg_count) the translator may push down. The
@@ -324,5 +344,16 @@ SELECT * FROM (
         ('pi',           0, 'numeric'),
         ('bitwise_xor',  2, 'numeric'),
         ('regexp_replace', 2, 'regex'),
-        ('regexp_replace', 3, 'regex')
+        ('regexp_replace', 3, 'regex'),
+        -- Round 6g — bitwise function-form
+        ('bitwise_and',         2, 'numeric'),
+        ('bitwise_or',          2, 'numeric'),
+        ('bitwise_not',         1, 'numeric'),
+        ('bitwise_left_shift',  2, 'numeric'),
+        ('bitwise_right_shift', 2, 'numeric'),
+        -- Round 6g — date convenience
+        ('year',         1, 'date'),
+        ('month',        1, 'date'),
+        ('day',          1, 'date'),
+        ('quarter',      1, 'date')
 ) AS t(trino_name, arg_count, category);
