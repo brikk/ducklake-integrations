@@ -491,6 +491,75 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testTierCYearBoundarySmokingGunSingaporeSession()
+    {
+        // Chunk 3.5 end-to-end smoking gun. The instant '2024-12-31 22:00 UTC'
+        // is a year-boundary case:
+        //   - UTC reader: year = 2024
+        //   - America/Los_Angeles reader: year = 2024 (14:00 LA)
+        //   - Asia/Singapore reader: year = 2025 (06:00 next day in SG)
+        //
+        // Pre-3.5 the connector's Arrow converter hardcoded UTC_KEY on the
+        // incoming WTZ value, so Trino's above-scan year() ALWAYS returned UTC
+        // year regardless of session. 3.5 fixed that — the converter now uses
+        // the Arrow schema TZ (= chunk-2's SET TimeZone = session zone), so
+        // Trino above-scan year() in a Singapore session is 2025 for this
+        // instant, matching DuckDB's pushed year() in its Singapore session.
+        //
+        // Test: Singapore session + property on + `WHERE year(ts) = 2025` must
+        // match the year-boundary row. Property off must match the same row
+        // (Trino-side eval) — invariance under the property toggle is the
+        // chunk-3.5 correctness claim made strong.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.tier_c_smoking_gun ("
+                        + "  id INTEGER, "
+                        + "  ts TIMESTAMP(3) WITH TIME ZONE)");
+        computeActual(writeDuckDbSession(),
+                "INSERT INTO test_schema.tier_c_smoking_gun VALUES "
+                        + "(1, TIMESTAMP '2024-12-31 22:00:00.000 UTC'), "
+                        + "(2, TIMESTAMP '2024-06-15 12:00:00.000 UTC')");
+        try {
+            Session singaporeOn = Session.builder(sessionWith(READ_MODE_MATERIALIZE))
+                    .setTimeZoneKey(TimeZoneKey.getTimeZoneKey("Asia/Singapore"))
+                    .setCatalogSessionProperty("ducklake", PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, "true")
+                    .build();
+            Session singaporeOff = Session.builder(sessionWith(READ_MODE_MATERIALIZE))
+                    .setTimeZoneKey(TimeZoneKey.getTimeZoneKey("Asia/Singapore"))
+                    .build();
+
+            // Property ON: pushed year(ts) executes server-side under DuckDB
+            // session=Singapore → returns 2025 for row 1 → DuckDB filter passes
+            // row 1. Above-scan Trino re-evaluates year(value) with value
+            // constructed by the converter using Arrow schema TZ=Singapore →
+            // Trino computes year=2025 → keeps row 1. Both agree.
+            MaterializedResult sgOn = computeActual(singaporeOn,
+                    "SELECT id FROM test_schema.tier_c_smoking_gun WHERE year(ts) = 2025");
+            assertThat(sgOn.getRowCount())
+                    .as("Singapore session + property on: the year-boundary row matches year=2025")
+                    .isEqualTo(1);
+            assertThat(sgOn.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+            // Property OFF: no pushdown; Trino above-scan year() of the converter-
+            // constructed value (Singapore-zoned) computes 2025 too → same answer,
+            // slower path. The invariance is the load-bearing claim.
+            MaterializedResult sgOff = computeActual(singaporeOff,
+                    "SELECT id FROM test_schema.tier_c_smoking_gun WHERE year(ts) = 2025");
+            assertThat(sgOff.getMaterializedRows())
+                    .as("Property toggle must not change visible result")
+                    .isEqualTo(sgOn.getMaterializedRows());
+
+            // Sibling case to pin: Singapore session asks year=2024 → row 2 (mid-year).
+            MaterializedResult sg2024 = computeActual(singaporeOn,
+                    "SELECT id FROM test_schema.tier_c_smoking_gun WHERE year(ts) = 2024");
+            assertThat(sg2024.getRowCount()).isEqualTo(1);
+            assertThat(sg2024.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.tier_c_smoking_gun");
+        }
+    }
+
+    @Test
     public void testTierCToUnixtimeOnTimestampWithTimeZonePushesWhenPropertyOn()
     {
         // The shipped Tier C surface in chunk 3: to_unixtime over TIMESTAMP WITH

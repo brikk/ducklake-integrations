@@ -93,10 +93,14 @@ multi-snapshot deletes actually live) is still not read by either implementation
    two-round-trip fallback with a single read. Covers `ducklake_data_file.footer_size`
    and `ducklake_delete_file.footer_size`; stale or missing hints degrade silently to
    the default path.
-2. **`sqllogictest` harness.** 248 `.slt` files across 48 categories (alter / attach /
-   compaction / encryption / merge / partitioning / time_travel / tpch / …). Trino has
-   its own product-tests story, but an `.slt` bridge could reuse this corpus for regression
-   against the catalog library in isolation.
+2. **`sqllogictest` harness.** 248 `.test` files across 46 categories under
+   `tests/sqllogictests/sql/` (alter / attach / compaction / encryption / merge /
+   partitioning / time_travel / tpch / …) — ~18,740 LOC, ~3,699 individual
+   `statement`/`query` cases. Note that the upstream `ducklake/` C++ reference has
+   **422** `.test` files across 49 categories with ~7,274 cases — the authoritative
+   spec-conformance corpus, ~2x what datafusion-ducklake replays. Trino has its own
+   product-tests story, but a sqllogictest bridge against `ducklake-catalog` in
+   isolation would unlock either corpus for regression coverage.
 3. **`hybrid_asyncdb.rs`** — DuckDB writes, DataFusion reads, same `.slt` runner. We do the
    equivalent in `TestDucklakeCrossEngineCompatibility`, but the idea of reusing DuckDB's
    own test suite as an interop oracle is clever and cheap.
@@ -158,7 +162,7 @@ Still open:
 |---|---|---|
 | Integration test LOC | ~13,425 across 26 files (was ~9,231 / 19 in v0.2.1; +4,200 from multicatalog + maintenance + row-id suites this refresh) | ~10,215 across 24 files |
 | Unit tests in source files | 11 files with `#[cfg(test)]` | N/A — separated out |
-| `.slt` suite | 248 files / 47 categories / ~18,740 LOC | none |
+| sqllogictest suite | 248 `.test` files / 46 categories / ~18,740 LOC / ~3,699 cases (replays a subset of the upstream `ducklake/` corpus, which has 422 files / 49 categories / ~7,274 cases) | none |
 | Per-backend metadata-provider tests | Postgres / MySQL / SQLite, Testcontainers | Postgres only (Testcontainers) |
 | Concurrent-access tests | `concurrent_tests.rs` + `concurrent_write_tests.rs` (~877 LOC) | Implicit via Trino runtime; no dedicated suite |
 | Write/DDL lifecycle | Insert path + DROP TABLE + multicatalog Phase 1 + three official maintenance ops | Full (DDL, DML, MERGE — ~2.4k LOC across 3 classes). M8 maintenance ops still open. |

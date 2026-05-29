@@ -206,44 +206,33 @@ final class DuckDbExpressionTranslator
     private static Map<NameArity, ArgTypeGate> buildTypeGates()
     {
         Map<NameArity, ArgTypeGate> gates = new java.util.HashMap<>();
-        // Tier B — DATE or TIMESTAMP no-TZ. TIMESTAMP WITH TIME ZONE is excluded
-        // for zone-dependent extracts even with the chunk-3 session property on.
-        // Background: the connector's Arrow→Page converter at
-        // DucklakeArrowToPageConverter:380-388 hardcodes UTC_KEY for all
-        // incoming WTZ values. That means Trino's above-scan eval of
-        // year(timestamptz_col) is ALWAYS UTC-aligned, while DuckDB-side eval
-        // (with chunk-2's session TimeZone) uses Trino's session zone. They
-        // diverge whenever the session isn't UTC — pushing such a predicate
-        // would silently drop or keep rows that Trino's above-scan would
-        // accept or reject. Until the converter is changed to honour the Arrow
-        // schema TZ (a connector-wide change with its own test surface), we
-        // refuse zone-dependent Tier C for these entries. See
-        // dev-docs/REPORT-datetime-tz-handling.md "Open follow-up probes".
-        ArgTypeGate arg0DateOrTimestamp = arg(0, DateType.class, TimestampType.class);
+        // Tier B always accepted (DATE or TIMESTAMP no-TZ); Tier C (TIMESTAMP WITH
+        // TIME ZONE) conditionally accepted when the session sets
+        // `pushdown_timestamp_with_timezone` = true. Chunk 2 set DuckDB's session
+        // TimeZone to match Trino's on attach; chunk 3.5 fixed the connector's
+        // Arrow→Page converter to construct WTZ values with the Arrow schema TZ
+        // (which IS the session zone). So Trino's above-scan year() and DuckDB's
+        // pushed year() now both interpret the value in Trino's session zone —
+        // results agree, pushdown is byte-equivalent. See
+        // dev-docs/REPORT-datetime-tz-handling.md and
+        // dev-docs/TODO-pushdown-datetime.md "Chunk 3.5 — shipped notes".
+        ArgTypeGate arg0Tier = argTier(0);
         for (String name : List.of("year", "month", "day", "quarter",
-                "hour", "minute", "second", "millisecond")) {
-            gates.put(new NameArity(name, 1), arg0DateOrTimestamp);
+                "hour", "minute", "second", "millisecond", "to_unixtime")) {
+            gates.put(new NameArity(name, 1), arg0Tier);
         }
-        // date_trunc(unit, x): same strictness on arg index 1.
-        gates.put(new NameArity("date_trunc", 2),
-                arg(1, DateType.class, TimestampType.class));
-        // date_diff(unit, t1, t2): same strictness on args 1 and 2.
+        // date_trunc(unit, x): gate the second arg.
+        gates.put(new NameArity("date_trunc", 2), argTier(1));
+        // date_diff(unit, t1, t2): both date-shape args must clear the same gate.
         gates.put(new NameArity("date_diff", 3), (args, session) -> {
-            Type t1 = args.get(1).getType();
-            Type t2 = args.get(2).getType();
-            return (t1 instanceof DateType || t1 instanceof TimestampType)
-                    && (t2 instanceof DateType || t2 instanceof TimestampType);
+            ArgTypeGate inner = argTier(0);
+            return inner.accepts(List.of(args.get(1)), session)
+                    && inner.accepts(List.of(args.get(2)), session);
         });
 
-        // Tier C — TIMESTAMP WITH TIME ZONE conditionally accepted ONLY for
-        // genuinely zone-invariant functions. `to_unixtime(value)` returns the
-        // absolute UTC epoch regardless of the value's time zone — Trino and
-        // DuckDB agree byte-for-byte for any session zone or stored zone. Safe
-        // to push for WTZ when the session opts in.
-        gates.put(new NameArity("to_unixtime", 1), argTier(0));
-
-        // Tier A — DATE-only, no WTZ extension (Trino's day_of_week / week /
-        // year_of_week etc. don't accept WTZ inputs either).
+        // Tier A — DATE-only, no WTZ extension. Trino's `day_of_week`, `week`,
+        // `year_of_week` etc. don't accept WTZ inputs either, so the strict
+        // DATE-only gate matches Trino's own signature.
         ArgTypeGate arg0DateStrict = arg(0, DateType.class);
         for (String name : List.of("day_of_week", "day_of_year", "last_day_of_month",
                 "week", "week_of_year", "year_of_week", "yow")) {

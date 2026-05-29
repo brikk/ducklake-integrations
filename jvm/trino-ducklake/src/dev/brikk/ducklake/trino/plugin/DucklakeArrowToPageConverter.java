@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import io.airlift.log.Logger;
 import io.airlift.slice.Slices;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
@@ -22,11 +23,14 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.LongTimestampWithTimeZone;
+import io.trino.spi.type.TimeZoneKey;
+import io.trino.spi.type.TimeZoneNotSupportedException;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.UuidType;
 import io.trino.spi.type.VarcharType;
+import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
@@ -76,6 +80,8 @@ import static java.lang.String.format;
  */
 final class DucklakeArrowToPageConverter
 {
+    private static final Logger log = Logger.get(DucklakeArrowToPageConverter.class);
+
     private final List<Type> columnTypes;
 
     DucklakeArrowToPageConverter(List<Type> columnTypes)
@@ -328,13 +334,31 @@ final class DucklakeArrowToPageConverter
 
     private static void writeTimestampTzColumn(TimestampWithTimeZoneType type, FieldVector vector, BlockBuilder builder, int rowCount)
     {
+        // Resolve the time zone ONCE per column from the Arrow schema. DuckDB
+        // sets the Arrow timestamp vector's TZ field to the session TimeZone at
+        // export time (probed across IANA / Etc/GMT± / fractional-offset-via-named
+        // zones — every shape comes through). Chunk 2 set DuckDB's session
+        // TimeZone to match Trino's session zone on attach, so the schema TZ
+        // arriving here IS the session zone the user wants. Pre-3.5 the code
+        // hardcoded UTC_KEY, which made Trino's above-scan year() always UTC-
+        // aligned regardless of session — that was an outlier vs. other Trino
+        // connectors (Iceberg, Hive, Parquet `isAdjustedToUtc=true` all return
+        // WTZ in session zone) and blocked Tier C pushdown over WTZ columns
+        // because DuckDB-side eval (session zone) and Trino above-scan eval
+        // (UTC) disagreed.
+        //
+        // Fallback to UTC_KEY when the schema TZ is missing or unparseable
+        // (one-shot WARN per zone string). Should not happen on the read path
+        // we control, but the converter stays robust for any future Arrow
+        // producer that didn't set the field.
+        TimeZoneKey zone = resolveTimeZoneKey(vector);
         if (vector instanceof TimeStampSecTZVector v) {
             for (int i = 0; i < rowCount; i++) {
                 if (v.isNull(i)) {
                     builder.appendNull();
                     continue;
                 }
-                writeTimestampTz(type, builder, Math.multiplyExact(v.get(i), 1_000L), 0);
+                writeTimestampTz(type, builder, Math.multiplyExact(v.get(i), 1_000L), 0, zone);
             }
         }
         else if (vector instanceof TimeStampMilliTZVector v) {
@@ -343,7 +367,7 @@ final class DucklakeArrowToPageConverter
                     builder.appendNull();
                     continue;
                 }
-                writeTimestampTz(type, builder, v.get(i), 0);
+                writeTimestampTz(type, builder, v.get(i), 0, zone);
             }
         }
         else if (vector instanceof TimeStampMicroTZVector v) {
@@ -355,7 +379,7 @@ final class DucklakeArrowToPageConverter
                 long micros = v.get(i);
                 long millis = Math.floorDiv(micros, 1_000L);
                 int picosOfMilli = (int) (Math.floorMod(micros, 1_000L) * 1_000_000L);
-                writeTimestampTz(type, builder, millis, picosOfMilli);
+                writeTimestampTz(type, builder, millis, picosOfMilli, zone);
             }
         }
         else if (vector instanceof TimeStampNanoTZVector v) {
@@ -367,7 +391,7 @@ final class DucklakeArrowToPageConverter
                 long nanos = v.get(i);
                 long millis = Math.floorDiv(nanos, 1_000_000L);
                 int picosOfMilli = (int) (Math.floorMod(nanos, 1_000_000L) * 1_000L);
-                writeTimestampTz(type, builder, millis, picosOfMilli);
+                writeTimestampTz(type, builder, millis, picosOfMilli, zone);
             }
         }
         else {
@@ -377,13 +401,41 @@ final class DucklakeArrowToPageConverter
         }
     }
 
-    private static void writeTimestampTz(TimestampWithTimeZoneType type, BlockBuilder builder, long epochMillis, int picosOfMilli)
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> UNPARSEABLE_TZ_WARNED =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static TimeZoneKey resolveTimeZoneKey(FieldVector vector)
+    {
+        ArrowType arrowType = vector.getField().getType();
+        if (!(arrowType instanceof ArrowType.Timestamp tsType)) {
+            return UTC_KEY;
+        }
+        String tzString = tsType.getTimezone();
+        if (tzString == null) {
+            return UTC_KEY;
+        }
+        try {
+            return TimeZoneKey.getTimeZoneKey(tzString);
+        }
+        catch (TimeZoneNotSupportedException | IllegalArgumentException e) {
+            if (UNPARSEABLE_TZ_WARNED.putIfAbsent(tzString, Boolean.TRUE) == null) {
+                log.warn("Arrow schema TimeZone '%s' is not a recognised Trino TimeZoneKey; "
+                                + "falling back to UTC for incoming TIMESTAMP WITH TIME ZONE values "
+                                + "of this column. Subsequent occurrences of the same zone string "
+                                + "use UTC without re-warning. See dev-docs/REPORT-datetime-tz-handling.md.",
+                        tzString);
+            }
+            return UTC_KEY;
+        }
+    }
+
+    private static void writeTimestampTz(TimestampWithTimeZoneType type, BlockBuilder builder, long epochMillis, int picosOfMilli, TimeZoneKey zone)
     {
         if (type.isShort()) {
-            type.writeLong(builder, packDateTimeWithZone(epochMillis, UTC_KEY));
+            type.writeLong(builder, packDateTimeWithZone(epochMillis, zone));
         }
         else {
-            type.writeObject(builder, LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, UTC_KEY));
+            type.writeObject(builder, LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, zone));
         }
     }
 }

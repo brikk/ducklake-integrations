@@ -814,40 +814,49 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
-    public void testYearOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    public void testYearOnTimestampWithTimeZonePushesWhenPropertyOn()
     {
-        // Zone-dependent extracts stay unpushed for WTZ even with the chunk-3
-        // property on. The connector's Arrow→Page converter hardcodes UTC_KEY
-        // for incoming WTZ values (DucklakeArrowToPageConverter:380-388), so
-        // Trino's above-scan year(timestamptz_col) always uses UTC while
-        // DuckDB-side year() uses the session zone — they disagree when the
-        // session isn't UTC. Promoting `year` to Tier C requires changing the
-        // converter to honour the Arrow schema TZ, which is its own dedicated
-        // probe + test surface and out of scope for chunk 3.
+        // Chunk 3.5: zone-dependent extracts over WTZ are now safe to push when
+        // the property is on. The chunk-3.5 converter fix constructs incoming
+        // WTZ values with the Arrow schema TZ (= session zone), so Trino's
+        // above-scan year() and DuckDB-side year() interpret the same instant in
+        // the same zone — results agree.
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
                 call(new FunctionName("year"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
                 new Constant(2024L, BIGINT));
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
                 expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).containsExactly("(trino_year(\"tstz\") = 2024)");
+    }
+
+    @Test
+    public void testYearOnTimestampWithTimeZoneStillBlockedWhenPropertyOff()
+    {
+        // Property off is the default and the safe baseline — never push WTZ.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(false));
         assertThat(conjuncts).isEmpty();
     }
 
     @Test
-    public void testHourOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    public void testHourOnTimestampWithTimeZonePushesWhenPropertyOn()
     {
-        // Same reasoning as year() above — hour is zone-dependent.
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
                 call(new FunctionName("hour"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
                 new Constant(22L, BIGINT));
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
                 expression, ASSIGNMENTS, sessionWithTierC(true));
-        assertThat(conjuncts).isEmpty();
+        assertThat(conjuncts).containsExactly("(trino_hour(\"tstz\") = 22)");
     }
 
     @Test
-    public void testDateTruncOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    public void testDateTruncOnTimestampWithTimeZonePushesWhenPropertyOn()
     {
         ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
                 call(new FunctionName("date_trunc"), TIMESTAMP_TZ_MILLIS,
@@ -856,16 +865,12 @@ public class TestDuckDbExpressionTranslator
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
                 expression, ASSIGNMENTS, sessionWithTierC(true));
-        assertThat(conjuncts).isEmpty();
+        assertThat(conjuncts).containsExactly("(trino_date_trunc('month', \"tstz\") IS NULL)");
     }
 
     @Test
-    public void testDateDiffWithTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    public void testDateDiffWithBothTimestampWithTimeZonePushesWhenPropertyOn()
     {
-        // date_diff over WTZ args is doubly hazardous: zone-dependent for
-        // day/month/year units, and the Arrow converter's UTC_KEY hardcoding
-        // means the engines disagree on what day boundary each instant
-        // belongs to.
         ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
                 call(new FunctionName("date_diff"), BIGINT,
                         varcharConst("day"),
@@ -875,7 +880,27 @@ public class TestDuckDbExpressionTranslator
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
                 expression, ASSIGNMENTS, sessionWithTierC(true));
-        assertThat(conjuncts).isEmpty();
+        assertThat(conjuncts).containsExactly(
+                "(trino_date_diff('day', \"tstz\", \"tstz\") = 0)");
+    }
+
+    @Test
+    public void testDateDiffMixedDateAndTimestampWithTimeZonePushesWhenPropertyOn()
+    {
+        // Mixed-kind args: DATE + TIMESTAMP WTZ. Each arg clears its own per-arg
+        // gate independently; the connector trusts both engines to handle the
+        // type promotion identically.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_diff"), BIGINT,
+                        varcharConst("day"),
+                        new Variable("d", DATE),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(0L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).containsExactly(
+                "(trino_date_diff('day', \"d\", \"tstz\") = 0)");
     }
 
     @Test

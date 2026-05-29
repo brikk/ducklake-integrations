@@ -20,6 +20,8 @@ import org.apache.arrow.vector.ipc.ArrowReader;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -60,6 +62,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * pattern: a manager writes files into the shared volume, executors ATTACH
  * them on demand.
  */
+@Execution(ExecutionMode.SAME_THREAD)  // Quack server is stateful + single-instance per @BeforeAll; concurrent CREATE OR REPLACE MACRO races server-side.
 final class TestDucklakeDuckDbExecutorBackends
 {
     private static final String TABLE_NAME = "t";

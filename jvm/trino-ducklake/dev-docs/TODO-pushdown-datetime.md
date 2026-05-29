@@ -19,7 +19,7 @@ These three docs together are the full context. The agent doing the work does NO
 - Chunk 1 — ✅ shipped (round 6j). 12 new macros, type-gate registry in translator, 13 unit tests, 3 e2e tests, 775 total tests green. See "Chunk 1 — shipped notes" below.
 - Chunk 2 — ✅ shipped. `TrinoTimeZoneNormaliser` in production, threaded through `DucklakePageSourceProvider → DuckDbFilePageSource → ExecutionRequest`, `SET TimeZone` applied at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor` (via `quack_query_by_name`), 14 normaliser unit tests + 2 executor-level integration tests (positive LA, positive Singapore, parity through Quack, control mismatch) + 1 Trino-runner stability test (Tier A/B results invariant across 4 session zones). 791 total tests green. See "Chunk 2 — shipped notes" below.
 - Chunk 3 — ✅ shipped (narrow). Session-property `pushdown_timestamp_with_timezone` (default off), `ConnectorSession` threaded through the translator (overloads preserve test backward compat), gate extension limited to TRULY zone-invariant `to_unixtime`. Zone-dependent extracts (`year`/`month`/`day`/`hour`/`minute`/`second`/`millisecond`/`date_trunc`/`date_diff`) STAY UNPUSHED over WTZ even when property is on — the converter's UTC-hardcoding makes them unsafe (see Chunk 3.5 below). See "Chunk 3 — shipped notes" below.
-- Chunk 3.5 — ⏳ not started. Fix `DucklakeArrowToPageConverter` to honour the Arrow schema TZ instead of hardcoding `UTC_KEY`; then promote the full Tier C surface. Empirically validated path; see "Chunk 3.5 — converter fix unblocks full Tier C" below.
+- Chunk 3.5 — ✅ shipped. `DucklakeArrowToPageConverter` now resolves the Arrow vector's schema TimeZone and constructs WTZ values with it instead of hardcoding `UTC_KEY`. Full Tier C surface (`year`/`month`/`day`/`quarter`/`hour`/`minute`/`second`/`millisecond`/`date_trunc`/`date_diff`) promoted to push over WTZ when property on. **Year-boundary smoking gun fires end-to-end** (`testTierCYearBoundarySmokingGunSingaporeSession`): Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through Trino's full stack. 801 total tests green; zero regressions in the existing WTZ test surface (nothing pinned UTC rendering). See "Chunk 3.5 — shipped notes" below.
 
 ### Chunk 1 — shipped notes
 
@@ -119,6 +119,25 @@ DuckDB reliably sets the Arrow schema-field TZ to whatever the session `TimeZone
 - New Tier C function entries (`from_unixtime`, `at_timezone`, `with_timezone`) — each needs its own probe + semantic fixture before promotion. Track as Chunk 4+ if a need surfaces.
 - Promoting Tier C to default-on. Burn-in first; flip the property's default in a follow-up commit.
 - Changing the converter for non-WTZ types. Out of scope.
+
+### Chunk 3.5 — shipped notes
+
+Smoking gun confirmed: `testTierCYearBoundarySmokingGunSingaporeSession` runs the full Trino → connector → DuckDB → Arrow → connector → Trino loop with Singapore session + property on + `WHERE year(ts) = 2025` over a `2024-12-31 22:00 UTC` literal. Pre-3.5 the same query returned 0 rows (Trino above-scan year() always UTC-aligned, dropping the row DuckDB pushed). Post-3.5 it returns the row, and property-off returns the same row too (invariance under toggle).
+
+Files changed:
+- `src/dev/brikk/ducklake/trino/plugin/DucklakeArrowToPageConverter.java` — `writeTimestampTzColumn` resolves a `TimeZoneKey` once per column from `vector.getField().getType()` cast to `ArrowType.Timestamp.getTimezone()`. Passes through `writeTimestampTz` as a new parameter. Defensive fallback to `UTC_KEY` on null TZ or unparseable string with one-shot WARN per zone string (`UNPARSEABLE_TZ_WARNED` ConcurrentHashMap field, matches the chunk-2 pattern). Added `Logger` field.
+- `src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.java` — `buildTypeGates()` unified the Tier B and Tier C codepaths into a single `argTier(...)` call for `year/month/day/quarter/hour/minute/second/millisecond/to_unixtime/date_trunc/date_diff`. Pre-3.5 these were split: `to_unixtime` got the conditional gate, the rest were locked to DATE+TIMESTAMP. Post-3.5 all share the same gate. Tier A (`day_of_week`/`week`/`year_of_week`/etc.) still DATE-only because Trino's signature doesn't accept WTZ for those either.
+- `test/src/dev/brikk/ducklake/trino/plugin/TestDuckDbExpressionTranslator.java` — 5 chunk-3 unit tests flipped from `assertThat(conjuncts).isEmpty()` to `containsExactly(...)`, asserting the WTZ predicates DO push when property on. New `testYearOnTimestampWithTimeZoneStillBlockedWhenPropertyOff` regression guard.
+- `test/src/dev/brikk/ducklake/trino/plugin/TestDucklakeDuckDbReadMode.java` — added `testTierCYearBoundarySmokingGunSingaporeSession`: the canonical year-boundary case Trino + DuckDB now agree on, with property-toggle invariance asserted.
+
+User-visible behaviour change to call out in the commit / release notes: `SELECT timestamptz_col FROM duckdb_table` now renders in the session zone (matches Iceberg / Hive / Parquet `isAdjustedToUtc=true` connectors) instead of always UTC. No test in the suite pinned the previous UTC rendering, so this surfaces only when users observe the changed display. The instant carried by each value is unchanged — the byte content on the wire, comparisons, and predicate semantics are equivalent under the previous UTC interpretation, just rendered differently.
+
+The Quack-server-side path also benefits: `TestDucklakeDuckDbExecutorBackends.sessionTimeZonePropagatesToBothBackends` continues to pass without modification — that test uses CAST-to-VARCHAR predicates that DuckDB computes server-side, and the cast string formatting was always controlled by DuckDB's session TimeZone (chunk 2). The converter change only affects how Trino constructs WTZ values from incoming Arrow, which that test doesn't exercise.
+
+What's left for future chunks:
+- New Tier C function entries: `from_unixtime/1` (Trino returns WTZ; DuckDB `to_timestamp` returns TIMESTAMPTZ), `at_timezone(t, zone)`, `with_timezone(t, zone)`. Each needs its own probe (DuckDB's `time_zone(t, zone)` vs Trino's semantics on DST gaps and ambiguous wall times) and semantic fixture before shipping.
+- Default-on flip for `pushdown_timestamp_with_timezone`. Land this after a release of burn-in with the property explicitly enabled on staging.
+- Probe DuckLake parquet-format read path: parquet timestamp logical types may not carry a schema TZ the same way Arrow does. If parquet-format reads still go through the same converter (need to check), parquet-stored WTZ values may regress to UTC display. Quick parquet-roundtrip test should be added to `TestDucklakeUnicodeStringRoundTrip`'s sibling.
 
 ---
 
