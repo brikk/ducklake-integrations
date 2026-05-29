@@ -219,6 +219,52 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testArithmeticAndCoalescePushdownReturnsCorrectRows()
+    {
+        // End-to-end proof for the round-6e translator additions:
+        // arithmetic ($add) and $coalesce both push down via the translator
+        // (no macros involved — these are standard-function operator emits).
+        // The duckdb-format path means the WHERE clause runs through DuckDB; a
+        // missing translator branch would fall back to Trino-side filter, still
+        // returning the right rows. So this test asserts correctness, and the
+        // unit tests in TestDuckDbExpressionTranslator pin the SQL shape.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.arith_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('Apple' AS VARCHAR)), "
+                        + "  (2, CAST(NULL AS VARCHAR)), "
+                        + "  (3, CAST('Cherry' AS VARCHAR))"
+                        + ") AS t(id, name)");
+        try {
+            // Arithmetic — id + 1 = 2 → only id=1 matches.
+            MaterializedResult arith = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.arith_pushdown WHERE id + 1 = 2");
+            assertThat(arith.getRowCount()).isEqualTo(1);
+            assertThat(arith.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+            // COALESCE — name IS NULL on row 2 → COALESCE(name, 'fallback') = 'fallback' matches row 2.
+            MaterializedResult coal = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.arith_pushdown "
+                            + "WHERE COALESCE(name, 'fallback') = 'fallback'");
+            assertThat(coal.getRowCount()).isEqualTo(1);
+            assertThat(coal.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+
+            // Combined — id * 2 > 4 AND COALESCE(name, '') <> '' → id=3 (Cherry, id*2=6>4, name non-null).
+            MaterializedResult combined = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.arith_pushdown "
+                            + "WHERE id * 2 > 4 AND COALESCE(name, '') <> ''");
+            assertThat(combined.getRowCount()).isEqualTo(1);
+            assertThat(combined.getMaterializedRows().getFirst().getField(0)).isEqualTo(3);
+        }
+        finally {
+            tryDropTable("test_schema.arith_pushdown");
+        }
+    }
+
+    @Test
     public void testPlaceholderLowerPushdownIsCorrectForAsciiData()
     {
         // lower/1 IS in PUSHABLE_FUNCTIONS as a placeholder — the translator pushes

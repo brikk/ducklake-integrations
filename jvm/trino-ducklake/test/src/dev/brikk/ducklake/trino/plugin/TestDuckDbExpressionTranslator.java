@@ -234,6 +234,121 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
+    public void testArithmeticAdd()
+    {
+        // WHERE id + 1 = 10
+        ConnectorExpression add = call(StandardFunctions.ADD_FUNCTION_NAME, BIGINT,
+                new Variable("id", BIGINT),
+                new Constant(1L, BIGINT));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                add,
+                new Constant(10L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("((\"id\" + 1) = 10)");
+    }
+
+    @Test
+    public void testArithmeticAllOperators()
+    {
+        // Each of $subtract / $multiply / $divide / $modulo as a single conjunct
+        // pinned against the expected DuckDB SQL.
+        Object[][] cases = {
+                {StandardFunctions.SUBTRACT_FUNCTION_NAME, "-", "((\"id\" - 1) = 10)"},
+                {StandardFunctions.MULTIPLY_FUNCTION_NAME, "*", "((\"id\" * 1) = 10)"},
+                {StandardFunctions.DIVIDE_FUNCTION_NAME, "/", "((\"id\" / 1) = 10)"},
+                {StandardFunctions.MODULO_FUNCTION_NAME, "%", "((\"id\" % 1) = 10)"},
+        };
+        for (Object[] c : cases) {
+            FunctionName op = (FunctionName) c[0];
+            String expectedSql = (String) c[2];
+            ConnectorExpression arith = call(op, BIGINT,
+                    new Variable("id", BIGINT),
+                    new Constant(1L, BIGINT));
+            ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                    arith,
+                    new Constant(10L, BIGINT));
+            assertThat(DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS))
+                    .as("operator %s", c[1])
+                    .containsExactly(expectedSql);
+        }
+    }
+
+    @Test
+    public void testCoalesceTwoArg()
+    {
+        // WHERE COALESCE(name, 'unknown') = 'apple'
+        ConnectorExpression coalesce = call(StandardFunctions.COALESCE_FUNCTION_NAME, VARCHAR,
+                new Variable("name", VARCHAR),
+                varcharConst("unknown"));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                coalesce,
+                varcharConst("apple"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(coalesce(\"name\", 'unknown') = 'apple')");
+    }
+
+    @Test
+    public void testCoalesceVariadic()
+    {
+        // WHERE COALESCE(name, name, 'x', 'y') IS NOT NULL — exercise variadic >2
+        ConnectorExpression coalesce = call(StandardFunctions.COALESCE_FUNCTION_NAME, VARCHAR,
+                new Variable("name", VARCHAR),
+                new Variable("name", VARCHAR),
+                varcharConst("x"),
+                varcharConst("y"));
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN, coalesce);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(coalesce(\"name\", \"name\", 'x', 'y') IS NULL)");
+    }
+
+    @Test
+    public void testNullif()
+    {
+        // WHERE NULLIF(name, '') = 'apple'
+        ConnectorExpression nullif = call(StandardFunctions.NULLIF_FUNCTION_NAME, VARCHAR,
+                new Variable("name", VARCHAR),
+                varcharConst(""));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                nullif,
+                varcharConst("apple"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(nullif(\"name\", '') = 'apple')");
+    }
+
+    @Test
+    public void testIdenticalNullSafeEquality()
+    {
+        // WHERE name IS NOT DISTINCT FROM NULL — Trino encodes as $identical
+        ConnectorExpression expression = call(StandardFunctions.IDENTICAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                new Variable("name", VARCHAR),
+                new Constant(null, VARCHAR));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("(\"name\" IS NOT DISTINCT FROM NULL)");
+    }
+
+    @Test
+    public void testCombinedArithmeticAndCoalesce()
+    {
+        // WHERE (id + 1) > COALESCE(id, 0) — mixes the new branches with existing ones.
+        ConnectorExpression add = call(StandardFunctions.ADD_FUNCTION_NAME, BIGINT,
+                new Variable("id", BIGINT),
+                new Constant(1L, BIGINT));
+        ConnectorExpression coalesce = call(StandardFunctions.COALESCE_FUNCTION_NAME, BIGINT,
+                new Variable("id", BIGINT),
+                new Constant(0L, BIGINT));
+        ConnectorExpression expression = call(StandardFunctions.GREATER_THAN_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                add, coalesce);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("((\"id\" + 1) > coalesce(\"id\", 0))");
+    }
+
+    @Test
     public void testTrinoMetaJavaSetContainsRepresentativeEntries()
     {
         // Tripwire: the Java-side PUSHABLE_FUNCTIONS must match the trino_meta() rows

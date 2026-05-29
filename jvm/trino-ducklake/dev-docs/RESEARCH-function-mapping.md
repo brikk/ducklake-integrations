@@ -275,15 +275,15 @@ Pushdown rating in the Notes column where useful:
 
 ### Comparison and conditional
 
-| Operation | Trino | DuckDB | Notes |
-|---|---|---|---|
-| `=`, `<>`, `<`, `<=`, `>`, `>=` | SQL grammar | SQL grammar | ✅ Aligned for non-NULL operands. NULL comparison: both produce NULL (3VL). |
-| IS NULL / IS NOT NULL | SQL grammar | SQL grammar | ✅ Aligned. |
-| IS [NOT] DISTINCT FROM | `a IS [NOT] DISTINCT FROM b` | `a IS [NOT] DISTINCT FROM b` | ✅ Aligned (NULL-safe comparison). |
-| BETWEEN | `x BETWEEN a AND b` | `x BETWEEN a AND b` | ✅ Aligned (inclusive). |
-| IN | `x IN (a, b, c)` | `x IN (a, b, c)` | ✅ Aligned. NULL-in-list handling identical (NULL in list yields NULL, not false). |
-| `greatest` / `least` | `greatest(v1, ..., vN) -> [same]`, `least(...)` | `greatest(x1, x2, ...)`, `least(...)` | ⚠️ NULL handling differs! **Trino: NULL anywhere → NULL.** **DuckDB: skips NULLs.** ❌ Do not push when args may be NULL. |
-| CASE / IF / COALESCE / NULLIF | SQL grammar; `if(cond, t)`, `if(cond, t, f)`, `coalesce(...)`, `nullif(a, b)`, `try(expr)` | SQL grammar; `if(a, b, c)`, `ifnull(expr, other)`, `coalesce(...)`, `nullif(a, b)` | ✅ Aligned. Note: Trino has `try(expr)` for swallowing errors; DuckDB has `TRY_CAST` but no general `try`. |
+| Operation | Trino | DuckDB | Done | Notes |
+|---|---|---|---|---|
+| `=`, `<>`, `<`, `<=`, `>`, `>=` | SQL grammar | SQL grammar | yes (translator) | ✅ Aligned for non-NULL operands. NULL comparison: both produce NULL (3VL). Translator emits operators directly. |
+| IS NULL / IS NOT NULL | SQL grammar | SQL grammar | yes (translator) | ✅ Aligned. |
+| IS [NOT] DISTINCT FROM | `a IS [NOT] DISTINCT FROM b` | `a IS [NOT] DISTINCT FROM b` | yes r6 (translator) | ✅ Trino encodes as `$identical` standard function. Translator emits `IS NOT DISTINCT FROM` operator form directly. NULL-safe equality. |
+| BETWEEN | `x BETWEEN a AND b` | `x BETWEEN a AND b` | — | ✅ Aligned (inclusive). |
+| IN | `x IN (a, b, c)` | `x IN (a, b, c)` | yes (via TupleDomain) | ✅ Aligned. Trino delivers IN-lists of constants through `TupleDomain`, which our existing `DuckDbWhereClauseTranslator` handles. NULL-in-list handling identical (NULL in list yields NULL, not false). |
+| `greatest` / `least` | `greatest(v1, ..., vN) -> [same]`, `least(...)` | `greatest(x1, x2, ...)`, `least(...)` | — never | ⚠️ NULL handling differs! **Trino: NULL anywhere → NULL.** **DuckDB: skips NULLs.** ❌ Do not push when args may be NULL. |
+| CASE / IF / COALESCE / NULLIF | SQL grammar; `if(cond, t)`, `if(cond, t, f)`, `coalesce(...)`, `nullif(a, b)`, `try(expr)` | SQL grammar; `if(a, b, c)`, `ifnull(expr, other)`, `coalesce(...)`, `nullif(a, b)` | yes r6 (coalesce, nullif) | ✅ `coalesce` (variadic) and `nullif/2` translated directly to DuckDB grammar. `CASE` and `IF` still TBD (special grammar handling). Trino's `try(expr)` is Trino-only (DuckDB has only `TRY_CAST`). |
 
 ### Logical / boolean
 

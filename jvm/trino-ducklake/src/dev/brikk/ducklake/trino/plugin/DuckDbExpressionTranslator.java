@@ -327,6 +327,49 @@ final class DuckDbExpressionTranslator
             }
             return "(" + left + " " + operator + " " + right + ")";
         }
+        String arithmetic = arithmeticOperator(name);
+        if (arithmetic != null && args.size() == 2) {
+            String left = translateOrNull(args.get(0), assignments);
+            String right = translateOrNull(args.get(1), assignments);
+            if (left == null || right == null) {
+                return null;
+            }
+            return "(" + left + " " + arithmetic + " " + right + ")";
+        }
+        if (name.equals(StandardFunctions.IDENTICAL_OPERATOR_FUNCTION_NAME) && args.size() == 2) {
+            // SQL "IS NOT DISTINCT FROM" — NULL-safe equality. DuckDB supports the
+            // grammar directly. Useful for predicates over nullable columns.
+            String left = translateOrNull(args.get(0), assignments);
+            String right = translateOrNull(args.get(1), assignments);
+            if (left == null || right == null) {
+                return null;
+            }
+            return "(" + left + " IS NOT DISTINCT FROM " + right + ")";
+        }
+        if (name.equals(StandardFunctions.COALESCE_FUNCTION_NAME) && !args.isEmpty()) {
+            // Variadic — both engines align: returns first non-NULL, or NULL if all NULL.
+            StringBuilder sql = new StringBuilder("coalesce(");
+            for (int i = 0; i < args.size(); i++) {
+                if (i > 0) {
+                    sql.append(", ");
+                }
+                String arg = translateOrNull(args.get(i), assignments);
+                if (arg == null) {
+                    return null;
+                }
+                sql.append(arg);
+            }
+            sql.append(')');
+            return sql.toString();
+        }
+        if (name.equals(StandardFunctions.NULLIF_FUNCTION_NAME) && args.size() == 2) {
+            String left = translateOrNull(args.get(0), assignments);
+            String right = translateOrNull(args.get(1), assignments);
+            if (left == null || right == null) {
+                return null;
+            }
+            return "nullif(" + left + ", " + right + ")";
+        }
 
         // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
         // Only push if (name, arity) is in our brain.
@@ -345,6 +388,23 @@ final class DuckDbExpressionTranslator
         if (name.equals(StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME)) return "<=";
         if (name.equals(StandardFunctions.GREATER_THAN_OPERATOR_FUNCTION_NAME)) return ">";
         if (name.equals(StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME)) return ">=";
+        return null;
+    }
+
+    private static String arithmeticOperator(FunctionName name)
+    {
+        // Trino's $add/$subtract/$multiply/$divide/$modulo standard functions map
+        // to identical SQL operators in DuckDB. Both engines align on integer and
+        // float arithmetic semantics (including overflow throws for integers, NaN
+        // / Inf propagation for floats). Date/interval arithmetic uses different
+        // shapes in the two engines — but if a Constant of those types reaches
+        // translateConstant() it returns null, so the whole arithmetic translation
+        // fails cleanly and stays unpushed. No type-aware gating needed here.
+        if (name.equals(StandardFunctions.ADD_FUNCTION_NAME)) return "+";
+        if (name.equals(StandardFunctions.SUBTRACT_FUNCTION_NAME)) return "-";
+        if (name.equals(StandardFunctions.MULTIPLY_FUNCTION_NAME)) return "*";
+        if (name.equals(StandardFunctions.DIVIDE_FUNCTION_NAME)) return "/";
+        if (name.equals(StandardFunctions.MODULO_FUNCTION_NAME)) return "%";
         return null;
     }
 
