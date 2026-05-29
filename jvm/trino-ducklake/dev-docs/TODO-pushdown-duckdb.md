@@ -26,7 +26,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
    - **`concat` shipped as translator rewrite** (round 6e): `Call(concat, [a,b,c])` → `(a || b || c)` when return type is `VARCHAR`. DuckDB's `concat` skips NULL; the `||` operator NULL-propagates in both engines and matches Trino's `concat` semantics.
    - Not yet shipped: `position` (operator-form; needs translator special case).
    - Regex (RE2 on both): `regexp_like/2`, `regexp_extract/{2,3}`. `regexp_like` exercises the rename pattern (Trino `regexp_like` → DuckDB `regexp_matches` via macro body).
-4. ⏳ **Date / time** — risky because of timezone, locale, calendar. Do one function at a time, with cross-engine semantic tests. Skip anything that touches session timezone interpretation until we've verified the alignment. Not started.
+4. ⏳ **Date / time** — risky because of timezone, locale, calendar. Do one function at a time, with cross-engine semantic tests. Skip anything that touches session timezone interpretation until we've verified the alignment. Plan + test corpus in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md). Tiered rollout (A: DATE only → B: TIMESTAMP no-TZ → C: TIMESTAMP WTZ behind session flag → D: format/parse never push). First commit fixes the latent type-gate bug in existing `year/month/day/quarter`/`date_trunc`/`date_diff` entries (they currently push for any arg type, would silently diverge on TIMESTAMP WTZ).
 5. ⏳ **DuckDB-namespaced exclusives** — vector / JSON / list / struct / regex variants that exist in DuckDB but not in Trino. Register through `ConnectorFunctionProvider`, route through the same translator. Lower-risk than #4 because we own both ends of the semantic contract. Not started.
 6. ⏳ **Lance table functions** when we get there. Sits on top of the infrastructure above.
 
@@ -91,7 +91,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
   - `lower/1`, `upper/1`, `reverse/1` shipped as **pushable placeholders** with one-shot warn-on-emit (round 4 — see [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md)). Native extension required for full Trino-equivalent semantics on non-ASCII input.
   - `chr`, `url_encode/decode`, `to_hex/from_hex`, `to_base64/from_base64`, `levenshtein_distance`, `hamming_distance` (round 4).
   - Still deferred: `concat` (NULL-propagation differs), `position` (operator-form).
-- Step 4 (date / time) — not started.
+- Step 4 (date / time) — not started; plan + cross-engine test corpus drafted in [PLAN-pushdown-datetime.md](PLAN-pushdown-datetime.md). First step-4 PR fixes the latent type-gate bug in the round-6g/6i date macros before adding new entries.
 - Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
 - Step 6 (Lance table functions) — not started.
 
