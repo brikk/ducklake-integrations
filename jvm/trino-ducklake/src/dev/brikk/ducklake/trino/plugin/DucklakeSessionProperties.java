@@ -64,7 +64,7 @@ public class DucklakeSessionProperties
      * that failed (rare — only for fractional bare-offset session zones DuckDB
      * can't normalise), Tier C results may diverge from Trino's reference. The
      * one-shot WARN logged by both executors is the breadcrumb. See
-     * dev-docs/REPORT-datetime-tz-handling.md.
+     * dev-docs/archive/REPORT-datetime-tz-handling.md.
      */
     public static final String PUSHDOWN_TIMESTAMP_WITH_TIMEZONE = "pushdown_timestamp_with_timezone";
 
@@ -118,7 +118,7 @@ public class DucklakeSessionProperties
                                 "semantic corpus burns in. When on, requires successful SET TimeZone on attach " +
                                 "(automatic for all named IANA zones and integer-hour offsets; fractional bare " +
                                 "offsets like '+05:30' get a one-shot WARN and the pushdown silently degrades " +
-                                "to Trino-side evaluation for that attach). See dev-docs/REPORT-datetime-tz-handling.md.",
+                                "to Trino-side evaluation for that attach). See dev-docs/archive/REPORT-datetime-tz-handling.md.",
                         false,
                         false));
     }

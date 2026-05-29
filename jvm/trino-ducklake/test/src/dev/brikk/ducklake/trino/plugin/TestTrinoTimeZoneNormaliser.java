@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pins the {@link TrinoTimeZoneNormaliser} three-rule contract documented in
- * {@code dev-docs/REPORT-datetime-tz-handling.md} (Q3 table). The 14 cases
+ * {@code dev-docs/archive/REPORT-datetime-tz-handling.md} (Q3 table). The 14 cases
  * here are the same set the {@code ProbeDuckDbTimeZoneHandling#probeQ3b…}
  * probe validated against {@code java.time} as ground truth — every
  * MATCH/DUCK-FAIL row in that table corresponds to an assertion below.

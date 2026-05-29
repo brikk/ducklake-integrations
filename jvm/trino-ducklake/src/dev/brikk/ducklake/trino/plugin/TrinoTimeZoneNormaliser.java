@@ -16,7 +16,7 @@ package dev.brikk.ducklake.trino.plugin;
 /**
  * Translates a Trino {@code TimeZoneKey} string into a string DuckDB's
  * {@code SET TimeZone = '...'} will accept. Three rules, derived empirically
- * in {@code dev-docs/REPORT-datetime-tz-handling.md} (Q3 table) and validated
+ * in {@code dev-docs/archive/REPORT-datetime-tz-handling.md} (Q3 table) and validated
  * across 14 representative shapes — every named IANA and integer-hour offset
  * matched {@code java.time}'s ground truth exactly.
  *

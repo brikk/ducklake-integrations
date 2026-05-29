@@ -185,7 +185,15 @@ final class DuckDbExpressionTranslator
             new NameArity("minute", 1),
             new NameArity("second", 1),
             new NameArity("millisecond", 1),
-            new NameArity("to_unixtime", 1));
+            new NameArity("to_unixtime", 1),
+            // Step 4 chunk 4 — Tier C extras.
+            // `from_unixtime(double)` is input-type-trivial (DOUBLE always pushable)
+            // and produces a WTZ output; chunk-3.5's converter handles the WTZ
+            // construction. Safe regardless of session property.
+            // `with_timezone(timestamp, varchar)` attaches a zone to a wall-clock;
+            // input is TIMESTAMP no-TZ in both engines, no Tier C gate needed.
+            new NameArity("from_unixtime", 1),
+            new NameArity("with_timezone", 2));
 
     /**
      * Sparse map of per-entry argument-type gates. {@link #PUSHABLE_FUNCTIONS}
@@ -198,8 +206,8 @@ final class DuckDbExpressionTranslator
      * <p>Originally added in step 4 chunk 1 for the date/time tier rollout —
      * date functions must reject {@code TIMESTAMP WITH TIME ZONE} arguments
      * until the session-TZ plumbing (chunk 2) lands and Tier C ships (chunk 3).
-     * See {@code dev-docs/TODO-pushdown-datetime.md} and
-     * {@code dev-docs/PLAN-pushdown-datetime.md}.
+     * See {@code dev-docs/archive/TODO-pushdown-datetime.md} and
+     * {@code dev-docs/archive/PLAN-pushdown-datetime.md}.
      */
     private static final Map<NameArity, ArgTypeGate> TYPE_GATES = buildTypeGates();
 
@@ -214,8 +222,8 @@ final class DuckDbExpressionTranslator
         // (which IS the session zone). So Trino's above-scan year() and DuckDB's
         // pushed year() now both interpret the value in Trino's session zone —
         // results agree, pushdown is byte-equivalent. See
-        // dev-docs/REPORT-datetime-tz-handling.md and
-        // dev-docs/TODO-pushdown-datetime.md "Chunk 3.5 — shipped notes".
+        // dev-docs/archive/REPORT-datetime-tz-handling.md and
+        // dev-docs/archive/TODO-pushdown-datetime.md "Chunk 3.5 — shipped notes".
         ArgTypeGate arg0Tier = argTier(0);
         for (String name : List.of("year", "month", "day", "quarter",
                 "hour", "minute", "second", "millisecond", "to_unixtime")) {
@@ -238,6 +246,11 @@ final class DuckDbExpressionTranslator
                 "week", "week_of_year", "year_of_week", "yow")) {
             gates.put(new NameArity(name, 1), arg0DateStrict);
         }
+
+        // with_timezone(TIMESTAMP no-TZ, varchar) → WTZ. Trino's signature excludes
+        // WTZ as the first arg (re-zoning a WTZ value is `at_timezone`, which we
+        // can't push — see SQL macros for the reason). Gate strictly to TIMESTAMP.
+        gates.put(new NameArity("with_timezone", 2), arg(0, TimestampType.class));
         return Map.copyOf(gates);
     }
 

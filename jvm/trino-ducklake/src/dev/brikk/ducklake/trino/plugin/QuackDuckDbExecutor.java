@@ -291,7 +291,7 @@ final class QuackDuckDbExecutor
                 log.warn("Quack server-side DuckDB rejected SET TimeZone for normalised zone '%s': %s. "
                                 + "Subsequent splits with the same zone proceed without an explicit "
                                 + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "
-                                + "See dev-docs/REPORT-datetime-tz-handling.md.",
+                                + "See dev-docs/archive/REPORT-datetime-tz-handling.md.",
                         z, e.getMessage().lines().findFirst().orElse(e.getMessage()));
             }
         }

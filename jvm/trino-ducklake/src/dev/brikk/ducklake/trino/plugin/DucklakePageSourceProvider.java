@@ -609,7 +609,7 @@ public class DucklakePageSourceProvider
         // (DuckDB's default zone is the JVM system TZ — Costa Rica on a dev box,
         // UTC in CI — so an explicit SET is the only way to make duckdb-format
         // reads reproducible across deployment environments). See
-        // dev-docs/REPORT-datetime-tz-handling.md.
+        // dev-docs/archive/REPORT-datetime-tz-handling.md.
         Optional<String> duckDbTimeZone = Optional.ofNullable(
                 TrinoTimeZoneNormaliser.normalise(session.getTimeZoneKey().getId()));
 

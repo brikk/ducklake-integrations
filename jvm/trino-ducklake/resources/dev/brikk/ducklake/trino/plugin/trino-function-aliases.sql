@@ -295,7 +295,7 @@ CREATE OR REPLACE MACRO trino_date_diff(unit, t1, t2) AS date_diff(unit, t1, t2)
 -- The Java-side TYPE_GATES registry in DuckDbExpressionTranslator restricts pushing
 -- these to safe argument types (DATE, or DATE+TIMESTAMP for Tier B). TIMESTAMP WITH
 -- TIME ZONE is excluded until step 4 chunk 3 ships the session-TZ plumbing. See
--- dev-docs/PLAN-pushdown-datetime.md and dev-docs/REPORT-datetime-tz-handling.md.
+-- dev-docs/archive/PLAN-pushdown-datetime.md and dev-docs/archive/REPORT-datetime-tz-handling.md.
 
 -- Tier A — DATE-only, TZ-irrelevant.
 --
@@ -342,9 +342,33 @@ CREATE OR REPLACE MACRO trino_millisecond(t) AS extract('millisecond' FROM t)::B
 
 -- to_unixtime: seconds since 1970-01-01 UTC as DOUBLE. For TIMESTAMP (no TZ)
 -- input both engines interpret the value as already-UTC and produce identical
--- epoch seconds — wall-clock-invariant. (from_unixtime returns WTZ in Trino and
--- is Tier C; not in this round.)
+-- epoch seconds — wall-clock-invariant. WTZ input is also safe (zone-invariant
+-- absolute epoch); gated to push for WTZ when Tier C property is on.
 CREATE OR REPLACE MACRO trino_to_unixtime(t) AS epoch(t)::DOUBLE;
+
+-- ---- Step 4 chunk 4 — Tier C extras (post-3.5) ----
+--
+-- from_unixtime(double) → TIMESTAMP(3) WITH TIME ZONE in Trino. DuckDB's
+-- to_timestamp(numeric) returns TIMESTAMPTZ. Both engines return the same
+-- absolute instant for the same epoch; rendering depends on session zone.
+-- Chunk 3.5's Arrow converter constructs the WTZ value with the session zone
+-- so Trino above-scan and DuckDB-side comparisons over the result agree.
+-- Input is DOUBLE — no Tier C gate needed on the input; the OUTPUT is WTZ
+-- but the output zone is the session zone (chunk 3.5 plumbing), so any
+-- downstream year()/hour() etc. that wraps from_unixtime also aligns.
+CREATE OR REPLACE MACRO trino_from_unixtime(d) AS to_timestamp(d);
+
+-- with_timezone(timestamp(p), varchar) → timestamp(p) with time zone in Trino:
+-- attaches a zone to a wall-clock TIMESTAMP. DuckDB's timezone(zone, ts) returns
+-- TIMESTAMPTZ with the same instant. Note the ARG-ORDER FLIP: Trino's signature
+-- is (timestamp, zone), DuckDB's is (zone, timestamp). The macro swaps them.
+--
+-- Trino does NOT have a directly-aligned `at_timezone(WTZ, zone)` form because
+-- DuckDB's `WTZ AT TIME ZONE 'X'` and `timezone('X', WTZ)` return TIMESTAMP
+-- (no-TZ) instead of WTZ — DuckDB's TIMESTAMPTZ has no per-value zone metadata
+-- so a "rezone display" operation is fundamentally not expressible. at_timezone
+-- stays unpushable through this connector. See RESEARCH-function-mapping.md.
+CREATE OR REPLACE MACRO trino_with_timezone(t, zone) AS timezone(zone, t);
 
 -- ---- Catalog of aliased functions ----
 --
@@ -457,5 +481,8 @@ SELECT * FROM (
         ('minute',            1, 'date'),
         ('second',            1, 'date'),
         ('millisecond',       1, 'date'),
-        ('to_unixtime',       1, 'date')
+        ('to_unixtime',       1, 'date'),
+        -- Step 4 chunk 4 — Tier C extras
+        ('from_unixtime',     1, 'date'),
+        ('with_timezone',     2, 'date')
 ) AS t(trino_name, arg_count, category);

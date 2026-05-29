@@ -919,6 +919,71 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
+    public void testFromUnixtimePushesUnconditionally()
+    {
+        // from_unixtime(DOUBLE) → WTZ. Input is DOUBLE — no gate, no Tier C
+        // property needed. The output WTZ value will be tagged with the session
+        // zone by the chunk-3.5 converter when read back.
+        DucklakeColumnHandle epochCol = new DucklakeColumnHandle(106L, "epoch", DOUBLE, true);
+        Map<String, ColumnHandle> assignments = ImmutableMap.of("epoch", epochCol);
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("from_unixtime"), TIMESTAMP_TZ_MILLIS,
+                        new Variable("epoch", DOUBLE)));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, assignments);
+        // Property off — still pushes (no gate).
+        assertThat(conjuncts).containsExactly("(trino_from_unixtime(\"epoch\") IS NULL)");
+    }
+
+    @Test
+    public void testWithTimezoneOnTimestampPushes()
+    {
+        // with_timezone(TIMESTAMP no-TZ, varchar) → WTZ. Gated to TIMESTAMP-only.
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("with_timezone"), TIMESTAMP_TZ_MILLIS,
+                        new Variable("ts", TIMESTAMP_MILLIS),
+                        varcharConst("America/Los_Angeles")));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly(
+                "(trino_with_timezone(\"ts\", 'America/Los_Angeles') IS NULL)");
+    }
+
+    @Test
+    public void testWithTimezoneOnDateDoesNotPush()
+    {
+        // Trino's with_timezone signature is (timestamp(p), varchar) — DATE input
+        // wouldn't match in Trino's planner either, but the gate refuses defensively.
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("with_timezone"), TIMESTAMP_TZ_MILLIS,
+                        new Variable("d", DATE),
+                        varcharConst("America/Los_Angeles")));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testWithTimezoneOnTimestampWithTimeZoneDoesNotPush()
+    {
+        // Re-zoning a WTZ value is `at_timezone` in Trino, not `with_timezone`.
+        // `at_timezone` stays unpushable through this connector because DuckDB's
+        // AT TIME ZONE on a TIMESTAMPTZ returns TIMESTAMP no-TZ — type mismatch.
+        // with_timezone gated strictly to TIMESTAMP no-TZ input.
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("with_timezone"), TIMESTAMP_TZ_MILLIS,
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS),
+                        varcharConst("America/Los_Angeles")));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
     public void testYearOnDateStillPushesWhenPropertyOn()
     {
         // Regression guard: turning the property on must NOT regress the Tier B

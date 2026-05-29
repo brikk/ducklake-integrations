@@ -422,7 +422,7 @@ final class DucklakeArrowToPageConverter
                 log.warn("Arrow schema TimeZone '%s' is not a recognised Trino TimeZoneKey; "
                                 + "falling back to UTC for incoming TIMESTAMP WITH TIME ZONE values "
                                 + "of this column. Subsequent occurrences of the same zone string "
-                                + "use UTC without re-warning. See dev-docs/REPORT-datetime-tz-handling.md.",
+                                + "use UTC without re-warning. See dev-docs/archive/REPORT-datetime-tz-handling.md.",
                         tzString);
             }
             return UTC_KEY;

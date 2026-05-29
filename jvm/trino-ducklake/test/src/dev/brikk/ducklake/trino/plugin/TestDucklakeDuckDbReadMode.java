@@ -574,7 +574,7 @@ public class TestDucklakeDuckDbReadMode
         // across three session zones — the strongest end-to-end correctness
         // guarantee we can make for Tier C without first changing the Arrow
         // converter to honour Arrow schema TZ (see chunk 3 shipped notes in
-        // TODO-pushdown-datetime.md for the broader Tier C plan).
+        // dev-docs/archive/TODO-pushdown-datetime.md for the broader Tier C plan).
         computeActual(writeDuckDbSession(),
                 "CREATE TABLE test_schema.tier_c_to_unixtime ("
                         + "  id INTEGER, "
@@ -658,6 +658,64 @@ public class TestDucklakeDuckDbReadMode
         }
         finally {
             tryDropTable("test_schema.tier_c_year_no_push");
+        }
+    }
+
+    @Test
+    public void testFromUnixtimeAndWithTimezonePushdownEndToEnd()
+    {
+        // Chunk-4 Tier C extras: from_unixtime(double) → WTZ and
+        // with_timezone(TIMESTAMP, varchar) → WTZ. Both push as macros to DuckDB's
+        // to_timestamp() / timezone() respectively. Wrap the WTZ output in
+        // to_unixtime() (chunk-3 zone-invariant pushable) for the predicate value
+        // so the whole expression composes without needing a WTZ-literal constant.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.fn_unixtime_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, DOUBLE '1718452800.0'), "  // 2024-06-15 12:00:00 UTC
+                        + "  (2, DOUBLE '0.0'), "          // 1970 epoch
+                        + "  (3, DOUBLE '-1.0')"           // pre-epoch
+                        + ") AS t(id, epoch_d)");
+        try {
+            // from_unixtime → WTZ → to_unixtime → DOUBLE: identity. The intermediate
+            // WTZ value goes through DuckDB's to_timestamp() and the round-trip
+            // exposes any byte mishandling.
+            MaterializedResult roundtrip = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.fn_unixtime_pushdown "
+                            + "WHERE to_unixtime(from_unixtime(epoch_d)) = 1718452800.0");
+            assertThat(roundtrip.getRowCount()).isEqualTo(1);
+            assertThat(roundtrip.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+        }
+        finally {
+            tryDropTable("test_schema.fn_unixtime_pushdown");
+        }
+    }
+
+    @Test
+    public void testWithTimezonePushdownEndToEnd()
+    {
+        // with_timezone(TIMESTAMP, varchar) attaches a zone to a wall-clock. Verify
+        // by extracting the epoch back: the wall-clock 2024-06-15 12:00:00
+        // interpreted in 'America/Los_Angeles' is the instant 1718478000 UTC
+        // (12:00 in LA on that day is 19:00 UTC due to UTC-7 in summer).
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.fn_with_tz_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, TIMESTAMP '2024-06-15 12:00:00'), "
+                        + "  (2, TIMESTAMP '2024-06-15 13:00:00')"
+                        + ") AS t(id, ts)");
+        try {
+            // 2024-06-15 12:00 LA wall-clock = 2024-06-15 19:00 UTC (PDT, UTC-7).
+            MaterializedResult la = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.fn_with_tz_pushdown "
+                            + "WHERE to_unixtime(with_timezone(ts, 'America/Los_Angeles')) = 1718478000.0");
+            assertThat(la.getRowCount()).isEqualTo(1);
+            assertThat(la.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+        }
+        finally {
+            tryDropTable("test_schema.fn_with_tz_pushdown");
         }
     }
 

@@ -621,7 +621,39 @@ public class TestTrinoFunctionAliases
                 c("to_unixtime 1: epoch", "to_unixtime", 1,
                         "SELECT trino_to_unixtime(TIMESTAMP '1970-01-01 00:00:00')", 0.0),
                 c("to_unixtime 1: one second before epoch", "to_unixtime", 1,
-                        "SELECT trino_to_unixtime(TIMESTAMP '1969-12-31 23:59:59')", -1.0));
+                        "SELECT trino_to_unixtime(TIMESTAMP '1969-12-31 23:59:59')", -1.0),
+                // Step 4 chunk 4 — Tier C extras
+                //
+                // from_unixtime: Trino's `double → WTZ` round-trips through DuckDB's
+                // to_timestamp(numeric). Verify by extracting epoch back from the result;
+                // both engines produce zone-invariant epochs (the epoch IS the instant).
+                c("from_unixtime 1: epoch 0 → instant", "from_unixtime", 1,
+                        "SELECT epoch(trino_from_unixtime(0.0))", 0.0),
+                c("from_unixtime 1: subsecond preserved", "from_unixtime", 1,
+                        "SELECT epoch(trino_from_unixtime(1.234567))", 1.234567),
+                c("from_unixtime 1: negative epoch (pre-1970)", "from_unixtime", 1,
+                        "SELECT epoch(trino_from_unixtime(-1.0))", -1.0),
+                c("from_unixtime 1: year-boundary instant", "from_unixtime", 1,
+                        // 1735682400 = 2024-12-31 22:00:00 UTC — the year-boundary
+                        // smoking-gun instant. epoch round-trip confirms the macro
+                        // doesn't mangle large positive doubles.
+                        "SELECT epoch(trino_from_unixtime(1735682400.0))", 1735682400.0),
+                // with_timezone: Trino's `(timestamp, varchar) → WTZ` attaches the zone
+                // to the wall-clock. DuckDB's `timezone(zone, ts)` does the same with
+                // arg order flipped (the macro handles the swap). Verify the instant
+                // by extracting epoch.
+                c("with_timezone 2: UTC wall-clock attach", "with_timezone", 2,
+                        // 2024-06-15 12:00:00 in UTC → epoch 1718452800
+                        "SELECT epoch(trino_with_timezone(TIMESTAMP '2024-06-15 12:00:00', 'UTC'))",
+                        1.7184528E9),
+                c("with_timezone 2: Singapore wall-clock attach", "with_timezone", 2,
+                        // 2024-06-15 12:00:00 wall-clock in Singapore (+08) is
+                        // 2024-06-15 04:00:00 UTC → epoch 1718424000.
+                        "SELECT epoch(trino_with_timezone(TIMESTAMP '2024-06-15 12:00:00', 'Asia/Singapore'))",
+                        1.7184240E9),
+                c("with_timezone 2: epoch wall-clock attach", "with_timezone", 2,
+                        "SELECT epoch(trino_with_timezone(TIMESTAMP '1970-01-01 00:00:00', 'UTC'))",
+                        0.0));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

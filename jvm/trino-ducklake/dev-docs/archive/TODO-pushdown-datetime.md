@@ -20,6 +20,7 @@ These three docs together are the full context. The agent doing the work does NO
 - Chunk 2 — ✅ shipped. `TrinoTimeZoneNormaliser` in production, threaded through `DucklakePageSourceProvider → DuckDbFilePageSource → ExecutionRequest`, `SET TimeZone` applied at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor` (via `quack_query_by_name`), 14 normaliser unit tests + 2 executor-level integration tests (positive LA, positive Singapore, parity through Quack, control mismatch) + 1 Trino-runner stability test (Tier A/B results invariant across 4 session zones). 791 total tests green. See "Chunk 2 — shipped notes" below.
 - Chunk 3 — ✅ shipped (narrow). Session-property `pushdown_timestamp_with_timezone` (default off), `ConnectorSession` threaded through the translator (overloads preserve test backward compat), gate extension limited to TRULY zone-invariant `to_unixtime`. Zone-dependent extracts (`year`/`month`/`day`/`hour`/`minute`/`second`/`millisecond`/`date_trunc`/`date_diff`) STAY UNPUSHED over WTZ even when property is on — the converter's UTC-hardcoding makes them unsafe (see Chunk 3.5 below). See "Chunk 3 — shipped notes" below.
 - Chunk 3.5 — ✅ shipped. `DucklakeArrowToPageConverter` now resolves the Arrow vector's schema TimeZone and constructs WTZ values with it instead of hardcoding `UTC_KEY`. Full Tier C surface (`year`/`month`/`day`/`quarter`/`hour`/`minute`/`second`/`millisecond`/`date_trunc`/`date_diff`) promoted to push over WTZ when property on. **Year-boundary smoking gun fires end-to-end** (`testTierCYearBoundarySmokingGunSingaporeSession`): Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through Trino's full stack. 801 total tests green; zero regressions in the existing WTZ test surface (nothing pinned UTC rendering). See "Chunk 3.5 — shipped notes" below.
+- Chunk 4 — ✅ shipped. Added `from_unixtime/1` (DOUBLE → WTZ via DuckDB's `to_timestamp`) and `with_timezone/2` (TIMESTAMP no-TZ + VARCHAR → WTZ via DuckDB's `timezone(zone, t)` — note the arg-order flip). Probed `at_timezone(WTZ, varchar)` and **confirmed not pushable** through this connector: DuckDB's `WTZ AT TIME ZONE 'X'` and `timezone('X', WTZ)` return TIMESTAMP no-TZ, not WTZ — DuckDB's TIMESTAMPTZ has no per-value zone metadata, so the "rezone display" operation is fundamentally not expressible. Documented in the macro SQL and RESEARCH-function-mapping.md. 807 total tests green. Date stuff complete for this iteration — moves to archive next.
 
 ### Chunk 1 — shipped notes
 
@@ -68,6 +69,40 @@ Files in chunk 3:
 - `DuckDbExpressionTranslator.java` — `ArgTypeGate` signature extended with `ConnectorSession session`; `translateConjuncts/translate` got new overloads taking session (backward-compat overloads delegate with `null`); every internal recursion (`translateOrNull`, `translateCall`, `translateLike`, `translateCast`, `translateStringConcat`, `translateMacroCall`, `joinBinary`) threads session through. The new `argTier(int index)` factory is the WTZ-when-property-on gate, currently bound to `to_unixtime/1`.
 - `DucklakeMetadata.applyFilter` — passes `session` into `translateConjuncts`.
 - Tests: 7 new translator unit tests covering positive (`to_unixtime` WTZ pushes when property on), negative (off), regression guard (Tier A and Tier B without WTZ stay correct), and explicit non-promotion (`year`/`hour`/`date_trunc`/`date_diff` over WTZ stay unpushed even with property on, with reasoned-out comments). 2 new e2e tests: property-toggle round-trips for `to_unixtime` across UTC / LA / Singapore sessions, and invariance check that `year(WTZ)` results don't shift under the property toggle.
+
+### Parquet-format WTZ asymmetry — known, fix design recorded
+
+**Finding.** Trino's standard `trino-parquet` reader (`io/trino/parquet/reader/ColumnReaderFactory.java:221-235`, `io/trino/parquet/reader/decoders/ValueDecoders.java:1025+`) **hardcodes `UTC_KEY` for all incoming `TIMESTAMP WITH TIME ZONE` values** regardless of parquet's `isAdjustedToUTC` logical-type flag. Same fault mode as our Arrow path pre-3.5. This is an upstream Trino behaviour; we don't own the parquet decoders.
+
+**Practical impact today — modest:**
+- `SELECT timestamptz_col FROM parquet_format_table` renders in UTC, has always rendered in UTC; chunk 3.5 didn't regress this.
+- Function-shape pushdown does NOT fire on parquet splits (`DucklakePageSourceProvider.createParquetPageSource` ignores `pushedExpressions`), so the chunk 3.5 session property has zero effect on parquet results.
+- **New asymmetry introduced by chunk 3.5**: a mixed-format DuckLake table (parquet + duckdb splits in the same logical table) now renders WTZ differently per split. Pre-3.5: both UTC. Post-3.5: parquet UTC, duckdb session-zone. Same WTZ instant, two displays.
+
+**Fix design (deferred to its own chunk):**
+Wrap the parquet `ConnectorPageSource` with a `WtzSessionZonePageSource` that rebuilds WTZ blocks with the session zone before yielding pages downstream. Sketch:
+
+```java
+// Wraps ParquetPageSource for parquet-format reads. For each output Page, looks at
+// each column position; if the column type is TimestampWithTimeZoneType, rebuilds
+// the block by reading each packed (epochMillis, UTC_KEY) value and writing
+// (epochMillis, sessionZone) back. Short variant: unpack/repack the long.
+// Long variant: read LongTimestampWithTimeZone, construct a new one with the
+// session zone preserving picosOfMilli.
+final class WtzSessionZonePageSource implements ConnectorPageSource {
+    private final ConnectorPageSource inner;
+    private final TimeZoneKey sessionZone;
+    private final int[] wtzColumnIndexes;
+    private final TimestampWithTimeZoneType[] wtzColumnTypes;
+    // ... iterate pages, rebuild WTZ blocks via BlockBuilder
+}
+```
+
+Wire it into `DucklakePageSourceProvider.createParquetPageSource` just before returning. Existing tests that don't assert WTZ rendering pass unchanged; new tests pin the round-trip in parquet format.
+
+**Why deferred** — the wrap is ~150-250 lines + dedicated test coverage for both `ShortTimestampWithTimeZone` and `LongTimestampWithTimeZone` rebuild paths. It's also redundant with a future upstream Trino fix (which would honour `isAdjustedToUTC` natively). Either path closes the asymmetry; pick whichever is reachable when prioritized.
+
+**Workaround for users hitting the asymmetry today**: keep DuckLake tables single-format, OR `SET SESSION pushdown_timestamp_with_timezone = false` to keep Tier C predicates above the scan (Trino-side eval is UTC-aligned for parquet AND duckdb in that case, so they agree).
 
 ### Chunk 3.5 — converter fix unblocks full Tier C
 
@@ -135,9 +170,8 @@ User-visible behaviour change to call out in the commit / release notes: `SELECT
 The Quack-server-side path also benefits: `TestDucklakeDuckDbExecutorBackends.sessionTimeZonePropagatesToBothBackends` continues to pass without modification — that test uses CAST-to-VARCHAR predicates that DuckDB computes server-side, and the cast string formatting was always controlled by DuckDB's session TimeZone (chunk 2). The converter change only affects how Trino constructs WTZ values from incoming Arrow, which that test doesn't exercise.
 
 What's left for future chunks:
-- New Tier C function entries: `from_unixtime/1` (Trino returns WTZ; DuckDB `to_timestamp` returns TIMESTAMPTZ), `at_timezone(t, zone)`, `with_timezone(t, zone)`. Each needs its own probe (DuckDB's `time_zone(t, zone)` vs Trino's semantics on DST gaps and ambiguous wall times) and semantic fixture before shipping.
 - Default-on flip for `pushdown_timestamp_with_timezone`. Land this after a release of burn-in with the property explicitly enabled on staging.
-- Probe DuckLake parquet-format read path: parquet timestamp logical types may not carry a schema TZ the same way Arrow does. If parquet-format reads still go through the same converter (need to check), parquet-stored WTZ values may regress to UTC display. Quick parquet-roundtrip test should be added to `TestDucklakeUnicodeStringRoundTrip`'s sibling.
+- **Parquet-format WTZ path — confirmed UTC-hardcoded, fix deferred** (see "Parquet-format WTZ asymmetry" section below for the full audit and the fix design).
 
 ---
 
@@ -293,7 +327,7 @@ The `ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity` empirically esta
 | `test/src/dev/brikk/ducklake/trino/plugin/ProbeDuckDbTimeZoneHandling.java` | **Delete this file.** All findings are now baked into shipped tests + REPORT. Matches the `ProbeConcatNullHandling` precedent. |
 | `dev-docs/RESEARCH-function-mapping.md` | Flip "Done" column for Tier C entries. |
 | `dev-docs/TODO-pushdown-duckdb.md` | Step 4 → ✅ shipped. Update catalog totals. |
-| `dev-docs/PLAN-pushdown-datetime.md` | Add a "Shipped" section pointing at the commits / PR. |
+| `PLAN-pushdown-datetime.md` (sibling in archive/) | Add a "Shipped" section pointing at the commits / PR. |
 | **This file** | Chunk 3 → `✅ shipped`. |
 
 ### The session-property flip
