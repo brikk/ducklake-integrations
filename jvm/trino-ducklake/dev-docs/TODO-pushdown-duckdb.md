@@ -93,10 +93,12 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
 - Step 6 (Lance table functions) — not started.
 
-### Catalog totals (as of round 5)
+### Catalog totals (as of round 6a + 6b-core)
 
-- 56 `trino_meta()` rows / ~47 function names across 5 categories (string, numeric, regex, encoding, distance).
+- 65 `trino_meta()` rows / ~51 function names across 6 categories (string, numeric, regex, encoding, distance, hash).
 - 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
+- Round 6a shipped: `sign/1`, `bit_length/1`, `pi/0`, `bitwise_xor/2`, `regexp_replace/{2,3}` (with `'g'` flag for Trino-aligned global default).
+- Round 6b-core shipped: `md5/1`, `sha1/1`, `sha256/1` (via `unhex(...)` wrap for VARBINARY return type).
 
 ---
 
@@ -110,16 +112,19 @@ Picked from the community-extensions audit (see [RESEARCH-function-community-ext
 - `inet` operator pushdown — `contains(network, address)` → `network >>= addr` requires translator to learn DuckDB's `>>=` / `<<=` operators. Separate infrastructure round.
 - `netquack` `url_extract_parameter(url, name)` — requires correlated-subquery emission for the `extract_query_parameters(url)` table function. Separate infrastructure round.
 
-### Round 6a — Core DuckDB extras (no new extensions)
+### Round 6a — Core DuckDB extras (no new extensions) — ✅ **SHIPPED**
 
-Cheap wins we missed earlier.
+Cheap wins. All confirmed aligned via DuckDB docs check; no probe required.
 
-| Trino | DuckDB | Notes |
+| Trino | DuckDB | Status |
 |---|---|---|
-| `sign(x)` | `sign(x)` | ✅ Same -1/0/1. Verify NaN propagation in fixtures. |
-| `bit_length(string)` | `bit_length(string)` | ✅ Aligned. |
-| `pi()` / 0-arg | `pi()` | ✅ Aligned. Constant-folded both sides; pushing is trivially safe. |
-| `truncate(x, n)` (2-arg) | `trunc(x, n)` — verify if DuckDB has 2-arg form | ⚠️ DuckDB's `trunc` may be 1-arg only; verify before adding. |
+| `sign(x)` | `sign(x)` | ✅ shipped |
+| `bit_length(string)` | `bit_length(string)` | ✅ shipped |
+| `pi()` / 0-arg | `pi()` | ✅ shipped — first 0-arg entry in catalog, exercises translator's empty-args path |
+| `bitwise_xor(x, y)` | `xor(x, y)` | ✅ shipped — DuckDB's only scalar bitwise op (and/or/not/shift are operator-only, queued for translator rewrite in 6e) |
+| `regexp_replace(s, p)` (Trino: removes matches) | `regexp_replace(s, p, '', 'g')` | ✅ shipped — macro passes `''` + `'g'` to match Trino's global-remove default |
+| `regexp_replace(s, p, repl)` | `regexp_replace(s, p, repl, 'g')` | ✅ shipped — `'g'` flag makes DuckDB's first-match default into Trino's global default |
+| `truncate(x, n)` (2-arg) | — | ⏳ Deferred — DuckDB's `trunc` is 1-arg only. Would need `cast(x * pow(10,n)) / pow(10,n)` shim; not as clean. |
 
 ### Round 6b-core — Core DuckDB hash macros (NO new extension, 3 entries)
 

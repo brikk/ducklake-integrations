@@ -383,7 +383,32 @@ public class TestTrinoFunctionAliases
                         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
                 c("sha256 1: abc", "sha256", 1,
                         "SELECT lower(hex(trino_sha256('abc')))",
-                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+                // Round 6a — core DuckDB easy wins
+                c("sign 1: negative", "sign", 1,
+                        "SELECT trino_sign(-5)", -1),
+                c("sign 1: zero", "sign", 1,
+                        "SELECT trino_sign(0)", 0),
+                c("sign 1: positive double", "sign", 1,
+                        "SELECT trino_sign(7.3)", 1.0),
+                c("bit_length 1: empty", "bit_length", 1,
+                        "SELECT trino_bit_length('')", 0L),
+                c("bit_length 1: 3 ASCII chars", "bit_length", 1,
+                        "SELECT trino_bit_length('abc')", 24L),
+                c("pi 0: constant", "pi", 0,
+                        "SELECT trino_pi()", Math.PI),
+                c("bitwise_xor 2: 5 ^ 3", "bitwise_xor", 2,
+                        // 5 = 0b101, 3 = 0b011, xor = 0b110 = 6
+                        "SELECT trino_bitwise_xor(5, 3)", 6),
+                c("bitwise_xor 2: identity", "bitwise_xor", 2,
+                        "SELECT trino_bitwise_xor(0, 0)", 0),
+                c("regexp_replace 2: global delete (Trino default)", "regexp_replace", 2,
+                        "SELECT trino_regexp_replace('abc-123-xyz', '\\d')", "abc--xyz"),
+                c("regexp_replace 3: global replace (Trino default)", "regexp_replace", 3,
+                        // DuckDB default is FIRST match; macro forces 'g' so 'aaa' → 'bbb' (not 'baa').
+                        "SELECT trino_regexp_replace('aaa', 'a', 'b')", "bbb"),
+                c("regexp_replace 3: backreferences", "regexp_replace", 3,
+                        "SELECT trino_regexp_replace('abc', '(a)(b)', '\\2\\1')", "bac"));
     }
 
     private static SemanticCase c(String label, String name, int arity, String sql, Object expected)

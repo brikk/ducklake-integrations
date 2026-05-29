@@ -34,7 +34,8 @@ Pushdown rating in the Notes column where useful:
 | Lowercase | `lower(string) -> varchar` | `lower(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB does simple case folding; Trino does full case folding. Diverges on `'İ'` → DuckDB `'i'` vs Trino `'i'` + U+0307. ASCII safe. Pushed for perf with warn-on-emit; native extension is the durable fix. |
 | Uppercase | `upper(string) -> varchar` | `upper(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB `upper('ß')` = `'ẞ'` (U+1E9E); Trino's Java = `'SS'`. ASCII safe. Pushed with warn-on-emit. |
 | Character length (code points) | `length(string) -> bigint` | `length(string)` | yes r1 | ⚠️ Both return count of code points (NOT bytes) for varchar. NULL → NULL in both. Trino has no separate `octet_length`; DuckDB has `strlen(string)` for bytes. |
-| Byte length | `length(varbinary) -> bigint` | `strlen(string)`, `octet_length(blob)` | — | ✅ Map Trino `length(varbinary)` → DuckDB `octet_length`. |
+| Byte length | `length(varbinary) -> bigint` | `strlen(string)`, `octet_length(blob)` | — | ✅ Map Trino `length(varbinary)` → DuckDB `octet_length`. Translator needs type awareness to choose between `length` and `octet_length` based on Trino arg type; queued. |
+| Bit length | `bit_length(varchar) -> bigint` | `bit_length(string)` | yes r6 | ✅ Both return bits in the UTF-8 byte sequence (8 × octet length). |
 | Grapheme cluster length | — | `length_grapheme(string)` | | ❌ DuckDB-only. |
 | Substring (start) | `substring(string, start) -> varchar`, `substr(string, start)` | `substring(string, start)`, `substr(...)` | yes r1 | ✅ Both 1-based; negative start counts from end in both. Verify both treat `start=0` identically (Trino: undefined-ish, DuckDB: behaves like 1) before pushing zero. |
 | Substring (start, length) | `substring(string, start, length)` | `substring(string, start, length)` | yes r1 | ✅ Aligned for positive args. |
@@ -91,7 +92,7 @@ Pushdown rating in the Notes column where useful:
 | Round half-up | `round(x)`, `round(x, d)` | `round(v, s)` | — | ⚠️ Trino: `round` is half-up. DuckDB: `round` is half-away-from-zero (since 0.10) — verify per version. Also `round_even` in DuckDB for banker's rounding. Do NOT push when `d > 0` until verified. |
 | Round half-even | — (no direct) | `round_even(v, s)` | | ❌ DuckDB-only. |
 | Truncate toward zero | `truncate(x)` | `trunc(x)` | yes r5 | ⚠️ Different names; same semantics. Renamed via macro body. |
-| Sign | `sign(x) -> [same]` | `sign(x)` | — | ⚠️ Both return -1/0/1. For floats, NaN behavior differs: Trino NaN→NaN; DuckDB NaN→NaN. Verify. |
+| Sign | `sign(x) -> [same]` | `sign(x)` | yes r6 | ⚠️ Both return -1/0/1. NaN behaviour on floats verified to align (both NaN→NaN). |
 | Mod | `mod(n, m) -> [same]`, `n % m` | `n % m`, `mod(n, m)` via `fmod` for floats | yes r2 (int only) | ⚠️ Integer `%`: both follow truncated division (sign follows dividend). Float `%`: Trino uses IEEE `remainder`-ish; DuckDB has `fmod`. ❌ Do not push float `%` until aligned. Macro is type-agnostic; translator must gate by arg type. |
 | Power | `pow(x, p) -> double`, `power(x, p)` | `pow(x, y)`, `power(x, y)` | yes r2 | ✅ Aligned. |
 | Sqrt | `sqrt(x) -> double` | `sqrt(x)` | yes r3 | ✅ Aligned. NaN on negative in both. |
@@ -101,7 +102,7 @@ Pushdown rating in the Notes column where useful:
 | Log base 2 | `log2(x) -> double` | `log2(x)` | yes r3 | ✅ Aligned. |
 | Log base 10 | `log10(x) -> double` | `log10(x)`, `log(x)` (single-arg) | yes r3 | ⚠️ DuckDB `log(x)` = log10 (PostgreSQL convention). Trino `log(b, x)` is log-base-b. Shipped as explicit `trino_log10` → `log10` to avoid the `log` collision; do not push the single-arg `log(x)`. |
 | Log base b | `log(b, x) -> double` | — (use `ln(x)/ln(b)`) | | ❌ DuckDB has no 2-arg `log`. |
-| Pi / e | `pi() -> double`, `e() -> double` | `pi()` | — | ⚠️ DuckDB has no `e()`; use `exp(1)`. |
+| Pi / e | `pi() -> double`, `e() -> double` | `pi()` | yes r6 (`pi` only) | ✅ `pi()` shipped. DuckDB has no `e()`; for Trino's `e()` use `exp(1)` if needed. |
 | Trig (sin/cos/tan/asin/acos/atan/atan2) | `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)` | same names; also `cot`, `asinh`, `acosh`, `atanh` | yes r5 | ✅ Aligned for the common set. DuckDB has extras Trino lacks. |
 | Hyperbolic | `sinh`, `cosh`, `tanh` | `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | yes r5 (forward only) | ⚠️ Forward hyperbolics shipped. Inverse hyperbolics DuckDB-only — not pushed. |
 | Degrees / radians | `degrees(x)`, `radians(x)` | `degrees(x)`, `radians(x)` | yes r5 | ✅ Aligned. |
@@ -174,7 +175,7 @@ Pushdown rating in the Notes column where useful:
 | Regex count | `regexp_count(string, pattern) -> bigint` | — (use `len(regexp_extract_all(...))`) | | ❌ Trino-only direct form. |
 | Regex extract (first match) | `regexp_extract(string, pattern)`, `regexp_extract(s, p, group)` | `regexp_extract(string, regex[, group][, options])` | yes r3 (2- and 3-arg) | ⚠️ Default group: Trino = 0 (whole match), DuckDB = 0. ✅ Aligned for 2- and 3-arg form. Note: DuckDB reserves `group`; macro parameter named `group_index`. |
 | Regex extract all | `regexp_extract_all(string, pattern[, group])` | `regexp_extract_all(string, regex[, group][, options])` | — | ⚠️ Empty-match handling differs; verify before pushing. |
-| Regex replace | `regexp_replace(s, p)`, `regexp_replace(s, p, repl)`, `regexp_replace(s, p, fn)` | `regexp_replace(s, p, repl[, options])` | — | ⚠️ Trino's no-replacement form removes matches (DuckDB needs explicit `''`). Lambda form is Trino-only. Backreference syntax aligned (`\1`,`\2`). |
+| Regex replace | `regexp_replace(s, p)`, `regexp_replace(s, p, repl)`, `regexp_replace(s, p, fn)` | `regexp_replace(s, p, repl[, options])` | yes r6 (2- and 3-arg) | ⚠️ Macro passes `('g')` options flag so DuckDB's first-match default becomes Trino's global default. 2-arg form passes `''` as replacement (Trino's remove-matches semantics). Lambda form Trino-only — not pushed. Backreference syntax aligned (`\1`,`\2`). |
 | Regex split | `regexp_split(string, pattern)` | `regexp_split_to_array(s, r[, options])`, `string_split_regex`, `regexp_split_to_table` | — | ⚠️ Name differs. Push as renamed call. |
 | Regex position | `regexp_position(s, p[, start[, occurrence]])` | — | ❌ Trino-only. |
 | Escape regex special chars | — | `regexp_escape(string)` | ❌ DuckDB-only. |
@@ -292,16 +293,16 @@ Pushdown rating in the Notes column where useful:
 
 ### Bitwise
 
-| Operation | Trino | DuckDB | Notes |
-|---|---|---|---|
-| AND | `bitwise_and(x, y) -> bigint` | `x & y`, `bit_and(x)` (aggregate) | ⚠️ Trino has no `&` operator on integers; uses function form. ✅ Translate `bitwise_and(x,y)` → `x & y`. |
-| OR | `bitwise_or(x, y) -> bigint` | `x \| y` | ⚠️ Same shape difference. |
-| XOR | `bitwise_xor(x, y) -> bigint` | `xor(x, y)`, `x # y` | ⚠️ DuckDB uses `#` operator for bit XOR; `^` is exponentiation in DuckDB. Easy to get wrong. |
-| NOT | `bitwise_not(x) -> bigint` | `~x` | ⚠️ Trino function vs DuckDB operator. |
-| Left shift | `bitwise_left_shift(value, shift)` | `value << shift` | ✅ Aligned. |
-| Right shift (logical) | `bitwise_right_shift(value, shift)` | `value >> shift` | ⚠️ Verify signed/unsigned semantics for negative integers — they CAN differ. |
-| Right shift (arithmetic) | `bitwise_right_shift_arithmetic(value, shift)` | — | ❌ Trino-only direct; DuckDB `>>` is arithmetic for signed. |
-| Bit count (popcount) | `bit_count(x, bits) -> bigint` | `bit_count(x)`, `bit_count(bitstring)` | ⚠️ Trino requires explicit bit-width arg; DuckDB infers. Do not push without matching width. |
+| Operation | Trino | DuckDB | Done | Notes |
+|---|---|---|---|---|
+| AND | `bitwise_and(x, y) -> bigint` | `x & y`, `bit_and(x)` (aggregate) | translator rewrite — TBD | ⚠️ Trino has no `&` operator on integers; uses function form. DuckDB scalar form is operator-only — needs translator rewrite (queued in [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) round 6e). |
+| OR | `bitwise_or(x, y) -> bigint` | `x \| y` | translator rewrite — TBD | Same shape difference. |
+| XOR | `bitwise_xor(x, y) -> bigint` | `xor(x, y)`, `x # y` | yes r6 | ✅ Shipped via macro body `xor(x, y)`. (DuckDB also has `#` operator; `^` is exponentiation in DuckDB — don't confuse.) |
+| NOT | `bitwise_not(x) -> bigint` | `~x` | translator rewrite — TBD | ⚠️ Trino function vs DuckDB operator. |
+| Left shift | `bitwise_left_shift(value, shift)` | `value << shift` | translator rewrite — TBD | ✅ Aligned semantics; operator-only in DuckDB. |
+| Right shift (logical) | `bitwise_right_shift(value, shift)` | `value >> shift` | translator rewrite — TBD | ⚠️ Verify signed/unsigned semantics for negative integers — they CAN differ. |
+| Right shift (arithmetic) | `bitwise_right_shift_arithmetic(value, shift)` | — | | ❌ Trino-only direct; DuckDB `>>` is arithmetic for signed. |
+| Bit count (popcount) | `bit_count(x, bits) -> bigint` | `bit_count(x)`, `bit_count(bitstring)` | — | ⚠️ Trino requires explicit bit-width arg; DuckDB infers. Do not push without matching width. |
 
 ### Hash / digest
 

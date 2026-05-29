@@ -219,6 +219,29 @@ CREATE OR REPLACE MACRO trino_sha1(b) AS unhex(sha1(b));
 
 CREATE OR REPLACE MACRO trino_sha256(b) AS unhex(sha256(b));
 
+-- ---- Round 6a — Core DuckDB easy wins (no extension) ----
+
+-- sign: returns -1 / 0 / +1. Both engines aligned per research mapping.
+CREATE OR REPLACE MACRO trino_sign(x) AS sign(x);
+
+-- bit_length: number of bits in the string (8 * octet length for UTF-8). Aligned.
+CREATE OR REPLACE MACRO trino_bit_length(s) AS bit_length(s);
+
+-- pi: 0-arg constant. Both engines return the same IEEE 754 double.
+CREATE OR REPLACE MACRO trino_pi() AS pi();
+
+-- bitwise_xor → DuckDB's scalar xor(x, y). Aligned for integer inputs.
+-- (bitwise_and / bitwise_or / bitwise_not / shifts are operator-only in DuckDB
+-- and need translator-level rewrites — queued in TODO round 6e.)
+CREATE OR REPLACE MACRO trino_bitwise_xor(x, y) AS xor(x, y);
+
+-- regexp_replace: Trino replaces ALL matches by default; DuckDB replaces only the
+-- FIRST match unless the 'g' flag is set. Pass 'g' to align with Trino.
+-- Trino's 2-arg form (no replacement) deletes matches; we pass '' as replacement.
+CREATE OR REPLACE MACRO trino_regexp_replace
+    (s, pattern)              AS regexp_replace(s, pattern, '', 'g'),
+    (s, pattern, replacement) AS regexp_replace(s, pattern, replacement, 'g');
+
 -- ---- Catalog of aliased functions ----
 --
 -- One row per (trino_name, arg_count) the translator may push down. The
@@ -294,5 +317,12 @@ SELECT * FROM (
         -- Round 6b-core — crypto hashes (no extension)
         ('md5',          1, 'hash'),
         ('sha1',         1, 'hash'),
-        ('sha256',       1, 'hash')
+        ('sha256',       1, 'hash'),
+        -- Round 6a — core DuckDB easy wins
+        ('sign',         1, 'numeric'),
+        ('bit_length',   1, 'string'),
+        ('pi',           0, 'numeric'),
+        ('bitwise_xor',  2, 'numeric'),
+        ('regexp_replace', 2, 'regex'),
+        ('regexp_replace', 3, 'regex')
 ) AS t(trino_name, arg_count, category);

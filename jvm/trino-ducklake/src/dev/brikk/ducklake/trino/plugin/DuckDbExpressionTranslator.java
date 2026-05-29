@@ -139,7 +139,14 @@ final class DuckDbExpressionTranslator
             // Round 6b-core — crypto hashes (no extension)
             new NameArity("md5", 1),
             new NameArity("sha1", 1),
-            new NameArity("sha256", 1));
+            new NameArity("sha256", 1),
+            // Round 6a — core DuckDB easy wins
+            new NameArity("sign", 1),
+            new NameArity("bit_length", 1),
+            new NameArity("pi", 0),
+            new NameArity("bitwise_xor", 2),
+            new NameArity("regexp_replace", 2),
+            new NameArity("regexp_replace", 3));
 
     /**
      * Bare Trino names of placeholder macros (those marked {@code -- @placeholder}
