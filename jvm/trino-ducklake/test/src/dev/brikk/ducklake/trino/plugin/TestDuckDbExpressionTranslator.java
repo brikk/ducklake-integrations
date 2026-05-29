@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.expression.Call;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.Constant;
@@ -23,6 +24,7 @@ import io.trino.spi.expression.FunctionName;
 import io.trino.spi.expression.StandardFunctions;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.type.BooleanType;
+import io.trino.testing.TestingConnectorSession;
 import io.trino.type.LikePattern;
 import io.trino.type.LikePatternType;
 import org.junit.jupiter.api.Test;
@@ -766,6 +768,143 @@ public class TestDuckDbExpressionTranslator
 
         List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
         assertThat(conjuncts).containsExactly("(trino_to_unixtime(\"ts\") = 0.0)");
+    }
+
+    // --- Chunk 3: TIMESTAMP WITH TIME ZONE gated by session property ---------
+
+    /** Builds a session with {@code pushdown_timestamp_with_timezone} = {@code value}. */
+    private static ConnectorSession sessionWithTierC(boolean value)
+    {
+        return TestingConnectorSession.builder()
+                .setPropertyMetadata(new DucklakeSessionProperties().getSessionProperties())
+                .setPropertyValues(java.util.Map.of(
+                        DucklakeSessionProperties.PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, value))
+                .build();
+    }
+
+    @Test
+    public void testToUnixtimeOnTimestampWithTimeZonePushesWhenPropertyOn()
+    {
+        // The one Tier C entry that's safe to push: to_unixtime returns the
+        // absolute UTC epoch regardless of the value's stored zone or DuckDB's
+        // session zone, so Trino's above-scan eval and DuckDB-side eval agree
+        // byte-for-byte. Property on → pushes.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("to_unixtime"), DOUBLE, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(0.0, DOUBLE));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).containsExactly("(trino_to_unixtime(\"tstz\") = 0.0)");
+    }
+
+    @Test
+    public void testToUnixtimeOnTimestampWithTimeZoneDoesNotPushWhenPropertyOff()
+    {
+        // Same expression, property explicitly off — to_unixtime falls back to
+        // the chunk-1 strict gate (DATE or TIMESTAMP no-TZ only). Predicate
+        // stays unpushed; Trino evaluates above the scan.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("to_unixtime"), DOUBLE, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(0.0, DOUBLE));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(false));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testYearOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    {
+        // Zone-dependent extracts stay unpushed for WTZ even with the chunk-3
+        // property on. The connector's Arrow→Page converter hardcodes UTC_KEY
+        // for incoming WTZ values (DucklakeArrowToPageConverter:380-388), so
+        // Trino's above-scan year(timestamptz_col) always uses UTC while
+        // DuckDB-side year() uses the session zone — they disagree when the
+        // session isn't UTC. Promoting `year` to Tier C requires changing the
+        // converter to honour the Arrow schema TZ, which is its own dedicated
+        // probe + test surface and out of scope for chunk 3.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testHourOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    {
+        // Same reasoning as year() above — hour is zone-dependent.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("hour"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(22L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDateTruncOnTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    {
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_trunc"), TIMESTAMP_TZ_MILLIS,
+                        varcharConst("month"),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS)));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDateDiffWithTimestampWithTimeZoneDoesNotPushEvenWhenPropertyOn()
+    {
+        // date_diff over WTZ args is doubly hazardous: zone-dependent for
+        // day/month/year units, and the Arrow converter's UTC_KEY hardcoding
+        // means the engines disagree on what day boundary each instant
+        // belongs to.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("date_diff"), BIGINT,
+                        varcharConst("day"),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS),
+                        new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(0L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testDayOfWeekOnTimestampWithTimeZoneNeverPushes()
+    {
+        // Tier A (DATE-only) — Trino's day_of_week doesn't accept WTZ inputs, so
+        // even with the Tier C property on, the gate refuses. This pins that the
+        // Tier A entries don't accidentally get widened.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("day_of_week"), BIGINT, new Variable("tstz", TIMESTAMP_TZ_MILLIS)),
+                new Constant(7L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testYearOnDateStillPushesWhenPropertyOn()
+    {
+        // Regression guard: turning the property on must NOT regress the Tier B
+        // shape. DATE input still pushes regardless of property value.
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                call(new FunctionName("year"), BIGINT, new Variable("d", DATE)),
+                new Constant(2024L, BIGINT));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(
+                expression, ASSIGNMENTS, sessionWithTierC(true));
+        assertThat(conjuncts).containsExactly("(trino_year(\"d\") = 2024)");
     }
 
     @Test

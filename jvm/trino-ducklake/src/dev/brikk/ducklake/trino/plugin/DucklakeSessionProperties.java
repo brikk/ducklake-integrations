@@ -26,6 +26,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 import static io.trino.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
+import static io.trino.spi.session.PropertyMetadata.booleanProperty;
 import static io.trino.spi.session.PropertyMetadata.longProperty;
 import static io.trino.spi.session.PropertyMetadata.stringProperty;
 
@@ -48,6 +49,24 @@ public class DucklakeSessionProperties
     public static final String READ_MODE_MATERIALIZE = "materialize";
     public static final String READ_MODE_HTTPFS = "httpfs";
     public static final String READ_MODE_AUTO = "auto";
+
+    /**
+     * Step 4 chunk 3: enable Tier C pushdown — date/time functions on
+     * {@code TIMESTAMP WITH TIME ZONE} arguments. Off by default while the
+     * cross-engine semantic corpus burns in; flip after staging confirms no
+     * regressions. The translator gates WTZ-arg entries on this property; when
+     * off, predicates over WTZ columns stay above the scan (Trino re-evaluates,
+     * correct but slower). When on, the predicates push to DuckDB which
+     * interprets the WTZ instants using the session {@code TimeZone} that chunk
+     * 2's plumbing set on attach.
+     *
+     * <p>Correctness is bounded by chunk 2's {@code SET TimeZone} success: if
+     * that failed (rare — only for fractional bare-offset session zones DuckDB
+     * can't normalise), Tier C results may diverge from Trino's reference. The
+     * one-shot WARN logged by both executors is the breadcrumb. See
+     * dev-docs/REPORT-datetime-tz-handling.md.
+     */
+    public static final String PUSHDOWN_TIMESTAMP_WITH_TIMEZONE = "pushdown_timestamp_with_timezone";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -91,6 +110,16 @@ public class DucklakeSessionProperties
                         "Read strategy for duckdb-format data files: 'httpfs' (default; DuckDB streams blocks from S3 directly via the httpfs extension and maintains its own warm cache across queries), 'materialize' (download whole .db file to local tmp then ATTACH; useful when many small reads dominate), or 'auto' (picks per-file based on ducklake.duckdb.auto-httpfs-threshold). No effect when data_file_format is 'parquet'.",
                         READ_MODE_HTTPFS,
                         DucklakeSessionProperties::validateDuckDbReadMode,
+                        false),
+                booleanProperty(
+                        PUSHDOWN_TIMESTAMP_WITH_TIMEZONE,
+                        "Enable pushdown of date/time predicates over TIMESTAMP WITH TIME ZONE columns " +
+                                "to DuckDB on the duckdb-format read path. Off by default while the cross-engine " +
+                                "semantic corpus burns in. When on, requires successful SET TimeZone on attach " +
+                                "(automatic for all named IANA zones and integer-hour offsets; fractional bare " +
+                                "offsets like '+05:30' get a one-shot WARN and the pushdown silently degrades " +
+                                "to Trino-side evaluation for that attach). See dev-docs/REPORT-datetime-tz-handling.md.",
+                        false,
                         false));
     }
 
@@ -156,6 +185,23 @@ public class DucklakeSessionProperties
     public static String getDuckDbReadMode(ConnectorSession session)
     {
         return session.getProperty(DUCKDB_READ_MODE, String.class);
+    }
+
+    /**
+     * @return {@code true} iff the session has opted into Tier C pushdown
+     *         (date/time predicates over TIMESTAMP WITH TIME ZONE columns).
+     *         Default {@code false}. A {@code null} session (the test overload of
+     *         {@code translateConjuncts} that doesn't have one) reads as off,
+     *         which keeps the safer "don't push WTZ" behaviour for unit tests
+     *         that synthesize calls without a session.
+     */
+    public static boolean isPushdownTimestampWithTimeZone(ConnectorSession session)
+    {
+        if (session == null) {
+            return false;
+        }
+        Boolean v = session.getProperty(PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, Boolean.class);
+        return v != null && v;
     }
 
     private static void validateDuckDbReadMode(String value)

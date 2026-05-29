@@ -625,7 +625,7 @@ public class DucklakeMetadata
         // dev-docs/TODO-pushdown-duckdb.md, "Regime 1 — common-SQL functions". Double
         // evaluation on .db splits is cheap, parquet splits keep working unchanged.
         List<String> newExpressionClauses = DuckDbExpressionTranslator.translateConjuncts(
-                constraint.getExpression(), constraint.getAssignments());
+                constraint.getExpression(), constraint.getAssignments(), session);
         List<String> combinedExpressions = mergePushedExpressions(
                 table.pushedExpressions(), newExpressionClauses);
 

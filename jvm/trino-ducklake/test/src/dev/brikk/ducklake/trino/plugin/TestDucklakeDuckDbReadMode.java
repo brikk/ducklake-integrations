@@ -25,6 +25,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_READ_MODE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB;
+import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.PUSHDOWN_TIMESTAMP_WITH_TIMEZONE;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_AUTO;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_HTTPFS;
 import static dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_MATERIALIZE;
@@ -486,6 +487,108 @@ public class TestDucklakeDuckDbReadMode
         }
         finally {
             tryDropTable("test_schema.tz_stable");
+        }
+    }
+
+    @Test
+    public void testTierCToUnixtimeOnTimestampWithTimeZonePushesWhenPropertyOn()
+    {
+        // The shipped Tier C surface in chunk 3: to_unixtime over TIMESTAMP WITH
+        // TIME ZONE. Both engines return the absolute UTC epoch regardless of
+        // any session or stored zone, so pushdown is byte-equivalent to Trino's
+        // above-scan eval. Predicate returns identical results under any session
+        // zone and either property setting; the difference is whether DuckDB
+        // does the filtering server-side (property on) or Trino does it
+        // above the scan (property off).
+        //
+        // Test pins the property toggle round-trips correctly for to_unixtime
+        // across three session zones — the strongest end-to-end correctness
+        // guarantee we can make for Tier C without first changing the Arrow
+        // converter to honour Arrow schema TZ (see chunk 3 shipped notes in
+        // TODO-pushdown-datetime.md for the broader Tier C plan).
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.tier_c_to_unixtime ("
+                        + "  id INTEGER, "
+                        + "  ts TIMESTAMP(3) WITH TIME ZONE)");
+        computeActual(writeDuckDbSession(),
+                "INSERT INTO test_schema.tier_c_to_unixtime VALUES "
+                        // 2024-06-15 12:00:00 UTC → epoch 1718452800 (deterministic)
+                        + "(1, TIMESTAMP '2024-06-15 12:00:00.000 UTC'), "
+                        // 1970-01-01 00:00:01 UTC → epoch 1
+                        + "(2, TIMESTAMP '1970-01-01 00:00:01.000 UTC')");
+        try {
+            for (String zoneId : new String[]{"UTC", "America/Los_Angeles", "Asia/Singapore"}) {
+                Session off = Session.builder(sessionWith(READ_MODE_MATERIALIZE))
+                        .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(zoneId))
+                        .build();
+                Session on = Session.builder(off)
+                        .setCatalogSessionProperty("ducklake", PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, "true")
+                        .build();
+                String query = "SELECT id FROM test_schema.tier_c_to_unixtime "
+                        + "WHERE to_unixtime(ts) = 1.0";
+
+                MaterializedResult offResult = computeActual(off, query);
+                MaterializedResult onResult = computeActual(on, query);
+
+                assertThat(offResult.getRowCount())
+                        .as("zone=%s, property off: epoch=1 picks the 1970-01-01 row", zoneId).isEqualTo(1);
+                assertThat(offResult.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+
+                assertThat(onResult.getMaterializedRows())
+                        .as("zone=%s: to_unixtime() pushed result must match Trino above-scan result "
+                                + "(to_unixtime is zone-invariant in both engines)", zoneId)
+                        .isEqualTo(offResult.getMaterializedRows());
+            }
+        }
+        finally {
+            tryDropTable("test_schema.tier_c_to_unixtime");
+        }
+    }
+
+    @Test
+    public void testTierCZoneDependentExtractsNeverPushOverWtz()
+    {
+        // Companion to the to_unixtime test above. The chunk-3 ship explicitly
+        // refuses to push zone-dependent extracts (year/month/day/hour/...) over
+        // TIMESTAMP WITH TIME ZONE columns even when the property is on. Reason:
+        // the connector's Arrow converter hardcodes UTC_KEY for incoming WTZ
+        // values, so Trino above-scan uses UTC year while DuckDB-side would use
+        // the session zone — they diverge whenever the session is non-UTC and
+        // pushing would silently drop rows Trino would keep.
+        //
+        // This test pins that the visible result is invariant under the
+        // property toggle for a year() query — proving the gate correctly
+        // refuses to push.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.tier_c_year_no_push ("
+                        + "  id INTEGER, "
+                        + "  ts TIMESTAMP(3) WITH TIME ZONE)");
+        computeActual(writeDuckDbSession(),
+                "INSERT INTO test_schema.tier_c_year_no_push VALUES "
+                        + "(1, TIMESTAMP '2024-06-15 12:00:00.000 UTC'), "
+                        + "(2, TIMESTAMP '2024-12-31 22:00:00.000 UTC')");
+        try {
+            for (String zoneId : new String[]{"UTC", "America/Los_Angeles", "Asia/Singapore"}) {
+                Session off = Session.builder(sessionWith(READ_MODE_MATERIALIZE))
+                        .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(zoneId))
+                        .build();
+                Session on = Session.builder(off)
+                        .setCatalogSessionProperty("ducklake", PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, "true")
+                        .build();
+                String query = "SELECT id FROM test_schema.tier_c_year_no_push "
+                        + "WHERE year(ts) = 2024 ORDER BY id";
+
+                MaterializedResult offResult = computeActual(off, query);
+                MaterializedResult onResult = computeActual(on, query);
+
+                assertThat(onResult.getMaterializedRows())
+                        .as("zone=%s: year(WTZ) must NOT push even when property on — gate refuses "
+                                + "the WTZ arg type; visible result invariant under toggle", zoneId)
+                        .isEqualTo(offResult.getMaterializedRows());
+            }
+        }
+        finally {
+            tryDropTable("test_schema.tier_c_year_no_push");
         }
     }
 

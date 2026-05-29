@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.expression.Call;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.Constant;
@@ -29,6 +30,7 @@ import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.IntegerType;
 import io.trino.spi.type.SmallintType;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
@@ -204,35 +206,48 @@ final class DuckDbExpressionTranslator
     private static Map<NameArity, ArgTypeGate> buildTypeGates()
     {
         Map<NameArity, ArgTypeGate> gates = new java.util.HashMap<>();
-        // Re-gates of the round-6g/6i entries — these previously pushed for any
-        // arg type, which would have silently diverged on TIMESTAMP WITH TIME ZONE
-        // inputs (per dev-docs/REPORT-datetime-tz-handling.md, the year/hour result
-        // depends on session TimeZone for WTZ values, and the connector does not
-        // yet set TimeZone on attach). The gate restricts arg-0 (or arg-1/arg-2 for
-        // date_trunc/date_diff) to DATE or TIMESTAMP no-TZ, which are wall-clock
-        // invariant.
+        // Tier B — DATE or TIMESTAMP no-TZ. TIMESTAMP WITH TIME ZONE is excluded
+        // for zone-dependent extracts even with the chunk-3 session property on.
+        // Background: the connector's Arrow→Page converter at
+        // DucklakeArrowToPageConverter:380-388 hardcodes UTC_KEY for all
+        // incoming WTZ values. That means Trino's above-scan eval of
+        // year(timestamptz_col) is ALWAYS UTC-aligned, while DuckDB-side eval
+        // (with chunk-2's session TimeZone) uses Trino's session zone. They
+        // diverge whenever the session isn't UTC — pushing such a predicate
+        // would silently drop or keep rows that Trino's above-scan would
+        // accept or reject. Until the converter is changed to honour the Arrow
+        // schema TZ (a connector-wide change with its own test surface), we
+        // refuse zone-dependent Tier C for these entries. See
+        // dev-docs/REPORT-datetime-tz-handling.md "Open follow-up probes".
         ArgTypeGate arg0DateOrTimestamp = arg(0, DateType.class, TimestampType.class);
-        for (String name : List.of("year", "month", "day", "quarter")) {
+        for (String name : List.of("year", "month", "day", "quarter",
+                "hour", "minute", "second", "millisecond")) {
             gates.put(new NameArity(name, 1), arg0DateOrTimestamp);
         }
-        // date_trunc(unit, x) — gate the second arg (the date/timestamp).
-        gates.put(new NameArity("date_trunc", 2), arg(1, DateType.class, TimestampType.class));
-        // date_diff(unit, t1, t2) — gate both date-shape args.
-        gates.put(new NameArity("date_diff", 3), args -> {
+        // date_trunc(unit, x): same strictness on arg index 1.
+        gates.put(new NameArity("date_trunc", 2),
+                arg(1, DateType.class, TimestampType.class));
+        // date_diff(unit, t1, t2): same strictness on args 1 and 2.
+        gates.put(new NameArity("date_diff", 3), (args, session) -> {
             Type t1 = args.get(1).getType();
             Type t2 = args.get(2).getType();
             return (t1 instanceof DateType || t1 instanceof TimestampType)
                     && (t2 instanceof DateType || t2 instanceof TimestampType);
         });
-        // Round 6j Tier A — DATE-only.
-        ArgTypeGate arg0Date = arg(0, DateType.class);
+
+        // Tier C — TIMESTAMP WITH TIME ZONE conditionally accepted ONLY for
+        // genuinely zone-invariant functions. `to_unixtime(value)` returns the
+        // absolute UTC epoch regardless of the value's time zone — Trino and
+        // DuckDB agree byte-for-byte for any session zone or stored zone. Safe
+        // to push for WTZ when the session opts in.
+        gates.put(new NameArity("to_unixtime", 1), argTier(0));
+
+        // Tier A — DATE-only, no WTZ extension (Trino's day_of_week / week /
+        // year_of_week etc. don't accept WTZ inputs either).
+        ArgTypeGate arg0DateStrict = arg(0, DateType.class);
         for (String name : List.of("day_of_week", "day_of_year", "last_day_of_month",
                 "week", "week_of_year", "year_of_week", "yow")) {
-            gates.put(new NameArity(name, 1), arg0Date);
-        }
-        // Round 6j Tier B — DATE or TIMESTAMP (no TZ).
-        for (String name : List.of("hour", "minute", "second", "millisecond", "to_unixtime")) {
-            gates.put(new NameArity(name, 1), arg0DateOrTimestamp);
+            gates.put(new NameArity(name, 1), arg0DateStrict);
         }
         return Map.copyOf(gates);
     }
@@ -242,11 +257,11 @@ final class DuckDbExpressionTranslator
      * runtime {@link Type} that is an instance of one of {@code allowed}. List
      * sizing is the caller's responsibility — entries with arity gates already
      * gate by the {@link NameArity} key, so this only fires when the right number
-     * of args is present.
+     * of args is present. Ignores the session.
      */
     private static ArgTypeGate arg(int index, Class<?>... allowed)
     {
-        return args -> {
+        return (args, session) -> {
             if (index >= args.size()) {
                 return false;
             }
@@ -260,10 +275,42 @@ final class DuckDbExpressionTranslator
         };
     }
 
+    /**
+     * Gate for entries whose Tier B shape is {@code DATE | TIMESTAMP no-TZ} and
+     * whose Tier C extension to {@code TIMESTAMP WITH TIME ZONE} is conditional
+     * on the {@code pushdown_timestamp_with_timezone} session property.
+     */
+    private static ArgTypeGate argTier(int index)
+    {
+        return (args, session) -> {
+            if (index >= args.size()) {
+                return false;
+            }
+            Type t = args.get(index).getType();
+            if (t instanceof DateType || t instanceof TimestampType) {
+                return true;
+            }
+            if (t instanceof TimestampWithTimeZoneType
+                    && DucklakeSessionProperties.isPushdownTimestampWithTimeZone(session)) {
+                return true;
+            }
+            return false;
+        };
+    }
+
     @FunctionalInterface
     interface ArgTypeGate
     {
-        boolean accepts(List<ConnectorExpression> args);
+        /**
+         * @param args     the actual {@link ConnectorExpression} arguments
+         *                 of the call being considered for pushdown
+         * @param session  the connector session; may be {@code null} for the
+         *                 test overload of {@code translateConjuncts}. Gates
+         *                 that consult session properties must tolerate
+         *                 {@code null} as "default-off semantics" via
+         *                 {@link DucklakeSessionProperties} helpers.
+         */
+        boolean accepts(List<ConnectorExpression> args, ConnectorSession session);
     }
 
     /**
@@ -297,10 +344,23 @@ final class DuckDbExpressionTranslator
      * each independently. Returns the SQL fragments for conjuncts the
      * translator could handle; the rest are silently dropped (the caller is
      * expected to leave them in {@code remainingExpression}).
+     *
+     * <p>The {@code session}-less overload reads as "no session properties
+     * available" — Tier C and any other session-property-gated entry stays
+     * unpushed. Convenient for unit tests that synthesize a single call without
+     * needing a {@link ConnectorSession}.
      */
     static List<String> translateConjuncts(
             ConnectorExpression expression,
             Map<String, ColumnHandle> assignments)
+    {
+        return translateConjuncts(expression, assignments, null);
+    }
+
+    static List<String> translateConjuncts(
+            ConnectorExpression expression,
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         List<String> out = new ArrayList<>();
         for (ConnectorExpression conjunct : conjuncts(expression)) {
@@ -310,7 +370,7 @@ final class DuckDbExpressionTranslator
                 // WHERE clause and cause applyFilter to report progress when there is none.
                 continue;
             }
-            Optional<String> translated = translate(conjunct, assignments);
+            Optional<String> translated = translate(conjunct, assignments, session);
             translated.ifPresent(out::add);
         }
         return List.copyOf(out);
@@ -344,8 +404,16 @@ final class DuckDbExpressionTranslator
             ConnectorExpression expression,
             Map<String, ColumnHandle> assignments)
     {
+        return translate(expression, assignments, null);
+    }
+
+    static Optional<String> translate(
+            ConnectorExpression expression,
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
+    {
         try {
-            return Optional.ofNullable(translateOrNull(expression, assignments));
+            return Optional.ofNullable(translateOrNull(expression, assignments, session));
         }
         catch (RuntimeException ignored) {
             // Defensive: any unexpected RuntimeException from a sub-translator => fail safe.
@@ -353,12 +421,15 @@ final class DuckDbExpressionTranslator
         }
     }
 
-    private static String translateOrNull(ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    private static String translateOrNull(
+            ConnectorExpression expression,
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         return switch (expression) {
             case Variable variable -> translateVariable(variable, assignments);
             case Constant constant -> translateConstant(constant);
-            case Call call -> translateCall(call, assignments);
+            case Call call -> translateCall(call, assignments, session);
             default -> null;
         };
     }
@@ -416,33 +487,33 @@ final class DuckDbExpressionTranslator
         return null;
     }
 
-    private static String translateCall(Call call, Map<String, ColumnHandle> assignments)
+    private static String translateCall(Call call, Map<String, ColumnHandle> assignments, ConnectorSession session)
     {
         FunctionName name = call.getFunctionName();
         List<ConnectorExpression> args = call.getArguments();
 
         // Standard operators: emit infix / prefix SQL.
         if (name.equals(StandardFunctions.AND_FUNCTION_NAME)) {
-            return joinBinary(args, " AND ", assignments);
+            return joinBinary(args, " AND ", assignments, session);
         }
         if (name.equals(StandardFunctions.OR_FUNCTION_NAME)) {
-            return joinBinary(args, " OR ", assignments);
+            return joinBinary(args, " OR ", assignments, session);
         }
         if (name.equals(StandardFunctions.NOT_FUNCTION_NAME) && args.size() == 1) {
-            String inner = translateOrNull(args.get(0), assignments);
+            String inner = translateOrNull(args.get(0), assignments, session);
             return inner == null ? null : "(NOT " + inner + ")";
         }
         if (name.equals(StandardFunctions.IS_NULL_FUNCTION_NAME) && args.size() == 1) {
-            String inner = translateOrNull(args.get(0), assignments);
+            String inner = translateOrNull(args.get(0), assignments, session);
             return inner == null ? null : "(" + inner + " IS NULL)";
         }
         if (name.equals(StandardFunctions.LIKE_FUNCTION_NAME) && args.size() == 2) {
-            return translateLike(args.get(0), args.get(1), assignments);
+            return translateLike(args.get(0), args.get(1), assignments, session);
         }
         String operator = comparisonOperator(name);
         if (operator != null && args.size() == 2) {
-            String left = translateOrNull(args.get(0), assignments);
-            String right = translateOrNull(args.get(1), assignments);
+            String left = translateOrNull(args.get(0), assignments, session);
+            String right = translateOrNull(args.get(1), assignments, session);
             if (left == null || right == null) {
                 return null;
             }
@@ -450,8 +521,8 @@ final class DuckDbExpressionTranslator
         }
         String arithmetic = arithmeticOperator(name);
         if (arithmetic != null && args.size() == 2) {
-            String left = translateOrNull(args.get(0), assignments);
-            String right = translateOrNull(args.get(1), assignments);
+            String left = translateOrNull(args.get(0), assignments, session);
+            String right = translateOrNull(args.get(1), assignments, session);
             if (left == null || right == null) {
                 return null;
             }
@@ -460,8 +531,8 @@ final class DuckDbExpressionTranslator
         if (name.equals(StandardFunctions.IDENTICAL_OPERATOR_FUNCTION_NAME) && args.size() == 2) {
             // SQL "IS NOT DISTINCT FROM" — NULL-safe equality. DuckDB supports the
             // grammar directly. Useful for predicates over nullable columns.
-            String left = translateOrNull(args.get(0), assignments);
-            String right = translateOrNull(args.get(1), assignments);
+            String left = translateOrNull(args.get(0), assignments, session);
+            String right = translateOrNull(args.get(1), assignments, session);
             if (left == null || right == null) {
                 return null;
             }
@@ -474,7 +545,7 @@ final class DuckDbExpressionTranslator
                 if (i > 0) {
                     sql.append(", ");
                 }
-                String arg = translateOrNull(args.get(i), assignments);
+                String arg = translateOrNull(args.get(i), assignments, session);
                 if (arg == null) {
                     return null;
                 }
@@ -484,8 +555,8 @@ final class DuckDbExpressionTranslator
             return sql.toString();
         }
         if (name.equals(StandardFunctions.NULLIF_FUNCTION_NAME) && args.size() == 2) {
-            String left = translateOrNull(args.get(0), assignments);
-            String right = translateOrNull(args.get(1), assignments);
+            String left = translateOrNull(args.get(0), assignments, session);
+            String right = translateOrNull(args.get(1), assignments, session);
             if (left == null || right == null) {
                 return null;
             }
@@ -493,14 +564,14 @@ final class DuckDbExpressionTranslator
         }
         if (name.equals(StandardFunctions.NEGATE_FUNCTION_NAME) && args.size() == 1) {
             // Arithmetic unary minus. Trino encodes `-x` as $negate.
-            String inner = translateOrNull(args.get(0), assignments);
+            String inner = translateOrNull(args.get(0), assignments, session);
             return inner == null ? null : "(-" + inner + ")";
         }
         if (name.equals(StandardFunctions.CAST_FUNCTION_NAME) && args.size() == 1) {
-            return translateCast(call, args.get(0), "CAST", assignments);
+            return translateCast(call, args.get(0), "CAST", assignments, session);
         }
         if (name.equals(StandardFunctions.TRY_CAST_FUNCTION_NAME) && args.size() == 1) {
-            return translateCast(call, args.get(0), "TRY_CAST", assignments);
+            return translateCast(call, args.get(0), "TRY_CAST", assignments, session);
         }
 
         // String concat is a translator rewrite (NOT a macro): Trino's `concat(a, b, c)`
@@ -514,7 +585,7 @@ final class DuckDbExpressionTranslator
                 && "concat".equals(name.getName())
                 && args.size() >= 2
                 && call.getType() instanceof VarcharType) {
-            return translateStringConcat(args, assignments);
+            return translateStringConcat(args, assignments, session);
         }
 
         // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
@@ -524,10 +595,10 @@ final class DuckDbExpressionTranslator
             NameArity key = new NameArity(name.getName(), args.size());
             if (PUSHABLE_FUNCTIONS.contains(key)) {
                 ArgTypeGate gate = TYPE_GATES.get(key);
-                if (gate != null && !gate.accepts(args)) {
+                if (gate != null && !gate.accepts(args, session)) {
                     return null;
                 }
-                return translateMacroCall(name.getName(), args, assignments);
+                return translateMacroCall(name.getName(), args, assignments, session);
             }
         }
         return null;
@@ -535,14 +606,15 @@ final class DuckDbExpressionTranslator
 
     private static String translateStringConcat(
             List<ConnectorExpression> args,
-            Map<String, ColumnHandle> assignments)
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         StringBuilder out = new StringBuilder("(");
         for (int i = 0; i < args.size(); i++) {
             if (i > 0) {
                 out.append(" || ");
             }
-            String inner = translateOrNull(args.get(i), assignments);
+            String inner = translateOrNull(args.get(i), assignments, session);
             if (inner == null) {
                 return null;
             }
@@ -567,7 +639,8 @@ final class DuckDbExpressionTranslator
     private static String translateLike(
             ConnectorExpression value,
             ConnectorExpression patternArg,
-            Map<String, ColumnHandle> assignments)
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         if (!(patternArg instanceof Constant constant)) {
             return null;
@@ -580,7 +653,7 @@ final class DuckDbExpressionTranslator
         if (extracted == null) {
             return null;
         }
-        String translatedValue = translateOrNull(value, assignments);
+        String translatedValue = translateOrNull(value, assignments, session);
         if (translatedValue == null) {
             return null;
         }
@@ -608,13 +681,14 @@ final class DuckDbExpressionTranslator
             Call call,
             ConnectorExpression operand,
             String castKeyword,
-            Map<String, ColumnHandle> assignments)
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         String targetType = duckdbTypeName(call.getType());
         if (targetType == null) {
             return null;
         }
-        String inner = translateOrNull(operand, assignments);
+        String inner = translateOrNull(operand, assignments, session);
         return inner == null ? null : castKeyword + "(" + inner + " AS " + targetType + ")";
     }
 
@@ -668,14 +742,15 @@ final class DuckDbExpressionTranslator
     private static String translateMacroCall(
             String trinoName,
             List<ConnectorExpression> args,
-            Map<String, ColumnHandle> assignments)
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         StringBuilder sql = new StringBuilder("trino_").append(trinoName).append('(');
         for (int i = 0; i < args.size(); i++) {
             if (i > 0) {
                 sql.append(", ");
             }
-            String arg = translateOrNull(args.get(i), assignments);
+            String arg = translateOrNull(args.get(i), assignments, session);
             if (arg == null) {
                 return null;
             }
@@ -703,7 +778,8 @@ final class DuckDbExpressionTranslator
     private static String joinBinary(
             List<ConnectorExpression> args,
             String separator,
-            Map<String, ColumnHandle> assignments)
+            Map<String, ColumnHandle> assignments,
+            ConnectorSession session)
     {
         if (args.isEmpty()) {
             return null;
@@ -713,7 +789,7 @@ final class DuckDbExpressionTranslator
             if (i > 0) {
                 out.append(separator);
             }
-            String inner = translateOrNull(args.get(i), assignments);
+            String inner = translateOrNull(args.get(i), assignments, session);
             if (inner == null) {
                 return null;
             }

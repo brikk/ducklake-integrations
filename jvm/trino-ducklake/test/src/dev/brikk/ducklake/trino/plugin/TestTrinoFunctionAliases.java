@@ -244,6 +244,28 @@ public class TestTrinoFunctionAliases
                         "SELECT trino_substring('abcdef', -2)", "ef"),
                 c("substring 3: index + length", "substring", 3,
                         "SELECT trino_substring('abcdef', 2, 3)", "bcd"),
+                // Unit pins — Trino's StringFunctions.substring uses offsetOfCodePoint /
+                // countCodePoints; DuckDB's substr probed empirically to do the same.
+                // Both engines: Unicode code points, NOT bytes, NOT graphemes.
+                c("substring 3: 2-byte UTF-8 codepoint (Cyrillic)", "substring", 3,
+                        // Each Cyrillic letter is 2 bytes in UTF-8 / 1 codepoint / 1 grapheme.
+                        // substr(2, 3) at byte-mode would slice mid-codepoint and return garbage;
+                        // at codepoint-mode returns three letters; at grapheme-mode same as codepoint.
+                        "SELECT trino_substring('пингвин', 2, 3)", "инг"),
+                c("substring 3: 4-byte UTF-8 codepoint (emoji)", "substring", 3,
+                        // Each emoji is 4 bytes UTF-8 / 1 codepoint / 1 grapheme. substr(2, 1)
+                        // returning the second whole emoji confirms the engine is NOT counting bytes.
+                        "SELECT trino_substring('🐧🦆🐍', 2, 1)", "🦆"),
+                c("substring 3: splits grapheme cluster (combining mark)", "substring", 3,
+                        // 'café' as 'cafe' + U+0301 has 5 codepoints / 4 graphemes. Position 4 is the
+                        // bare 'e' (codepoint 4) — a grapheme-aware substr would return the composed
+                        // 'é'. Both engines splitting the grapheme is the alignment-confirming case.
+                        "SELECT trino_substring('caf' || chr(101) || chr(769), 4, 1)", "e"),
+                c("substring 3: splits ZWJ emoji sequence", "substring", 3,
+                        // '👨‍👩‍👧' is 5 codepoints (man, ZWJ, woman, ZWJ, girl) / 1 grapheme.
+                        // Position 1 length 1 returns the bare man emoji in both engines — confirms
+                        // codepoint-counting (a grapheme-aware substr would return the whole family).
+                        "SELECT trino_substring('👨‍👩‍👧', 1, 1)", "👨"),
                 c("replace 3", "replace", 3,
                         "SELECT trino_replace('a.b.c', '.', '-')", "a-b-c"),
                 c("strpos 2: found", "strpos", 2,
@@ -458,6 +480,81 @@ public class TestTrinoFunctionAliases
                 c("date_diff 3: month boundary", "date_diff", 3,
                         // Both engines count boundary crossings, not whole units elapsed.
                         "SELECT trino_date_diff('month', DATE '2024-01-31', DATE '2024-02-01')", 1L),
+                // === Unicode pressure for string macros — alignment lock-in ===
+                //
+                // Every non-placeholder string macro gets at least one fixture with
+                // multi-byte UTF-8 input. The reference "nasty character" is the
+                // ZWJ family emoji '👨‍👩‍👧' — 5 codepoints (man, ZWJ, woman, ZWJ, girl),
+                // 1 grapheme, 18 bytes UTF-8. If an engine ever switched to
+                // byte-counting or grapheme-counting, these tests would surface it
+                // immediately. Both engines today count Unicode CODE POINTS for
+                // all of these — verified empirically and (for Trino) in source.
+                //
+                // length: ZWJ family has 5 codepoints (man, ZWJ, woman, ZWJ, girl).
+                c("length 1: ZWJ family emoji = 5 codepoints", "length", 1,
+                        "SELECT trino_length('👨‍👩‍👧')", 5L),
+                c("length 1: 4-byte emoji × 3 = 3 codepoints", "length", 1,
+                        "SELECT trino_length('🐧🦆🐍')", 3L),
+                // strpos: codepoint-indexed position (1-based).
+                c("strpos 2: multi-byte haystack and needle", "strpos", 2,
+                        // X(1) 你(2) 好(3) Y(4). Find '好' → 3.
+                        "SELECT trino_strpos('X你好Y', '好')", 3L),
+                c("strpos 2: bare emoji inside ZWJ sequence", "strpos", 2,
+                        // 'a👨‍👩‍👧b' — codepoints: a(1) 👨(2) ZWJ(3) 👩(4) ZWJ(5) 👧(6) b(7).
+                        // strpos of bare '👨' is 2; engines that index by grapheme
+                        // would report 2 too but for the wrong reason. The needle
+                        // '👨' alone is a codepoint inside a different grapheme;
+                        // both engines find it at codepoint 2.
+                        "SELECT trino_strpos('a👨‍👩‍👧b', '👨')", 2L),
+                // starts_with: multi-byte prefix.
+                c("starts_with 2: 4-byte emoji prefix", "starts_with", 2,
+                        "SELECT trino_starts_with('🐧🦆🐍', '🐧')", true),
+                c("starts_with 2: bare man emoji prefixes ZWJ family", "starts_with", 2,
+                        // '👨' is a codepoint prefix of '👨‍👩‍👧' (which starts with man + ZWJ + ...).
+                        "SELECT trino_starts_with('👨‍👩‍👧 the family', '👨')", true),
+                // trim: ZWJ cluster as content is left intact (only whitespace stripped).
+                c("trim 1: ZWJ family content not stripped", "trim", 1,
+                        "SELECT trino_trim('  👨‍👩‍👧  ')", "👨‍👩‍👧"),
+                // replace: multi-byte search + replacement.
+                c("replace 3: CJK to CJK", "replace", 3,
+                        "SELECT trino_replace('a你b', '你', '好')", "a好b"),
+                c("replace 3: 4-byte emoji replacement", "replace", 3,
+                        // Replace bare man emoji INSIDE a ZWJ sequence — both engines
+                        // do codepoint substring match, so the man codepoint at
+                        // position 2 of the family gets swapped while the ZWJ +
+                        // woman + ZWJ + girl tail remains. Result is malformed as a
+                        // grapheme but the codepoint sequence is well-defined.
+                        "SELECT trino_replace('🐧🦆🐧', '🐧', '🐍')", "🐍🦆🐍"),
+                // lpad / rpad: target length is in codepoints; pad with a multi-byte char.
+                c("lpad 3: pad to 5 codepoints with CJK pad char", "lpad", 3,
+                        // 'abc' (3 cp) → pad with '你' (1 cp) until total = 5 cp → '你你abc'.
+                        "SELECT trino_lpad('abc', 5, '你')", "你你abc"),
+                c("rpad 3: pad with 4-byte emoji", "rpad", 3,
+                        "SELECT trino_rpad('abc', 5, '🐧')", "abc🐧🐧"),
+                // concat_ws: multi-byte separator.
+                c("concat_ws 3: multi-byte separator", "concat_ws", 3,
+                        "SELECT trino_concat_ws('🔗', 'a', 'b')", "a🔗b"),
+                // translate: codepoint-by-codepoint translate-from / translate-to.
+                c("translate 3: CJK to ASCII pairwise", "translate", 3,
+                        // 你 → A, 好 → B (codepoint-wise); 世界 unchanged.
+                        "SELECT trino_translate('你好世界', '你好', 'AB')", "AB世界"),
+                // bit_length: codepoint × byte-width × 8 bits.
+                c("bit_length 1: 4-byte emoji × 3 = 96 bits", "bit_length", 1,
+                        "SELECT trino_bit_length('🐧🦆🐍')", 96L),
+                c("bit_length 1: Cyrillic 2-byte × 7 = 112 bits", "bit_length", 1,
+                        "SELECT trino_bit_length('пингвин')", 112L),
+                c("bit_length 1: ZWJ family 18 bytes = 144 bits", "bit_length", 1,
+                        // 4 (man) + 3 (ZWJ) + 4 (woman) + 3 (ZWJ) + 4 (girl) = 18 bytes.
+                        "SELECT trino_bit_length('👨‍👩‍👧')", 144L),
+                // levenshtein_distance: edit distance by codepoint (not byte, not grapheme).
+                c("levenshtein_distance 2: one-emoji substitution", "levenshtein_distance", 2,
+                        "SELECT trino_levenshtein_distance('🐧🦆🐍', '🐧🦉🐍')", 1L),
+                // hamming_distance: codepoint-by-codepoint diff count.
+                c("hamming_distance 2: one-emoji substitution", "hamming_distance", 2,
+                        "SELECT trino_hamming_distance('🐧🦆🐍', '🐧🦉🐍')", 1L),
+                // chr: codepoint above U+FFFF (requires supplementary-plane handling).
+                c("chr 1: 4-byte emoji codepoint (penguin U+1F427)", "chr", 1,
+                        "SELECT trino_chr(128039)", "🐧"),
                 // Round 6j (step 4 chunk 1) — Tier A: DATE-only date functions
                 //
                 // day_of_week: Trino is 1=Mon..7=Sun (ISO). Sunday is the divergence
