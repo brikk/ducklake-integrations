@@ -507,6 +507,71 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
+    public void testConcatTwoArg()
+    {
+        // WHERE concat(name, 'X') = 'AppleX'  — translator rewrites to `||` chain,
+        // not a trino_concat macro, because DuckDB's concat skips NULL while Trino's
+        // NULL-propagates. `||` propagates in both engines (REPORT-hash-null-handling.md).
+        ConnectorExpression concat = call(new FunctionName("concat"), VARCHAR,
+                new Variable("name", VARCHAR),
+                varcharConst("X"));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                concat,
+                varcharConst("AppleX"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("((\"name\" || 'X') = 'AppleX')");
+    }
+
+    @Test
+    public void testConcatVariadic()
+    {
+        // WHERE concat(name, '-', name, '!') = 'Apple-Apple!'  — exercise arity > 2.
+        ConnectorExpression concat = call(new FunctionName("concat"), VARCHAR,
+                new Variable("name", VARCHAR),
+                varcharConst("-"),
+                new Variable("name", VARCHAR),
+                varcharConst("!"));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                concat,
+                varcharConst("Apple-Apple!"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).containsExactly("((\"name\" || '-' || \"name\" || '!') = 'Apple-Apple!')");
+    }
+
+    @Test
+    public void testConcatWithUntranslatableArgNotPushed()
+    {
+        // One arg references an unmapped variable → whole concat fails translation,
+        // and the surrounding conjunct is dropped.
+        ConnectorExpression concat = call(new FunctionName("concat"), VARCHAR,
+                new Variable("name", VARCHAR),
+                new Variable("not_present", VARCHAR));
+        ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                concat,
+                varcharConst("x"));
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
+    public void testConcatArrayOverloadNotPushed()
+    {
+        // Trino's `concat(array, array)` is a separate overload with its own NULL
+        // semantics; we only rewrite when the return type is VARCHAR. An ARRAY-typed
+        // concat falls through to the macro check, where it's not registered → drop.
+        io.trino.spi.type.ArrayType arrayVarchar = new io.trino.spi.type.ArrayType(VARCHAR);
+        ConnectorExpression concat = new Call(arrayVarchar, new FunctionName("concat"),
+                List.of(new Variable("name", VARCHAR), new Variable("name", VARCHAR)));
+        ConnectorExpression expression = call(StandardFunctions.IS_NULL_FUNCTION_NAME, BOOLEAN, concat);
+
+        List<String> conjuncts = DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS);
+        assertThat(conjuncts).isEmpty();
+    }
+
+    @Test
     public void testTrinoMetaJavaSetContainsRepresentativeEntries()
     {
         // Tripwire: the Java-side PUSHABLE_FUNCTIONS must match the trino_meta() rows

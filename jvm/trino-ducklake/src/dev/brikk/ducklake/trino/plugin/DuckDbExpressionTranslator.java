@@ -401,6 +401,20 @@ final class DuckDbExpressionTranslator
             return translateCast(call, args.get(0), "TRY_CAST", assignments);
         }
 
+        // String concat is a translator rewrite (NOT a macro): Trino's `concat(a, b, c)`
+        // NULL-propagates, DuckDB's built-in `concat` silently skips NULLs. The `||`
+        // operator NULL-propagates in BOTH engines (verified by ProbeConcatNullHandling —
+        // see REPORT-hash-null-handling.md), so rewriting to `(a || b || c)` emits
+        // Trino-aligned semantics without a macro. Gated on VARCHAR return type to
+        // avoid Trino's array overload (`concat(array, array)`), which has different
+        // NULL semantics and a different operator shape in DuckDB.
+        if (name.getCatalogSchema().isEmpty()
+                && "concat".equals(name.getName())
+                && args.size() >= 2
+                && call.getType() instanceof VarcharType) {
+            return translateStringConcat(args, assignments);
+        }
+
         // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
         // Only push if (name, arity) is in our brain.
         if (name.getCatalogSchema().isEmpty()
@@ -408,6 +422,25 @@ final class DuckDbExpressionTranslator
             return translateMacroCall(name.getName(), args, assignments);
         }
         return null;
+    }
+
+    private static String translateStringConcat(
+            List<ConnectorExpression> args,
+            Map<String, ColumnHandle> assignments)
+    {
+        StringBuilder out = new StringBuilder("(");
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) {
+                out.append(" || ");
+            }
+            String inner = translateOrNull(args.get(i), assignments);
+            if (inner == null) {
+                return null;
+            }
+            out.append(inner);
+        }
+        out.append(')');
+        return out.toString();
     }
 
     /**

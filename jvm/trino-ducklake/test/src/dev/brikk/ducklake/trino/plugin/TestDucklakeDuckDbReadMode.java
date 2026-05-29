@@ -257,6 +257,68 @@ public class TestDucklakeDuckDbReadMode
     }
 
     @Test
+    public void testConcatPredicatePushesDownAsOperatorChain()
+    {
+        // End-to-end proof for the concat → `||` translator rewrite. DuckDB's
+        // built-in `concat` silently skips NULLs while Trino's NULL-propagates
+        // (REPORT-hash-null-handling.md), so the translator rewrites Trino's
+        // `Call(concat, [args])` into `(arg1 || arg2 || ...)` — the `||` operator
+        // NULL-propagates in both engines, giving Trino-aligned semantics.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.concat_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('Apple' AS VARCHAR), CAST('X' AS VARCHAR)), "
+                        + "  (2, CAST('banana' AS VARCHAR), CAST('Y' AS VARCHAR)), "
+                        + "  (3, CAST('Cherry' AS VARCHAR), CAST('Z' AS VARCHAR))"
+                        + ") AS t(id, name, suffix)");
+        try {
+            // concat(name, suffix) = 'AppleX' → only id=1 matches.
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.concat_pushdown WHERE concat(name, suffix) = 'AppleX'");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(1);
+
+            // Variadic: concat(name, '-', suffix) = 'banana-Y' → id=2.
+            MaterializedResult variadic = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.concat_pushdown WHERE concat(name, '-', suffix) = 'banana-Y'");
+            assertThat(variadic.getRowCount()).isEqualTo(1);
+            assertThat(variadic.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.concat_pushdown");
+        }
+    }
+
+    @Test
+    public void testConcatWithNullPropagatesTrinoSemantics()
+    {
+        // The key correctness guarantee for the rewrite: when an argument is NULL,
+        // Trino's `concat(...)` returns NULL — DuckDB's built-in `concat` would
+        // return the non-NULL fragments. Routing through `||` preserves Trino's
+        // NULL-propagation on the duckdb-format read path.
+        computeActual(writeDuckDbSession(),
+                "CREATE TABLE test_schema.concat_null_pushdown AS "
+                        + "SELECT * FROM (VALUES "
+                        + "  (1, CAST('a' AS VARCHAR), CAST('b' AS VARCHAR)), "
+                        + "  (2, CAST('a' AS VARCHAR), CAST(NULL AS VARCHAR))"
+                        + ") AS t(id, a, b)");
+        try {
+            // concat(a, b) IS NULL → only id=2 (Trino semantics; DuckDB built-in concat
+            // would return 'a' for id=2 and the predicate would match nothing).
+            MaterializedResult result = computeActual(
+                    sessionWith(READ_MODE_MATERIALIZE),
+                    "SELECT id FROM test_schema.concat_null_pushdown WHERE concat(a, b) IS NULL");
+            assertThat(result.getRowCount()).isEqualTo(1);
+            assertThat(result.getMaterializedRows().getFirst().getField(0)).isEqualTo(2);
+        }
+        finally {
+            tryDropTable("test_schema.concat_null_pushdown");
+        }
+    }
+
+    @Test
     public void testBetweenPredicateReturnsCorrectRows()
     {
         // BETWEEN is grammar in both engines; Trino's planner typically decomposes
