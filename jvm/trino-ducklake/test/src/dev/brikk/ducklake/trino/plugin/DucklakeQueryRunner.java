@@ -119,11 +119,16 @@ public final class DucklakeQueryRunner
                         .put("fs.hadoop.enabled", "true")
                         .putAll(connectorProperties.buildOrThrow());
                 // Test hook: when a built trino_parity.duckdb_extension is available
-                // (path passed via -Dducklake.test.parityExtensionPath=...), thread
-                // it into the catalog so the in-process executor LOADs the binary
-                // instead of replaying the in-tree SQL aliases. Otherwise the
-                // executor falls back to TrinoFunctionAliases.applyDirect — same
-                // behaviour as before the extension existed.
+                // (path passed via -Dducklake.test.parityExtensionPath=...), default
+                // the catalog property to the host-side path. This is the right
+                // value for the in-process executor (the JVM-internal DuckDB reads
+                // the file directly). Tests that exercise the Quack-engine path
+                // (ducklake.execution-engine=quack) MUST override this property to
+                // TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH
+                // via connectorProperties — the `!containsKey` guard preserves their
+                // override. CATALOG backend (PG / DUCKDB_LOCAL / DUCKDB_QUACK) is a
+                // metadata-storage concern and does NOT determine which executor
+                // the catalog ends up using; only the execution-engine property does.
                 String testExtensionPath = System.getProperty("ducklake.test.parityExtensionPath");
                 if (testExtensionPath != null && !testExtensionPath.isBlank()
                         && !connectorProperties.buildOrThrow().containsKey("ducklake.duckdb.parity-extension-path")) {

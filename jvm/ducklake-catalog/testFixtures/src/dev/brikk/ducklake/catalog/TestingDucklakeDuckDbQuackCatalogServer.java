@@ -16,6 +16,11 @@ package dev.brikk.ducklake.catalog;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
+import org.testcontainers.utility.MountableFile;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Optional;
 
 /**
  * Testcontainer wrapper for a DuckDB process hosting a Quack RPC listener.
@@ -36,18 +41,39 @@ public class TestingDucklakeDuckDbQuackCatalogServer
     private static final int CONTAINER_PORT = 9494;
     private static final String DEFAULT_TOKEN = "ducklake-test-token";
 
+    /**
+     * In-container path where the trino_parity DuckDB extension is mounted
+     * (when {@link #TestingDucklakeDuckDbQuackCatalogServer(Optional)} is
+     * called with a non-empty path). Clients reach this via the Quack wrapper
+     * with {@code LOAD '<path>'} — server-side allow_unsigned_extensions is
+     * enabled by the entrypoint's {@code duckdb -unsigned} invocation.
+     */
+    public static final String IN_CONTAINER_PARITY_EXTENSION_PATH =
+            "/opt/duckdb-extensions/trino_parity.duckdb_extension";
+
     private final GenericContainer<?> container;
     private final String token;
 
     public TestingDucklakeDuckDbQuackCatalogServer()
     {
+        this(Optional.empty());
+    }
+
+    public TestingDucklakeDuckDbQuackCatalogServer(Optional<Path> parityExtensionPath)
+    {
         this.token = DEFAULT_TOKEN;
-        this.container = new GenericContainer<>(buildImage())
+        GenericContainer<?> c = new GenericContainer<>(buildImage())
                 .withExposedPorts(CONTAINER_PORT)
                 .withEnv("QUACK_PORT", String.valueOf(CONTAINER_PORT))
                 .withEnv("QUACK_TOKEN", token)
                 .withStartupAttempts(3)
                 .waitingFor(Wait.forListeningPort());
+        if (parityExtensionPath.isPresent() && Files.isRegularFile(parityExtensionPath.get())) {
+            c = c.withCopyFileToContainer(
+                    MountableFile.forHostPath(parityExtensionPath.get()),
+                    IN_CONTAINER_PARITY_EXTENSION_PATH);
+        }
+        this.container = c;
         container.start();
     }
 

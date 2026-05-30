@@ -44,12 +44,16 @@ final class DucklakeDuckDbExecutorFactory
     DucklakeDuckDbExecutor create()
     {
         DuckDbTuning tuning = config.toDuckDbTuning();
-        // For the in-process engine, the parity extension path (if configured) is
-        // a local filesystem path the JVM can read. The Quack engine evaluates SQL
-        // server-side in a separate container/process; mounting the same .duckdb_extension
-        // path there is a docker-compose / deployment concern tracked in
-        // dev-docs/TODO-pushdown-duckdb.md. Until that's wired, Quack stays on the
-        // SQL-replay fallback path.
+        // parityExtensionPath semantics differ by engine:
+        //   - DUCKDB_LOCAL: local filesystem path the JVM can read directly.
+        //   - QUACK: SERVER-SIDE path the Quack DuckDB process can read. The
+        //     connector forwards `LOAD '<path>'` over the Quack wrapper, so the
+        //     value must point at where the extension lives INSIDE the Quack
+        //     container/host, not where it lives on the Trino worker.
+        // Single config key is convenient when both processes share a path
+        // (mounted at the same in-container location); when they don't, the
+        // user has to pick which engine to point it at. Either way, if LOAD
+        // fails the executor falls back to the in-tree SQL replay.
         return switch (config.getExecutionEngine()) {
             case DUCKDB_LOCAL -> new InProcessDuckDbExecutor(tuning, config.getDuckdbParityExtensionPath());
             case QUACK -> {
@@ -63,7 +67,8 @@ final class DucklakeDuckDbExecutorFactory
                     throw new TrinoException(CONFIGURATION_INVALID,
                             "ducklake.execution-engine=quack requires ducklake.quack.token");
                 }
-                yield new QuackDuckDbExecutor(host, config.getQuackPort(), token, tuning);
+                yield new QuackDuckDbExecutor(host, config.getQuackPort(), token, tuning,
+                        config.getDuckdbParityExtensionPath());
             }
             case SWANLAKE -> throw new TrinoException(NOT_SUPPORTED,
                     "ducklake.execution-engine=swanlake is reserved but not yet implemented. "

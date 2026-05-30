@@ -100,6 +100,13 @@ services:
       # Shared with trino at the same path so materialize-mode .db files
       # written by the Trino worker are visible to server-side ATTACH.
       - ducklake-materialize:/tmp/ducklake-read
+      # trino_parity extension binary, same as the trino container — Quack
+      # server-side LOAD '<path>' is sent through the wrapper by the
+      # QuackDuckDbExecutor when the catalog has ducklake.duckdb.parity-extension-path
+      # set. Identical in-container path on both sides keeps quack.properties
+      # and ducklake.properties consistent. Server-side LOAD requires
+      # allow_unsigned_extensions, set via `duckdb -unsigned` in entrypoint.sh.
+      - ../../../duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension:/opt/duckdb-extensions/trino_parity.duckdb_extension:ro
     restart: unless-stopped
 
   trino:

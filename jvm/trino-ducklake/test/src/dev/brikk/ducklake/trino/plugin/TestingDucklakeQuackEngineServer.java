@@ -13,12 +13,16 @@
  */
 package dev.brikk.ducklake.trino.plugin;
 
+import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
+import org.testcontainers.utility.MountableFile;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 
 /**
  * Out-of-process DuckDB-serving-Quack fixture for exercising
@@ -44,14 +48,25 @@ final class TestingDucklakeQuackEngineServer
 
     TestingDucklakeQuackEngineServer(Path sharedDataDir)
     {
+        this(sharedDataDir, Optional.empty());
+    }
+
+    TestingDucklakeQuackEngineServer(Path sharedDataDir, Optional<Path> parityExtensionPath)
+    {
         this.token = DEFAULT_TOKEN;
-        this.container = new GenericContainer<>(buildImage())
+        GenericContainer<?> c = new GenericContainer<>(buildImage())
                 .withExposedPorts(CONTAINER_PORT)
                 .withEnv("QUACK_PORT", String.valueOf(CONTAINER_PORT))
                 .withEnv("QUACK_TOKEN", token)
                 .withFileSystemBind(sharedDataDir.toAbsolutePath().toString(), "/data", BindMode.READ_WRITE)
                 .withStartupAttempts(3)
                 .waitingFor(Wait.forListeningPort());
+        if (parityExtensionPath.isPresent() && Files.isRegularFile(parityExtensionPath.get())) {
+            c = c.withCopyFileToContainer(
+                    MountableFile.forHostPath(parityExtensionPath.get()),
+                    TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH);
+        }
+        this.container = c;
         container.start();
     }
 

@@ -66,18 +66,26 @@ final class QuackDuckDbExecutor
     private final int port;
     private final String token;
     private final DuckDbTuning tuning;
+    private final java.util.Optional<String> parityExtensionPath;
 
     QuackDuckDbExecutor(String host, int port, String token)
     {
-        this(host, port, token, DuckDbTuning.defaults());
+        this(host, port, token, DuckDbTuning.defaults(), java.util.Optional.empty());
     }
 
     QuackDuckDbExecutor(String host, int port, String token, DuckDbTuning tuning)
+    {
+        this(host, port, token, tuning, java.util.Optional.empty());
+    }
+
+    QuackDuckDbExecutor(String host, int port, String token, DuckDbTuning tuning,
+                        java.util.Optional<String> parityExtensionPath)
     {
         this.host = requireNonNull(host, "host is null");
         this.port = port;
         this.token = requireNonNull(token, "token is null");
         this.tuning = requireNonNull(tuning, "tuning is null");
+        this.parityExtensionPath = requireNonNull(parityExtensionPath, "parityExtensionPath is null");
         if (token.length() < 4) {
             throw new IllegalArgumentException(
                     "Quack auth token must be at least 4 characters (Quack server-side requirement)");
@@ -110,17 +118,38 @@ final class QuackDuckDbExecutor
                 for (String tuningSql : DuckDbTuningSql.statements(tuning)) {
                     drainWrappedQuery(init, tuningSql);
                 }
-                for (String aliasSql : TrinoFunctionAliases.statements()) {
+                // Server-side macro registration. When the parity extension path is
+                // configured AND the LOAD succeeds, we trust the extension's
+                // LoadInternal to register every trino_<name> and trino_meta() —
+                // and skip the SQL replay below. On any failure (path not mounted,
+                // ABI mismatch, allow_unsigned not enabled on the server), fall
+                // back to the SQL replay so the connector keeps working.
+                boolean serverSideExtensionLoaded = false;
+                if (parityExtensionPath.isPresent()) {
+                    String path = parityExtensionPath.get();
+                    String loadSql = "LOAD '" + path.replace("'", "''") + "'";
                     try {
-                        drainWrappedQuery(init, aliasSql);
+                        drainWrappedQuery(init, loadSql);
+                        serverSideExtensionLoaded = true;
                     }
                     catch (SQLException e) {
-                        if (TrinoFunctionAliases.isBestEffort(aliasSql)) {
-                            log.warn("trino-function-aliases best-effort statement failed server-side: %s — %s",
-                                    aliasSql.lines().findFirst().orElse(aliasSql), e.getMessage());
-                            continue;
+                        log.warn("Server-side LOAD trino_parity from '%s' failed; falling back to in-tree SQL aliases — %s",
+                                path, e.getMessage());
+                    }
+                }
+                if (!serverSideExtensionLoaded) {
+                    for (String aliasSql : TrinoFunctionAliases.statements()) {
+                        try {
+                            drainWrappedQuery(init, aliasSql);
                         }
-                        throw e;
+                        catch (SQLException e) {
+                            if (TrinoFunctionAliases.isBestEffort(aliasSql)) {
+                                log.warn("trino-function-aliases best-effort statement failed server-side: %s — %s",
+                                        aliasSql.lines().findFirst().orElse(aliasSql), e.getMessage());
+                                continue;
+                            }
+                            throw e;
+                        }
                     }
                 }
                 for (String serverInitStatement : serverInitStatementsFor(request.target())) {

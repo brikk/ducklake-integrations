@@ -84,7 +84,16 @@ final class TestDucklakeDuckDbExecutorBackends
             s.execute("CREATE TABLE " + TABLE_NAME + " (id INTEGER, name VARCHAR)");
             s.execute("INSERT INTO " + TABLE_NAME + " VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')");
         }
-        quackServer = new TestingDucklakeQuackEngineServer(sharedDir);
+        // When -Dducklake.test.parityExtensionPath is set (forwarded by Gradle),
+        // copy the extension binary into the engine container so the
+        // testServerSideParityExtensionLoad case can exercise the LOAD path
+        // through QuackDuckDbExecutor's 5-arg constructor.
+        Optional<Path> parityExtensionPath = Optional
+                .ofNullable(System.getProperty("ducklake.test.parityExtensionPath"))
+                .map(String::strip)
+                .filter(s -> !s.isEmpty())
+                .map(Path::of);
+        quackServer = new TestingDucklakeQuackEngineServer(sharedDir, parityExtensionPath);
     }
 
     @AfterAll
