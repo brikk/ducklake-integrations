@@ -178,7 +178,7 @@ operators and functions are not available through Trino.
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
 | SELECT / table scans | Yes | |
-| Predicate pushdown (WHERE) | Yes | All types |
+| Predicate pushdown (WHERE) | Yes | TupleDomain on all types; function-shape pushdown on duckdb-format splits — see [Function Pushdown](#function-pushdown) |
 | File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files via `ducklake_file_column_stats` (top-level and nested-leaf rows). Trino predicates today land on top-level handles; the nested-leaf stats are emitted on write so DuckDB readers can prune subfield predicates against Trino-written tables. |
 | Partition pruning | Yes | Identity and temporal partitions |
 | Bucket partition pruning | Yes | Murmur3 hash; prunes files for equality predicates (ranges aren't pruned — bucketing scrambles ordering) |
@@ -270,6 +270,66 @@ catalogs; it should not be needed against any v1-conformant catalog.
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
 
+## Function Pushdown
+
+When a query reads a duckdb-format data file (see [DuckDB-Format Data Files](#duckdb-format-data-files-experimental)), the connector translates Trino predicates into DuckDB SQL fragments and pushes them server-side. Parquet-format reads still use Trino's standard Parquet reader; function-shape pushdown does not fire on parquet splits today.
+
+**Discipline (non-negotiable):**
+
+- Lossless pushdown only — anything we can't translate with confidence stays in Trino.
+- Curated map, not "translate anything that looks similar" — each translation is an explicit entry with recorded NULL / Unicode / edge semantics.
+- Cross-engine semantic test per entry — pushed result must match Trino's own evaluation byte-for-byte.
+
+**92 catalog entries** across 8 categories (`trino_meta()`), plus translator-level rewrites for standard operators, CAST, and `concat` → `||`.
+
+| Category | Surface | Notes |
+|---|---|-------|
+| Standard operators | `=`, `<>`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT DISTINCT FROM`, `+`, `-`, `*`, `/`, `%`, `COALESCE`, `NULLIF`, unary `-`, `CAST` / `TRY_CAST` for primitive types | Translated directly to infix / prefix SQL. |
+| LIKE / NOT LIKE | `value LIKE 'pattern' [ESCAPE 'c']` | NOT LIKE rides the existing `NOT` recursion. Dynamic patterns and NULL patterns stay unpushed. |
+| String basics | `length`, `reverse`, `trim`/`ltrim`/`rtrim`, `substring/{2,3}`, `replace`, `strpos`, `starts_with`, `lpad`, `rpad`, `concat_ws/{2..5}`, `translate`, `chr`, `lower`/`upper`/`reverse` (placeholders — warn-on-emit on non-ASCII divergence) | Unicode pressure pinned in fixtures (codepoint counts on ZWJ family, combining marks, 4-byte emoji). |
+| String rewrite | `concat(a, b, c, ...)` → `(a \|\| b \|\| c \|\| ...)` for VARCHAR returns | Translator-level rewrite, not a macro — DuckDB's `concat` skips NULL while Trino's NULL-propagates; the `\|\|` operator propagates in both. |
+| Numeric | `abs`, `ceil`, `floor`, `mod`, `power`, `sqrt`, `exp`, `ln`, `log2`, `log10`, trig + hyperbolic (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`), `degrees`, `radians`, `cbrt`, `truncate`, `sign`, `bit_length`, `pi()`, `bitwise_and/or/not/xor`, `bitwise_left_shift`/`bitwise_right_shift` | |
+| Regex | `regexp_like`, `regexp_extract/{2,3}`, `regexp_replace/{2,3}` | RE2 on both sides. |
+| Encoding / distance / hash | `url_encode`, `url_decode`, `to_hex`, `from_hex`, `to_base64`, `from_base64`, `levenshtein_distance`, `hamming_distance`, `md5`, `sha1`, `sha256` | Hash macros use `unhex(...)` to return BLOB matching Trino's VARBINARY. |
+| Conditional | `if/{2,3}` | |
+| Date / time | `year`, `month`, `day`, `quarter`, `hour`, `minute`, `second`, `millisecond`, `day_of_week` (ISO), `day_of_year`, `last_day_of_month`, `week` / `week_of_year` (ISO), `year_of_week` / `yow`, `date_trunc`, `date_diff`, `to_unixtime`, `from_unixtime`, `with_timezone` | Type-gated registry restricts each entry to safe argument types. Session property `pushdown_timestamp_with_timezone` (default off) extends Tier C support to `TIMESTAMP WITH TIME ZONE`. `at_timezone` is not pushable — DuckDB's `TIMESTAMPTZ` has no per-value zone metadata. |
+
+The `lower` / `upper` / `reverse` placeholders push for performance characterization but log a one-shot WARN per name when emitting — DuckDB's case-folding (simple, not full) and grapheme-aware `reverse` diverge from Trino on specific non-ASCII inputs. ASCII results are correct. A future native DuckDB extension is the durable fix.
+
+Open program items tracked in [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md): step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`), step 6 (Lance table functions), Tier C default-on flip after burn-in.
+
+## DuckDB-Format Data Files (EXPERIMENTAL)
+
+> **Experimental.** The `.db`-format read/write path is feature-complete with cross-engine tests, but the surface is still evolving (executor abstractions, session properties, write modes). Default to parquet for production workloads unless you've evaluated the trade-offs.
+
+DuckLake's `ducklake_data_file.file_format` column enumerates the file format per data file; values today are `parquet` and `duckdb`. A duckdb-format split is one whose data lives in a single-table DuckDB database file (`.db`). Function pushdown (above) fires on duckdb-format splits only.
+
+**Read modes** (session property `duckdb_read_mode`, default `httpfs`):
+
+| Mode | Behaviour |
+|---|-------|
+| `materialize` | Download the `.db` to a local tmp cache, then `ATTACH 'path' AS lake (READ_ONLY)`. Fast steady-state when files are local; the cache amortises ATTACH cost across queries. |
+| `httpfs` | Load DuckDB's httpfs extension, `ATTACH 's3://...' AS lake (READ_ONLY)`. DuckDB streams blocks server-side; no whole-file download. |
+| `auto` | Pick per file based on the `ducklake.duckdb.auto-httpfs-threshold` config — files below the threshold materialize, files at or above stream via httpfs. |
+
+**Executors** (the in-process strategy is the default; Quack is gated on upstream RPC maturity):
+
+- **In-process** — DuckDB embedded via `jdbc:duckdb:`. Per-split connection lifecycle. A DuckDB crash takes the JVM down.
+- **Quack** — out-of-process DuckDB reached via Quack RPC. The local JDBC client ships SQL server-side via `quack_query_by_name`. Sidecar crash recoverable independently of the Trino worker.
+
+Both executors set `SET TimeZone = '<session_zone>'` on attach (required for Tier C predicate pushdown correctness over `TIMESTAMP WITH TIME ZONE`) and install the same `trino_*` macro library so function pushdown lands consistently on both paths.
+
+**Write modes** (session property `duckdb_writer_mode`, default `arrow_stream`):
+
+| Mode | Notes |
+|---|-------|
+| `arrow_stream` | Page → Arrow → `INSERT FROM` registered stream. Columnar end-to-end. |
+| `appender` | JDBC Appender; per-cell JNI calls. Kept for comparison; the Arrow path is faster. |
+
+**Mixed-format tables.** A DuckLake table can carry both parquet and duckdb splits within the same logical table. The connector returns translated function-shape conjuncts both as a pushdown hint (used by `.db` splits) AND in `remainingExpression` (so Trino re-evaluates above the scan for parquet splits). Each path handles its own correctness independently.
+
+**User-visible behaviour change (chunk 3.5):** `SELECT timestamptz_col FROM duckdb_format_table` renders in the session zone — matching how Iceberg / Hive / parquet `isAdjustedToUtc=true` connectors return WTZ. The connector's Arrow-to-Page converter resolves the TimeZone from the Arrow schema TZ instead of hardcoding UTC. Parquet-format reads through Trino's standard parquet reader still render in UTC (upstream Trino behaviour); mixed-format tables show this asymmetry today.
+
 ## Table Properties
 
 Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (...)`.
@@ -360,10 +420,20 @@ The connector is tested for bidirectional compatibility with DuckDB:
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
 | `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
+| `ducklake.duckdb.auto-httpfs-threshold` | No | `64MiB` | **EXPERIMENTAL.** File-size threshold for the `auto` setting of `duckdb_read_mode`. Files at or above this size stream via httpfs; smaller files materialize to local tmp. No effect when `data_file_format` is `parquet`. |
 | `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
 | `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
 
-Session properties: `read_snapshot_id`, `read_snapshot_timestamp`
+### Session Properties
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `read_snapshot_id` | — | Pin reads in this session to a snapshot ID |
+| `read_snapshot_timestamp` | — | Pin reads in this session to an ISO-8601 instant |
+| `data_file_format` | session-inherited | `'parquet'` or `'duckdb'`. Controls the format of writes (CTAS / INSERT) in this session. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). The table-level `data_file_format` property overrides this for a specific `CREATE`. `'duckdb'` is **EXPERIMENTAL**. |
+| `duckdb_writer_mode` | `arrow_stream` | **EXPERIMENTAL.** `'arrow_stream'` (default, columnar) or `'appender'` (JDBC Appender; kept for comparison). No effect when `data_file_format` is `parquet`. |
+| `duckdb_read_mode` | `httpfs` | **EXPERIMENTAL.** Read strategy for duckdb-format data files: `'httpfs'` (DuckDB streams blocks from S3), `'materialize'` (download `.db` to local tmp then ATTACH), or `'auto'` (per-file decision against `ducklake.duckdb.auto-httpfs-threshold`). No effect when `data_file_format` is `parquet`. |
+| `pushdown_timestamp_with_timezone` | `false` | Enable function pushdown of date/time predicates over `TIMESTAMP WITH TIME ZONE` columns on the duckdb-format read path (Tier C). Off by default pending burn-in. Requires successful `SET TimeZone` on attach — automatic for all named IANA zones and integer-hour offsets; fractional bare-offset session zones get a one-shot WARN and pushdown silently degrades to Trino-side evaluation. See [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md). |
 
 Snapshot resolution precedence: query clause > session property > catalog config > current snapshot.
 
@@ -445,11 +515,19 @@ research item.
 - Puffin deletion vectors (DuckLake's Roaring-bitmap delete files, written when
   `write_deletion_vectors=true`) are read but not written. Trino-side DELETE/UPDATE/MERGE
   always emits parquet positional delete files.
+- The duckdb-format data file path (`data_file_format = 'duckdb'`) is **EXPERIMENTAL**.
+  Read modes (`materialize` / `httpfs` / `auto`), writer modes (`arrow_stream` / `appender`),
+  function pushdown, and Tier C TIMESTAMP-WITH-TIME-ZONE semantics are all wired and
+  tested but the API surface is still evolving — see [DuckDB-Format Data Files](#duckdb-format-data-files-experimental).
+  The user-visible WTZ rendering change (session-zone instead of UTC) applies to
+  duckdb-format reads only; parquet-format reads through Trino's standard reader
+  still render WTZ in UTC.
 
 ## Additional Documentation
 
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
 - [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
 - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
-- [dev-docs/DUCKLAKE_1_0_IMPACT.md](dev-docs/DUCKLAKE_1_0_IMPACT.md) — DuckLake 1.0 spec impact reference (linked from the TODOs above for spec context)
-- [dev-docs/REUSE.md](dev-docs/REUSE.md) — What is reused from Trino/Iceberg and what is custom
+- [TODO for Function Pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
+- [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
+- [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail
