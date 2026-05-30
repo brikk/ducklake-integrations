@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Properties;
 import static java.lang.String.format;
 
 /**
@@ -44,22 +45,38 @@ final class InProcessDuckDbExecutor
     private static final String ATTACHED_TABLE = "t";
 
     private final DuckDbTuning tuning;
+    private final java.util.Optional<String> parityExtensionPath;
 
     InProcessDuckDbExecutor()
     {
-        this(DuckDbTuning.defaults());
+        this(DuckDbTuning.defaults(), java.util.Optional.empty());
     }
 
     InProcessDuckDbExecutor(DuckDbTuning tuning)
     {
+        this(tuning, java.util.Optional.empty());
+    }
+
+    InProcessDuckDbExecutor(DuckDbTuning tuning, java.util.Optional<String> parityExtensionPath)
+    {
         this.tuning = java.util.Objects.requireNonNull(tuning, "tuning is null");
+        this.parityExtensionPath = java.util.Objects.requireNonNull(parityExtensionPath, "parityExtensionPath is null");
     }
 
     @Override
     public ExecutionContext execute(ExecutionRequest request)
             throws SQLException
     {
-        DuckDBConnection connection = (DuckDBConnection) DriverManager.getConnection("jdbc:duckdb:");
+        // allow_unsigned_extensions is a database-startup setting; setting it via
+        // `SET` after the DB is running fails ("Cannot change while running") AND
+        // closes the JDBC Statement on the way out. Pass it as a connection
+        // property when (and only when) we plan to LOAD the trino_parity binary,
+        // so the JDBC URL stays default for the no-extension path.
+        Properties connectionProps = new Properties();
+        if (parityExtensionPath.isPresent()) {
+            connectionProps.setProperty("allow_unsigned_extensions", "true");
+        }
+        DuckDBConnection connection = (DuckDBConnection) DriverManager.getConnection("jdbc:duckdb:", connectionProps);
         Statement statement = null;
         DuckDBResultSet resultSet = null;
         BufferAllocator allocator = null;
@@ -67,7 +84,7 @@ final class InProcessDuckDbExecutor
         try {
             try (Statement attachStmt = connection.createStatement()) {
                 DuckDbTuningSql.applyDirect(attachStmt, tuning);
-                TrinoFunctionAliases.applyDirect(attachStmt);
+                TrinoFunctionAliases.applyDirect(attachStmt, parityExtensionPath);
                 attachStmt.execute(buildAttachSql(request.target(), attachStmt));
                 applySessionTimeZone(attachStmt, request.duckDbTimeZone());
             }

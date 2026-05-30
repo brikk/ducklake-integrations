@@ -123,6 +123,12 @@ services:
       - ./trino/etc/catalog/quack.properties:/etc/trino/catalog/quack.properties:ro
       - ./trino/etc/catalog/quack_ovh.properties:/etc/trino/catalog/quack_ovh.properties:ro
       - ../build/trino-plugin/trino-ducklake-${PLUGIN_VERSION}:/usr/lib/trino/plugin/ducklake:ro
+      # trino_parity DuckDB extension — provides trino_<name> macros + native
+      # ICU lower/upper/reverse. Build with:
+      #   cd $REPO/duckdb-trino-parity-extension && GEN=ninja make
+      # The catalog property ducklake.duckdb.parity-extension-path in
+      # ducklake.properties points at the in-container path below.
+      - ../../../duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension:/opt/duckdb-extensions/trino_parity.duckdb_extension:ro
       - ducklake-materialize:/tmp/ducklake-read
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]

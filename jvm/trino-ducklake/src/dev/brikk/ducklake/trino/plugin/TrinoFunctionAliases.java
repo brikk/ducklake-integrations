@@ -23,6 +23,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -88,6 +89,29 @@ final class TrinoFunctionAliases
      */
     static void applyDirect(Statement stmt) throws SQLException
     {
+        applyDirect(stmt, Optional.empty());
+    }
+
+    /**
+     * Apply the trino_<name> macro layer to {@code stmt}. When {@code extensionPath}
+     * is present, attempts to {@code LOAD '<path>'} the trino_parity DuckDB extension
+     * (see https://github.com/brikk/duckdb-trino-parity-extension), which registers
+     * the native lower/upper/reverse functions and all the macros + trino_meta()
+     * in a single binary load. On successful LOAD the in-tree SQL replay is skipped;
+     * the extension is the only source of truth.
+     *
+     * <p>On LOAD failure (binary missing, ABI mismatch, etc.) we log and fall back to
+     * the in-tree SQL — same behaviour as today, no operational regression. The path
+     * being unset has the same effect as a failed LOAD: SQL fallback.
+     *
+     * <p>The fallback path still warns once per JVM about placeholder macros; the
+     * extension path doesn't, because the natives don't diverge.
+     */
+    static void applyDirect(Statement stmt, Optional<String> extensionPath) throws SQLException
+    {
+        if (extensionPath.isPresent() && tryLoadParityExtension(stmt.getConnection(), extensionPath.get())) {
+            return;
+        }
         for (String sql : STATEMENTS) {
             try {
                 stmt.execute(sql);
@@ -102,6 +126,31 @@ final class TrinoFunctionAliases
             }
         }
         warnPlaceholdersOnce();
+    }
+
+    /**
+     * Attempt to LOAD the trino_parity extension binary at {@code path}. Returns
+     * true on success, false on failure (caller falls back to SQL replay).
+     *
+     * <p>Uses a scratch {@link Statement} so a LOAD failure doesn't poison the
+     * caller's statement — DuckDB's JDBC driver auto-closes a Statement on any
+     * SQLException, and we want the caller to keep using its Statement for the
+     * SQL fallback path. The connection itself must already permit unsigned
+     * extensions (set via JDBC URL property at connection-open time, not via SET).
+     *
+     * <p>Visible for testing.
+     */
+    static boolean tryLoadParityExtension(java.sql.Connection connection, String path)
+    {
+        try (Statement scratch = connection.createStatement()) {
+            scratch.execute("LOAD '" + path.replace("'", "''") + "'");
+            return true;
+        }
+        catch (SQLException e) {
+            log.warn("LOAD trino_parity from '%s' failed; falling back to in-tree SQL aliases — %s",
+                    path, e.getMessage());
+            return false;
+        }
     }
 
     /** Names of macros flagged with {@code -- @placeholder} in the SQL resource. */

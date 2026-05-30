@@ -1,3 +1,6 @@
 [submodule "jvm/trino-ducklake/ducklake-web"]
 	path = jvm/trino-ducklake/ducklake-web
 	url = https://github.com/duckdb/ducklake-web.git
+[submodule "duckdb-trino-parity-extension"]
+	path = duckdb-trino-parity-extension
+	url = https://github.com/brikk/duckdb-trino-parity-extension

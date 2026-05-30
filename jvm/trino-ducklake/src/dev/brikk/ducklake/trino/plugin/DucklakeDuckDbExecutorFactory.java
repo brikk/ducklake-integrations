@@ -44,8 +44,14 @@ final class DucklakeDuckDbExecutorFactory
     DucklakeDuckDbExecutor create()
     {
         DuckDbTuning tuning = config.toDuckDbTuning();
+        // For the in-process engine, the parity extension path (if configured) is
+        // a local filesystem path the JVM can read. The Quack engine evaluates SQL
+        // server-side in a separate container/process; mounting the same .duckdb_extension
+        // path there is a docker-compose / deployment concern tracked in
+        // dev-docs/TODO-pushdown-duckdb.md. Until that's wired, Quack stays on the
+        // SQL-replay fallback path.
         return switch (config.getExecutionEngine()) {
-            case DUCKDB_LOCAL -> new InProcessDuckDbExecutor(tuning);
+            case DUCKDB_LOCAL -> new InProcessDuckDbExecutor(tuning, config.getDuckdbParityExtensionPath());
             case QUACK -> {
                 String host = config.getQuackHost();
                 String token = config.getQuackToken();

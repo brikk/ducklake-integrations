@@ -52,6 +52,7 @@ public class DucklakeConfig
     private DataSize duckdbTempDirectoryMaxSize;
     private boolean duckdbEnableObjectCache = true;
     private DataSize duckdbTargetWriteBytes = DataSize.ofBytes(512L * 1024 * 1024);
+    private Optional<String> duckdbParityExtensionPath = Optional.empty();
 
     @NotNull
     public String getCatalogDatabaseUrl()
@@ -393,5 +394,20 @@ public class DucklakeConfig
                 .setCatalogDatabasePassword(catalogDatabasePassword)
                 .setDataPath(dataPath)
                 .setMaxCatalogConnections(maxCatalogConnections);
+    }
+
+    public Optional<String> getDuckdbParityExtensionPath()
+    {
+        return duckdbParityExtensionPath;
+    }
+
+    @Config("ducklake.duckdb.parity-extension-path")
+    @ConfigDescription("Filesystem path to the trino_parity.duckdb_extension binary (https://github.com/brikk/duckdb-trino-parity-extension). When set, executors LOAD this extension on every DuckDB attach instead of parsing the in-tree trino-function-aliases.sql resource — faster per-split setup, and the only source of truth for the trino_<name> macros + trino_meta() catalog. If unset, falls back to the in-tree SQL replay (current default). The path is passed to DuckDB's LOAD '<path>'; allow_unsigned_extensions is enabled before LOAD.")
+    public DucklakeConfig setDuckdbParityExtensionPath(String duckdbParityExtensionPath)
+    {
+        this.duckdbParityExtensionPath = Optional.ofNullable(duckdbParityExtensionPath)
+                .map(String::strip)
+                .filter(s -> !s.isEmpty());
+        return this;
     }
 }

@@ -115,6 +115,15 @@ tasks.test {
         inputs.property("ducklake.test.catalog-backend", it)
     }
 
+    // Forward the trino_parity extension path. When set, DucklakeQueryRunner threads
+    // it into the catalog properties as `ducklake.duckdb.parity-extension-path`, and
+    // the in-process executor LOADs the binary instead of replaying the in-tree SQL
+    // aliases. See https://github.com/brikk/duckdb-trino-parity-extension.
+    System.getProperty("ducklake.test.parityExtensionPath")?.let {
+        systemProperty("ducklake.test.parityExtensionPath", it)
+        inputs.property("ducklake.test.parityExtensionPath", it)
+    }
+
     jvmArgs(
         "-XX:+ExitOnOutOfMemoryError",
         "-XX:+HeapDumpOnOutOfMemoryError",

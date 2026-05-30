@@ -114,11 +114,22 @@ public final class DucklakeQueryRunner
                     baseProperties = DucklakeTestCatalogEnvironment.getConnectorProperties();
                 }
 
-                Map<String, String> properties = ImmutableMap.<String, String>builder()
+                ImmutableMap.Builder<String, String> propertiesBuilder = ImmutableMap.<String, String>builder()
                         .putAll(baseProperties)
                         .put("fs.hadoop.enabled", "true")
-                        .putAll(connectorProperties.buildOrThrow())
-                        .buildOrThrow();
+                        .putAll(connectorProperties.buildOrThrow());
+                // Test hook: when a built trino_parity.duckdb_extension is available
+                // (path passed via -Dducklake.test.parityExtensionPath=...), thread
+                // it into the catalog so the in-process executor LOADs the binary
+                // instead of replaying the in-tree SQL aliases. Otherwise the
+                // executor falls back to TrinoFunctionAliases.applyDirect — same
+                // behaviour as before the extension existed.
+                String testExtensionPath = System.getProperty("ducklake.test.parityExtensionPath");
+                if (testExtensionPath != null && !testExtensionPath.isBlank()
+                        && !connectorProperties.buildOrThrow().containsKey("ducklake.duckdb.parity-extension-path")) {
+                    propertiesBuilder.put("ducklake.duckdb.parity-extension-path", testExtensionPath);
+                }
+                Map<String, String> properties = propertiesBuilder.buildOrThrow();
 
                 queryRunner.installPlugin(new DucklakePlugin());
                 queryRunner.createCatalog(CATALOG, "ducklake", properties);
