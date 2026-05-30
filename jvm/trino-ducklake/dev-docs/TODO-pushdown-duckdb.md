@@ -5,6 +5,21 @@ Bring our duckdb-format read path up to the BigQuery / Snowflake connector shape
 Background and architecture: see [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md).
 Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function-mapping.md).
 
+> **Status as of the trino_parity extension migration:** the `@placeholder` /
+> warn-on-emit machinery, the in-tree `trino-function-aliases.sql` resource,
+> and the `TrinoFunctionAliases.applyDirect` SQL-replay path are all GONE.
+> `trino_lower` / `trino_upper` / `trino_reverse` / `trim` family /
+> `normalize/{1,2}` are native C++ in
+> [duckdb-trino-parity-extension](../../../duckdb-trino-parity-extension);
+> the rest of the `trino_<name>` macros are `DefaultMacro[]` arrays in the
+> same extension; `trino_meta()` has 93 entries; the connector bundles the
+> extension binary into the plugin jar and `LOAD`s it on attach. The text
+> below still mentions placeholders, warn-on-emit, the SQL resource — read
+> those sections as historical record of how we got here, not as live state.
+> Current open work: items 5 (DuckDB-namespaced exclusives via
+> `ConnectorFunctionProvider`), 6 (Lance), Tier C default-on flip, plus
+> the extension repo's own [TODO.md](../../../duckdb-trino-parity-extension/TODO.md).
+
 ## Discipline (non-negotiable)
 
 - **Lossless pushdown only.** Anything we can't translate with confidence stays in Trino. Partial pushdown is correct, ambitious pushdown that quietly changes semantics is a bug factory.
