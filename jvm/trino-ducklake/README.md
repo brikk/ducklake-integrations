@@ -22,7 +22,37 @@ sdk env install
 sdk env
 ```
 
-Build the plugin:
+### Prerequisite: build the trino_parity DuckDB extension first
+
+This connector's predicate-pushdown path REQUIRES the
+[`trino_parity` DuckDB extension](../../duckdb-trino-parity-extension/) to be loadable into
+the DuckDB instance at attach time. The gradle build bundles every available platform's
+`.duckdb_extension` binary into the plugin jar as classpath resources, and
+`TrinoParityExtensionResolver` extracts the matching one at runtime.
+
+Build at least the host-platform binary before assembling the plugin:
+
+```shell
+cd ../../duckdb-trino-parity-extension
+GEN=ninja make
+```
+
+For the Quack-engine tests (`-Dducklake.test.catalog-backend=DUCKDB_QUACK` and the
+default `TestDucklakeDuckDbExecutorBackends`), the Quack server runs as a Linux
+testcontainer regardless of the host OS. On a macOS dev box you also need a Linux build
+of the extension so the testcontainer can LOAD it:
+
+```shell
+cd ../../duckdb-trino-parity-extension
+make linux-arm64    # native on Apple Silicon
+make linux-amd64    # slower under Rosetta/qemu emulation
+```
+
+The gradle bundling is non-fatal on missing platforms — it'll just ship a plugin jar
+without that variant. At deploy time, set `ducklake.duckdb.parity-extension-path` to
+override the bundled binary with an explicit filesystem path.
+
+### Build the plugin
 
 ```shell
 ./gradlew :trino-ducklake:pluginAssemble
