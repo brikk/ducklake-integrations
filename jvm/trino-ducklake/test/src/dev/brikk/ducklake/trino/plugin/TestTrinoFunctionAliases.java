@@ -326,6 +326,13 @@ public class TestTrinoFunctionAliases
                         // Trino & DuckDB: when from-string is longer than to-string,
                         // extra source chars are deleted from the result.
                         "SELECT trino_translate('abcdef', 'bdf', 'XY')", "aXcYe"),
+                // Normalize — native via ICU Normalizer2.
+                c("normalize 1: NFC default composes decomposed café", "normalize", 1,
+                        // 'cafe' + U+0301 (5 cp) → 'café' with composed U+00E9 (4 cp).
+                        "SELECT trino_normalize('cafe' || chr(769)) = 'café'", true),
+                c("normalize 2: NFKC decomposes ligature U+FB01", "normalize", 2,
+                        // 'ﬁ' (U+FB01) decomposes to 'f' + 'i' under NFKC.
+                        "SELECT trino_normalize(chr(64257), 'NFKC') = 'fi'", true),
                 // Regex — round 3
                 c("regexp_like 2: match", "regexp_like", 2,
                         "SELECT trino_regexp_like('abc-123', '\\d+')", true),

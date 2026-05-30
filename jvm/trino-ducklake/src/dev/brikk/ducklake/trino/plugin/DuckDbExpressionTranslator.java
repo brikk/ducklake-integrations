@@ -145,6 +145,10 @@ final class DuckDbExpressionTranslator
             // Round 6a — core DuckDB easy wins
             new NameArity("sign", 1),
             new NameArity("bit_length", 1),
+            // Native trino_normalize via ICU Normalizer2 (NFC default; 2-arg
+            // takes 'NFC'/'NFD'/'NFKC'/'NFKD' case-insensitively).
+            new NameArity("normalize", 1),
+            new NameArity("normalize", 2),
             new NameArity("pi", 0),
             new NameArity("bitwise_xor", 2),
             new NameArity("regexp_replace", 2),
