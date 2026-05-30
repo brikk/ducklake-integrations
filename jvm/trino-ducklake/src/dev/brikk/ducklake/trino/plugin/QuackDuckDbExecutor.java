@@ -66,20 +66,22 @@ final class QuackDuckDbExecutor
     private final int port;
     private final String token;
     private final DuckDbTuning tuning;
-    private final java.util.Optional<String> parityExtensionPath;
+    private final String parityExtensionPath;
 
-    QuackDuckDbExecutor(String host, int port, String token)
+    /**
+     * Path is the SERVER-SIDE filesystem path inside the Quack DuckDB process,
+     * where the trino_parity.duckdb_extension binary has been baked into the
+     * container image or mounted via volume. The Quack server must be started
+     * with allow_unsigned_extensions enabled (e.g. {@code duckdb -unsigned}
+     * in the entrypoint).
+     */
+    QuackDuckDbExecutor(String host, int port, String token, String parityExtensionPath)
     {
-        this(host, port, token, DuckDbTuning.defaults(), java.util.Optional.empty());
-    }
-
-    QuackDuckDbExecutor(String host, int port, String token, DuckDbTuning tuning)
-    {
-        this(host, port, token, tuning, java.util.Optional.empty());
+        this(host, port, token, DuckDbTuning.defaults(), parityExtensionPath);
     }
 
     QuackDuckDbExecutor(String host, int port, String token, DuckDbTuning tuning,
-                        java.util.Optional<String> parityExtensionPath)
+                        String parityExtensionPath)
     {
         this.host = requireNonNull(host, "host is null");
         this.port = port;
@@ -118,40 +120,13 @@ final class QuackDuckDbExecutor
                 for (String tuningSql : DuckDbTuningSql.statements(tuning)) {
                     drainWrappedQuery(init, tuningSql);
                 }
-                // Server-side macro registration. When the parity extension path is
-                // configured AND the LOAD succeeds, we trust the extension's
-                // LoadInternal to register every trino_<name> and trino_meta() —
-                // and skip the SQL replay below. On any failure (path not mounted,
-                // ABI mismatch, allow_unsigned not enabled on the server), fall
-                // back to the SQL replay so the connector keeps working.
-                boolean serverSideExtensionLoaded = false;
-                if (parityExtensionPath.isPresent()) {
-                    String path = parityExtensionPath.get();
-                    String loadSql = "LOAD '" + path.replace("'", "''") + "'";
-                    try {
-                        drainWrappedQuery(init, loadSql);
-                        serverSideExtensionLoaded = true;
-                    }
-                    catch (SQLException e) {
-                        log.warn("Server-side LOAD trino_parity from '%s' failed; falling back to in-tree SQL aliases — %s",
-                                path, e.getMessage());
-                    }
-                }
-                if (!serverSideExtensionLoaded) {
-                    for (String aliasSql : TrinoFunctionAliases.statements()) {
-                        try {
-                            drainWrappedQuery(init, aliasSql);
-                        }
-                        catch (SQLException e) {
-                            if (TrinoFunctionAliases.isBestEffort(aliasSql)) {
-                                log.warn("trino-function-aliases best-effort statement failed server-side: %s — %s",
-                                        aliasSql.lines().findFirst().orElse(aliasSql), e.getMessage());
-                                continue;
-                            }
-                            throw e;
-                        }
-                    }
-                }
+                // Server-side LOAD of trino_parity. The extension's LoadInternal
+                // registers every trino_<name> and trino_meta() into the server's
+                // shared catalog. Required — no SQL fallback. Path must point at
+                // a binary the Quack DuckDB process can read; the Quack server
+                // must have been started with allow_unsigned_extensions enabled
+                // (see TestingDucklakeQuackEngineServer's entrypoint.sh).
+                TrinoFunctionAliases.loadServerSide(sql -> drainWrappedQuery(init, sql), parityExtensionPath);
                 for (String serverInitStatement : serverInitStatementsFor(request.target())) {
                     drainWrappedQuery(init, serverInitStatement);
                 }

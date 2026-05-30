@@ -92,6 +92,94 @@ tasks.withType<JavaCompile> {
     ))
 }
 
+// ---- Bundle trino_parity DuckDB extension into the plugin jar ----
+//
+// The connector requires the trino_parity.duckdb_extension binary to be
+// LOAD-able by the in-process DuckDB at attach time. We bundle every
+// locally-built platform variant into the plugin jar's classpath resources,
+// keyed by platform name. TrinoParityExtensionResolver detects the runtime
+// platform and extracts the matching binary; for the Quack engine, the
+// testcontainer mounts the linux-arm64 binary so the Linux server can LOAD it.
+//
+// Source paths (one per platform, each independently optional):
+//   ../../duckdb-trino-parity-extension/build/release/extension/...    host platform
+//                                                                       (output of `make`)
+//   ../../duckdb-trino-parity-extension/build/linux-arm64/release/...  output of `make linux-arm64`
+//   ../../duckdb-trino-parity-extension/build/linux-amd64/release/...  output of `make linux-amd64`
+//
+// Bundled to: META-INF/.../duckdb-extensions/<platform>/trino_parity.duckdb_extension
+//
+// Missing binaries are non-fatal at build time; the plugin jar just ships
+// without that platform's variant and operators on that platform have to wire
+// the path manually (or build the extension first).
+
+val parityExtensionRoot: File =
+    rootProject.projectDir.resolve("../duckdb-trino-parity-extension")
+
+val hostPlatform: String = run {
+    val os = System.getProperty("os.name").lowercase()
+    val arch = System.getProperty("os.arch").lowercase()
+    val osPart = when {
+        os.contains("mac") || os.contains("darwin") -> "darwin"
+        os.contains("linux") -> "linux"
+        os.contains("windows") -> "windows"
+        else -> "unknown"
+    }
+    val archPart = when (arch) {
+        "x86_64", "amd64" -> "amd64"
+        "aarch64", "arm64" -> "arm64"
+        else -> "unknown"
+    }
+    "$osPart-$archPart"
+}
+
+// (platform-name, source path) — the host build lands in build/release;
+// cross-built variants land in build/<platform>/release/.
+val parityExtensionSources: List<Pair<String, File>> = listOf(
+    hostPlatform to parityExtensionRoot.resolve("build/release/extension/trino_parity/trino_parity.duckdb_extension"),
+    "linux-arm64" to parityExtensionRoot.resolve("build/linux-arm64/release/extension/trino_parity/trino_parity.duckdb_extension"),
+    "linux-amd64" to parityExtensionRoot.resolve("build/linux-amd64/release/extension/trino_parity/trino_parity.duckdb_extension"),
+).distinctBy { it.first }  // host might equal linux-arm64 on Linux CI; dedupe
+
+val bundleParityExtension by tasks.registering {
+    description = "Copy every available trino_parity.duckdb_extension into the plugin's classpath resources."
+    group = "build"
+    val outputs = parityExtensionSources.map { (platform, _) ->
+        layout.buildDirectory.file(
+            "generated-resources/parity-extension/dev/brikk/ducklake/trino/plugin/duckdb-extensions/$platform/trino_parity.duckdb_extension"
+        )
+    }
+    inputs.files(parityExtensionSources.map { it.second }).withPropertyName("sources").optional()
+    this.outputs.files(outputs).withPropertyName("bundled")
+    doLast {
+        var bundled = 0
+        for ((platform, source) in parityExtensionSources) {
+            if (!source.isFile) {
+                logger.lifecycle("trino_parity: $platform binary missing at ${source.relativeToOrSelf(rootProject.projectDir)} — skipping (build it with `(cd duckdb-trino-parity-extension && make ${if (platform == hostPlatform) "" else platform})`).")
+                continue
+            }
+            val target = layout.buildDirectory.file(
+                "generated-resources/parity-extension/dev/brikk/ducklake/trino/plugin/duckdb-extensions/$platform/trino_parity.duckdb_extension"
+            ).get().asFile
+            target.parentFile.mkdirs()
+            source.copyTo(target, overwrite = true)
+            bundled++
+            logger.info("trino_parity: bundled $platform from ${source.relativeToOrSelf(rootProject.projectDir)}")
+        }
+        if (bundled == 0) {
+            logger.lifecycle("trino_parity: NO platform binaries bundled — plugin jar will require ducklake.duckdb.parity-extension-path to be set at deploy time.")
+        }
+    }
+}
+
+sourceSets.main {
+    resources.srcDir(layout.buildDirectory.dir("generated-resources/parity-extension"))
+}
+
+tasks.named("processResources") {
+    dependsOn(bundleParityExtension)
+}
+
 tasks.test {
     useJUnitPlatform()
 

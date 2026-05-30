@@ -161,18 +161,19 @@ public final class DucklakeTestCatalogEnvironment
                 result = quackServer;
                 if (result == null) {
                     try {
-                        // When the test JVM has been told where the trino_parity
-                        // extension binary lives (system property forwarded from
-                        // Gradle), copy it into the Quack container so server-side
-                        // LOAD '<in-container-path>' works. Same property is also
-                        // read by DucklakeQueryRunner to set the catalog property
-                        // — the QuackDuckDbExecutor uses the in-container path
-                        // (TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH).
+                        // The Quack catalog container runs Linux; mount the
+                        // platform-matched binary (linux-arm64 on macOS arm64
+                        // hosts via Docker Desktop, linux-amd64 on Linux amd64
+                        // hosts). System-property override wins.
+                        String containerArch = System.getProperty("os.arch", "").toLowerCase().contains("aarch")
+                                ? "linux-arm64" : "linux-amd64";
                         java.util.Optional<java.nio.file.Path> extensionPath = java.util.Optional
                                 .ofNullable(System.getProperty("ducklake.test.parityExtensionPath"))
                                 .map(String::strip)
                                 .filter(s -> !s.isEmpty())
-                                .map(java.nio.file.Path::of);
+                                .map(java.nio.file.Path::of)
+                                .or(() -> TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerArch)
+                                        .map(java.nio.file.Path::of));
                         result = new TestingDucklakeDuckDbQuackCatalogServer(extensionPath);
                         quackServer = result;
                         Runtime.getRuntime().addShutdownHook(new Thread(result::close));

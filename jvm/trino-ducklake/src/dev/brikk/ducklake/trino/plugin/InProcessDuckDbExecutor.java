@@ -45,19 +45,24 @@ final class InProcessDuckDbExecutor
     private static final String ATTACHED_TABLE = "t";
 
     private final DuckDbTuning tuning;
-    private final java.util.Optional<String> parityExtensionPath;
+    private final String parityExtensionPath;
 
+    /**
+     * Test-only convenience constructor: auto-resolves the bundled trino_parity
+     * extension binary from the plugin classpath. Throws if no bundled binary
+     * is available for the host platform — production code paths the path
+     * through the factory which surfaces a CONFIGURATION_INVALID error instead.
+     */
     InProcessDuckDbExecutor()
     {
-        this(DuckDbTuning.defaults(), java.util.Optional.empty());
+        this(DuckDbTuning.defaults(), TrinoParityExtensionResolver.resolveBundledExtensionPath()
+                .orElseThrow(() -> new IllegalStateException(
+                        "No bundled trino_parity extension found on classpath. " +
+                                "Build the extension first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`, " +
+                                "then rebuild the trino-ducklake plugin jar.")));
     }
 
-    InProcessDuckDbExecutor(DuckDbTuning tuning)
-    {
-        this(tuning, java.util.Optional.empty());
-    }
-
-    InProcessDuckDbExecutor(DuckDbTuning tuning, java.util.Optional<String> parityExtensionPath)
+    InProcessDuckDbExecutor(DuckDbTuning tuning, String parityExtensionPath)
     {
         this.tuning = java.util.Objects.requireNonNull(tuning, "tuning is null");
         this.parityExtensionPath = java.util.Objects.requireNonNull(parityExtensionPath, "parityExtensionPath is null");
@@ -70,21 +75,18 @@ final class InProcessDuckDbExecutor
         // allow_unsigned_extensions is a database-startup setting; setting it via
         // `SET` after the DB is running fails ("Cannot change while running") AND
         // closes the JDBC Statement on the way out. Pass it as a connection
-        // property when (and only when) we plan to LOAD the trino_parity binary,
-        // so the JDBC URL stays default for the no-extension path.
+        // property so the LOAD '<path>' below works.
         Properties connectionProps = new Properties();
-        if (parityExtensionPath.isPresent()) {
-            connectionProps.setProperty("allow_unsigned_extensions", "true");
-        }
+        connectionProps.setProperty("allow_unsigned_extensions", "true");
         DuckDBConnection connection = (DuckDBConnection) DriverManager.getConnection("jdbc:duckdb:", connectionProps);
         Statement statement = null;
         DuckDBResultSet resultSet = null;
         BufferAllocator allocator = null;
         ArrowReader arrowReader = null;
         try {
+            TrinoFunctionAliases.loadInProcess(connection, parityExtensionPath);
             try (Statement attachStmt = connection.createStatement()) {
                 DuckDbTuningSql.applyDirect(attachStmt, tuning);
-                TrinoFunctionAliases.applyDirect(attachStmt, parityExtensionPath);
                 attachStmt.execute(buildAttachSql(request.target(), attachStmt));
                 applySessionTimeZone(attachStmt, request.duckDbTimeZone());
             }

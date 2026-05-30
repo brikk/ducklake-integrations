@@ -18,6 +18,7 @@ import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -84,15 +85,25 @@ final class TestDucklakeDuckDbExecutorBackends
             s.execute("CREATE TABLE " + TABLE_NAME + " (id INTEGER, name VARCHAR)");
             s.execute("INSERT INTO " + TABLE_NAME + " VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')");
         }
-        // When -Dducklake.test.parityExtensionPath is set (forwarded by Gradle),
-        // copy the extension binary into the engine container so the
-        // testServerSideParityExtensionLoad case can exercise the LOAD path
-        // through QuackDuckDbExecutor's 5-arg constructor.
+        // Source the host-side parity extension binary for the Quack
+        // testcontainer copy. The testcontainer runs LINUX, so we need a Linux
+        // binary regardless of the test JVM's OS. Precedence:
+        //   1. -Dducklake.test.parityExtensionPath (if Gradle forwarded it —
+        //      operator-asserted to be Linux-loadable).
+        //   2. The bundled linux-<arch> binary in the plugin jar resources,
+        //      extracted to a temp path. Built via `make linux-arm64` /
+        //      `make linux-amd64` in the extension repo.
+        // The Quack executor LOADs the in-container counterpart at
+        // TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH;
+        // withCopyFileToContainer puts the file there.
+        String containerArch = System.getProperty("os.arch", "").toLowerCase().contains("aarch")
+                ? "linux-arm64" : "linux-amd64";
         Optional<Path> parityExtensionPath = Optional
                 .ofNullable(System.getProperty("ducklake.test.parityExtensionPath"))
                 .map(String::strip)
                 .filter(s -> !s.isEmpty())
-                .map(Path::of);
+                .map(Path::of)
+                .or(() -> TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerArch).map(Path::of));
         quackServer = new TestingDucklakeQuackEngineServer(sharedDir, parityExtensionPath);
     }
 
@@ -138,7 +149,7 @@ final class TestDucklakeDuckDbExecutorBackends
         }
         List<List<Object>> quackRows;
         try (DucklakeDuckDbExecutor.ExecutionContext ctx =
-                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken())
+                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken(), dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
                         .execute(quackReq)) {
             quackRows = drain(ctx.arrowReader(), projection.size());
         }
@@ -176,7 +187,7 @@ final class TestDucklakeDuckDbExecutorBackends
         }
         long quackRows;
         try (DucklakeDuckDbExecutor.ExecutionContext ctx =
-                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken())
+                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken(), dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
                         .execute(quackReq)) {
             quackRows = countRows(ctx.arrowReader());
         }
@@ -236,7 +247,7 @@ final class TestDucklakeDuckDbExecutorBackends
                 List.of("CAST(\"ts\" AS VARCHAR) = '2024-06-15 05:00:00-07'"),
                 Optional.of("America/Los_Angeles"));
         try (DucklakeDuckDbExecutor.ExecutionContext ctx =
-                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken())
+                new QuackDuckDbExecutor(quackServer.getHost(), quackServer.getMappedPort(), quackServer.getToken(), dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
                         .execute(laMatchQuack)) {
             assertThat(countRows(ctx.arrowReader()))
                     .as("Quack: SET TimeZone='America/Los_Angeles' issued via quack_query_by_name "

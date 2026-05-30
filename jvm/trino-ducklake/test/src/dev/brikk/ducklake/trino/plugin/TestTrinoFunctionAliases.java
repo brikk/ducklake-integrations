@@ -22,6 +22,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,12 +39,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class TestTrinoFunctionAliases
 {
+    /**
+     * Opens an in-memory DuckDB JDBC connection with the trino_parity extension
+     * LOADed. Path comes from {@link TrinoParityExtensionResolver} — same code
+     * path the production in-process executor uses. Fails fast if the bundled
+     * extension is missing on the test classpath (build the extension first:
+     * {@code (cd duckdb-trino-parity-extension && GEN=ninja make)}).
+     */
+    private static Connection openConnectionWithExtension() throws java.sql.SQLException
+    {
+        String path = TrinoParityExtensionResolver.resolveBundledExtensionPath()
+                .orElseThrow(() -> new AssertionError(
+                        "trino_parity extension not bundled in plugin jar on this platform — " +
+                                "build it first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`."));
+        Properties props = new Properties();
+        props.setProperty("allow_unsigned_extensions", "true");
+        Connection conn = DriverManager.getConnection("jdbc:duckdb:", props);
+        TrinoFunctionAliases.loadInProcess(conn, path);
+        return conn;
+    }
+
     @Test
     public void testTrinoMacroSemantics() throws Exception
     {
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
             for (SemanticCase c : semanticCases()) {
                 Object actual = scalar(stmt, c.sql());
                 if (c.expected() instanceof Number expectedNumber && actual instanceof Number actualNumber) {
@@ -63,10 +83,8 @@ public class TestTrinoFunctionAliases
     @Test
     public void testTrinoMetaCatalogMatchesMacros() throws Exception
     {
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
-
             Set<NameArity> meta = readMeta(stmt);
             List<String> installed = installedTrinoMacros(stmt);
             for (NameArity entry : meta) {
@@ -81,10 +99,8 @@ public class TestTrinoFunctionAliases
     @Test
     public void testMetaMatchesFixtures() throws Exception
     {
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
-
             Set<NameArity> meta = readMeta(stmt);
             Set<NameArity> covered = new HashSet<>();
             for (SemanticCase c : semanticCases()) {
@@ -111,10 +127,8 @@ public class TestTrinoFunctionAliases
         // must match the DuckDB-side catalog (trino_meta()) exactly. Drift breaks
         // pushdown: either we push a function DuckDB cannot resolve, or we fail to
         // push one that would actually work.
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
-
             Set<NameArity> duckDbMeta = readMeta(stmt);
             Set<DuckDbExpressionTranslator.NameArity> javaSet =
                     DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS;
@@ -130,52 +144,35 @@ public class TestTrinoFunctionAliases
     }
 
     @Test
-    public void testApplyIsIdempotent() throws Exception
+    public void testUnicodeCaseFoldingMatchesTrinoSpec() throws Exception
     {
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        // Pins the FULL-CASE-FOLDING semantics provided by the native trino_lower /
+        // trino_upper / trino_reverse in the trino_parity extension (ICU-backed,
+        // root locale). Used to be a "documented divergence" test back when the
+        // macro layer wrapped DuckDB's bare lower/upper — those did simple case
+        // folding and disagreed with Trino on U+0130 / U+00DF. The native
+        // extension closes those gaps.
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
-            // CREATE OR REPLACE makes a second pass on the same connection a no-op.
-            TrinoFunctionAliases.applyDirect(stmt);
-            assertThat(scalar(stmt, "SELECT trino_lower('AB')")).isEqualTo("ab");
-        }
-    }
+            // Turkish capital dotted I → 'i' + U+0307 (NOT bare 'i').
+            assertThat(scalar(stmt, "SELECT trino_lower(chr(304))"))
+                    .as("trino_lower('İ') matches Trino's full case folding: 'i' + U+0307")
+                    .isEqualTo("i̇");
 
-    @Test
-    public void testUnicodeCaseFoldingDocumentsKnownDivergence() throws Exception
-    {
-        // Pins the EMPIRICAL divergence between trino_lower / trino_upper and
-        // Trino's native lower/upper on non-ASCII input. This is why neither
-        // (lower, 1) nor (upper, 1) appears in trino_meta() or PUSHABLE_FUNCTIONS:
-        // pushing them through DuckDB would silently filter out rows Trino would
-        // have kept.
-        //
-        // Specifically: DuckDB's bare lower(string) does ASCII-only case folding
-        // (even with INSTALL/LOAD icu in the session). It drops the combining
-        // dot above on 'İ' (U+0130) and returns plain 'i'. Trino's lower uses
-        // Java's String.toLowerCase(Locale.ENGLISH) which preserves the dot via
-        // Unicode-general lowering — 'i' + U+0307. The two strings compare
-        // unequal under DuckDB's WHERE clause.
-        //
-        // Fix path: change the trino_lower macro body to use ICU collation
-        // (e.g. `lower(s COLLATE icu_root)`) once we've verified that ICU's
-        // output actually matches Trino across the test corpus, then re-add
-        // (lower, 1) / (upper, 1) to trino_meta + PUSHABLE_FUNCTIONS.
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
-                Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
+            // German sharp s upper → 'SS' (NOT U+1E9E).
+            assertThat(scalar(stmt, "SELECT trino_upper('ß')"))
+                    .as("trino_upper('ß') matches Trino's full case folding: 'SS'")
+                    .isEqualTo("SS");
+            assertThat(scalar(stmt, "SELECT trino_upper('straße strauß')"))
+                    .as("multiple ß expand independently")
+                    .isEqualTo("STRASSE STRAUSS");
 
-            // The divergence — documented, not asserted-against-Trino.
-            assertThat(scalar(stmt, "SELECT trino_lower('İ')"))
-                    .as("DuckDB drops the combining dot — Trino would keep it")
-                    .isEqualTo("i");
-            // Trino's documented output for reference (not executed; informational
-            // assertion that the two strings differ).
-            assertThat("i̇")
-                    .as("Trino's documented lower('İ') would produce i + U+0307")
-                    .isNotEqualTo("i");
+            // Code-point reverse on decomposed café — combining mark detaches from the e.
+            assertThat(scalar(stmt, "SELECT trino_reverse('cafe' || chr(769))"))
+                    .as("trino_reverse splits combining marks (code-point reverse)")
+                    .isEqualTo("́efac");
 
-            // ASCII is unaffected — these are what the macros do safely:
+            // ASCII baseline still works.
             assertThat(scalar(stmt, "SELECT trino_lower('HeLLo')")).isEqualTo("hello");
             assertThat(scalar(stmt, "SELECT trino_upper('HeLLo')")).isEqualTo("HELLO");
         }
@@ -185,9 +182,8 @@ public class TestTrinoFunctionAliases
     public void testNullPropagation() throws Exception
     {
         // Trino-aligned: NULL input → NULL output for the round 1/2 functions.
-        try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Connection conn = openConnectionWithExtension();
                 Statement stmt = conn.createStatement()) {
-            TrinoFunctionAliases.applyDirect(stmt);
             assertThat(scalar(stmt, "SELECT trino_lower(NULL)")).isNull();
             assertThat(scalar(stmt, "SELECT trino_substring(NULL, 1, 2)")).isNull();
             assertThat(scalar(stmt, "SELECT trino_abs(CAST(NULL AS INTEGER))")).isNull();
@@ -200,14 +196,18 @@ public class TestTrinoFunctionAliases
     {
         return List.of(
                 // String — round 1
-                //   lower/1, upper/1, reverse/1 are pushable PLACEHOLDERS (see
-                //   testUnicodeCaseFoldingDocumentsKnownDivergence + REPORT-string-unicode-audit.md).
-                //   ASCII fixtures below confirm the safe range; divergent inputs are documented
-                //   in the audit report. Translator emits warn-on-emit when these fire in pushdown.
+                //   lower/1, upper/1, reverse/1 are now NATIVE C++ scalar functions in
+                //   the trino_parity extension (ICU full case folding, root locale, plus
+                //   code-point reverse). The placeholder/warn-on-emit machinery is gone.
+                //   testUnicodeCaseFoldingMatchesTrinoSpec pins the formerly-divergent inputs.
                 c("lower 1: ASCII case fold", "lower", 1,
                         "SELECT trino_lower('HeLLo')", "hello"),
+                c("lower 1: Turkish dotted I", "lower", 1,
+                        "SELECT trino_lower(chr(304))", "i̇"),
                 c("upper 1: ASCII case fold", "upper", 1,
                         "SELECT trino_upper('HeLLo')", "HELLO"),
+                c("upper 1: German ß expands to SS", "upper", 1,
+                        "SELECT trino_upper('ß')", "SS"),
                 c("length 1: code points", "length", 1,
                         "SELECT trino_length('abcde')", 5L),
                 c("length 1: multibyte", "length", 1,
