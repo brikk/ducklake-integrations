@@ -28,7 +28,7 @@ Pushdown rating in the Notes column where useful:
 | Operation | Trino | DuckDB | Done | Notes |
 |---|---|---|---|---|
 | String concat operator (NULL propagates) | `a \|\| b` | `a \|\| b` | | ✅ Both: any NULL operand → NULL. |
-| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls); `\|\|` operator chain has aligned NULL-propagation | yes step 1 (translator rewrite) | ✅ Shipped as translator rewrite. Verified empirically ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)): DuckDB `concat('a', NULL, 'c') = 'acd'`, `concat(NULL, NULL) = ''`; Trino returns NULL in both cases. `DuckDbExpressionTranslator` rewrites Trino's `Call(concat, [a, b, c])` → `(a \|\| b \|\| c)` when the return type is `VARCHAR` (gates out the `concat(array, array)` overload). Both engines NULL-propagate `\|\|` identically, so the rewrite is lossless. |
+| Multi-arg concat (NULL propagates) | `concat(s1, ..., sN) -> varchar` | — (DuckDB `concat` SKIPS nulls); `\|\|` operator chain has aligned NULL-propagation | yes step 1 (translator rewrite) | ✅ Shipped as translator rewrite. Verified empirically ([archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md)): DuckDB `concat('a', NULL, 'c') = 'acd'`, `concat(NULL, NULL) = ''`; Trino returns NULL in both cases. `DuckDbExpressionTranslator` rewrites Trino's `Call(concat, [a, b, c])` → `(a \|\| b \|\| c)` when the return type is `VARCHAR` (gates out the `concat(array, array)` overload). Both engines NULL-propagate `\|\|` identically, so the rewrite is lossless. |
 | Multi-arg concat (NULL skipped) | — | `concat(value, ...)` | | ❌ DuckDB-only semantics; route through Trino `concat_ws` or chain `coalesce`. |
 | Concat with separator | `concat_ws(separator, s1, ..., sN)`, `concat_ws(sep, array(varchar))` | `concat_ws(separator, string, ...)` | yes r2 (2..5 arg) | ⚠️ Trino: NULL separator → NULL result; DuckDB: NULL separator → NULL result. NULL elements: Trino skips, DuckDB skips. Mostly aligned, but verify separator-NULL on the actual engine before pushing. Shipped as fixed-arity overloads 2..5. Array-form Trino-only. |
 | Lowercase | `lower(string) -> varchar` | `lower(string)` | yes r1 ⚠️ placeholder | ⚠️ DuckDB does simple case folding; Trino does full case folding. Diverges on `'İ'` → DuckDB `'i'` vs Trino `'i'` + U+0307. ASCII safe. Pushed for perf with warn-on-emit; native extension is the durable fix. |
@@ -66,7 +66,7 @@ Pushdown rating in the Notes column where useful:
 | Char from code | `chr(n) -> varchar` | `chr(code_point)` | yes r4 | ✅ Aligned for valid code points. |
 | Translate chars | `translate(source, from, to) -> varchar` | `translate(string, from, to)` | yes r3 | ✅ Same algorithm: char-by-char replacement, extra `from` chars deleted. |
 | Unicode normalize | `normalize(string[, form])` | `nfc_normalize(string)` | ⚠️ DuckDB only NFC; Trino has NFC/NFD/NFKC/NFKD. Push only when both sides agree on form=NFC. |
-| Soundex | `soundex(char) -> string` | `soundex(s)` (splink_udfs); also `double_metaphone(s)` for a stronger encoder | — | ✅ Pushable when `splink_udfs` is loaded. See [community-extensions § Splink UDFs](RESEARCH-function-community-extensions.md#splink-udfs). |
+| Soundex | `soundex(char) -> string` | `soundex(s)` (splink_udfs); also `double_metaphone(s)` for a stronger encoder | — | ✅ Pushable when `splink_udfs` is loaded. See [community-extensions § Splink UDFs](archive/RESEARCH-function-community-extensions-detail.md#splink-udfs). |
 | Word stem | `word_stem(word[, lang]) -> varchar` | — | | ❌ Trino-only. |
 | Luhn check | `luhn_check(string) -> boolean` | — | | ❌ Trino-only. |
 | Format with `printf`-style | `format(format, args...) -> varchar` | `printf(format, ...)`, `format(format, ...)` | | ❌ Different format specifications (Trino: Java `Formatter`; DuckDB: fmt/printf). Do not push. |
@@ -308,11 +308,11 @@ This table is 4-column (no separate Done column); shipped rows are flagged inlin
 
 ### Hash / digest
 
-> Two community extensions close most of this gap: **crypto** (cryptographic hashes + HMAC) and **hashfuncs** (non-crypto: xxHash, MurmurHash3, RapidHash). See [RESEARCH-function-community-extensions.md § Crypto](RESEARCH-function-community-extensions.md#crypto) and [§ Hashfuncs](RESEARCH-function-community-extensions.md#hashfuncs).
+> Two community extensions close most of this gap: **crypto** (cryptographic hashes + HMAC) and **hashfuncs** (non-crypto: xxHash, MurmurHash3, RapidHash). See [RESEARCH-function-community-extensions.md § Crypto](archive/RESEARCH-function-community-extensions-detail.md#crypto) and [§ Hashfuncs](archive/RESEARCH-function-community-extensions-detail.md#hashfuncs).
 
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
-| MD5 | `md5(binary) -> varbinary` | `md5(string) -> VARCHAR` (hex) wrapped in `unhex(...)` | yes r6 | ✅ Shipped via macro body `unhex(md5(b))` to convert DuckDB's hex-VARCHAR to BLOB matching Trino's VARBINARY. NULL propagation verified ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)). |
+| MD5 | `md5(binary) -> varbinary` | `md5(string) -> VARCHAR` (hex) wrapped in `unhex(...)` | yes r6 | ✅ Shipped via macro body `unhex(md5(b))` to convert DuckDB's hex-VARCHAR to BLOB matching Trino's VARBINARY. NULL propagation verified ([archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md)). |
 | SHA-1 | `sha1(binary) -> varbinary` | `sha1(value) -> VARCHAR` wrapped in `unhex(...)` | yes r6 | ✅ Same pattern. |
 | SHA-256 | `sha256(binary) -> varbinary` | `sha256(value) -> VARCHAR` wrapped in `unhex(...)` | yes r6 | ✅ Same pattern. |
 | SHA-512 | `sha512(binary) -> varbinary` | `crypto_hash('sha2-512', x) -> VARCHAR` (crypto) | ⚠️ Available with `crypto`; output is hex VARCHAR, so cast to VARBINARY (or compare against hex form) before equating to Trino's. |
@@ -334,7 +334,7 @@ This table is 4-column (no separate Done column); shipped rows are flagged inlin
 
 ### URL
 
-> The community **NetQuack** extension supplies all the `url_extract_*` operations. See [RESEARCH-function-community-extensions.md § NetQuack](RESEARCH-function-community-extensions.md#netquack).
+> The community **NetQuack** extension supplies all the `url_extract_*` operations. See [RESEARCH-function-community-extensions.md § NetQuack](archive/RESEARCH-function-community-extensions-detail.md#netquack).
 
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
@@ -349,7 +349,7 @@ This table is 4-column (no separate Done column); shipped rows are flagged inlin
 
 ### IP address
 
-> DuckDB's **core `inet` extension** provides a unified `INET` type (IPv4 + IPv6 with optional CIDR), subnet operators, and host/netmask/network/broadcast helpers. See [RESEARCH-function-community-extensions.md § Inet](RESEARCH-function-community-extensions.md#inet-core-extension--not-community). The community **NetQuack** extension supplies textual IP validators / classifiers (`is_valid_ip`, `is_private_ip`, `ip_version`, `ipcalc`).
+> DuckDB's **core `inet` extension** provides a unified `INET` type (IPv4 + IPv6 with optional CIDR), subnet operators, and host/netmask/network/broadcast helpers. See [RESEARCH-function-community-extensions.md § Inet](archive/RESEARCH-function-community-extensions-detail.md#inet-core-extension--not-community). The community **NetQuack** extension supplies textual IP validators / classifiers (`is_valid_ip`, `is_private_ip`, `ip_version`, `ipcalc`).
 
 | Operation | Trino | DuckDB | Notes |
 |---|---|---|---|
@@ -419,7 +419,7 @@ This table is 4-column (no separate Done column); shipped rows are flagged inlin
 | Median / mode / MAD | — | `median(x)`, `mode(x)`, `mad(x)` | ❌ DuckDB-only direct. Trino uses `approx_percentile` for median. |
 | Quantile (continuous / discrete) | `approx_percentile(...)` | `quantile_cont(x, pos)`, `quantile_disc(x, pos)` | ❌ Different shape (DuckDB exact, Trino approximate by default). |
 | Approx distinct (HLL) | `approx_distinct(x[, e]) -> bigint`, `approx_set`, `merge(HyperLogLog)` | `approx_count_distinct(x)`, `list_approx_count_distinct(list)`; also `datasketch_hll*` and `datasketch_cpc*` for a richer sketch surface (datasketches) | ⚠️ Names differ; HLL state types are not interchangeable across engines. Push only as cardinality call, not state. The `datasketches` extension adds confidence bounds and CPC if needed. |
-| Approx most frequent | `approx_most_frequent(buckets, value, capacity)` | `datasketch_frequent_items(lg_max_k, column)` + `datasketch_frequent_items_get_frequent(sketch, error_type)` (datasketches) | ✅ Pushable as the canonical Frequent-Items sketch when `datasketches` is loaded. See [community-extensions § DataSketches](RESEARCH-function-community-extensions.md#datasketches). |
+| Approx most frequent | `approx_most_frequent(buckets, value, capacity)` | `datasketch_frequent_items(lg_max_k, column)` + `datasketch_frequent_items_get_frequent(sketch, error_type)` (datasketches) | ✅ Pushable as the canonical Frequent-Items sketch when `datasketches` is loaded. See [community-extensions § DataSketches](archive/RESEARCH-function-community-extensions-detail.md#datasketches). |
 | Bitwise aggregates | `bitwise_and_agg(x)`, `bitwise_or_agg(x)`, `bitwise_xor_agg(x)` | `bit_and(arg)`, `bit_or(arg)`, `bit_xor(arg)`, `bitstring_agg(arg[, min, max])` | ⚠️ Names differ; semantics aligned. |
 | Reduce (aggregate lambda) | `reduce_agg(input, init, inputFn, combineFn)` | — | ❌ Trino-only. |
 | Sketch (theta) | `theta_sketch_union`, `theta_sketch_cardinality` | `datasketch_theta*` family (datasketches): `_union`, `_intersect`, `_a_not_b`, `_estimate` | ✅ Pushable when `datasketches` is loaded. ⚠️ Serialized sketch states are **not** wire-compatible with Trino's — only computed-cardinality / set-op paths are safe to push, not sketch values crossing engine boundaries. |
@@ -454,7 +454,7 @@ Any aggregate function (`sum`, `avg`, `count`, etc.) can also be used as a windo
 ## Notes on intentional omissions
 
 - **Geospatial** — Trino has a large ST_* set (`ST_Point`, `ST_Contains`, `ST_Buffer`, …). DuckDB has these via the `spatial` extension. Deferred — not in the pushdown path for our first phase.
-- **HyperLogLog / qdigest / tdigest / setdigest / Theta sketch** — Trino has its own state serialization. The DuckDB **`datasketches`** community extension supplies the Apache DataSketches port for HLL, CPC, KLL, classic Quantiles, REQ, T-Digest, Theta, and Frequent Items — see [RESEARCH-function-community-extensions.md § DataSketches](RESEARCH-function-community-extensions.md#datasketches). Cardinality / quantile / set-op results can be pushed when the extension is loaded; **sketch state is still not interchangeable across engines**, so cross-engine sketch transport requires re-aggregation.
+- **HyperLogLog / qdigest / tdigest / setdigest / Theta sketch** — Trino has its own state serialization. The DuckDB **`datasketches`** community extension supplies the Apache DataSketches port for HLL, CPC, KLL, classic Quantiles, REQ, T-Digest, Theta, and Frequent Items — see [RESEARCH-function-community-extensions.md § DataSketches](archive/RESEARCH-function-community-extensions-detail.md#datasketches). Cardinality / quantile / set-op results can be pushed when the extension is loaded; **sketch state is still not interchangeable across engines**, so cross-engine sketch transport requires re-aggregation.
 - **AI / ML functions** — `ai_analyze_sentiment`, `ai_classify`, `ai_extract`, `ai_fix_grammar`, `ai_gen`, `ai_mask`, `ai_translate`, `learn_classifier`, `classify`, `learn_regressor`, `regress`, `features`, `learn_libsvm_*` are Trino-only. Do not push.
 - **Color** — `color()`, `bar()`, `render()`, `rgb()` are Trino terminal-rendering functions. Do not push.
 - **Datasketches** — `theta_sketch_*` — see HyperLogLog above.

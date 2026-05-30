@@ -50,36 +50,9 @@ are now solid reference points when we pick those up.
 | Official maintenance ops (`expire_snapshots`, `cleanup_old_files`, `delete_orphaned_files`, `DROP TABLE` tombstone) | All four landed in 2026-05-28/29 (PRs #122, #123). `ExpireCriteria::{Versions, OlderThan}` + `CleanupCriteria::{All, OlderThan}` mirror upstream's two-phase vacuum; `OlderThan` filter is `last_modified` against `object_store::ObjectMeta` (in-flight write protection), not catalog `schedule_start`. Sqlite single-catalog + Postgres multicatalog code paths share `src/maintenance.rs` (290 LOC) with backend-scoped variants. `.parquet`-suffix filter at storage-listing time matches upstream. Side-by-side validated against the official DuckDB+DuckLake extension via `examples/maintenance_demo.sql` + `examples/orphan_cleanup_demo.sql`. | Tracked in `TODO-WRITE-MODE.md §M8 Maintenance Operations` — **not implemented.** `expire_snapshots`, `cleanup_old_files`, and `delete_orphaned_files` are on the M8 list; the Commit-Failure File Cleanup section notes "self-served from M8". | **Rust ahead** — they ported the official semantics including the `last_modified` vs catalog-side `schedule_start` distinction. When we implement M8, the choice of criteria enums and the two-phase split is worth mirroring. |
 | Multi-tenant catalog isolation (per-tenant `catalog_id` partitioning of a shared metadata DB) | Added in PR #117 (2026-05-25) as `MulticatalogManager` + `PostgresMetadataWriter` + `MulticatalogProvider` + `initialize_multicatalog_schema`. Adds `ducklake_catalog` + `ducklake_catalog_{snapshot,schema}_map` + per-catalog `ducklake_schema_versions` + a `catalog_id` column on `ducklake_files_scheduled_for_deletion` (a documented divergence from the official single-catalog schema). FOR UPDATE on the catalog row (30s `lock_timeout`) serialises concurrent writers; cross-catalog table_id/schema_id rejected at write time. `drop_catalog` and `drop_table_in_catalog` (PR #120) tombstone per catalog. | Single-catalog only. Multi-tenant isolation, if needed, would live on the layer above (one connector instance per tenant, or per-tenant schema namespacing). | **Non-spec extension**, not a gap on our side. Worth noting only because it diverges the Rust schema from the official `ducklake_files_scheduled_for_deletion` shape, which a future cross-engine compatibility check should account for. |
 
-### A doc-vs-code mismatch on the Rust side
-
-Their `CLAUDE.md` says `DeleteFilterExec` "filters rows by global position." DuckLake
-positional deletes are **per data file** (`(file_path, pos)` tuples). Reading the code
-(`delete_filter.rs`), `row_offset` is per-file (starts at 0 and tracks position within one
-file's Parquet stream), so the behavior is actually spec-correct — only the doc phrasing is
-loose. Worth a direct source read before copying any ideas verbatim, since a future reader
-of their docs could be misled.
-
-A spec-alignment bug they caught and fixed (PR #116, 2026-05-20) is worth knowing about
-even though it doesn't affect us: their `SqliteMetadataWriter` had been bootstrapping
-`ducklake_column` without `parent_column`, `initial_default`, `default_value`,
-`default_value_type`, `default_value_dialect`, so the reader's `SQL_GET_TABLE_COLUMNS`
-panicked on every catalog they wrote. CI missed it because `write-sqlite` wasn't enabled
-on the test step. Our jOOQ-generated `DucklakeColumnRecord` carries all five of those
-columns (we attach to an existing DuckLake catalog rather than DDL-bootstrap our own),
-so we never had the bug. The fact that CI for the encryption / postgres / mysql writer
-fixtures still doesn't cover their schemas is documented in the PR — analogous gaps may
-still ship invisibly there until backend-specific CI is added.
-
-### A README-vs-spec mismatch on our side — fixed
-
-Original concern: `trino-ducklake/README.md` used to read
-"Multiple delete files per data file | Yes | Accumulated across snapshots", which is
-wrong at face value (spec: at most one delete file per data file per snapshot). The
-row is now "Delete-file evolution across snapshots | Yes | Reads the currently-valid
-delete file per data file at the active snapshot (spec: at most one delete file per
-data file per snapshot)" — matches spec. The 1.0 `partial_max` column (where
-multi-snapshot deletes actually live) is still not read by either implementation — see
-`DUCKLAKE_1_0_IMPACT.md`.
+**Rust-side caveat when copying their docs verbatim**: their `CLAUDE.md` describes
+`DeleteFilterExec` as "filters rows by global position" — code (`delete_filter.rs`)
+is per-file (spec-correct), but the doc phrasing is loose. Read source before copying.
 
 ## Ideas worth stealing
 
@@ -135,25 +108,13 @@ multi-snapshot deletes actually live) is still not read by either implementation
   are present.
 - Views with dialect filtering (non-Trino views hidden rather than mis-rendered).
 
-## Action items surfaced by this comparison
-
-Closed:
-
-- ~~**Reword the README delete-file row.**~~ Done — README now says "Delete-file
-  evolution across snapshots | Yes | Reads the currently-valid delete file per data
-  file at the active snapshot (spec: at most one delete file per data file per
-  snapshot)."
-
-Still open:
+## Action items still open
 
 - **Track `partial_max` handling for 1.0.** Puffin deletion-vector reads landed on our
   side (2026-05-20 — `DucklakePuffinDeleteReader`), so the remaining 1.0 delete-file gap
   is `partial_max`. Neither implementation reads it today. When a DuckDB compaction
   rewrites a delete file as partial, we need to not mis-attribute deletes to older
   snapshots.
-- ~~Consider adopting the footer-size hint on the read path.~~ Adopted — see "Ideas worth
-  stealing" #1 above; `FooterPrefetchingParquetDataSource` wraps reads using the
-  `ducklake_data_file.footer_size` / `ducklake_delete_file.footer_size` hints.
 - **Evaluate the `.slt` corpus** as a portable regression suite for the catalog library.
 
 ## Test coverage, at a glance

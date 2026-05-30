@@ -6,9 +6,9 @@ lean on Trino's `ParquetWriter` and merge-on-read (`ConnectorMergeSink`) plumbin
 keep DuckLake-specific code limited to catalog semantics and snapshot logic.
 
 Spec context for several items below lives in
-[DUCKLAKE_1_0_IMPACT.md](DUCKLAKE_1_0_IMPACT.md) (the DuckLake 1.0 spec impact
+[archive/DUCKLAKE_1_0_IMPACT.md](archive/DUCKLAKE_1_0_IMPACT.md) (the DuckLake 1.0 spec impact
 reference). Spec issues we filed upstream live in
-[REPORT_CROSS_ENGINE_WRITE.md](REPORT_CROSS_ENGINE_WRITE.md).
+[archive/REPORT_CROSS_ENGINE_WRITE.md](archive/REPORT_CROSS_ENGINE_WRITE.md).
 
 ## Top Priorities
 
@@ -412,7 +412,7 @@ generate new parquet files and need a similar metadata-insert path.
 - [ ] **Apply table sort spec during Parquet writes** in `DucklakePageSink`.
   Trino-written files would then be pre-sorted for DuckDB compaction. Medium-high
   effort — requires Trino `ParquetWriter` sort integration. See
-  [DUCKLAKE_1_0_IMPACT.md § Sorted Tables](DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+  [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
 
 ## Schema Evolution Gaps
 
@@ -431,7 +431,7 @@ literal or expression to interpret. Call sites:
 `JdbcDucklakeCatalog.insertColumnTree`, `JdbcDucklakeCatalog.renameColumn`.
 Pinned today by
 `TestDucklakeCrossEngineCatalogMetadata.testDuckdbReadsTrinoTableWithNullDefaultValueDialect`
-(asserts the SQL NULL contract). See [REPORT_CROSS_ENGINE_WRITE.md] Issue 1.
+(asserts the SQL NULL contract). See [archive/REPORT_CROSS_ENGINE_WRITE.md] Issue 1.
 
 ## Commit Context (DuckDB `set_commit_message` equivalent)
 
@@ -800,7 +800,53 @@ handled by the connector):
   spec PR [duckdb/ducklake-web#349](https://github.com/duckdb/ducklake-web/pull/349)).
   A deprecated epoch path is kept behind `ducklake.temporal-partition-encoding=epoch`
   for legacy catalogs; see
-  [REPORT_DUCKLAKE_PARTITION_PROB.md](REPORT_DUCKLAKE_PARTITION_PROB.md).
+  [REPORT-temporal-partition-encoding-resolution.md](REPORT-temporal-partition-encoding-resolution.md).
 
-See [REPORT_CROSS_ENGINE_WRITE.md](REPORT_CROSS_ENGINE_WRITE.md) for spec issues filed
+See [archive/REPORT_CROSS_ENGINE_WRITE.md](archive/REPORT_CROSS_ENGINE_WRITE.md) for spec issues filed
 with the DuckDB team.
+
+## Open Research Items
+
+Pointers; full per-item rationale lives in
+[`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md). When an item is picked up,
+promote it into a real task in the appropriate section above and prune the bullet.
+
+- **rename-table-change-chain** — does `renameTable` emit `altered_table:<id>` to
+  `snapshot_changes` (analogous to verified `renameView`)? ~30-min spike.
+- **internal-retry-strategy** — decide: stay query-level (Trino retries the whole
+  query on `DUCKLAKE_TRANSACTION_CONFLICT`) vs. bounded internal retry (upstream
+  shape, but has the catalog-ID-reuse + off-by-one pitfalls they just fixed).
+- **disallow-drop-sorted-column** — when sorted-table writes ship, reject
+  `DROP COLUMN` for any sort-key column. Track as a sub-item of § Sorted Table Writes.
+- **quack-hardening-watch** — re-check each refresh: "Experimental" label dropped?
+  Stable-docs entry exists? JDBC driver docs describe pointing local DuckDB at Quack?
+- **quack-wrapper-rewrite-spike** — jOOQ `ExecuteListener` on Quack branch that
+  inlines params and wraps every statement in
+  `quack_query_by_name(<metadata_catalog>, <inlined-sql>)`; drops the
+  `ATTACH 'ducklake:quack:...'` line. 1-2 day spike; gates multi-op write parity.
+- **quack-server-side-txn-lifecycle** — measurement spike: open one local DuckDB
+  JDBC connection, run a sequence of `quack_query_by_name` calls, confirm via
+  `duckdb_logs_parsed('Quack')` that all share one server-side `connection_id`.
+- **quack-read-only-fallback** — alternate posture if wrapper-rewrite proves
+  expensive: replace the 2-table JOINs in `getPartitionSpecs`/`getSortKeys` with
+  per-table fetches joined in-JVM; ship "Quack: read parity, write deferred."
+- **quack-jdbc-vs-quack-connid-pinning** — read DuckLake C++ extension's
+  `ducklake_initializer.cpp` + `ducklake_transaction.cpp` + Quack's
+  `quack_client.cpp` for connection-ID lifecycle. ~30-min read; unblocks the
+  server-side-txn item above.
+- **datafusion-maintenance-ops-reference** — pointer for M8 (above). Upstream Rust
+  impl carries non-obvious semantics worth lifting: three-phase split (tombstone →
+  expire → cleanup), criteria enums, in-flight-write guard on `last_modified`,
+  `.parquet` suffix filter at storage listing, orphan-sweep referenced-set as a
+  3-way UNION ALL (including pending scheduled-for-deletion). The Rust
+  `examples/maintenance_demo.{rs,sql}` is the cross-engine oracle when M8 lands.
+- **DuckLake v1.1 / v2.0 spec watch** — upcoming spec features to track as
+  upstream firms them up. v1.1: variant inlining (lifts the "variant blocks
+  inlining" restriction for non-DuckDB catalogs), multi-deletion-vector puffin
+  files (multiple DVs per puffin to preserve time-travel without small-file
+  proliferation). v2.0 ideas under consideration: git-like branching for
+  DuckLake versions, role-based access control, incremental materialized views.
+  Re-check on each upstream refresh — promote to real backlog when the
+  spec text lands. Detailed previews in
+  [`archive/archive/DUCKLAKE_1_0_IMPACT.md`](archive/archive/DUCKLAKE_1_0_IMPACT.md)
+  "DuckLake v1.1 / v2.0 Preview" sections.

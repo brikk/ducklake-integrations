@@ -208,7 +208,7 @@ CREATE OR REPLACE MACRO trino_truncate(x) AS trunc(x);
 -- DuckDB core md5/sha1/sha256 return hex VARCHAR; Trino returns VARBINARY.
 -- Wrap with unhex(...) to produce a BLOB matching Trino's wire shape.
 -- NULL handling verified aligned (md5(NULL) → NULL; md5('a' || NULL || 'c') → NULL).
--- See REPORT-hash-null-handling.md.
+-- See archive/REPORT-hash-null-handling.md.
 -- sha512 / HMAC family require the crypto extension and are queued in
 -- TODO-pushdown-duckdb.md → "Round 6b-ext", currently blocked on extension
 -- availability for our platform.

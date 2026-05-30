@@ -72,7 +72,7 @@ DuckLake tables can carry mixed file formats — parquet and duckdb side by side
 - `applyFilter` checks `ducklake_data_file` at plan time: every file for this scan must have `file_format = 'duckdb'`. If not, reject with a clear error pointing at the offending format mix.
 - If homogeneous: push to the executor's SQL AND remove from `remainingExpression` — we own the evaluation end-to-end.
 
-Skip the "route parquet through DuckDB too" alternative. Loses Trino's native parquet reader + Alluxio page-cache + soft-affinity work; undoes the layered design from `CONCEPT-duckdb-as-parquet-file-cache.md`.
+Skip the "route parquet through DuckDB too" alternative. Loses Trino's native parquet reader + Alluxio page-cache + soft-affinity work; undoes the layered design from `archive/CONCEPT-duckdb-as-parquet-file-cache.md`.
 
 ## What's out of scope
 
@@ -139,7 +139,7 @@ Cheap wins. All confirmed aligned via DuckDB docs check; no probe required.
 
 ### Round 6b-core — Core DuckDB hash macros (NO new extension, 3 entries)
 
-**Promoted to front of queue** based on `ProbeHashNullHandling` findings (see [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)). Core DuckDB ships `md5`, `sha1`, `sha256` returning hex VARCHAR; wrap with `unhex(...)` to match Trino's VARBINARY return. NULL propagation empirically verified aligned (`md5(NULL) → NULL`, `md5('a' || NULL || 'c') → NULL`).
+**Promoted to front of queue** based on `ProbeHashNullHandling` findings (see [archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md)). Core DuckDB ships `md5`, `sha1`, `sha256` returning hex VARCHAR; wrap with `unhex(...)` to match Trino's VARBINARY return. NULL propagation empirically verified aligned (`md5(NULL) → NULL`, `md5('a' || NULL || 'c') → NULL`).
 
 | Trino | DuckDB macro body | Notes |
 |---|---|---|
@@ -153,7 +153,7 @@ Macro pattern: `CREATE OR REPLACE MACRO trino_<name>(...) AS unhex(crypto_hash('
 
 Pre-step: extend `TrinoFunctionAliases` (or the executor attach) to `INSTALL crypto; LOAD crypto;` as best-effort, mirroring the ICU pattern.
 
-**⚠️ Catalog wait:** `crypto` was HTTP 404 on `extensions.duckdb.org` for DuckDB 1.5.3 (probed 2026-05-28). Likely cause is the community catalog hasn't yet cut a 1.5.3 build — not a permanent platform gap. Re-probe in a few days; the catalog catches up over time. See [REPORT-hash-null-handling.md](REPORT-hash-null-handling.md).
+**⚠️ Catalog wait:** `crypto` was HTTP 404 on `extensions.duckdb.org` for DuckDB 1.5.3 (probed 2026-05-28). Likely cause is the community catalog hasn't yet cut a 1.5.3 build — not a permanent platform gap. Re-probe in a few days; the catalog catches up over time. See [archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md).
 
 | Trino | DuckDB macro body | Notes |
 |---|---|---|
@@ -201,7 +201,7 @@ Note: NetQuack also ships `base64_encode`/`base64_decode` that overlap core Duck
 
 These need translator-level work because the shape change can't be expressed as a single macro substitution:
 
-- ✅ **`concat(a, b, c, ...)` → `(a || b || c || ...)` operator chain — SHIPPED.** Empirically verified ([REPORT-hash-null-handling.md](REPORT-hash-null-handling.md)): DuckDB's `concat` skips NULL while Trino's NULL-propagates, but the `||` operator NULL-propagates on both sides. `DuckDbExpressionTranslator` rewrites `Call(concat, [args])` into a parenthesized `||` chain when the return type is `VARCHAR` (gates out the `concat(array, array)` overload, which has different NULL semantics). Variadic, any arity ≥ 2. End-to-end coverage in `TestDucklakeDuckDbReadMode#testConcatPredicatePushesDownAsOperatorChain` and `#testConcatWithNullPropagatesTrinoSemantics` (the second pins the NULL-propagation guarantee on the duckdb-format path).
+- ✅ **`concat(a, b, c, ...)` → `(a || b || c || ...)` operator chain — SHIPPED.** Empirically verified ([archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md)): DuckDB's `concat` skips NULL while Trino's NULL-propagates, but the `||` operator NULL-propagates on both sides. `DuckDbExpressionTranslator` rewrites `Call(concat, [args])` into a parenthesized `||` chain when the return type is `VARCHAR` (gates out the `concat(array, array)` overload, which has different NULL semantics). Variadic, any arity ≥ 2. End-to-end coverage in `TestDucklakeDuckDbReadMode#testConcatPredicatePushesDownAsOperatorChain` and `#testConcatWithNullPropagatesTrinoSemantics` (the second pins the NULL-propagation guarantee on the duckdb-format path).
 - `contains(network, address)` → emit `network >>= addr` operator form (inet extension).
 - `url_extract_parameter(url, name)` → emit correlated subquery through `extract_query_parameters(url)` table function (netquack extension).
 - IPADDRESS / IPPREFIX type → connector-side type plumbing.

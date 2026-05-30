@@ -263,7 +263,7 @@ public class TestDucklakeDuckDbReadMode
     {
         // End-to-end proof for the concat → `||` translator rewrite. DuckDB's
         // built-in `concat` silently skips NULLs while Trino's NULL-propagates
-        // (REPORT-hash-null-handling.md), so the translator rewrites Trino's
+        // (archive/REPORT-hash-null-handling.md), so the translator rewrites Trino's
         // `Call(concat, [args])` into `(arg1 || arg2 || ...)` — the `||` operator
         // NULL-propagates in both engines, giving Trino-aligned semantics.
         computeActual(writeDuckDbSession(),

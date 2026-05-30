@@ -526,7 +526,7 @@ public class TestDuckDbExpressionTranslator
     {
         // WHERE concat(name, 'X') = 'AppleX'  — translator rewrites to `||` chain,
         // not a trino_concat macro, because DuckDB's concat skips NULL while Trino's
-        // NULL-propagates. `||` propagates in both engines (REPORT-hash-null-handling.md).
+        // NULL-propagates. `||` propagates in both engines (archive/REPORT-hash-null-handling.md).
         ConnectorExpression concat = call(new FunctionName("concat"), VARCHAR,
                 new Variable("name", VARCHAR),
                 varcharConst("X"));

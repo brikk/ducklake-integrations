@@ -8,7 +8,7 @@ resolution against the SQL catalog, dual-encoding temporal pruning, and inlined-
 fallback semantics.
 
 Spec context for several items below lives in
-[DUCKLAKE_1_0_IMPACT.md](DUCKLAKE_1_0_IMPACT.md) (the DuckLake 1.0 spec impact
+[archive/DUCKLAKE_1_0_IMPACT.md](archive/DUCKLAKE_1_0_IMPACT.md) (the DuckLake 1.0 spec impact
 reference). Gaps surfaced from upstream and sister connectors live in the
 `COMPARE-*.md` files.
 
@@ -203,11 +203,11 @@ data file's scan.
   variant-specific operators, no shredded field access, no shredded statistics).
   Options: keep degraded; add JSON-style accessor functions over the VARCHAR;
   wait for native Trino Variant type support. See
-  [DUCKLAKE_1_0_IMPACT.md § Variant Type](DUCKLAKE_1_0_IMPACT.md#3-variant-type).
+  [archive/DUCKLAKE_1_0_IMPACT.md § Variant Type](archive/DUCKLAKE_1_0_IMPACT.md#3-variant-type).
 
 - [ ] **Geometry** — currently degraded to VARBINARY (no spatial pruning, no
   bounding-box stats use). Wants integration with a Trino spatial library. See
-  [DUCKLAKE_1_0_IMPACT.md § Geometry Type](DUCKLAKE_1_0_IMPACT.md#4-geometry-type).
+  [archive/DUCKLAKE_1_0_IMPACT.md § Geometry Type](archive/DUCKLAKE_1_0_IMPACT.md#4-geometry-type).
 
 ## Virtual Columns
 
@@ -233,10 +233,85 @@ data file's scan.
 - [ ] Test views across all catalog backends (SQLite, PostgreSQL, DuckDB) — today's
   view tests exercise PostgreSQL only.
 
+## Alternative Columnar File Formats (epics)
+
+DuckLake's `ducklake_data_file.file_format` column already enumerates the
+file format per data file (today: `parquet`, `duckdb`). The catalog schema
+is format-agnostic; adding a new format is a connector-side concern
+(reader plumbing + executor-side ATTACH, where applicable) plus a writer
+follow-up.
+
+Two epics tracked here at high level. Neither is scheduled; both are
+"when a real workload pushes for them" items.
+
+### Lance file support
+
+DuckLake snapshots that reference Lance-format data files. Lance is the
+columnar storage shape used by lancedb — vectorized scans, vector-index
+secondary structures, and a Trino-native reader path via the
+`lance-jni` / `lance-arrow` surface or a Lance table-function pushdown.
+
+Existing design sketch: [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md).
+Covers: Trino table-function SPI for Lance, route A vs route B trade-offs
+(in-process Lance reader vs federation through a Lance service), and how
+the existing pushdown layer (translator + macro alias surface in
+`TODO-pushdown-duckdb.md`) would extend to Lance's expression syntax.
+
+Open at the epic level — no spike sized yet. When picked up, lift the
+sketch in RESEARCH-lance-and-pushdown.md into a `PLAN-lance.md` and chunk
+it the same way the date-time pushdown program was chunked.
+
+### Vortex file support
+
+DuckLake snapshots that reference Vortex-format data files. Vortex is a
+newer high-performance columnar storage layer (Spiral DB) with explicit
+compression-cascade encodings and lazy decompression; the target use case
+is analytic scans where Parquet's row-group encoding is a bottleneck.
+
+No design sketch yet. Scope when picked up:
+
+- **Reader path**: most likely route is a `VortexPageSource` paralleling
+  the existing `DuckDbFilePageSource` / Trino's standard `ParquetPageSource`.
+  Vortex's Java surface — if mature — replaces the Parquet reader for
+  files whose `file_format = 'vortex'`. If Java bindings aren't mature,
+  fall back to a Vortex-via-DuckDB extension (if one exists) and reuse
+  the duckdb-format executor abstraction from step 4 of the pushdown
+  program.
+- **Pushdown integration**: TupleDomain + function-shape pushdown work
+  the same way the parquet path does today; specifics depend on what
+  Vortex's filter API surface looks like.
+- **Cross-engine compatibility**: catalog-side `file_format = 'vortex'`
+  has to be agreed between writer and reader. Check whether the
+  upstream DuckLake spec has reserved the string (it should be opaque
+  to the spec; the connector decides what it can read).
+
+Open at the epic level — when a workload surfaces, start with a probe:
+write one Vortex file outside DuckLake, register it as `add_files` against
+a DuckLake table with `file_format='vortex'`, attempt to read via Trino,
+record what blows up. That tells us what the first PR scope is.
+
 ## Research / Evaluation
 
 - [ ] **Evaluate adopting the DuckLake `.slt` corpus** as a portable regression
   suite for the catalog library. Source: `COMPARE-datafusion-ducklake.md`.
+
+### Open research items (read-path)
+
+Full per-item rationale in [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md).
+When promoted, move into the section above it belongs to (e.g. Type-Support
+Improvements, Inlined-Read Type Gaps).
+
+- **uint-type-promotion-audit** — upstream PR #1128 fixed type promotion for
+  UINTEGER. Verify it's purely DuckDB-execution (not in `ducklake_column.column_type`
+  catalog representation). ~10-min PR-and-test read.
+- **schema-evolution-missing-column** — upstream PR #1142 fixed missing-column
+  handling under schema evolution. Reproduce their test in our cross-engine harness
+  (DuckDB inserts → `ALTER TABLE ADD COLUMN` → DuckDB inserts more → Trino reads):
+  confirm old-file rows project NULL/default for the new column. ~1h spike.
+- **delete-file-filter-pushdown** — can we hand a `TupleDomain` to the delete-file
+  Parquet reader the same way we do for data files? Saves IO on narrow predicates
+  (e.g. single `pos` value in a MERGE plan). Scoping spike against Trino's
+  `ConnectorPageSource` filter-pushdown surface.
 
 ### Cross-Dialect View Transpilation
 

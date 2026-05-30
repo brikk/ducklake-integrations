@@ -579,7 +579,7 @@ final class DuckDbExpressionTranslator
         // String concat is a translator rewrite (NOT a macro): Trino's `concat(a, b, c)`
         // NULL-propagates, DuckDB's built-in `concat` silently skips NULLs. The `||`
         // operator NULL-propagates in BOTH engines (verified by ProbeConcatNullHandling —
-        // see REPORT-hash-null-handling.md), so rewriting to `(a || b || c)` emits
+        // see archive/REPORT-hash-null-handling.md), so rewriting to `(a || b || c)` emits
         // Trino-aligned semantics without a macro. Gated on VARCHAR return type to
         // avoid Trino's array overload (`concat(array, array)`), which has different
         // NULL semantics and a different operator shape in DuckDB.

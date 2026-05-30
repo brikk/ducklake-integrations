@@ -1,15 +1,18 @@
-# Upstream-Tracking Research TODO
+# Upstream-Tracking Research TODO (archived — long-form per-item rationale)
 
-Open research questions and proposed action items surfaced by upstream
-surveys. Each entry has a stable anchor so the log can link to it.
+Archived snapshot. Open research questions and proposed action items
+surfaced by upstream surveys, with stable anchors so the
+sibling [`RESEARCH-LOG.md`](RESEARCH-LOG.md) entries can link to them.
 
-When the user escalates an item to a real working TODO, move it into
-`jvm/trino-ducklake/dev-docs/TODO-WRITE-MODE.md` or `TODO-READ-MODE.md`
-and strike it through here with a back-reference.
+These items have been folded as short bullets into the working TODOs
+([`../TODO-WRITE-MODE.md`](../TODO-WRITE-MODE.md) → "Open Research Items"
+section,
+[`../TODO-READ-MODE.md`](../TODO-READ-MODE.md) → "Research / Evaluation"
+section). This file remains as the longer-form rationale that the bullets
+point at.
 
-See [`RESEARCH-HOWTO.md`](RESEARCH-HOWTO.md) for the workflow and
-[`RESEARCH-LOG.md`](RESEARCH-LOG.md) for the surveys that produced
-these items.
+Workflow lives in [`../RESEARCH-upstreams.md`](../RESEARCH-upstreams.md)
+(formerly RESEARCH-HOWTO).
 
 ---
 
@@ -53,7 +56,7 @@ retry.
 **Proposed next step:** decision spike. Two options:
 
 1. Stay query-level retry — write a short doc note in
-   `dev-docs/REPORT_CROSS_ENGINE_WRITE.md` (or similar) explaining
+   `REPORT_CROSS_ENGINE_WRITE.md` (sibling in archive/; or similar) explaining
    why we deliberately don't have an internal retry loop, and what
    the implications are (each query retry re-pays planning, but
    avoids the upstream class of bugs).

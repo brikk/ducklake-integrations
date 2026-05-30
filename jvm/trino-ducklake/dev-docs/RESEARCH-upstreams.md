@@ -1,10 +1,11 @@
-# Upstream-Tracking Research Playbook
+# Upstream Tracking — Playbook + Latest Findings
 
 The repo root has a `vendor/` directory that holds **read-only working
 copies** of upstream projects we audit against. Nothing under `vendor/`
 is built or shipped, and the sub-directories themselves are git-ignored
-(see the root `.gitignore`). This file is the playbook an agent runs on
-each refresh.
+(see the root `.gitignore`). This file is both the playbook an agent runs
+on each refresh and a short record of where the most recent survey left
+the baselines.
 
 To bootstrap a fresh checkout (or refresh an existing one):
 
@@ -13,17 +14,22 @@ To bootstrap a fresh checkout (or refresh an existing one):
 ./vendor/clone-related-projects.sh --pull   # additionally fast-forward
 ```
 
-Paths in this document are written **relative to the repo root** (e.g.
-`vendor/ducklake/`, `jvm/trino-ducklake/dev-docs/RESEARCH-LOG.md`). The
-research docs themselves live in `jvm/trino-ducklake/dev-docs/` alongside
-the `COMPARE-*.md` and `TODO-*.md` files; refer to them by sibling path:
+Paths in this document are written **relative to the repo root**. Sibling
+docs in this same directory:
 
-- [`RESEARCH-LOG.md`](RESEARCH-LOG.md) — append-only log, one entry per
-  refresh run. Records what was surveyed, what was found, and the SHAs
-  the survey rested on so the next run has a baseline.
-- [`RESEARCH-TODO.md`](RESEARCH-TODO.md) — open research questions and
-  proposed action items. Items here are *candidates*; the user escalates
-  them to a real working TODO when they want them picked up.
+- Working TODOs: `TODO-WRITE-MODE.md`, `TODO-READ-MODE.md`,
+  `TODO-pushdown-duckdb.md`, `TODO-duckdb-lake-format.md`. Research-derived
+  items get folded in there directly (each has an "Open Research Items"
+  pointer section).
+- Comparison audits: `COMPARE-datafusion-ducklake.md`,
+  `COMPARE-pg_ducklake.md`.
+- Archived historical context:
+  [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md) (full append-only
+  log of prior refresh runs — what was surveyed, what was found, and the
+  SHAs each survey rested on),
+  [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md) (pre-fold-in
+  research questions with the longer rationale for each item that's now
+  bulleted in the working TODOs).
 
 The point: keep our integration aligned with the reference implementations
 without missing spec-level or correctness-impacting changes.
@@ -47,10 +53,11 @@ For each tracked repo, **in this order**:
 
 ### 1. Establish baseline
 
-Open [`RESEARCH-LOG.md`](RESEARCH-LOG.md), find the most recent entry for
-this repo, and read the recorded "last-surveyed SHA" (and branch) for it.
-If no prior entry exists, the baseline is the current local `HEAD` before
-fetching.
+Open [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md) (or the "Latest
+baselines" section at the bottom of this file), find the most recent
+entry for this repo, and read the recorded "last-surveyed SHA" (and
+branch) for it. If no prior entry exists, the baseline is the current
+local `HEAD` before fetching.
 
 ### 2. Fetch — do not pull
 
@@ -113,87 +120,58 @@ formatting, blog posts unrelated to a feature.
 
 For each substantive change, decide:
 
-- **Parity** — we already do this. Note as confirmation in the log, no
-  TODO needed.
-- **Gap** — we don't do this; could matter. Add a `RESEARCH-TODO.md`
-  entry under "Action items pending escalation".
-- **Research** — unclear if it matters until we look closer. Add a
-  `RESEARCH-TODO.md` entry under "Research questions".
+- **Parity** — we already do this. Note as confirmation in the chat
+  summary; no doc change needed.
+- **Gap** — we don't do this; could matter. Add a short bullet under
+  "Open Research Items" in the appropriate working TODO
+  (`TODO-WRITE-MODE.md` or `TODO-READ-MODE.md`) with a one-line summary
+  + proposed spike size.
+- **Research** — unclear if it matters until we look closer. Same as
+  Gap — bullet in the appropriate TODO.
 - **Bug-shaped on our side** — if upstream just fixed something we may
-  also have wrong, add it as a high-priority action item.
+  also have wrong, add a high-priority item directly in the relevant
+  working TODO section (not under "Open Research Items"; this is a
+  known-need).
 - **Doc-only** — write/read mode unaffected; just update the relevant
   `dev-docs/COMPARE-*.md` files in place (the agent has authority to
   do this directly — these are *our* docs, not user code).
 
-### 5. Write the log entry
+### 5. Fold findings into working TODOs
 
-Append one entry to `RESEARCH-LOG.md`. Template:
-
-```markdown
-## YYYY-MM-DD — refresh run
-
-**Surveyed repos:**
-
-- `ducklake/` — baseline `<prev-sha>` → `origin/main@<new-sha>`,
-  `origin/v1.5-variegata@<sha>`; N substantive commits.
-- `ducklake-web/` — baseline `<prev-sha>` → `origin/main@<new-sha>`;
-  N substantive commits.
-- `pg_ducklake/` — baseline `<prev-sha>` → `origin/main@<new-sha>`;
-  vendored `third_party/ducklake/` (un)changed.
-- `datafusion-ducklake/` — baseline `<prev-sha>` → `origin/main@<new-sha>`;
-  vN.M.P (vN.M.Q).
-- `duckdb-web/` — checked, no DuckLake-relevant changes / N entries.
-
-**Substantive findings:**
-
-- [parity / gap / research / bug] — short description, repo + PR/commit,
-  what we did about it (logged-only, COMPARE updated, RESEARCH-TODO added,
-  …).
-
-**TODOs created this run:** links to `RESEARCH-TODO.md` items by anchor.
-
-**Next baseline:** record the new SHAs the next run should diff against.
-```
-
-### 6. Append/update RESEARCH-TODO entries
-
-For each gap / research / bug item, append (or update if related) an
-entry in `RESEARCH-TODO.md`. Use a short stable anchor so the log can
-link to it. Template:
+For each gap / research / bug-shaped item, add a short bullet under the
+target TODO's "Open Research Items" section (or directly in the relevant
+feature section if it's bug-shaped and already in scope). Bullets are
+terse; they're pointers, not full rationale. Shape:
 
 ```markdown
-### <anchor> — short title
-
-**Source:** repo `<repo>`, PR/commit `<ref>`, dated YYYY-MM-DD.
-**Kind:** [gap | research | bug-shaped]
-**Impact:** which paths (read / write / catalog / type / lifecycle).
-**Our state:** what we do today (file:line if known).
-**Proposed next step:** scoped task, often a quick verification or a
-spike before committing to real work.
+- **<short-anchor>** — what + where (1 sentence) + proposed spike size.
 ```
+
+Don't write a separate per-item doc unless the item is substantial
+enough to need 100+ lines of analysis. In that case create a `REPORT-*`
+or `PLAN-*` sibling in `dev-docs/` and link from the bullet.
+
+### 6. Update "Latest baselines"
+
+Edit the "Latest baselines" section at the bottom of this file: bump the
+SHAs you just surveyed so the next run has the right diff anchor.
+
+If the survey was large or the user wants a permanent record, append a
+dated entry to [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md)
+mirroring the older entries' shape. For routine refreshes, the in-chat
+summary plus the "Latest baselines" update is enough — don't bloat the
+log with one-line "nothing substantive" runs.
 
 ### 7. Summarize to the user
 
 End the run with a concise summary in chat (not a doc):
 
-- Repos surveyed + new baseline SHAs
-- 1-line bullets for each substantive finding
-- "Items added to RESEARCH-TODO: …"
-- Ask the user which (if any) should be **escalated** to a working TODO
-  in `TODO-WRITE-MODE.md` or `TODO-READ-MODE.md` (siblings in this same
-  directory). Don't escalate without explicit user OK.
-
-## Working-TODO escalation
-
-When the user says "escalate item X to the working TODO":
-
-1. Move the item from `RESEARCH-TODO.md` into the appropriate
-   `TODO-WRITE-MODE.md` or `TODO-READ-MODE.md` section (siblings in
-   this same directory).
-   Convert "proposed next step" into the proper TODO format (priority,
-   scope, checklist).
-2. Strike through the entry in `RESEARCH-TODO.md` with a back-reference
-   to where it landed (so the log history stays intact).
+- Repos surveyed + new baseline SHAs.
+- 1-line bullets for each substantive finding.
+- Items added to working TODOs by anchor.
+- Ask the user which (if any) should be **promoted** from "Open Research
+  Items" into a real backlog item in that same TODO. Don't promote
+  without explicit user OK.
 
 ## Common pitfalls
 
@@ -216,6 +194,24 @@ When the user says "escalate item X to the working TODO":
   portable to us, but the vendored `third_party/ducklake/` snapshot is —
   if that submodule/vendor bumps, treat it as a `ducklake/` survey.
 
-## Inventory at last update
+## Latest baselines
 
-See `RESEARCH-LOG.md` for the most-recent baseline SHAs to diff against.
+Most-recent SHA for each tracked repo. Update these after each refresh
+run. For the long-form historical record see
+[`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md).
+
+| Repo | Branch | Baseline SHA | Surveyed on |
+|---|---|---|---|
+| `datafusion-ducklake/` | `main` | `f1af7dd5` (post-v0.2.1) | 2026-05-29 |
+| `ducklake/` | `v1.5-variegata`, `main` | (see archive entry 2026-05-19) | 2026-05-19 |
+| `ducklake-web/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
+| `pg_ducklake/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
+| `duckdb-quack/` | `main` | (see archive entry 2026-05-22) | 2026-05-22 |
+| `duckdb-web/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
+
+Older baselines and the per-run substantive findings are preserved
+verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The
+research items found during those runs were folded into the working
+TODOs (see "Open Research Items" sections in `TODO-WRITE-MODE.md` and
+`TODO-READ-MODE.md`); the longer per-item rationale is in
+[`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md).

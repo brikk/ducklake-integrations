@@ -35,63 +35,34 @@ expose, but the scope is well understood and tractable.
 
 ## Bugs / fragility in our JVM impl surfaced by this audit
 
-### Real bugs (worth fixing)
+Earlier audit rounds surfaced 5 real bugs (B1–B5) plus 2 additional gaps (C1, C2);
+all are **closed** with regression coverage:
 
-| # | Finding | File / line | Severity | Status |
-|---|---|---|---|---|
-| B1 | **`snapshot_changes` column is built with `String.join(",", ...)` and no escaping.** Upstream uses `KeywordHelper::WriteQuoted()` with double quotes for values, e.g. `created_table:"main.users"`. If an entry ever contains a comma or quote (legal in table names), our row is malformed and the DuckDB parser will trip. | `JdbcDucklakeCatalog.java` (quoting helpers + call sites in `createTable` / `createView` / `createSchema`) | Medium | **Fixed.** `writeQuotedValue()` + `changeCreated{Table,View,Schema}` helpers emit spec-conformant `"schema"."name"`. Pinned by `TestJdbcDucklakeCatalogChangesMadeFormat` + two cross-engine tests (all kinds + pathological comma-bearing names). |
-| B2 | **Inlined `list<T>` rows stored as `VARCHAR[]` (Postgres array), not a serialized scalar.** Reference Postgres metadata manager writes native PG arrays (`INT4[]`, etc.) for inlined lists and lets the reader reconstruct. Our `DucklakeInlinedValueConverter` path assumes a single string and calls `toStringValue()`. | `DucklakeInlinedValueConverter.java` (array path) | High (when triggered) | **Fully fixed.** `DucklakeInlinedValueConverter` detects `ArrayType` columns and parses DuckDB's `[elem, elem, ...]` inlined text form (with NULL + `\'` / `\\` escape handling) plus a `java.sql.Array` / `Object[]` fallback for native PG arrays. Covered across all primitive element types (int/bigint/smallint/tinyint/bool/real/double/decimal/varchar/date/timestamp/timestamptz) via both inlined and Parquet paths. `list<uuid>` handled by `toUuidSlice` (2026-05-13). `list<blob>` handled by `decodeBlobText`, which inverts DuckDB's `Blob::ToString` `\xNN` form (2026-05-20). |
-| B3 | **`hugeint` / `uhugeint` are unmapped and throw** on any column that uses them. | `DucklakeTypeConverter.java` | High (when triggered) | **Fixed.** `int128` → `DECIMAL(38, 0)`, `uint128` → `VARCHAR` (Trino caps decimal at 38 digits). README type table + limitations updated. Pinned by `TestDucklakeTypeConverter` unit tests + cross-engine `testDuckdbHugeintColumnReadsAsDecimalInTrino` / `testDuckdbUhugeintColumnReadsAsVarcharInTrino`. Note: spec canonical names are `int128`/`uint128`, not `hugeint`/`uhugeint` — the DuckDB SQL names never appear in the catalog column_type column. |
-| B4 | **`linestring z` in the type converter switch** — spec 1.0 renamed it `linestring_z` (underscore). | `DucklakeTypeConverter.java` | Low but trivial | **Fixed.** Converter matches both `linestring_z` (1.0 name) and `linestring z` (legacy form for pre-1.0 catalogs). Covered by `testLinestringZUnderscoreIsVarbinary` + `testLinestringZLegacySpaceFormStillAccepted`. |
-| B5 | **Unsigned writes silently truncate.** We widen on read (uint8→SMALLINT etc.) but do no range check on write. A Trino `SMALLINT 300` into a `uint8` column becomes 44 through integer wrap. | `DucklakePageSink` write path | Medium | **Fixed.** `DucklakeUnsignedRangeChecker` validates each page before it reaches the Parquet writer, throwing `TrinoException(NUMERIC_VALUE_OUT_OF_RANGE)` for any value outside the uint range. Built once per sink; singleton no-op when no unsigned columns. uint64 uses a single `Int128.getHigh() != 0` test to catch both negative values and values above 2^64 − 1. Pinned by `TestDucklakeUnsignedRangeChecker` (all four unsigned widths + 300-wrap symptom + null handling) and `TestDucklakeCrossEngineCompatibility.testTrinoRejectsOutOfRangeInsertsIntoUnsignedColumns` (DuckDB creates the UTINYINT/USMALLINT/UINTEGER/UBIGINT columns, Trino round-trips max values and gets rejected on every overflow case without leaking partial rows). |
-| B6 | **Decimal `p > 38` errors hard.** Trino can't represent it, so there is no graceful path — but right now we throw at type construction time rather than at `CREATE TABLE` time with a clearer message. Upstream allows higher precisions. Unlikely to be hit. | `DucklakeTypeConverter.java` | Low | Open. |
+- B1 (snapshot_changes quoting) — `writeQuotedValue()` + `changeCreated{Table,View,Schema}`
+  helpers + `TestJdbcDucklakeCatalogChangesMadeFormat` + cross-engine pathological-name tests.
+- B2 (inlined `list<T>` reads incl. `list<uuid>`, `list<blob>`) — `DucklakeInlinedValueConverter`
+  parses DuckDB's `[elem, ...]` text form with escape handling + native PG-array fallback.
+- B3 (int128/uint128 mapping) — `int128` → `DECIMAL(38, 0)`, `uint128` → `VARCHAR`;
+  `TestDucklakeTypeConverter` + cross-engine round-trips.
+- B4 (`linestring_z` underscore vs legacy space form) — converter matches both.
+- B5 (unsigned-write range checks) — `DucklakeUnsignedRangeChecker` before Parquet
+  writer; cross-engine `testTrinoRejectsOutOfRangeInsertsIntoUnsignedColumns`.
+- C1 (`renamed_view:<viewId>` not a spec change-type) — emit `altered_view:<viewId>`;
+  pinned by `testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges`.
+- C2 (`schema_version` not bumped on view/schema DDL) —
+  `DucklakeWriteTransaction.incrementSchemaVersion()` wired into all view/schema DDL;
+  pinned by `testSchemaVersionBumpsOnViewAndSchemaDdl`.
 
-### Additional gaps surfaced after the original audit
+For the original deep findings and exact file:line / test names, walk git history
+in `JdbcDucklakeCatalog.java`, `DucklakeInlinedValueConverter.java`,
+`DucklakeTypeConverter.java`, `DucklakeUnsignedRangeChecker.java` — each fix has a
+distinct commit referencing the bug ID.
 
-| # | Finding | Status |
+### Still open
+
+| # | Finding | Severity |
 |---|---|---|
-| C1 | **`renamed_view:<viewId>` is not a recognized upstream change type.** Upstream's `ParseChangeType` (in `ducklake_transaction_changes.cpp`) enumerates `created_view` / `altered_view` / `dropped_view` but no `RENAMED_*`. Any snapshot that renamed a view made DuckDB's `ducklake_snapshots()` / `table_changes()` throw `InvalidInputException`. | **Fixed.** `renameView` now emits `altered_view:<viewId>` (rename is semantically a schema/name change). Pinned by `testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges`. |
-| C2 | **`schema_version` not bumped on view and schema DDL.** Upstream's `DuckLakeTransaction::SchemaChangesMade()` flips on new/dropped view entries and new/dropped schema entries, not just table DDL. A DuckDB reader that caches the catalog keyed on `schema_version` would miss Trino-created/dropped views and schemas until something else (a table DDL) happened to bump the counter. | **Fixed.** Added no-arg `DucklakeWriteTransaction.incrementSchemaVersion()` (table_id = NULL) and wired it into `createView` / `dropView` / `renameView` / `replaceViewMetadata` / `createSchema` / `dropSchema`. Pinned by `testSchemaVersionBumpsOnViewAndSchemaDdl`. |
-
-### Known, documented, no action required
-
-- **`partial_max` not read.** Already in `DUCKLAKE_1_0_IMPACT.md`. One-file delete model
-  remains spec-correct; we just don't read the compaction hint yet.
-- **Inlined-data table selection across schema bumps.** Reconfirmed by pg_ducklake
-  #197/#198 (2026-05-13): after a schema-bumping DDL (ADD COLUMN, SET PARTITIONED BY, …)
-  multiple `ducklake_inlined_data_tables` rows exist for the same `table_id`, and the
-  reference selects the row with `MAX(schema_version)` for **new** inlined writes
-  (mirroring upstream `DuckLakeMetadataManager::WriteNewInlinedData`). On the read side,
-  every row with `schema_version ≤ snapshot.schema_version` is valid and must be
-  unioned. Our `JdbcDucklakeCatalog.getInlinedDataInfos()` already returns all qualifying
-  rows ordered by `schema_version`; we don't write to the inlined heap (Trino always
-  writes Parquet), so the pg_ducklake direct-insert bug they hit doesn't have a JVM
-  analog. No action.
-- **`default_value_type='literal'`, `default_value_dialect='duckdb'` hardcoded.** We
-  already documented this in `REPORT_CROSS_ENGINE_WRITE.md`. Reference actually does
-  something similar — it writes the dialect that wrote the column. Fine until we want
-  to support expression defaults.
-- **UUIDv7 for catalog-identity UUIDs.** Done. Switched `schema_uuid` / `table_uuid` /
-  `view_uuid` generation to `Generators.timeBasedEpochGenerator()` to match upstream's
-  UUIDv7 locality (keeps PK B-tree inserts roughly monotonic). Transient
-  `DucklakeTransactionHandle` UUID and Parquet filename UUIDs intentionally left on v4
-  (no DB locality value there). Pinned by `TestJdbcDucklakeCatalogUuidVersion`.
-
-### Things the earlier audit flagged that I verified as *not* bugs
-
-- **Snapshot lineage conflict detection.** Agent flagged "is this the same as upstream" —
-  yes, `ensureSnapshotLineageUnchanged()` in `JdbcDucklakeCatalog.java:1103` does the same
-  max-snapshot fence the reference uses on commit. Match.
-- **Per-table schema versioning (`ducklake_schema_versions.table_id`).** We write it; the
-  reference writes it; both fall back gracefully when it's missing.
-- **Parquet `field_id` annotations.** Our `DucklakeParquetSchemaBuilder` produces the same
-  annotation layout the reference produces. Bidirectional compat test already covers this.
-- **Inlined data table naming** (`ducklake_inlined_data_<tableId>_<schemaVersion>`).
-  Matches.
-- **`row_id_start` being a plain `long`.** An agent claimed upstream uses `optional_idx`
-  and we miss the "unallocated" state. Looking at the spec, `row_id_start` is required on
-  data file insert. The optional form upstream uses is a C++ convenience for transient
-  transaction state, not a catalog-column possibility. Non-issue.
+| B6 | **Decimal `p > 38` errors hard.** Trino can't represent it, so there is no graceful path — but right now we throw at type construction time rather than at `CREATE TABLE` time with a clearer message. Upstream allows higher precisions. Unlikely to be hit. | Low |
 
 ## Things pg_ducklake (and therefore the reference) does that we don't
 
@@ -201,31 +172,17 @@ Categories we can ignore (PG-specific): `fdw`, `frozen_fdw`, `import_foreign_sch
 `access_control`, `ddl_triggers`, `gucs`, `connection_string`, `recycle_ddb`,
 `non_ducklake_commit`.
 
-## Action items surfaced by this comparison
+## Action items still open
 
-Closed:
-
-1. ~~**Fix the `snapshot_changes` join.**~~ Done — quoted form via `writeQuotedValue()` +
-   `changeCreated{Table,View,Schema}` helpers. (B1)
-2. ~~**Verify inlined `list<T>` read path with a real DuckDB-written fixture.**~~ Done.
-   All element types — including `list<uuid>` (2026-05-13) and `list<blob>` (2026-05-20) — round-trip
-   through both inlined and Parquet paths. (B2)
-3. ~~**Map `hugeint`/`uhugeint`.**~~ Done — `int128` → `DECIMAL(38, 0)`, `uint128` →
-   `VARCHAR`. (B3; spec canonical names are `int128`/`uint128`.)
-4. ~~**Rename `"linestring z"` → `"linestring_z"`.**~~ Done — converter matches both. (B4)
-
-Still open:
-
-5. **Start planning maintenance ops.** Scope above. Earliest wins are probably
-   `expire_snapshots` and `cleanup_orphaned_files` — both are catalog-driven and don't
-   require a compaction engine.
-6. **Add a concurrency isolation test suite.** Two scenarios first: two writers on the
-   same table, two writers on different tables. These are the scenarios pg_isolation's
-   specs protect against and our code has no tests for.
-7. **Consider session properties** for `commit_author`/`commit_message`/`commit_extra_info`.
-   Already on the roadmap; pg_ducklake exposing `set_commit_message()` is a nudge it's a
-   commonly wanted feature.
-8. **Unsigned write-side range check.** (B5) Fixed — see B5 status row above.
+- **Start planning maintenance ops.** Scope above. Earliest wins are probably
+  `expire_snapshots` and `cleanup_orphaned_files` — both are catalog-driven and don't
+  require a compaction engine.
+- **Add a concurrency isolation test suite.** Two scenarios first: two writers on the
+  same table, two writers on different tables. These are the scenarios pg_isolation's
+  specs protect against and our code has no tests for.
+- **Consider session properties** for `commit_author`/`commit_message`/`commit_extra_info`.
+  Already on the roadmap; pg_ducklake exposing `set_commit_message()` is a nudge it's a
+  commonly wanted feature.
 
 ## Appendix — Type mapping differences worth knowing
 

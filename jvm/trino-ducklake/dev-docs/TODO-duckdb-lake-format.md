@@ -225,7 +225,7 @@ Once httpfs is competitive for repeated reads (after N4), the table-property or 
 
 ## Phase 2+ (out of scope for this TODO file)
 
-The original concept (`CONCEPT-duckdb-as-parquet-file-cache.md`) goes beyond
+The original concept (`archive/CONCEPT-duckdb-as-parquet-file-cache.md`) goes beyond
 what's tracked here:
 
 - Auto-promotion of hot parquet tables to a duckdb-format cache (the original "DuckDB as a Parquet cache layer" thesis)

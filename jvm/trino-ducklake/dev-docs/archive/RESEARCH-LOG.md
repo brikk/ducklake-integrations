@@ -1,8 +1,10 @@
 # Upstream-Tracking Research Log
 
-Append-only. Newest entry on top. See [`RESEARCH-HOWTO.md`](RESEARCH-HOWTO.md)
-for procedure. Action items found during a run live in
-[`RESEARCH-TODO.md`](RESEARCH-TODO.md).
+Append-only historical record. Newest entry on top. The procedure (formerly
+`RESEARCH-HOWTO.md`) is now [`../RESEARCH-upstreams.md`](../RESEARCH-upstreams.md).
+Action items per run live in sibling [`RESEARCH-TODO.md`](RESEARCH-TODO.md);
+recent items have been folded as bullets into the working
+`../TODO-WRITE-MODE.md` / `../TODO-READ-MODE.md` under "Open Research Items".
 
 ---
 
