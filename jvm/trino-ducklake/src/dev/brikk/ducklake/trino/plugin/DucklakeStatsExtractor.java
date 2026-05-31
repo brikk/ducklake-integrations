@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin;
 
 import com.google.common.collect.ImmutableList;
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats;
+import dev.brikk.ducklake.catalog.DucklakeStatTypes;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DateType;
@@ -71,6 +72,7 @@ public final class DucklakeStatsExtractor
         for (LeafStatsTarget target : leafTargets) {
             int parquetColumnIndex = target.parquetColumnIndex();
             Type type = target.leafType();
+            boolean numeric = isNumericTrinoType(type);
 
             long totalCompressedSize = 0;
             long totalValueCount = 0;
@@ -96,14 +98,14 @@ public final class DucklakeStatsExtractor
 
                     if (stats.isSetMin_value() && stats.isSetMax_value()) {
                         hasStats = true;
-                        Optional<String> groupMin = convertStatValue(stats.getMin_value(), type);
-                        Optional<String> groupMax = convertStatValue(stats.getMax_value(), type);
+                        Optional<String> groupMin = convertStatValue(stats.getMin_value(), type, columnMeta.getType());
+                        Optional<String> groupMax = convertStatValue(stats.getMax_value(), type, columnMeta.getType());
 
                         if (groupMin.isPresent()) {
-                            minValue = minValue.isEmpty() ? groupMin : Optional.of(stringMin(minValue.get(), groupMin.get()));
+                            minValue = minValue.isEmpty() ? groupMin : Optional.of(DucklakeStatTypes.min(minValue.get(), groupMin.get(), numeric));
                         }
                         if (groupMax.isPresent()) {
-                            maxValue = maxValue.isEmpty() ? groupMax : Optional.of(stringMax(maxValue.get(), groupMax.get()));
+                            maxValue = maxValue.isEmpty() ? groupMax : Optional.of(DucklakeStatTypes.max(maxValue.get(), groupMax.get(), numeric));
                         }
                     }
                 }
@@ -123,6 +125,11 @@ public final class DucklakeStatsExtractor
     }
 
     static Optional<String> convertStatValue(byte[] value, Type type)
+    {
+        return convertStatValue(value, type, null);
+    }
+
+    static Optional<String> convertStatValue(byte[] value, Type type, org.apache.parquet.format.Type physicalType)
     {
         if (value == null || value.length == 0) {
             return Optional.empty();
@@ -177,7 +184,7 @@ public final class DucklakeStatsExtractor
                 return Optional.of(instant.toString());
             }
             if (type instanceof DecimalType decimalType) {
-                BigInteger unscaled = new BigInteger(value);
+                BigInteger unscaled = decodeDecimalUnscaled(value, physicalType);
                 BigDecimal decimal = new BigDecimal(unscaled, decimalType.getScale());
                 return Optional.of(decimal.toPlainString());
             }
@@ -189,13 +196,34 @@ public final class DucklakeStatsExtractor
         }
     }
 
-    private static String stringMin(String a, String b)
+    /**
+     * Parquet stores DECIMAL statistics in different byte orders depending on the
+     * physical type: INT32/INT64-backed decimals are little-endian two's-complement
+     * (matching the primitive layout), while FIXED_LEN_BYTE_ARRAY / BINARY decimals
+     * are big-endian two's-complement. Decoding the short INT32/INT64 forms as
+     * big-endian ({@code new BigInteger(byte[])}) silently corrupts min/max for
+     * low-precision decimals.
+     */
+    private static BigInteger decodeDecimalUnscaled(byte[] value, org.apache.parquet.format.Type physicalType)
     {
-        return a.compareTo(b) <= 0 ? a : b;
+        if (physicalType == org.apache.parquet.format.Type.INT32) {
+            return BigInteger.valueOf(ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getInt());
+        }
+        if (physicalType == org.apache.parquet.format.Type.INT64) {
+            return BigInteger.valueOf(ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getLong());
+        }
+        // FIXED_LEN_BYTE_ARRAY / BINARY (and the unknown/test path): big-endian two's complement.
+        return new BigInteger(value);
     }
 
-    private static String stringMax(String a, String b)
+    private static boolean isNumericTrinoType(Type type)
     {
-        return a.compareTo(b) >= 0 ? a : b;
+        return type instanceof TinyintType
+                || type instanceof SmallintType
+                || type instanceof IntegerType
+                || type instanceof BigintType
+                || type instanceof RealType
+                || type instanceof DoubleType
+                || type instanceof DecimalType;
     }
 }

@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin;
 
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats;
+import io.trino.spi.type.DecimalType;
 import org.apache.parquet.format.ColumnChunk;
 import org.apache.parquet.format.ColumnMetaData;
 import org.apache.parquet.format.CompressionCodec;
@@ -25,6 +26,7 @@ import org.apache.parquet.format.Statistics;
 import org.apache.parquet.format.Type;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
@@ -111,6 +113,46 @@ class TestDucklakeStatsExtractor
         int epochDay = (int) java.time.LocalDate.of(2024, 1, 15).toEpochDay();
         byte[] bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(epochDay).array();
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DATE)).isEqualTo(Optional.of("2024-01-15"));
+    }
+
+    @Test
+    void testConvertShortDecimalInt32IsLittleEndian()
+    {
+        // decimal(5,2) value 123.45 -> unscaled 12345, stored by parquet as a
+        // little-endian INT32. Decoding it big-endian (the old bug) yields garbage.
+        DecimalType type = DecimalType.createDecimalType(5, 2);
+        byte[] bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(12345).array();
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT32))
+                .isEqualTo(Optional.of("123.45"));
+    }
+
+    @Test
+    void testShortDecimalInt32NegativeIsLittleEndian()
+    {
+        DecimalType type = DecimalType.createDecimalType(5, 2);
+        byte[] bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(-12345).array();
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT32))
+                .isEqualTo(Optional.of("-123.45"));
+    }
+
+    @Test
+    void testShortDecimalInt64IsLittleEndian()
+    {
+        // decimal(18,4) value 12345.6789 -> unscaled 123456789, stored as little-endian INT64.
+        DecimalType type = DecimalType.createDecimalType(18, 4);
+        byte[] bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(123_456_789L).array();
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT64))
+                .isEqualTo(Optional.of("12345.6789"));
+    }
+
+    @Test
+    void testLongDecimalFixedLenByteArrayIsBigEndian()
+    {
+        // High-precision decimals are FIXED_LEN_BYTE_ARRAY / BINARY: big-endian two's complement.
+        DecimalType type = DecimalType.createDecimalType(38, 0);
+        byte[] bytes = BigInteger.valueOf(1_000_000L).toByteArray();
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.FIXED_LEN_BYTE_ARRAY))
+                .isEqualTo(Optional.of("1000000"));
     }
 
     @Test
@@ -231,10 +273,11 @@ class TestDucklakeStatsExtractor
         assertThat(stats).hasSize(1);
         assertThat(stats.get(0).valueCount()).isEqualTo(20L);
         assertThat(stats.get(0).nullCount()).isEqualTo(3L);
-        // Lexical comparison on strings: "1" < "12" < "3" — for the connector's stats
-        // format that's the contract (DuckLake stores min/max as VARCHAR).
+        // INTEGER stats merge numerically across row groups: file-wide min=1, max=12.
+        // Guards the old regression where string compare picked "8" as max ("8" > "12"
+        // lexically) even though DuckLake stores min/max as text.
         assertThat(stats.get(0).minValue()).contains("1");
-        assertThat(stats.get(0).maxValue()).contains("8");
+        assertThat(stats.get(0).maxValue()).contains("12");
     }
 
     // ==================== Thrift FileMetaData builders ====================

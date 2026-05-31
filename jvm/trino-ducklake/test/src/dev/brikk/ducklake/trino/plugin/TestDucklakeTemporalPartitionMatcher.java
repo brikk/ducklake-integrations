@@ -540,6 +540,70 @@ public class TestDucklakeTemporalPartitionMatcher
                 .isFalse();
     }
 
+    // ==================== CALENDAR non-monotonic / open-range pruning (B4) ====================
+    // Under CALENDAR encoding the sub-year transforms (MONTH/DAY/HOUR) are only monotonic
+    // within one parent period. An open-ended or multi-period datetime range wraps the
+    // transformed value, so range pruning must be skipped to avoid silently dropping files.
+
+    @Test
+    public void testCalendarHourUnboundedLowAtMidnightDoesNotPruneAll()
+    {
+        // `ts < 2026-03-08 00:00:00` with HOUR transform: the exclusive-high boundary
+        // adjustment decremented the transformed hour to -1, so every partition hour
+        // (0..23) was wrongly pruned. Hour 10 of an earlier day satisfies the predicate.
+        Domain domain = Domain.create(
+                ValueSet.ofRanges(Range.lessThan(TIMESTAMP_MICROS, tsMicros(2026, 3, 8, 0))),
+                false);
+        assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                TIMESTAMP_MICROS, "10", domain, DucklakePartitionTransform.HOUR, CALENDAR, false))
+                .isTrue();
+    }
+
+    @Test
+    public void testCalendarDayUnboundedLowAtMonthStartDoesNotPruneAll()
+    {
+        // `ts < 2026-03-01 00:00:00` with DAY transform: exclusive high decremented the
+        // transformed day to 0, so every partition day (1..31) was wrongly pruned.
+        Domain domain = Domain.create(
+                ValueSet.ofRanges(Range.lessThan(TIMESTAMP_MICROS, tsMicros(2026, 3, 1, 0))),
+                false);
+        assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                TIMESTAMP_MICROS, "15", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
+                .isTrue();
+    }
+
+    @Test
+    public void testCalendarDayUnboundedHighDoesNotPrune()
+    {
+        // `ts >= 2026-03-08` with DAY transform: high is unbounded so day-of-month wraps
+        // across months; day 5 (e.g. 2026-04-05) must not be pruned.
+        Domain domain = Domain.create(
+                ValueSet.ofRanges(Range.greaterThanOrEqual(TIMESTAMP_MICROS, tsMicros(2026, 3, 8, 0))),
+                false);
+        assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                TIMESTAMP_MICROS, "5", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
+                .isTrue();
+    }
+
+    @Test
+    public void testCalendarDayMultiMonthRangeDoesNotPrune()
+    {
+        // Bounded but spanning Feb..Apr: day-of-month is non-monotonic across the span,
+        // so day 25 (e.g. 2026-02-25 or 2026-03-25) must not be pruned.
+        Domain domain = Domain.create(
+                ValueSet.ofRanges(Range.range(
+                        TIMESTAMP_MICROS, tsMicros(2026, 2, 8, 0), true, tsMicros(2026, 4, 20, 0), false)),
+                false);
+        assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                TIMESTAMP_MICROS, "25", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
+                .isTrue();
+    }
+
+    private static long tsMicros(int year, int month, int day, int hour)
+    {
+        return LocalDate.of(year, month, day).toEpochDay() * 86_400_000_000L + hour * 3_600_000_000L;
+    }
+
     private static Domain singleDate(LocalDate date)
     {
         return Domain.singleValue(DATE, date.toEpochDay());

@@ -4,6 +4,7 @@ import org.jooq.codegen.gradle.CodegenPluginExtension
 import org.jooq.codegen.gradle.CodegenTask
 import org.jooq.meta.jaxb.GeneratedAnnotationType
 import org.jooq.meta.jaxb.VisibilityModifier
+import org.gradle.api.artifacts.ResolvedDependency
 
 plugins {
     id("buildlogic.kotlin.library")
@@ -187,5 +188,27 @@ tasks.withType<CodegenTask>().configureEach {
             user = service.username
             password = service.password
         }
+    }
+}
+
+
+
+tasks.register("printCompileDependencyTree") {
+    doLast {
+        fun walk(dep: ResolvedDependency, indent: String = "") {
+            dep.moduleArtifacts.forEach { artifact ->
+                println("$indent${dep.moduleGroup}:${dep.moduleName}:${dep.moduleVersion}")
+                println("$indent  -> ${artifact.file.absolutePath}")
+            }
+            dep.children
+                .sortedBy { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
+                .forEach { walk(it, "$indent  ") }
+        }
+        configurations
+            .getByName("compileClasspath")
+            .resolvedConfiguration
+            .firstLevelModuleDependencies
+            .sortedBy { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
+            .forEach { walk(it) }
     }
 }

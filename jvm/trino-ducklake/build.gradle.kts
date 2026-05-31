@@ -238,3 +238,23 @@ val pluginAssemble by tasks.registering(Copy::class) {
 tasks.build {
     dependsOn(pluginAssemble)
 }
+
+tasks.register("printCompileDependencyTree") {
+    doLast {
+        fun walk(dep: ResolvedDependency, indent: String = "") {
+            dep.moduleArtifacts.forEach { artifact ->
+                println("$indent${dep.moduleGroup}:${dep.moduleName}:${dep.moduleVersion}")
+                println("$indent  -> ${artifact.file.absolutePath}")
+            }
+            dep.children
+                .sortedBy { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
+                .forEach { walk(it, "$indent  ") }
+        }
+        configurations
+            .getByName("compileClasspath")
+            .resolvedConfiguration
+            .firstLevelModuleDependencies
+            .sortedBy { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
+            .forEach { walk(it) }
+    }
+}

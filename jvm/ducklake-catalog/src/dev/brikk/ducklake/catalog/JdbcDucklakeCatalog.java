@@ -573,31 +573,12 @@ public class JdbcDucklakeCatalog
 
     private static String typedMin(String a, String b, String columnType)
     {
-        return typedCompare(a, b, columnType) <= 0 ? a : b;
+        return DucklakeStatTypes.min(a, b, columnType);
     }
 
     private static String typedMax(String a, String b, String columnType)
     {
-        return typedCompare(a, b, columnType) >= 0 ? a : b;
-    }
-
-    private static int typedCompare(String a, String b, String columnType)
-    {
-        try {
-            return switch (columnType.toLowerCase(java.util.Locale.ENGLISH)) {
-                case "bigint", "integer", "int", "smallint", "tinyint", "hugeint" ->
-                        Long.compare(Long.parseLong(a), Long.parseLong(b));
-                case "double", "real", "float", "decimal" ->
-                        Double.compare(Double.parseDouble(a), Double.parseDouble(b));
-                case "date" ->
-                        java.time.LocalDate.parse(a).compareTo(java.time.LocalDate.parse(b));
-                default -> a.compareTo(b);
-            };
-        }
-        catch (RuntimeException ignored) {
-            // If parsing fails, fall back to string comparison (conservative)
-            return a.compareTo(b);
-        }
+        return DucklakeStatTypes.max(a, b, columnType);
     }
 
     @Override
@@ -2422,50 +2403,7 @@ public class JdbcDucklakeCatalog
 
     private Comparable<?> parseStatValue(String columnType, String value)
     {
-        if (value == null) {
-            return null;
-        }
-
-        String normalizedType = columnType.toLowerCase();
-        try {
-            if (isNumericType(normalizedType)) {
-                return new java.math.BigDecimal(value);
-            }
-            if (normalizedType.equals("boolean")) {
-                return parseBoolean(value);
-            }
-            return value;
-        }
-        catch (RuntimeException e) {
-            // If parsing fails we avoid false negatives by not pruning on this value.
-            return null;
-        }
-    }
-
-    private boolean isNumericType(String type)
-    {
-        return type.equals("int8")
-                || type.equals("int16")
-                || type.equals("int32")
-                || type.equals("int64")
-                || type.equals("uint8")
-                || type.equals("uint16")
-                || type.equals("uint32")
-                || type.equals("uint64")
-                || type.equals("float32")
-                || type.equals("float64")
-                || type.startsWith("decimal(");
-    }
-
-    private Boolean parseBoolean(String value)
-    {
-        if (value.equalsIgnoreCase("true") || value.equals("1")) {
-            return true;
-        }
-        if (value.equalsIgnoreCase("false") || value.equals("0")) {
-            return false;
-        }
-        throw new IllegalArgumentException("Invalid boolean value: " + value);
+        return DucklakeStatTypes.parseStat(columnType, value);
     }
 
     private boolean isWithinBounds(

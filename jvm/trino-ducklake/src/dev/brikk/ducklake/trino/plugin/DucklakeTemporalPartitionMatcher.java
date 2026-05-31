@@ -112,6 +112,23 @@ final class DucklakeTemporalPartitionMatcher
                 .map(v -> applyTemporalTransform(columnType, v, transform, encoding))
                 .orElse(Long.MAX_VALUE);
 
+        boolean nonMonotonicCalendar = encoding == CALENDAR &&
+                (transform == DucklakePartitionTransform.MONTH
+                        || transform == DucklakePartitionTransform.DAY
+                        || transform == DucklakePartitionTransform.HOUR);
+
+        // CALENDAR sub-year transforms (month/day/hour) are only monotonic within a single
+        // parent period (a day for HOUR, a month for DAY, a year for MONTH). If either bound
+        // is unbounded, or the two bounds straddle different parent periods, the transformed
+        // value wraps and [low, high] range pruning would silently drop matching files.
+        // Skip pruning in those cases — reading extra files is correct; dropping them is not.
+        if (nonMonotonicCalendar &&
+                (range.getLowValue().isEmpty()
+                        || range.getHighValue().isEmpty()
+                        || !inSameCalendarParentPeriod(columnType, range.getLowValue().get(), range.getHighValue().get(), transform))) {
+            return true;
+        }
+
         // For non-DATE types, Trino does not normalize exclusive bounds to inclusive
         // (DATE is discrete so Trino converts e.g. `< DATE '2026-03-08'` to `<= DATE '2026-03-07'`).
         // When an exclusive high bound falls exactly on a partition transform boundary
@@ -125,15 +142,32 @@ final class DucklakeTemporalPartitionMatcher
             }
         }
 
-        // Calendar month/day/hour transforms are not monotonic over broad ranges.
-        // In wrapping cases, skip pruning to avoid false negatives.
-        if (encoding == CALENDAR &&
-                (transform == DucklakePartitionTransform.MONTH || transform == DucklakePartitionTransform.DAY || transform == DucklakePartitionTransform.HOUR) &&
-                lowTransformed > highTransformed) {
+        // Defensive fallback: even within one parent period an exclusive-high decrement can
+        // invert the bounds (e.g. a range covering only the boundary instant). Skip pruning
+        // rather than drop everything.
+        if (nonMonotonicCalendar && lowTransformed > highTransformed) {
             return true;
         }
 
         return transformedValue >= lowTransformed && transformedValue <= highTransformed;
+    }
+
+    /**
+     * Whether two range bounds fall in the same CALENDAR parent period for the given
+     * sub-year transform, i.e. the period over which the transform is monotonic:
+     * the same day for HOUR, the same calendar month for DAY, the same year for MONTH.
+     */
+    private static boolean inSameCalendarParentPeriod(Type columnType, Object lowValue, Object highValue, DucklakePartitionTransform transform)
+    {
+        TemporalValue low = TemporalValue.from(columnType, lowValue);
+        TemporalValue high = TemporalValue.from(columnType, highValue);
+        return switch (transform) {
+            case HOUR -> low.epochDay() == high.epochDay();
+            case DAY -> low.date().getYear() == high.date().getYear()
+                    && low.date().getMonthValue() == high.date().getMonthValue();
+            case MONTH -> low.date().getYear() == high.date().getYear();
+            default -> true;
+        };
     }
 
     private static boolean isAtTransformBoundary(long epochMicros, DucklakePartitionTransform transform)

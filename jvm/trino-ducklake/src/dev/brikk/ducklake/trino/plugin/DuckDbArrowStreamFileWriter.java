@@ -629,6 +629,16 @@ final class DuckDbArrowStreamFileWriter
         catch (Throwable ignored) {
             // best-effort
         }
+        // Wait for the consumer to actually exit before freeing Arrow resources:
+        // the INSERT...SELECT reads from arrayStream/reader using buffers owned by
+        // allocator, so closing those while the consumer is still running can
+        // crash the JVM. Mirrors the happy-path join at finishAndBuildFragment.
+        try {
+            consumerThread.join(5_000);
+        }
+        catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
         closeQuietly(arrayStream);
         closeQuietly(reader);
         closeQuietly(allocator);
