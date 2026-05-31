@@ -57,7 +57,7 @@ The trino-ducklake plugin jar bundles the trino_parity DuckDB extension binary f
 platform it can find at build time. Build the extension first, then the plugin:
 
 ```shell
-# Build the host-platform extension (~30 min first time — DuckDB + statically linked ICU)
+# Build the host-platform extension (~30 min first time — DuckDB + vendored ICU)
 cd duckdb-trino-parity-extension
 GEN=ninja make
 
@@ -65,14 +65,19 @@ GEN=ninja make
 make linux-arm64    # native on Apple Silicon
 make linux-amd64    # via Rosetta/qemu emulation, slower
 
+# Alternative: skip the local build and pull every platform from the
+# extension repo's CI matrix (signed artifacts on every push to main):
+scripts/fetch-from-ci-artifacts.sh
+
 # Build the Trino plugin (gradle picks up every available build/<platform>/... binary)
 cd ../jvm
 ./gradlew build
 ```
 
 See [duckdb-trino-parity-extension/README.md](duckdb-trino-parity-extension/README.md) for
-the extension's prerequisites (vcpkg, ninja, ccache) and platform notes. See the
-[JVM project README](jvm/README.md) for JVM-side build prerequisites (Java 25, Docker).
+the extension's prerequisites (ninja, ccache; ICU is vendored, no vcpkg needed locally)
+and platform notes. See the [JVM project README](jvm/README.md) for JVM-side build
+prerequisites (Java 25, Docker).
 
 ## License
 

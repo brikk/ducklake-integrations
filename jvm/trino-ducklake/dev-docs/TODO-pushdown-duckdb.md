@@ -12,7 +12,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 > `normalize/{1,2}` are native C++ in
 > [duckdb-trino-parity-extension](../../../duckdb-trino-parity-extension);
 > the rest of the `trino_<name>` macros are `DefaultMacro[]` arrays in the
-> same extension; `trino_meta()` has 93 entries; the connector bundles the
+> same extension; `trino_meta()` has 92 entries; the connector bundles the
 > extension binary into the plugin jar and `LOAD`s it on attach. The text
 > below still mentions placeholders, warn-on-emit, the SQL resource — read
 > those sections as historical record of how we got here, not as live state.

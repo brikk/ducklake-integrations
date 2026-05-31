@@ -310,7 +310,7 @@ When a query reads a duckdb-format data file (see [DuckDB-Format Data Files](#du
 - Curated map, not "translate anything that looks similar" — each translation is an explicit entry with recorded NULL / Unicode / edge semantics.
 - Cross-engine semantic test per entry — pushed result must match Trino's own evaluation byte-for-byte.
 
-**93 catalog entries** across 8 categories (`trino_meta()`, sourced from the
+**92 catalog entries** across 8 categories (`trino_meta()`, sourced from the
 [`trino_parity` DuckDB extension](../../duckdb-trino-parity-extension)), plus
 translator-level rewrites for standard operators, CAST, and `concat` → `||`.
 
@@ -318,7 +318,7 @@ translator-level rewrites for standard operators, CAST, and `concat` → `||`.
 |---|---|-------|
 | Standard operators | `=`, `<>`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT DISTINCT FROM`, `+`, `-`, `*`, `/`, `%`, `COALESCE`, `NULLIF`, unary `-`, `CAST` / `TRY_CAST` for primitive types | Translated directly to infix / prefix SQL. |
 | LIKE / NOT LIKE | `value LIKE 'pattern' [ESCAPE 'c']` | NOT LIKE rides the existing `NOT` recursion. Dynamic patterns and NULL patterns stay unpushed. |
-| String (native, ICU) | `lower`, `upper`, `reverse`, `trim`/`ltrim`/`rtrim`, `normalize/{1,2}` | Full Unicode parity with Trino's Java semantics — root-locale full case folding, code-point reverse, `Character.isWhitespace`-aligned trim, NFC/NFD/NFKC/NFKD via `icu::Normalizer2`. Implemented in the extension's `string_functions.cpp`. |
+| String (native, ICU) | `lower`, `upper`, `reverse`, `trim`/`ltrim`/`rtrim`, `normalize/1` | Full Unicode parity with Trino's Java semantics — root-locale full case folding, code-point reverse, `Character.isWhitespace`-aligned trim, NFC via `icu::Normalizer2`. Implemented in the extension's `string_functions.cpp`. The 2-arg `normalize(s, form)` (NFD/NFKC/NFKD selector) is intentionally not pushed — the extension's vendored ICU snapshot ships only NFC data. |
 | String (macro) | `length`, `substring/{2,3}`, `replace`, `strpos`, `starts_with`, `lpad`, `rpad`, `concat_ws/{2..5}`, `translate`, `chr`, `bit_length` | Unicode pressure pinned in fixtures (codepoint counts on ZWJ family, combining marks, 4-byte emoji). |
 | String rewrite | `concat(a, b, c, ...)` → `(a \|\| b \|\| c \|\| ...)` for VARCHAR returns | Translator-level rewrite, not a macro — DuckDB's `concat` skips NULL while Trino's NULL-propagates; the `\|\|` operator propagates in both. |
 | Numeric | `abs`, `ceil`, `floor`, `mod`, `power`, `sqrt`, `exp`, `ln`, `log2`, `log10`, trig + hyperbolic (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`), `degrees`, `radians`, `cbrt`, `truncate`, `sign`, `bit_length`, `pi()`, `bitwise_and/or/not/xor`, `bitwise_left_shift`/`bitwise_right_shift` | |
