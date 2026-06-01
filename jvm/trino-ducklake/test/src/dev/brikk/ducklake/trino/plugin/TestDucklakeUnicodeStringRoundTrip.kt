@@ -214,7 +214,7 @@ class TestDucklakeUnicodeStringRoundTrip
         private const val CYRILLIC = "пингвин"        // 7 cp, 14 bytes
         private const val CJK = "你好世界"        // 4 cp, 12 bytes
         private const val EMOJI = "🐧🦆🐍"          // 3 cp, 12 bytes
-        private const val COMBINING = "café"     // 5 cp, 6 bytes (4 graphemes)
+        private const val COMBINING = "café"     // 5 cp, 6 bytes (4 graphemes): 'cafe' + U+0301 combining acute accent
         private const val FLAG = "🇺🇸" // 🇺🇸 — 2 cp, 8 bytes
         private const val ZWJ_FAMILY = "👨‍👩‍👧" // 👨‍👩‍👧 — 5 cp, 18 bytes
     }
