@@ -1,0 +1,241 @@
+{
+  "overall": {
+    "tests": 108,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "classes": [
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.QuackJdbcProbeTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.QuackMetadataAccessProbeTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestApplyDeleteFragmentsEndSnapshotsPrior",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestCatalogShapeRegression",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentAddFilesVsDropColumn",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentAddFilesVsDropTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentAlterViewVsAlterView",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentAlteredTableVsAlteredTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentCreateSchemaSameName",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentCreateTableInDroppedSchema",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentCreateTableSameName",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentCreateTableVsCreateView",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentDeleteVsAlterTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentDeleteVsDelete",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentDeleteVsDropTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentDropDueling",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentInsertDifferentTables",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentInsertSameTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentInsertVsAlterTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentInsertVsDropColumn",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestConcurrentInsertVsDropTable",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestDuckDbQuackCatalogServerSmoke",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestDucklakeStatTypes",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestInterveningChangesParser",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogChangesMadeFormat",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogConcurrentCommit",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogIntegration",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogOnLocalDuckDbSmoke",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogOnQuackSmoke",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestJdbcDucklakeCatalogUuidVersion",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestQuackBackedDuckDbCatalogUrl",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestQuackWrappedMetadataQuery",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.catalog.TestWriteTransactionRetry",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ]
+}
