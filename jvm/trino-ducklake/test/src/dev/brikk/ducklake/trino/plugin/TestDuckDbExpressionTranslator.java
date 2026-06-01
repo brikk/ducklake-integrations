@@ -266,15 +266,14 @@ public class TestDuckDbExpressionTranslator
     }
 
     @Test
-    public void testArithmeticAllOperators()
+    public void testArithmeticPushedOperators()
     {
-        // Each of $subtract / $multiply / $divide / $modulo as a single conjunct
-        // pinned against the expected DuckDB SQL.
+        // $subtract and $multiply still push as bare DuckDB operators — both engines
+        // align on integer overflow throws and float NaN/Inf propagation, so the wire
+        // shape matches Trino-native end-to-end. $add is covered separately above.
         Object[][] cases = {
                 {StandardFunctions.SUBTRACT_FUNCTION_NAME, "-", "((\"id\" - 1) = 10)"},
                 {StandardFunctions.MULTIPLY_FUNCTION_NAME, "*", "((\"id\" * 1) = 10)"},
-                {StandardFunctions.DIVIDE_FUNCTION_NAME, "/", "((\"id\" / 1) = 10)"},
-                {StandardFunctions.MODULO_FUNCTION_NAME, "%", "((\"id\" % 1) = 10)"},
         };
         for (Object[] c : cases) {
             FunctionName op = (FunctionName) c[0];
@@ -288,6 +287,36 @@ public class TestDuckDbExpressionTranslator
             assertThat(DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS))
                     .as("operator %s", c[1])
                     .containsExactly(expectedSql);
+        }
+    }
+
+    @Test
+    public void testDivideAndModuloAreNotPushed()
+    {
+        // B2: $divide and $modulo are INTENTIONALLY not pushed — DuckDB diverges
+        // from Trino on integer division semantics (5/2=2.5 vs 2) AND on
+        // divide-by-zero handling (DuckDB returns Infinity/NULL silently, Trino
+        // throws). A bare-operator push on the .db read path returns wrong rows
+        // AND suppresses Trino's expected exceptions, because Trino's above-scan
+        // re-evaluation can't restore rows DuckDB stripped at the source.
+        // See TestDucklakeArithmeticPushdownParity for the end-to-end RED test
+        // that drove this change. The performant alternative is a `trino_divide`
+        // / `trino_modulo` parity macro in duckdb-trino-parity-extension — captured
+        // in PLAN.md / BEFORE-RESUME B2 as a follow-up.
+        FunctionName[] notPushed = {
+                StandardFunctions.DIVIDE_FUNCTION_NAME,
+                StandardFunctions.MODULO_FUNCTION_NAME,
+        };
+        for (FunctionName op : notPushed) {
+            ConnectorExpression arith = call(op, BIGINT,
+                    new Variable("id", BIGINT),
+                    new Constant(1L, BIGINT));
+            ConnectorExpression expression = call(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME, BOOLEAN,
+                    arith,
+                    new Constant(10L, BIGINT));
+            assertThat(DuckDbExpressionTranslator.translateConjuncts(expression, ASSIGNMENTS))
+                    .as("operator %s must NOT push — semantic divergence from Trino on the .db read path", op)
+                    .isEmpty();
         }
     }
 

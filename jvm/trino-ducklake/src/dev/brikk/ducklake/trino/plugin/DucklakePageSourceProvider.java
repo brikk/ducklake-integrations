@@ -436,6 +436,16 @@ public class DucklakePageSourceProvider
             // give up row-group pruning on files that carry deletes. The performant
             // alternative (project the parquet file_row_number via appendRowNumberColumn and
             // thread it through both transforms) is deferred — see PLAN.md / BEFORE-RESUME B3b.
+            //
+            // INVARIANT: B3b's correctness ALSO depends on splits being whole-file. The
+            // cumulative-offset math seeds nextRowOffset at 0; if a split ever covers a
+            // sub-range of a file (split-by-rowgroup for parallel reads of large files, as
+            // Iceberg/Hive do), this fix is INSUFFICIENT — nextRowOffset would also need to
+            // be seeded from the split's start offset. Today DucklakeSplitManager.createMergedSplit
+            // produces one split per data_file_id (passing primary.fileSizeBytes() and
+            // start=0 throughout), and getFilteredRowGroups below is called with start=0 /
+            // length=split.fileSizeBytes(), so this invariant holds. Any change to split
+            // granularity MUST re-derive position math (or do the performant fix above).
             TupleDomain<ColumnDescriptor> parquetTupleDomain = splitHasActiveDeletes(split)
                     ? TupleDomain.all()
                     : toParquetTupleDomain(descriptorsByPath, effectivePredicate);

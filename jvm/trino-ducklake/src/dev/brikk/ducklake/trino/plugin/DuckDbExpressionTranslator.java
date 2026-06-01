@@ -705,18 +705,41 @@ final class DuckDbExpressionTranslator
 
     private static String arithmeticOperator(FunctionName name)
     {
-        // Trino's $add/$subtract/$multiply/$divide/$modulo standard functions map
-        // to identical SQL operators in DuckDB. Both engines align on integer and
-        // float arithmetic semantics (including overflow throws for integers, NaN
-        // / Inf propagation for floats). Date/interval arithmetic uses different
-        // shapes in the two engines — but if a Constant of those types reaches
-        // translateConstant() it returns null, so the whole arithmetic translation
-        // fails cleanly and stays unpushed. No type-aware gating needed here.
+        // Trino's $add/$subtract/$multiply map to identical SQL operators in DuckDB.
+        // Both engines align on integer and float arithmetic semantics (including
+        // overflow throws for integers, NaN / Inf propagation for floats). Date/
+        // interval arithmetic uses different shapes in the two engines — but if a
+        // Constant of those types reaches translateConstant() it returns null, so
+        // the whole arithmetic translation fails cleanly and stays unpushed. No
+        // type-aware gating needed for the three operators below.
         if (name.equals(StandardFunctions.ADD_FUNCTION_NAME)) return "+";
         if (name.equals(StandardFunctions.SUBTRACT_FUNCTION_NAME)) return "-";
         if (name.equals(StandardFunctions.MULTIPLY_FUNCTION_NAME)) return "*";
-        if (name.equals(StandardFunctions.DIVIDE_FUNCTION_NAME)) return "/";
-        if (name.equals(StandardFunctions.MODULO_FUNCTION_NAME)) return "%";
+        // B2: $divide and $modulo are INTENTIONALLY not pushed. Two independent
+        // divergences make a bare-operator push silently wrong on the .db read path
+        // (TestDucklakeArithmeticPushdownParity exercises both):
+        //   1. Integer DIVISION SEMANTICS — Trino's `/` on integers truncates toward
+        //      zero (Java-style: 5/2=2). DuckDB's `/` on integers performs TRUE
+        //      division and returns a fractional DOUBLE (5/2=2.5). A pushed
+        //      `WHERE id / 2 = 2` therefore returns a DIFFERENT row set from
+        //      DuckDB than Trino-native would produce. Trino re-evaluates the
+        //      predicate above the scan via remainingExpression, BUT it can only
+        //      re-evaluate rows DuckDB returned — rows DuckDB stripped at the
+        //      source cannot be restored.
+        //   2. DIVIDE/MODULO BY ZERO — Trino throws DIVISION_BY_ZERO. DuckDB
+        //      silently returns Infinity (div) / NULL (mod) for the offending row,
+        //      and `Infinity = N` / `NULL = N` evaluates to UNKNOWN, so DuckDB
+        //      strips the row from its output. Trino never sees the row, never
+        //      re-evaluates, never throws — the query silently succeeds with a
+        //      hidden row instead of failing. The same suppression applies to
+        //      float div-by-zero (Trino throws, DuckDB returns NULL).
+        // Returning null here routes both operators through Trino-native evaluation
+        // above the scan. Cost: lose source-side filtering for divide / modulo
+        // predicates on .db files; parquet path was unaffected either way
+        // (pushedExpressions is only consumed by DuckDbFilePageSource). The
+        // performant alternative — a `trino_divide` / `trino_modulo` parity macro
+        // in duckdb-trino-parity-extension that emulates Trino's truncation and
+        // throws on zero — is captured for later in PLAN.md / BEFORE-RESUME B2.
         return null;
     }
 
