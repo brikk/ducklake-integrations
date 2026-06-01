@@ -1,0 +1,154 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.brikk.ducklake.trino.plugin
+
+import com.google.common.collect.ImmutableMap
+import dev.brikk.ducklake.catalog.TableLocationSpec
+import io.trino.spi.TrinoException
+import io.trino.spi.session.PropertyMetadata
+import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
+import java.util.Optional
+
+/**
+ * Unit-tests for `DucklakeTableProperties.LOCATION_PROPERTY` —
+ * scheme detection, trailing-slash normalization, blank-rejection, and
+ * path-traversal rejection. The integration round-trip (Trino write →
+ * catalog row → DuckDB read of the same files) is covered by
+ * `TestDucklakeCrossEngineTableLocation`.
+ */
+class TestDucklakeTablePropertiesLocation {
+    @Test
+    fun testAbsoluteS3LocationParsesAsAbsolute() {
+        val location: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "s3://bucket/data/foo/"))
+
+        assertThat(location).isPresent
+        assertThat(location.get().path).isEqualTo("s3://bucket/data/foo/")
+        assertThat(location.get().isRelative).isFalse()
+    }
+
+    @Test
+    fun testAbsoluteFileLocationParsesAsAbsolute() {
+        val location: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "file:///abs/path/"))
+
+        assertThat(location).isPresent
+        assertThat(location.get().path).isEqualTo("file:///abs/path/")
+        assertThat(location.get().isRelative).isFalse()
+    }
+
+    @Test
+    fun testAbsoluteAbfssLocationParsesAsAbsolute() {
+        val location: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "abfss://container@acct.dfs.core.windows.net/data/"))
+
+        assertThat(location).isPresent
+        assertThat(location.get().path).isEqualTo("abfss://container@acct.dfs.core.windows.net/data/")
+        assertThat(location.get().isRelative).isFalse()
+    }
+
+    @Test
+    fun testRelativeLocationParsesAsRelative() {
+        val location: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "special_dir/"))
+
+        assertThat(location).isPresent
+        assertThat(location.get().path).isEqualTo("special_dir/")
+        assertThat(location.get().isRelative).isTrue()
+    }
+
+    @Test
+    fun testMissingTrailingSlashIsAppended() {
+        val absolute: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "s3://bucket/data/foo"))
+        assertThat(absolute).isPresent
+        assertThat(absolute.get().path).isEqualTo("s3://bucket/data/foo/")
+        assertThat(absolute.get().isRelative).isFalse()
+
+        val relative: Optional<TableLocationSpec> = DucklakeTableProperties.getLocation(
+                ImmutableMap.of<String, Any>("location", "rel_dir"))
+        assertThat(relative).isPresent
+        assertThat(relative.get().path).isEqualTo("rel_dir/")
+        assertThat(relative.get().isRelative).isTrue()
+    }
+
+    @Test
+    fun testMissingPropertyReturnsEmpty() {
+        assertThat(DucklakeTableProperties.getLocation(ImmutableMap.of())).isEmpty
+    }
+
+    @Test
+    fun testBlankPropertyReturnsEmpty() {
+        // Validation runs at property-set time; getLocation treats post-validation blank as "no value".
+        assertThat(DucklakeTableProperties.getLocation(emptyValue(""))).isEmpty
+        assertThat(DucklakeTableProperties.getLocation(emptyValue("   "))).isEmpty
+    }
+
+    @Test
+    fun testValidatorRejectsBlank() {
+        val meta: PropertyMetadata<*> = locationPropertyMetadata()
+        assertThatThrownBy { meta.decode("") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("location must not be blank")
+        assertThatThrownBy { meta.decode("   ") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("location must not be blank")
+    }
+
+    @Test
+    fun testValidatorRejectsPathTraversal() {
+        val meta: PropertyMetadata<*> = locationPropertyMetadata()
+        assertThatThrownBy { meta.decode("../escape/") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("..")
+        assertThatThrownBy { meta.decode("s3://bucket/../escape/") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("..")
+        // Embedded ".." in the middle of a path is rejected too.
+        assertThatThrownBy { meta.decode("a/../b/") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("..")
+        // Windows-style traversal also rejected.
+        assertThatThrownBy { meta.decode("a\\..\\b\\") }
+                .isInstanceOf(TrinoException::class.java)
+                .hasMessageContaining("..")
+    }
+
+    @Test
+    fun testValidatorAcceptsDoubleDotInsideSegment() {
+        // ".." is only rejected when it stands alone as a segment.
+        // A segment that contains ".." as a substring (e.g. "my..dir") is fine.
+        val meta: PropertyMetadata<*> = locationPropertyMetadata()
+        meta.decode("my..dir/")
+        meta.decode("s3://bucket/dir..with..dots/")
+    }
+
+    companion object {
+        private fun emptyValue(raw: String): Map<String, Any> {
+            // Mirror what Trino does after PropertyMetadata.decode runs the validator; this
+            // helper exists because the validator itself rejects blank input.
+            return ImmutableMap.of<String, Any>("location", raw)
+        }
+
+        private fun locationPropertyMetadata(): PropertyMetadata<*> {
+            val properties: List<PropertyMetadata<*>> = DucklakeTableProperties().tableProperties
+            return properties.stream()
+                    .filter { p -> p.name == "location" }
+                    .findFirst()
+                    .orElseThrow { AssertionError("location property not registered") }
+        }
+    }
+}
