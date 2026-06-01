@@ -64,9 +64,7 @@ import io.trino.spi.type.Type;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.io.ColumnIO;
 import org.apache.parquet.io.MessageColumnIO;
-import org.apache.parquet.io.PrimitiveColumnIO;
 import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -428,7 +426,19 @@ public class DucklakePageSourceProvider
             MessageType fileSchema = fileMetadata.getSchema();
             ParquetDataSourceId dataSourceId = dataSource.getId();
             Map<List<String>, ColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-            TupleDomain<ColumnDescriptor> parquetTupleDomain = toParquetTupleDomain(descriptorsByPath, effectivePredicate);
+            // B3b: when the split carries active position deletes, disable in-reader predicate
+            // pushdown (row-group pruning + page-level skipping). RowIdInjectingPageSource and
+            // DeleteRowFilterTransform derive file positions from cumulative page sizes
+            // (nextRowOffset += positionCount), which only matches true file positions when
+            // pages stream contiguously from row 0. Pruning creates gaps and mis-aligns the
+            // counter, masking the wrong rows. Trino's filter pipeline still applies the
+            // predicate above the page source, so query semantics are preserved — we just
+            // give up row-group pruning on files that carry deletes. The performant
+            // alternative (project the parquet file_row_number via appendRowNumberColumn and
+            // thread it through both transforms) is deferred — see PLAN.md / BEFORE-RESUME B3b.
+            TupleDomain<ColumnDescriptor> parquetTupleDomain = splitHasActiveDeletes(split)
+                    ? TupleDomain.all()
+                    : toParquetTupleDomain(descriptorsByPath, effectivePredicate);
             TupleDomainParquetPredicate parquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC);
             List<RowGroupInfo> rowGroups = getFilteredRowGroups(
                     0,
@@ -600,8 +610,13 @@ public class DucklakePageSourceProvider
 
         // Restrict the pushed-down predicate to columns we actually project (filter
         // pipeline still applies any not-pushed-down or non-projected predicates above).
-        TupleDomain<DucklakeColumnHandle> filePredicate = effectivePredicate.filter(
-                (col, _) -> fileColumns.contains(col));
+        // B3b: when the split carries active position deletes, drop the pushed predicate so
+        // DuckDB returns rows contiguously from row 0. RowIdInjectingPageSource's cumulative
+        // nextRowOffset assumes contiguous output; predicate-pushed DuckDB scans return only
+        // matching rows, breaking the position math. Trino still filters above the page source.
+        TupleDomain<DucklakeColumnHandle> filePredicate = splitHasActiveDeletes(split)
+                ? TupleDomain.all()
+                : effectivePredicate.filter((col, _) -> fileColumns.contains(col));
 
         // Carry Trino's session zone through to the executor so it can run
         // `SET TimeZone` on attach. Required for Tier C correctness (TIMESTAMP
@@ -613,8 +628,12 @@ public class DucklakePageSourceProvider
         Optional<String> duckDbTimeZone = Optional.ofNullable(
                 TrinoTimeZoneNormaliser.normalise(session.getTimeZoneKey().getId()));
 
+        // B3b: drop pushed complex expressions when the split has active deletes — same
+        // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
+        // matching rows, breaking RowIdInjectingPageSource's cumulative-offset math.
+        List<String> effectivePushedExpressions = splitHasActiveDeletes(split) ? List.of() : pushedExpressions;
         ConnectorPageSource pageSource = new DuckDbFilePageSource(
-                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, pushedExpressions,
+                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
                 duckDbTimeZone);
 
         if (rowIdOutputPosition >= 0) {
@@ -704,132 +723,14 @@ public class DucklakePageSourceProvider
     private Set<Long> readDeletedRowsFromFile(TrinoFileSystem fileSystem, String deleteFilePath, DucklakeSplit split)
             throws IOException
     {
-        TrinoInputFile inputFile = fileSystem.newInputFile(toLocation(deleteFilePath));
-
-        AggregatedMemoryContext memoryContext = newSimpleAggregatedMemoryContext();
-        ParquetDataSource dataSource = null;
-        try {
-            dataSource = createDataSource(
-                    inputFile,
-                    OptionalLong.empty(),
-                    parquetReaderOptions,
-                    memoryContext,
-                    fileFormatDataSourceStats);
-
-            // Delete files carry their own footer_size in ducklake_delete_file.
-            long deleteFooterHint = split.deleteFileFooterSizes().getOrDefault(deleteFilePath, 0L);
-            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(dataSource, deleteFooterHint);
-
-            ParquetMetadata parquetMetadata = MetadataReader.readFooter(
-                    dataSource,
-                    parquetReaderOptions,
-                    Optional.empty(),
-                    Optional.empty());
-            FileMetadata fileMetadata = parquetMetadata.getFileMetaData();
-            ParquetDataSourceId dataSourceId = dataSource.getId();
-            MessageType fileSchema = fileMetadata.getSchema();
-            MessageColumnIO messageColumnIO = getColumnIO(fileSchema, fileSchema);
-
-            DeleteFileColumn deleteFileColumn = getDeleteFileColumn(fileSchema, messageColumnIO);
-            Map<List<String>, ColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-            TupleDomain<ColumnDescriptor> parquetTupleDomain = TupleDomain.all();
-            TupleDomainParquetPredicate parquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC);
-            List<RowGroupInfo> rowGroups = getFilteredRowGroups(
-                    0,
-                    inputFile.length(),
-                    dataSource,
-                    parquetMetadata,
-                    ImmutableList.of(parquetTupleDomain),
-                    ImmutableList.of(parquetPredicate),
-                    descriptorsByPath,
-                    UTC,
-                    Domain.DEFAULT_COMPACTION_THRESHOLD,
-                    parquetReaderOptions);
-
-            ParquetReader parquetReader = new ParquetReader(
-                    Optional.ofNullable(fileMetadata.getCreatedBy()),
-                    ImmutableList.of(new Column(deleteFileColumn.columnName(), deleteFileColumn.field())),
-                    false,
-                    rowGroups,
-                    dataSource,
-                    UTC,
-                    memoryContext,
-                    parquetReaderOptions,
-                    exception -> handleParquetException(dataSourceId, exception),
-                    Optional.empty(),
-                    Optional.empty(),
-                    Optional.empty());
-
-            Set<Long> deletedRows = new HashSet<>();
-            try (ConnectorPageSource pageSource = new ParquetPageSource(parquetReader)) {
-                while (!pageSource.isFinished()) {
-                    SourcePage page = pageSource.getNextSourcePage();
-                    if (page == null) {
-                        continue;
-                    }
-                    Block block = page.getBlock(0);
-                    for (int position = 0; position < block.getPositionCount(); position++) {
-                        if (block.isNull(position)) {
-                            continue;
-                        }
-                        deletedRows.add(readDeleteValue(deleteFileColumn.columnType(), block, position));
-                    }
-                }
-            }
-            return deletedRows;
-        }
-        catch (IOException | RuntimeException e) {
-            if (dataSource != null) {
-                try {
-                    dataSource.close();
-                }
-                catch (IOException ex) {
-                    if (!e.equals(ex)) {
-                        e.addSuppressed(ex);
-                    }
-                }
-            }
-            throw new RuntimeException("Failed to read delete file: " + deleteFilePath, e);
-        }
-    }
-
-    private static DeleteFileColumn getDeleteFileColumn(MessageType fileSchema, MessageColumnIO messageColumnIO)
-    {
-        for (org.apache.parquet.schema.Type field : fileSchema.getFields()) {
-            if (!field.isPrimitive()) {
-                continue;
-            }
-            ColumnIO columnIO = messageColumnIO.getChild(field.getName());
-            if (!(columnIO instanceof PrimitiveColumnIO primitiveColumnIO)) {
-                continue;
-            }
-
-            PrimitiveTypeName primitiveTypeName = primitiveColumnIO.getPrimitive();
-            Type columnType = switch (primitiveTypeName) {
-                case INT64 -> BIGINT;
-                case INT32 -> INTEGER;
-                default -> null;
-            };
-
-            if (columnType != null) {
-                Field fieldDefinition = DucklakeParquetTypeUtils.constructField(columnType, columnIO)
-                        .orElseThrow(() -> new TrinoException(NOT_SUPPORTED, "Could not construct field for delete file column: " + field.getName()));
-                return new DeleteFileColumn(field.getName(), columnType, fieldDefinition);
-            }
-        }
-
-        throw new TrinoException(NOT_SUPPORTED, "Delete file must contain at least one INT32/INT64 primitive column");
-    }
-
-    private static long readDeleteValue(Type type, Block block, int position)
-    {
-        if (type.equals(BIGINT)) {
-            return BIGINT.getLong(block, position);
-        }
-        if (type.equals(INTEGER)) {
-            return INTEGER.getInt(block, position);
-        }
-        throw new IllegalArgumentException("Unsupported delete file value type: " + type);
+        // Delete files carry their own footer_size in ducklake_delete_file.
+        long deleteFooterHint = split.deleteFileFooterSizes().getOrDefault(deleteFilePath, 0L);
+        return DucklakeDeleteFileReader.readPositions(
+                fileSystem,
+                deleteFilePath,
+                deleteFooterHint,
+                parquetReaderOptions,
+                fileFormatDataSourceStats);
     }
 
     private static TupleDomain<ColumnDescriptor> toParquetTupleDomain(
@@ -871,6 +772,22 @@ public class DucklakePageSourceProvider
         return TupleDomain.withColumnDomains(parquetDomains);
     }
 
+    /**
+     * Whether the split carries any active position deletes — either external parquet/puffin
+     * delete files or inlined deletes from {@code ducklake_inlined_delete_<tableId>}.
+     *
+     * <p>When this returns {@code true}, the page-source pipeline must NOT push the query
+     * predicate down into the parquet reader or the DuckDB scan: doing so prunes row groups
+     * / skips rows inside the underlying file, breaking the cumulative-offset math that
+     * {@link RowIdInjectingPageSource} and {@link DeleteRowFilterTransform} use to compute
+     * file-absolute positions for delete matching (B3b — see the bug trace and option-(B)
+     * fix in {@code .ai/kotlin-port/BEFORE-RESUME.md}).
+     */
+    static boolean splitHasActiveDeletes(DucklakeSplit split)
+    {
+        return !split.deleteFilePaths().isEmpty() || !split.inlinedDeletedRowPositions().isEmpty();
+    }
+
     private static boolean isPuffinPath(String path)
     {
         // DuckLake's delete-file path always ends with .puffin when format='puffin'
@@ -901,8 +818,6 @@ public class DucklakePageSourceProvider
                 "Error reading Parquet file: " + dataSourceId,
                 exception);
     }
-
-    private record DeleteFileColumn(String columnName, Type columnType, Field field) {}
 
     static final class DeleteRowFilterTransform
             implements Function<SourcePage, SourcePage>

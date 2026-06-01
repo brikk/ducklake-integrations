@@ -82,7 +82,8 @@
       "Bash(rm -rf duckdb-parity-extension/.git duckdb-parity-extension/.github)",
       "Bash(tail -30 /tmp/linux-arm64-build.log 2>/dev/null && echo \"---docker?---\" && docker ps -a 2>&1 | head -5 && echo \"---wc log---\" && wc -l /tmp/linux-arm64-build.log 2>/dev/null)",
       "Bash(./gradlew :trino-ducklake:test --tests 'TestTrinoFunctionAliases' --tests 'TestDucklakeDuckDbReadMode' --tests 'TestDucklakeDuckDbExecutorBackends' --no-daemon)",
-      "Bash(./gradlew :trino-ducklake:test --tests \"dev.brikk.ducklake.trino.plugin.TestDucklakeTemporalPartitionMatcher\")"
+      "Bash(./gradlew :trino-ducklake:test --tests \"dev.brikk.ducklake.trino.plugin.TestDucklakeTemporalPartitionMatcher\")",
+      "Bash(./gradlew :ducklake-catalog:test --tests \"dev.brikk.ducklake.catalog.TestApplyDeleteFragmentsEndSnapshotsPrior\")"
     ]
   }
 }

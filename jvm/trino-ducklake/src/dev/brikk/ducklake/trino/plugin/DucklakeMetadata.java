@@ -87,6 +87,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1227,10 +1228,33 @@ public class DucklakeMetadata
                 resolveWriteFormat(session, handle.tableId(), handle.snapshotId()),
                 DucklakeSessionProperties.getDuckDbWriterMode(session));
 
-        // Build data file ranges for row ID → data file resolution
+        // Build data file ranges for row ID → data file resolution. getDataFiles LEFT-JOINs
+        // ducklake_delete_file, returning one row per (data_file, active delete_file) pair —
+        // group by data_file_id to deduplicate and collect resolved delete-file paths. The
+        // merge sink uses these paths to read prior-active positions and union them with
+        // this commit's new deletes (B3a: writeDeleteFile must preserve prior deletions when
+        // it produces a superseding file, otherwise positions resurrect).
         List<DucklakeDataFile> dataFiles = catalog.getDataFiles(handle.tableId(), handle.snapshotId());
-        List<DucklakeMergeTableHandle.DataFileRange> dataFileRanges = dataFiles.stream()
-                .map(df -> new DucklakeMergeTableHandle.DataFileRange(df.dataFileId(), df.rowIdStart(), df.recordCount()))
+        LinkedHashMap<Long, DucklakeDataFile> primaryByFileId = new LinkedHashMap<>();
+        LinkedHashMap<Long, List<String>> deletePathsByFileId = new LinkedHashMap<>();
+        for (DucklakeDataFile df : dataFiles) {
+            primaryByFileId.putIfAbsent(df.dataFileId(), df);
+            if (df.deleteFilePath().isPresent()) {
+                String resolved = pathResolver.resolveFilePath(
+                        df.deleteFilePath().orElseThrow(),
+                        df.deleteFilePathIsRelative().orElse(false),
+                        tableDataPath);
+                deletePathsByFileId
+                        .computeIfAbsent(df.dataFileId(), _ -> new ArrayList<>())
+                        .add(resolved);
+            }
+        }
+        List<DucklakeMergeTableHandle.DataFileRange> dataFileRanges = primaryByFileId.values().stream()
+                .map(df -> new DucklakeMergeTableHandle.DataFileRange(
+                        df.dataFileId(),
+                        df.rowIdStart(),
+                        df.recordCount(),
+                        deletePathsByFileId.getOrDefault(df.dataFileId(), List.of())))
                 .collect(toImmutableList());
 
         return new DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges);

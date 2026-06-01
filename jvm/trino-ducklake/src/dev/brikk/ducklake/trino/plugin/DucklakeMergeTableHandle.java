@@ -46,10 +46,16 @@ public record DucklakeMergeTableHandle(
     public record DataFileRange(
             @JsonProperty("dataFileId") long dataFileId,
             @JsonProperty("rowIdStart") long rowIdStart,
-            @JsonProperty("recordCount") long recordCount)
+            @JsonProperty("recordCount") long recordCount,
+            @JsonProperty("existingDeleteFilePaths") List<String> existingDeleteFilePaths)
     {
         @JsonCreator
-        public DataFileRange {}
+        public DataFileRange
+        {
+            existingDeleteFilePaths = existingDeleteFilePaths == null
+                    ? List.of()
+                    : List.copyOf(existingDeleteFilePaths);
+        }
 
         public boolean containsRowId(long rowId)
         {

@@ -21,9 +21,11 @@ import io.airlift.slice.Slices;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoOutputFile;
+import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.writer.ParquetSchemaConverter;
 import io.trino.parquet.writer.ParquetWriter;
 import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import dev.brikk.ducklake.trino.plugin.DucklakeMergeTableHandle.DataFileRange;
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment;
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment;
@@ -42,8 +44,10 @@ import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -66,6 +70,8 @@ public class DucklakeMergeSink
     private final JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec;
     private final JsonCodec<DucklakeWriteFragment> writeFragmentCodec;
     private final ParquetWriterOptions writerOptions;
+    private final ParquetReaderOptions parquetReaderOptions;
+    private final FileFormatDataSourceStats fileFormatDataSourceStats;
     private final String trinoVersion;
     private final int dataColumnCount;
 
@@ -81,6 +87,8 @@ public class DucklakeMergeSink
             JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec,
             JsonCodec<DucklakeWriteFragment> writeFragmentCodec,
             ParquetWriterOptions writerOptions,
+            ParquetReaderOptions parquetReaderOptions,
+            FileFormatDataSourceStats fileFormatDataSourceStats,
             String trinoVersion,
             ConnectorPageSink insertSink)
     {
@@ -89,6 +97,8 @@ public class DucklakeMergeSink
         this.deleteFragmentCodec = requireNonNull(deleteFragmentCodec, "deleteFragmentCodec is null");
         this.writeFragmentCodec = requireNonNull(writeFragmentCodec, "writeFragmentCodec is null");
         this.writerOptions = requireNonNull(writerOptions, "writerOptions is null");
+        this.parquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null");
+        this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.trinoVersion = requireNonNull(trinoVersion, "trinoVersion is null");
         this.insertSink = requireNonNull(insertSink, "insertSink is null");
         this.dataColumnCount = mergeHandle.insertHandle().columns().size();
@@ -169,6 +179,34 @@ public class DucklakeMergeSink
     private DucklakeDeleteFragment writeDeleteFile(long dataFileId, List<Long> rowIds)
             throws IOException
     {
+        // B3a: read any prior-active delete files for this data_file_id (paths captured on the
+        // merge handle at beginMerge time) and UNION their positions with this commit's new
+        // deletes. The catalog end-snapshots the prior files in the same transaction we insert
+        // this new one (JdbcDucklakeCatalog.applyDeleteFragments), so the new file must carry
+        // every still-deleted position or rows resurrect. record_count is decremented by
+        // newDeleteCount (positions truly new this commit), since the prior file's positions
+        // were already deducted when it was first committed.
+        List<String> existingDeleteFilePaths = findExistingDeleteFilePaths(dataFileId);
+        LinkedHashSet<Long> unionPositions = new LinkedHashSet<>();
+        for (String existingPath : existingDeleteFilePaths) {
+            Set<Long> priorPositions = DucklakeDeleteFileReader.readPositions(
+                    fileSystem,
+                    existingPath,
+                    0L,
+                    parquetReaderOptions,
+                    fileFormatDataSourceStats);
+            unionPositions.addAll(priorPositions);
+        }
+        // rowIds are disjoint from prior positions by engine invariant: the SELECT phase of
+        // DELETE/UPDATE/MERGE only sees rows that aren't already tombstoned, so the engine
+        // never issues a delete for a position that's in any prior active delete file. We
+        // still go through a set to defend against pathological input rather than relying on
+        // engine semantics for correctness of the size math.
+        long preNewSize = unionPositions.size();
+        unionPositions.addAll(rowIds);
+        long totalPositions = unionPositions.size();
+        long newDeleteCount = totalPositions - preNewSize;
+
         String fileName = "ducklake-delete-" + UUID.randomUUID() + ".parquet";
         String tableDataPath = mergeHandle.insertHandle().tableDataPath();
         Location filePath = Location.of(tableDataPath).appendPath(fileName);
@@ -192,10 +230,10 @@ public class DucklakeMergeSink
                 java.util.Optional.empty(),
                 java.util.Optional.empty());
 
-        // Write all row IDs as a single page
-        io.trino.spi.block.BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, rowIds.size());
-        for (long rowId : rowIds) {
-            BIGINT.writeLong(blockBuilder, rowId);
+        // Write all positions (prior ∪ new) as a single page
+        io.trino.spi.block.BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, (int) totalPositions);
+        for (long position : unionPositions) {
+            BIGINT.writeLong(blockBuilder, position);
         }
         Block block = blockBuilder.build();
         parquetWriter.write(new Page(block.getPositionCount(), block));
@@ -215,14 +253,26 @@ public class DucklakeMergeSink
             footerSize = 0;
         }
 
-        log.debug("Wrote delete file %s with %d row IDs for data file %d", filePath, rowIds.size(), dataFileId);
+        log.debug("Wrote delete file %s with %d total positions (%d new this commit, %d superseded from %d prior file(s)) for data file %d",
+                filePath, totalPositions, newDeleteCount, preNewSize, existingDeleteFilePaths.size(), dataFileId);
 
         return new DucklakeDeleteFragment(
                 dataFileId,
                 fileName,
-                rowIds.size(),
+                totalPositions,
                 fileSize,
-                footerSize);
+                footerSize,
+                newDeleteCount);
+    }
+
+    private List<String> findExistingDeleteFilePaths(long dataFileId)
+    {
+        for (DataFileRange range : mergeHandle.dataFileRanges()) {
+            if (range.dataFileId() == dataFileId) {
+                return range.existingDeleteFilePaths();
+            }
+        }
+        return List.of();
     }
 
     @Override

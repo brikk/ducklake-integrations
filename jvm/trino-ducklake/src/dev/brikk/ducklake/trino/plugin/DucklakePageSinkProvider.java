@@ -15,9 +15,12 @@ package dev.brikk.ducklake.trino.plugin;
 
 import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
+import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment;
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment;
+import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.NodeVersion;
 import io.trino.spi.PageIndexerFactory;
@@ -43,6 +46,8 @@ public class DucklakePageSinkProvider
     private final JsonCodec<DucklakeWriteFragment> fragmentCodec;
     private final JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec;
     private final ParquetWriterConfig parquetWriterConfig;
+    private final ParquetReaderOptions parquetReaderOptions;
+    private final FileFormatDataSourceStats fileFormatDataSourceStats;
     private final long duckdbTargetWriteBytes;
     private final String trinoVersion;
     private final PageIndexerFactory pageIndexerFactory;
@@ -53,6 +58,8 @@ public class DucklakePageSinkProvider
             JsonCodec<DucklakeWriteFragment> fragmentCodec,
             JsonCodec<DucklakeDeleteFragment> deleteFragmentCodec,
             ParquetWriterConfig parquetWriterConfig,
+            ParquetReaderConfig parquetReaderConfig,
+            FileFormatDataSourceStats fileFormatDataSourceStats,
             DucklakeConfig ducklakeConfig,
             NodeVersion nodeVersion,
             PageIndexerFactory pageIndexerFactory)
@@ -61,6 +68,8 @@ public class DucklakePageSinkProvider
         this.fragmentCodec = requireNonNull(fragmentCodec, "fragmentCodec is null");
         this.deleteFragmentCodec = requireNonNull(deleteFragmentCodec, "deleteFragmentCodec is null");
         this.parquetWriterConfig = requireNonNull(parquetWriterConfig, "parquetWriterConfig is null");
+        this.parquetReaderOptions = requireNonNull(parquetReaderConfig, "parquetReaderConfig is null").toParquetReaderOptions();
+        this.fileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null");
         this.duckdbTargetWriteBytes = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
                 .getDuckdbTargetWriteBytes().toBytes();
         this.trinoVersion = requireNonNull(nodeVersion, "nodeVersion is null").toString();
@@ -114,6 +123,8 @@ public class DucklakePageSinkProvider
                 deleteFragmentCodec,
                 fragmentCodec,
                 writerOptions,
+                parquetReaderOptions,
+                fileFormatDataSourceStats,
                 trinoVersion,
                 insertSink);
     }

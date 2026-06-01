@@ -21,13 +21,22 @@ import static java.util.Objects.requireNonNull;
 /**
  * Describes a delete Parquet file written during a DELETE/UPDATE/MERGE operation.
  * Each fragment corresponds to one data file's deletions.
+ *
+ * <p>{@link #deleteCount} is the TOTAL positions stored in the new parquet file
+ * (union of prior-active-delete-file positions plus this commit's new deletes).
+ * {@link #newDeleteCount} is the DELTA that should be subtracted from the table's
+ * {@code record_count} — i.e. the count of positions added by THIS commit only.
+ * The prior file's positions were already deducted from {@code record_count} when
+ * that file was first committed; the new file supersedes it (end-snapshotted in the
+ * same transaction) and re-introducing its count would double-subtract.
  */
 public record DucklakeDeleteFragment(
         @JsonProperty("dataFileId") long dataFileId,
         @JsonProperty("path") String path,
         @JsonProperty("deleteCount") long deleteCount,
         @JsonProperty("fileSizeBytes") long fileSizeBytes,
-        @JsonProperty("footerSize") long footerSize)
+        @JsonProperty("footerSize") long footerSize,
+        @JsonProperty("newDeleteCount") long newDeleteCount)
 {
     @JsonCreator
     public DucklakeDeleteFragment

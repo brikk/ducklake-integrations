@@ -2206,8 +2206,27 @@ public class JdbcDucklakeCatalog
         DSLContext ctx = tx.dsl();
         var delfile = DUCKLAKE_DELETE_FILE.as("delfile");
         var tabstats = DUCKLAKE_TABLE_STATS.as("tabstats");
-        long totalDeleteCount = 0;
+        long totalNewDeleteCount = 0;
         List<DucklakeDeleteFileRecord> deleteFileRecords = new ArrayList<>();
+
+        // End-snapshot any prior active delete files for the data_file_ids we're about to
+        // write new delete files for. DuckLake's spec invariant is ≤1 active delete file per
+        // data_file_id per snapshot (README:223, checkDeleteFileOverlap:1311-1312); the sink
+        // unions prior-active positions with this commit's new positions into the new file,
+        // so superseding the prior is correct (no rows resurrect — the new file carries the
+        // union). Record-count math below uses the DELTA (newDeleteCount), not the union
+        // total, because the prior's positions were already deducted at first commit.
+        Set<Long> touchedDataFileIds = new HashSet<>();
+        for (DucklakeDeleteFragment fragment : deleteFragments) {
+            touchedDataFileIds.add(fragment.dataFileId());
+        }
+        if (!touchedDataFileIds.isEmpty()) {
+            ctx.update(delfile)
+                    .set(delfile.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(delfile.DATA_FILE_ID.in(touchedDataFileIds))
+                    .and(delfile.END_SNAPSHOT.isNull())
+                    .execute();
+        }
 
         for (DucklakeDeleteFragment fragment : deleteFragments) {
             long deleteFileId = tx.allocateFileId();
@@ -2225,17 +2244,19 @@ public class JdbcDucklakeCatalog
             r.setFooterSize(fragment.footerSize());
             deleteFileRecords.add(r);
 
-            totalDeleteCount += fragment.deleteCount();
+            totalNewDeleteCount += fragment.newDeleteCount();
         }
 
         if (!deleteFileRecords.isEmpty()) {
             ctx.batchInsert(deleteFileRecords).execute();
         }
 
-        // Update table stats: decrement record count with GREATEST(0, record_count - ?)
+        // Update table stats: decrement record count by the DELTA (positions added by this
+        // commit only). GREATEST(0, …) defends against arithmetic underflow if stats were
+        // ever inconsistent with the delete-file ledger.
         ctx.update(tabstats)
                 .set(tabstats.RECORD_COUNT,
-                        DSL.greatest(DSL.inline(0L), tabstats.RECORD_COUNT.minus(totalDeleteCount)))
+                        DSL.greatest(DSL.inline(0L), tabstats.RECORD_COUNT.minus(totalNewDeleteCount)))
                 .where(tabstats.TABLE_ID.eq(tableId))
                 .execute();
     }

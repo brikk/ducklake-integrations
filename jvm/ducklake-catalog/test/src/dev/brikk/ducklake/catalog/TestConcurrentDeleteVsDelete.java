@@ -85,13 +85,15 @@ public class TestConcurrentDeleteVsDelete
                 "test_data/delete_vs_delete_winner.parquet",
                 /* deleteCount */ 2L,
                 /* fileSizeBytes */ 256L,
-                /* footerSize */ 64L);
+                /* footerSize */ 64L,
+                /* newDeleteCount */ 2L);
         DucklakeDeleteFragment loserFragment = new DucklakeDeleteFragment(
                 sharedDataFileId,
                 "test_data/delete_vs_delete_loser.parquet",
                 /* deleteCount */ 1L,
                 /* fileSizeBytes */ 256L,
-                /* footerSize */ 64L);
+                /* footerSize */ 64L,
+                /* newDeleteCount */ 1L);
 
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,

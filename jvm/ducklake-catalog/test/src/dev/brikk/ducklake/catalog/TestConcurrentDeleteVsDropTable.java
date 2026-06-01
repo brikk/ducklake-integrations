@@ -83,7 +83,8 @@ public class TestConcurrentDeleteVsDropTable
                 "test_data/delete_vs_drop_table_loser.parquet",
                 /* deleteCount */ 1L,
                 /* fileSizeBytes */ 256L,
-                /* footerSize */ 64L);
+                /* footerSize */ 64L,
+                /* newDeleteCount */ 1L);
 
         ConcurrentWriterHarness.Result result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
                 catalog,
