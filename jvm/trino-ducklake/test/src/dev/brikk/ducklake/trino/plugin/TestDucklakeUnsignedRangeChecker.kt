@@ -38,7 +38,7 @@ class TestDucklakeUnsignedRangeChecker {
                 DucklakeColumnHandle(1, "a", BIGINT, true),
                 DucklakeColumnHandle(2, "b", INTEGER, true)),
             mapOf(1L to "int64", 2L to "int32"))
-        assertThat(checker.isNoOp).isTrue()
+        assertThat(checker.isNoOp()).isTrue()
         // No-op validate must not throw on anything.
         checker.validate(Page(1, smallintBlock((-1).toShort())))
     }

@@ -13,9 +13,9 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_PARQUET
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
 import io.trino.Session
 import io.trino.testing.MaterializedRow
 import org.assertj.core.api.Assertions.assertThat

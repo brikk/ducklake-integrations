@@ -19,10 +19,10 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STA
 import dev.brikk.ducklake.catalog.testing.CatalogPredicates.currentlyActive
 import dev.brikk.ducklake.catalog.testing.CatalogQueries
 import dev.brikk.ducklake.catalog.testing.CatalogTestSupport
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_WRITER_MODE
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.WRITER_MODE_APPENDER
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DUCKDB_WRITER_MODE
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.WRITER_MODE_APPENDER
 import io.trino.Session
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy

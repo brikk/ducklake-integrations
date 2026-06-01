@@ -111,14 +111,16 @@ object DucklakeTestCatalogEnvironment {
     fun getConnectorProperties(): Map<String, String> {
         val config = createDucklakeConfig()
         val properties = ImmutableMap.builder<String, String>()
-            .put("ducklake.catalog.database-url", requireNonNull(config.catalogDatabaseUrl, "catalogDatabaseUrl is null"))
-            .put("ducklake.data-path", requireNonNull(config.dataPath, "dataPath is null"))
+            .put("ducklake.catalog.database-url", requireNotNull(config.getCatalogDatabaseUrl()) { "catalogDatabaseUrl is null" })
+            .put("ducklake.data-path", requireNotNull(config.getDataPath()) { "dataPath is null" })
 
-        if (config.catalogDatabaseUser != null) {
-            properties.put("ducklake.catalog.database-user", config.catalogDatabaseUser)
+        val catalogDatabaseUser = config.getCatalogDatabaseUser()
+        if (catalogDatabaseUser != null) {
+            properties.put("ducklake.catalog.database-user", catalogDatabaseUser)
         }
-        if (config.catalogDatabasePassword != null) {
-            properties.put("ducklake.catalog.database-password", config.catalogDatabasePassword)
+        val catalogDatabasePassword = config.getCatalogDatabasePassword()
+        if (catalogDatabasePassword != null) {
+            properties.put("ducklake.catalog.database-password", catalogDatabasePassword)
         }
 
         return properties.buildOrThrow()

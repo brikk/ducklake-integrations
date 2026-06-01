@@ -70,10 +70,10 @@ class TestDucklakeInlinedDeleteHandling {
                     table.tableId, victim.dataFileId, 0L, snapshotId)
 
             val splitAfter = getSplits(fx.splitManager, tableHandle).stream()
-                    .filter { split -> split.dataFilePath() == baselineSplit.dataFilePath() }
+                    .filter { split -> split.dataFilePath == baselineSplit.dataFilePath }
                     .findFirst()
                     .orElseThrow()
-            assertThat(splitAfter.inlinedDeletedRowPositions()).containsExactly(0L)
+            assertThat(splitAfter.inlinedDeletedRowPositions).containsExactly(0L)
 
             val rowsAfter = countRows(fx.pageSourceProvider, tableHandle, splitAfter, priceColumn)
             assertThat(rowsAfter).isEqualTo(baselineRows - 1)
@@ -110,16 +110,16 @@ class TestDucklakeInlinedDeleteHandling {
 
             val splitsAfter = getSplits(fx.splitManager, tableHandle)
             val targetAfter = splitsAfter.stream()
-                    .filter { split -> split.dataFilePath() == targetSplit.dataFilePath() }
+                    .filter { split -> split.dataFilePath == targetSplit.dataFilePath }
                     .findFirst()
                     .orElseThrow()
             val otherAfter = splitsAfter.stream()
-                    .filter { split -> split.dataFilePath() == otherSplit.dataFilePath() }
+                    .filter { split -> split.dataFilePath == otherSplit.dataFilePath }
                     .findFirst()
                     .orElseThrow()
 
-            assertThat(targetAfter.inlinedDeletedRowPositions()).containsExactly(0L)
-            assertThat(otherAfter.inlinedDeletedRowPositions()).isEmpty()
+            assertThat(targetAfter.inlinedDeletedRowPositions).containsExactly(0L)
+            assertThat(otherAfter.inlinedDeletedRowPositions).isEmpty()
 
             val targetRowsAfter = countRows(fx.pageSourceProvider, tableHandle, targetAfter, idColumn)
             val otherRowsAfter = countRows(fx.pageSourceProvider, tableHandle, otherAfter, idColumn)
@@ -155,10 +155,10 @@ class TestDucklakeInlinedDeleteHandling {
             assertThat(fx.catalog.hasInlinedDeletes(table.tableId, snapshotId)).isFalse()
 
             val splitAfter = getSplits(fx.splitManager, tableHandle).stream()
-                    .filter { split -> split.dataFilePath() == baselineSplit.dataFilePath() }
+                    .filter { split -> split.dataFilePath == baselineSplit.dataFilePath }
                     .findFirst()
                     .orElseThrow()
-            assertThat(splitAfter.inlinedDeletedRowPositions()).isEmpty()
+            assertThat(splitAfter.inlinedDeletedRowPositions).isEmpty()
 
             val rowsAfter = countRows(fx.pageSourceProvider, tableHandle, splitAfter, priceColumn)
             assertThat(rowsAfter).isEqualTo(baselineRows)
@@ -317,9 +317,9 @@ class TestDucklakeInlinedDeleteHandling {
         private fun findDataFileForSplit(
                 catalog: DucklakeCatalog, tableId: Long, snapshotId: Long, split: DucklakeSplit): DucklakeDataFile {
             return catalog.getDataFiles(tableId, snapshotId).stream()
-                    .filter { dataFile -> split.dataFilePath().endsWith(dataFile.path) }
+                    .filter { dataFile -> split.dataFilePath.endsWith(dataFile.path) }
                     .findFirst()
-                    .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath()) }
+                    .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath) }
         }
 
         private fun priceColumn(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long): DucklakeColumnHandle {

@@ -13,7 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_SNAPSHOT_TIMESTAMP
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_SNAPSHOT_TIMESTAMP
 import io.trino.Session
 import io.trino.spi.type.TimeZoneKey
 import org.assertj.core.api.Assertions.assertThat

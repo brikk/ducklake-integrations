@@ -43,7 +43,7 @@ class TestDucklakeSplitManager {
         val config = DucklakeTestCatalogEnvironment.createDucklakeConfig()
 
         catalog = JdbcDucklakeCatalog(config.toCatalogConfig())
-        splitManager = DucklakeSplitManager(catalog, config, DucklakePathResolver(catalog, config), io.trino.filesystem.cache.NoopSplitAffinityProvider())
+        splitManager = DucklakeSplitManager(catalog!!, config, DucklakePathResolver(catalog!!, config), io.trino.filesystem.cache.NoopSplitAffinityProvider())
     }
 
     @AfterEach
@@ -125,7 +125,7 @@ class TestDucklakeSplitManager {
 
         assertThat(splits).hasSize(catalog!!.getDataFiles(table.tableId, snapshotId).size)
         assertThat(splits)
-                .allSatisfy { split -> assertThat(split.fileStatisticsDomain()).isEqualTo(expectedDomain) }
+                .allSatisfy { split -> assertThat(split.fileStatisticsDomain).isEqualTo(expectedDomain) }
     }
 
     @Test
@@ -139,7 +139,7 @@ class TestDucklakeSplitManager {
 
         assertThat(splits).hasSize(catalog!!.getDataFiles(table.tableId, snapshotId).size)
         assertThat(splits)
-                .allSatisfy { split -> assertThat(split.fileStatisticsDomain().isAll).isTrue() }
+                .allSatisfy { split -> assertThat(split.fileStatisticsDomain.isAll).isTrue() }
     }
 
     @Test
@@ -198,8 +198,8 @@ class TestDucklakeSplitManager {
         assertThat(splits)
                 .isNotEmpty()
                 .allSatisfy { split ->
-                    assertThat(split.footerSize())
-                            .`as`("split footer_size hint for %s", split.dataFilePath())
+                    assertThat(split.footerSize)
+                            .`as`("split footer_size hint for %s", split.dataFilePath)
                             .isPositive()
                 }
     }

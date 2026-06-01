@@ -36,14 +36,14 @@ class TestDuckDbS3Config {
 
         val config = DuckDbS3Config.fromCatalogConfig(raw)
 
-        assertThat(config.endpoint()).contains("http://minio:9000")
-        assertThat(config.region()).contains("us-east-1")
-        assertThat(config.accessKey()).contains("minioadmin")
-        assertThat(config.secretKey()).contains("minioadmin")
-        assertThat(config.pathStyleAccess()).isTrue()
+        assertThat(config.endpoint).contains("http://minio:9000")
+        assertThat(config.region).contains("us-east-1")
+        assertThat(config.accessKey).contains("minioadmin")
+        assertThat(config.secretKey).contains("minioadmin")
+        assertThat(config.pathStyleAccess).isTrue()
         // http:// scheme implies useSsl=false — guards against the easy-to-make
         // mistake of always defaulting useSsl=true.
-        assertThat(config.useSsl()).isFalse()
+        assertThat(config.useSsl).isFalse()
     }
 
     @Test
@@ -52,7 +52,7 @@ class TestDuckDbS3Config {
                 "s3.endpoint" to "https://s3.us-west-2.amazonaws.com",
                 "s3.region" to "us-west-2"))
 
-        assertThat(config.useSsl()).isTrue()
+        assertThat(config.useSsl).isTrue()
     }
 
     @Test
@@ -60,8 +60,8 @@ class TestDuckDbS3Config {
         // No endpoint = AWS-default endpoint resolution; HTTPS is the right default.
         val config = DuckDbS3Config.fromCatalogConfig(mapOf("s3.region" to "us-east-1"))
 
-        assertThat(config.endpoint()).isEmpty
-        assertThat(config.useSsl()).isTrue()
+        assertThat(config.endpoint).isEmpty
+        assertThat(config.useSsl).isTrue()
     }
 
     @Test
@@ -72,10 +72,10 @@ class TestDuckDbS3Config {
                 "s3.aws-access-key" to "",
                 "s3.aws-secret-key" to "  "))
 
-        assertThat(config.endpoint()).isEmpty
-        assertThat(config.region()).isEmpty
-        assertThat(config.accessKey()).isEmpty
-        assertThat(config.secretKey()).isEmpty
+        assertThat(config.endpoint).isEmpty
+        assertThat(config.region).isEmpty
+        assertThat(config.accessKey).isEmpty
+        assertThat(config.secretKey).isEmpty
     }
 
     @Test
@@ -138,11 +138,11 @@ class TestDuckDbS3Config {
         // Defensive — empty map should not throw. All fields absent, useSsl=true.
         val config = DuckDbS3Config.fromCatalogConfig(emptyMap())
 
-        assertThat(config.endpoint()).isEmpty
-        assertThat(config.region()).isEmpty
-        assertThat(config.accessKey()).isEmpty
-        assertThat(config.secretKey()).isEmpty
-        assertThat(config.pathStyleAccess()).isFalse()
-        assertThat(config.useSsl()).isTrue()
+        assertThat(config.endpoint).isEmpty
+        assertThat(config.region).isEmpty
+        assertThat(config.accessKey).isEmpty
+        assertThat(config.secretKey).isEmpty
+        assertThat(config.pathStyleAccess).isFalse()
+        assertThat(config.useSsl).isTrue()
     }
 }

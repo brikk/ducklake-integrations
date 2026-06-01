@@ -1,0 +1,95 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.brikk.ducklake.trino.plugin
+
+import java.util.Optional
+
+/**
+ * S3 settings copied from the catalog's connector-properties map for use by DuckDB's
+ * httpfs extension on the read path. We deliberately reuse the same keys
+ * ({@code s3.endpoint}, {@code s3.region}, {@code s3.aws-access-key},
+ * {@code s3.aws-secret-key}, {@code s3.path-style-access}) that Trino's
+ * {@code FileSystemModule} consumes for the parquet path — the user only configures
+ * S3 once. Reading these directly from the config map avoids binding the same
+ * keys to two airlift {@code @Config} classes (which the Bootstrap would treat as
+ * a duplicate-binding error).
+ *
+ * <p>All fields are optional; when {@link #endpoint()} is absent the connector falls
+ * back to AWS-default endpoint resolution. {@link #useSsl()} is derived from the
+ * endpoint URL scheme (defaults to {@code true} when no endpoint is given).
+ */
+@JvmRecord
+data class DuckDbS3Config(
+        @get:JvmName("endpoint") val endpoint: Optional<String>,
+        @get:JvmName("region") val region: Optional<String>,
+        @get:JvmName("accessKey") val accessKey: Optional<String>,
+        @get:JvmName("secretKey") val secretKey: Optional<String>,
+        @get:JvmName("pathStyleAccess") val pathStyleAccess: Boolean,
+        @get:JvmName("useSsl") val useSsl: Boolean) {
+    /**
+     * Render a DuckDB {@code CREATE OR REPLACE SECRET (TYPE S3, ...)} statement
+     * using these settings. {@code OR REPLACE} makes this idempotent across
+     * concurrent callers — required on the Quack execution-engine path where
+     * the secret is server-instance-scoped and shared across sessions (without
+     * {@code OR REPLACE}, the second client to issue this statement against the
+     * Quack server would fail). Harmless on the in-process path where each
+     * split has its own fresh in-memory DuckDB.
+     */
+    fun renderCreateSecretSql(): String {
+        val sql = StringBuilder("CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3")
+        endpoint.ifPresent { e ->
+            sql.append(", ENDPOINT '").append(stripScheme(e).replace("'", "''")).append("'")
+        }
+        region.ifPresent { r -> sql.append(", REGION '").append(r.replace("'", "''")).append("'") }
+        accessKey.ifPresent { k -> sql.append(", KEY_ID '").append(k.replace("'", "''")).append("'") }
+        secretKey.ifPresent { s -> sql.append(", SECRET '").append(s.replace("'", "''")).append("'") }
+        sql.append(", URL_STYLE '").append(if (pathStyleAccess) "path" else "vhost").append("'")
+        sql.append(", USE_SSL ").append(useSsl)
+        sql.append(")")
+        return sql.toString()
+    }
+
+    companion object {
+        @JvmStatic
+        fun fromCatalogConfig(config: Map<String, String>): DuckDbS3Config {
+            val endpoint = trimmed(config["s3.endpoint"])
+            val useSsl = endpoint.map { e -> !e.lowercase(java.util.Locale.ROOT).startsWith("http://") }
+                    .orElse(true)
+            return DuckDbS3Config(
+                    endpoint,
+                    trimmed(config["s3.region"]),
+                    trimmed(config["s3.aws-access-key"]),
+                    trimmed(config["s3.aws-secret-key"]),
+                    java.lang.Boolean.parseBoolean(config.getOrDefault("s3.path-style-access", "false")),
+                    useSsl)
+        }
+
+        @JvmStatic
+        private fun trimmed(value: String?): Optional<String> {
+            if (value == null) {
+                return Optional.empty()
+            }
+            val t = value.trim()
+            return if (t.isEmpty()) Optional.empty() else Optional.of(t)
+        }
+
+        @JvmStatic
+        private fun stripScheme(url: String): String {
+            // DuckDB's S3 ENDPOINT field expects host:port, not a full URL. Strip http(s)://
+            // if present so the user can paste the same value Trino's FileSystemModule accepts.
+            val idx = url.indexOf("://")
+            return if (idx < 0) url else url.substring(idx + 3)
+        }
+    }
+}

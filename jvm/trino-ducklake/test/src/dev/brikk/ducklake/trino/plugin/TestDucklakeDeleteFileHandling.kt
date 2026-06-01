@@ -78,7 +78,7 @@ class TestDucklakeDeleteFileHandling {
             assertThat(baselineRows).isGreaterThan(1)
 
             val dataFile = findDataFileForSplit(catalog, table.tableId, snapshotId, splitBeforeDelete)
-            val deleteFilePath = writeDeleteParquetFile(splitBeforeDelete.dataFilePath(), dataFile.rowIdStart)
+            val deleteFilePath = writeDeleteParquetFile(splitBeforeDelete.dataFilePath, dataFile.rowIdStart)
             insertDeleteFileMetadata(
                 isolated.jdbcUrl,
                 isolated.user!!,
@@ -91,9 +91,9 @@ class TestDucklakeDeleteFileHandling {
                 Files.size(deleteFilePath.absolutePath))
 
             val splitAfterDelete = getSplits(splitManager, tableHandle).stream()
-                .filter { split -> split.dataFilePath() == splitBeforeDelete.dataFilePath() }
+                .filter { split -> split.dataFilePath == splitBeforeDelete.dataFilePath }
                 .findFirst()
-                .orElseThrow { AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath()) }
+                .orElseThrow { AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath) }
 
             assertThat(splitAfterDelete.deleteFilePath()).isPresent()
             val rowsAfterDelete = countRows(pageSourceProvider, tableHandle, splitAfterDelete, priceColumn)
@@ -154,9 +154,9 @@ class TestDucklakeDeleteFileHandling {
 
         private fun findDataFileForSplit(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long, split: DucklakeSplit): DucklakeDataFile {
             return catalog.getDataFiles(tableId, snapshotId).stream()
-                .filter { dataFile -> split.dataFilePath().endsWith(dataFile.path) }
+                .filter { dataFile -> split.dataFilePath.endsWith(dataFile.path) }
                 .findFirst()
-                .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath()) }
+                .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath) }
         }
 
         @Throws(Exception::class)

@@ -13,13 +13,13 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_READ_MODE
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.PUSHDOWN_TIMESTAMP_WITH_TIMEZONE
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_AUTO
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_HTTPFS
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_MODE_MATERIALIZE
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DUCKDB_READ_MODE
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.PUSHDOWN_TIMESTAMP_WITH_TIMEZONE
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_MODE_AUTO
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_MODE_HTTPFS
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_MODE_MATERIALIZE
 import io.trino.Session
 import io.trino.spi.type.TimeZoneKey
 import io.trino.testing.AbstractTestQueryFramework

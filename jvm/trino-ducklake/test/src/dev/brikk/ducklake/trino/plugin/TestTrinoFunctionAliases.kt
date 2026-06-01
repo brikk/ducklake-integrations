@@ -112,7 +112,7 @@ class TestTrinoFunctionAliases {
 
                 val javaAsNameArity = HashSet<NameArity>()
                 for (na in javaSet) {
-                    javaAsNameArity.add(NameArity(na.name(), na.arity()))
+                    javaAsNameArity.add(NameArity(na.name, na.arity))
                 }
                 assertThat(javaAsNameArity)
                         .`as`("DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS vs trino_meta() drifted")

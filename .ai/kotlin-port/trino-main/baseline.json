@@ -1,0 +1,500 @@
+{
+  "overall": {
+    "tests": 825,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "classes": [
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDeleteRowFilterTransformOverlap",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDuckDbExpressionTranslator",
+      "tests": 66,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDuckDbS3Config",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDuckDbSelectSqlBuilder",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDuckDbWhereClauseTranslator",
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeAddFiles",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeAddFilesCrossEngine",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeAlterTable",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeArithmeticPushdownParity",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeBackendDispatchSmoke",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCatalog",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCatalogSnapshotPinningIntegration",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeConfig",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineCatalogMetadata",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEnginePuffinDeleteRoundTrip",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineRoundTrip",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineSortedTableProperties",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineTableLocation",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineTypeAudit",
+      "tests": 23,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeCrossEngineWriteGuards",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDelete",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDeleteFileHandling",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbArrowStreamWriter",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbExecutorBackends",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbFormatRead",
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbFormatSkeleton",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbFormatWrite",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbReadMode",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeDuckDbWriteRollover",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeFileFormatPrecedence",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeInlinedAndDeleteReads",
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeInlinedDeleteHandling",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeInlinedValueConverter",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeInsertAndCtas",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeMerge",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeMetadataTemporalVersionConversion",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeNestedLeafStats",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePageSourceProvider",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeParquetSchemaBuilder",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePartitionAndTimeTravel",
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePartitionComputer",
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePartitionPruning",
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePartitionedWrite",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePlannerAndJoins",
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePlugin",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePuffinDeleteFileGuard",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakePuffinDeleteReader",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeReadSmoke",
+      "tests": 34,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeSchemaAndTableDdl",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeSnapshotAndSchemaVersion",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeSnapshotResolver",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeSortPropertyMapper",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeSplitManager",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeStatsExtractor",
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeStatsLeafProjector",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeTablePropertiesLocation",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeTemporalPartitionMatcher",
+      "tests": 29,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeTypeConverter",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeTypesAndComplexReads",
+      "tests": 57,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeUnicodeStringRoundTrip",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeUnsignedRangeChecker",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeUpdate",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeViewDialectFiltering",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeViewIntegration",
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeWriteFragment",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestDucklakeWriteMetadataAndSnapshot",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestFooterPrefetchingParquetDataSource",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestSplitHasActiveDeletes",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestTrinoFunctionAliases",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.trino.plugin.TestTrinoTimeZoneNormaliser",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ]
+}

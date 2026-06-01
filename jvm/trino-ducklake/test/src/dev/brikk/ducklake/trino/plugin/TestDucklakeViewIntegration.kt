@@ -13,7 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_SNAPSHOT_ID
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_SNAPSHOT_ID
 import io.trino.Session
 import io.trino.testing.AbstractTestQueryFramework
 import io.trino.testing.QueryRunner

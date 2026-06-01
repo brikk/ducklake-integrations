@@ -17,8 +17,8 @@ import com.google.common.collect.ImmutableMap
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_SNAPSHOT_ID
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.READ_SNAPSHOT_TIMESTAMP
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_SNAPSHOT_ID
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.READ_SNAPSHOT_TIMESTAMP
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.testing.TestingConnectorSession

@@ -1186,7 +1186,7 @@ class TestDuckDbExpressionTranslator {
         /** Builds a session with `pushdown_timestamp_with_timezone` = `value`. */
         private fun sessionWithTierC(value: Boolean): ConnectorSession {
             return TestingConnectorSession.builder()
-                .setPropertyMetadata(DucklakeSessionProperties().sessionProperties)
+                .setPropertyMetadata(DucklakeSessionProperties().getSessionProperties())
                 .setPropertyValues(
                     java.util.Map.of<String, Any>(
                         DucklakeSessionProperties.PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, value

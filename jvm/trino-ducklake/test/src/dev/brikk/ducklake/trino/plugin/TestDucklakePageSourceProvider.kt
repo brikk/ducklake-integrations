@@ -88,27 +88,27 @@ class TestDucklakePageSourceProvider {
         val baseSplit = getSplits(tableHandle).first()
 
         val matchingSplit = DucklakeSplit(
-            baseSplit.dataFilePath(),
-            baseSplit.deleteFilePaths(),
-            baseSplit.rowIdStart(),
-            baseSplit.recordCount(),
-            baseSplit.fileSizeBytes(),
-            baseSplit.fileFormat(),
+            baseSplit.dataFilePath,
+            baseSplit.deleteFilePaths,
+            baseSplit.rowIdStart,
+            baseSplit.recordCount,
+            baseSplit.fileSizeBytes,
+            baseSplit.fileFormat,
             TupleDomain.withColumnDomains(java.util.Map.of(priceColumn, Domain.singleValue(DOUBLE, 30.0))))
         val nonMatchingSplit = DucklakeSplit(
-            baseSplit.dataFilePath(),
-            baseSplit.deleteFilePaths(),
-            baseSplit.rowIdStart(),
-            baseSplit.recordCount(),
-            baseSplit.fileSizeBytes(),
-            baseSplit.fileFormat(),
+            baseSplit.dataFilePath,
+            baseSplit.deleteFilePaths,
+            baseSplit.rowIdStart,
+            baseSplit.recordCount,
+            baseSplit.fileSizeBytes,
+            baseSplit.fileFormat,
             TupleDomain.withColumnDomains(java.util.Map.of(priceColumn, Domain.singleValue(DOUBLE, 1000.0))))
 
         val allRows = countRows(tableHandle, baseSplit, priceColumn)
         val matchingRows = countRows(tableHandle, matchingSplit, priceColumn)
         val nonMatchingRows = countRows(tableHandle, nonMatchingSplit, priceColumn)
 
-        assertThat(allRows).isEqualTo(baseSplit.recordCount())
+        assertThat(allRows).isEqualTo(baseSplit.recordCount)
         assertThat(matchingRows).isEqualTo(allRows)
         assertThat(nonMatchingRows).isEqualTo(0)
     }
@@ -124,12 +124,12 @@ class TestDucklakePageSourceProvider {
 
         val baseSplit = getSplits(tableHandle).first()
         val noneSplit = DucklakeSplit(
-            baseSplit.dataFilePath(),
-            baseSplit.deleteFilePaths(),
-            baseSplit.rowIdStart(),
-            baseSplit.recordCount(),
-            baseSplit.fileSizeBytes(),
-            baseSplit.fileFormat(),
+            baseSplit.dataFilePath,
+            baseSplit.deleteFilePaths,
+            baseSplit.rowIdStart,
+            baseSplit.recordCount,
+            baseSplit.fileSizeBytes,
+            baseSplit.fileFormat,
             TupleDomain.none())
 
         assertThat(countRows(tableHandle, noneSplit, priceColumn)).isEqualTo(0)
@@ -147,18 +147,18 @@ class TestDucklakePageSourceProvider {
         val baseSplit = getSplits(tableHandle).first()
         val missingColumn = DucklakeColumnHandle(-1, "missing_col", DOUBLE, true)
         val missingColumnPredicateSplit = DucklakeSplit(
-            baseSplit.dataFilePath(),
-            baseSplit.deleteFilePaths(),
-            baseSplit.rowIdStart(),
-            baseSplit.recordCount(),
-            baseSplit.fileSizeBytes(),
-            baseSplit.fileFormat(),
+            baseSplit.dataFilePath,
+            baseSplit.deleteFilePaths,
+            baseSplit.rowIdStart,
+            baseSplit.recordCount,
+            baseSplit.fileSizeBytes,
+            baseSplit.fileFormat,
             TupleDomain.withColumnDomains(java.util.Map.of(missingColumn, Domain.singleValue(DOUBLE, 1.0))))
 
         val allRows = countRows(tableHandle, baseSplit, priceColumn)
         val rowsWithMissingColumnPredicate = countRows(tableHandle, missingColumnPredicateSplit, priceColumn)
 
-        assertThat(allRows).isEqualTo(baseSplit.recordCount())
+        assertThat(allRows).isEqualTo(baseSplit.recordCount)
         assertThat(rowsWithMissingColumnPredicate).isEqualTo(allRows)
     }
 
@@ -173,16 +173,16 @@ class TestDucklakePageSourceProvider {
 
         val baseSplit = getSplits(tableHandle).first()
         val fileUriSplit = DucklakeSplit(
-            Path.of(baseSplit.dataFilePath()).toUri().toString(),
-            baseSplit.deleteFilePaths(),
-            baseSplit.rowIdStart(),
-            baseSplit.recordCount(),
-            baseSplit.fileSizeBytes(),
-            baseSplit.fileFormat(),
-            baseSplit.fileStatisticsDomain())
+            Path.of(baseSplit.dataFilePath).toUri().toString(),
+            baseSplit.deleteFilePaths,
+            baseSplit.rowIdStart,
+            baseSplit.recordCount,
+            baseSplit.fileSizeBytes,
+            baseSplit.fileFormat,
+            baseSplit.fileStatisticsDomain)
 
         val expectedRows = countRows(tableHandle, baseSplit, priceColumn)
-        assertThat(expectedRows).isEqualTo(baseSplit.recordCount())
+        assertThat(expectedRows).isEqualTo(baseSplit.recordCount)
         assertThat(countRows(tableHandle, fileUriSplit, priceColumn)).isEqualTo(expectedRows)
     }
 
@@ -326,7 +326,7 @@ class TestDucklakePageSourceProvider {
 
         // Should return all rows, with null values for the missing column
         val rows = countRows(tableHandle, split, missingColumn)
-        assertThat(rows).isEqualTo(split.recordCount())
+        assertThat(rows).isEqualTo(split.recordCount)
 
         // Verify all values are null
         pageSourceProvider.createPageSource(
@@ -375,7 +375,7 @@ class TestDucklakePageSourceProvider {
                 }
             }
         }
-        assertThat(rows).isEqualTo(split.recordCount())
+        assertThat(rows).isEqualTo(split.recordCount)
     }
 
     @Test

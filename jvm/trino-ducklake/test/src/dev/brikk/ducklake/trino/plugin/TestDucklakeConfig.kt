@@ -25,8 +25,8 @@ class TestDucklakeConfig {
     fun testTemporalPartitionEncodingDefaults() {
         val config = DucklakeConfig()
 
-        assertThat(config.temporalPartitionEncoding).isEqualTo(CALENDAR)
-        assertThat(config.isTemporalPartitionEncodingReadLeniency).isTrue()
+        assertThat(config.getTemporalPartitionEncoding()).isEqualTo(CALENDAR)
+        assertThat(config.isTemporalPartitionEncodingReadLeniency()).isTrue()
     }
 
     @Test
@@ -35,8 +35,8 @@ class TestDucklakeConfig {
                 .setTemporalPartitionEncoding("epoch")
                 .setTemporalPartitionEncodingReadLeniency(false)
 
-        assertThat(config.temporalPartitionEncoding).isEqualTo(EPOCH)
-        assertThat(config.isTemporalPartitionEncodingReadLeniency).isFalse()
+        assertThat(config.getTemporalPartitionEncoding()).isEqualTo(EPOCH)
+        assertThat(config.isTemporalPartitionEncodingReadLeniency()).isFalse()
     }
 
     @Test
@@ -56,7 +56,7 @@ class TestDucklakeConfig {
         // httpfs without any tuning. If a future change moves this default, the tests
         // that rely on threshold-based routing in TestDucklakeDuckDbReadMode will need
         // updating too.
-        assertThat(DucklakeConfig().duckdbAutoHttpfsThreshold)
+        assertThat(DucklakeConfig().getDuckdbAutoHttpfsThreshold())
                 .isEqualTo(DataSize.ofBytes(64L * 1024 * 1024))
     }
 
@@ -65,6 +65,6 @@ class TestDucklakeConfig {
         val config = DucklakeConfig()
                 .setDuckdbAutoHttpfsThreshold(DataSize.valueOf("128MB"))
 
-        assertThat(config.duckdbAutoHttpfsThreshold.toBytes()).isEqualTo(128L * 1024 * 1024)
+        assertThat(config.getDuckdbAutoHttpfsThreshold().toBytes()).isEqualTo(128L * 1024 * 1024)
     }
 }

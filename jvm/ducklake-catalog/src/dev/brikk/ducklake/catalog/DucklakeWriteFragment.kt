@@ -29,7 +29,7 @@ data class DucklakeWriteFragment(
     @get:JsonProperty("footerSize") @get:JvmName("footerSize") val footerSize: Long,
     @get:JsonProperty("recordCount") @get:JvmName("recordCount") val recordCount: Long,
     @get:JsonProperty("columnStats") @get:JvmName("columnStats") val columnStats: List<DucklakeFileColumnStats>,
-    @get:JsonProperty("partitionValues") @get:JvmName("partitionValues") val partitionValues: Map<Int, String>,
+    @get:JsonProperty("partitionValues") @get:JvmName("partitionValues") val partitionValues: Map<Int, String?>,
     @get:JsonProperty("partitionId") @get:JvmName("partitionId") val partitionId: OptionalLong,
     @get:JsonProperty("nameMap") @get:JvmName("nameMap") val nameMap: Optional<DucklakeNameMap>,
 ) {
@@ -78,7 +78,7 @@ data class DucklakeWriteFragment(
         footerSize: Long,
         recordCount: Long,
         columnStats: List<DucklakeFileColumnStats>,
-        partitionValues: Map<Int, String>,
+        partitionValues: Map<Int, String?>,
         partitionId: OptionalLong,
     ) : this(
         path = path,
@@ -106,7 +106,7 @@ data class DucklakeWriteFragment(
         footerSize: Long,
         recordCount: Long,
         columnStats: List<DucklakeFileColumnStats>,
-        partitionValues: Map<Int, String>,
+        partitionValues: Map<Int, String?>,
         partitionId: OptionalLong,
     ) : this(
         path = path,
@@ -144,7 +144,7 @@ data class DucklakeWriteFragment(
             @JsonProperty("footerSize") footerSize: Long,
             @JsonProperty("recordCount") recordCount: Long,
             @JsonProperty("columnStats") columnStats: List<DucklakeFileColumnStats>,
-            @JsonProperty("partitionValues") partitionValues: Map<Int, String>?,
+            @JsonProperty("partitionValues") partitionValues: Map<Int, String?>?,
             @JsonProperty("partitionId") partitionId: OptionalLong?,
             @JsonProperty("nameMap") nameMap: Optional<DucklakeNameMap>?,
         ): DucklakeWriteFragment {

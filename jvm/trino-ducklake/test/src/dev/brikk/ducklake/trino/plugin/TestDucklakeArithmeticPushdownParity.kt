@@ -13,8 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.DUCKDB_READ_MODE
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DUCKDB_READ_MODE
 import io.trino.Session
 import io.trino.testing.MaterializedResult
 import org.assertj.core.api.Assertions.assertThat
