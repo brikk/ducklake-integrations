@@ -58,8 +58,8 @@ class TestConcurrentDeleteVsDropTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
-            sharedDataFileId = catalog.getDataFiles(tableId, snapshotId).first().dataFileId()
+            tableId = table.tableId
+            sharedDataFileId = catalog.getDataFiles(tableId, snapshotId).first().dataFileId
         }
 
         @JvmStatic

@@ -55,12 +55,12 @@ class TestConcurrentInsertSameTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "id" }
+                .filter { c -> c.columnName == "id" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
         }
 
         @AfterAll
@@ -121,7 +121,7 @@ class TestConcurrentInsertSameTable {
             .`as`("both fragments must be present at the latest snapshot")
             .hasSize((preDataFileCount + 2).toInt())
         assertThat(dataFiles)
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .contains(winnerFragment.path(), loserFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .contains(winnerFragment.path, loserFragment.path)
     }
 }

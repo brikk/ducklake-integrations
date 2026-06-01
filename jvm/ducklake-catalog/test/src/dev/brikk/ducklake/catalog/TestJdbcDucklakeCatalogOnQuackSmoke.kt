@@ -53,7 +53,7 @@ open class TestJdbcDucklakeCatalogOnQuackSmoke {
                 "ATTACH 'ducklake:quack:...' must auto-bootstrap the metadata schema and " +
                     "create the default 'main' DuckLake schema visible to listSchemas"
             )
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .contains("main")
     }
 
@@ -64,7 +64,7 @@ open class TestJdbcDucklakeCatalogOnQuackSmoke {
 
         val snapshotId = catalog!!.currentSnapshotId
         assertThat(catalog!!.listSchemas(snapshotId))
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .contains(name)
     }
 

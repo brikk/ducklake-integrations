@@ -54,12 +54,12 @@ class TestConcurrentInsertVsAlterTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "id" }
+                .filter { c -> c.columnName == "id" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
         }
 
         @AfterAll
@@ -123,11 +123,11 @@ class TestConcurrentInsertVsAlterTable {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTableColumns(tableId, latestSnapshot))
             .`as`("winner's rename visible at the latest snapshot")
-            .extracting(java.util.function.Function<DucklakeColumn, String> { it.columnName() })
+            .extracting(java.util.function.Function<DucklakeColumn, String> { it.columnName })
             .contains("id_renamed")
         assertThat(catalog.getDataFiles(tableId, latestSnapshot))
             .`as`("loser's data file did NOT land — its INSERT was aborted before commit")
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .doesNotContain(loserFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .doesNotContain(loserFragment.path)
     }
 }

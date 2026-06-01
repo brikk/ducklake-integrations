@@ -102,7 +102,7 @@ class TestConcurrentAlterViewVsAlterView {
         val latestSnapshot = catalog.currentSnapshotId
         val landedView = catalog.getView("test_schema", "alter_dueling_view", latestSnapshot)
             .orElseThrow()
-        assertThat(landedView.sql())
+        assertThat(landedView.sql)
             .`as`("winner's SQL is the one that landed; loser's was rolled back")
             .isEqualTo("SELECT 2 AS winner_sql")
     }

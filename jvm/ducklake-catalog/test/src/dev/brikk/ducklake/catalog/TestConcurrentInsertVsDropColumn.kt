@@ -57,12 +57,12 @@ class TestConcurrentInsertVsDropColumn {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             nameColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "name" }
+                .filter { c -> c.columnName == "name" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
         }
 
         @AfterAll
@@ -133,15 +133,15 @@ class TestConcurrentInsertVsDropColumn {
         val dataFiles = catalog.getDataFiles(tableId, latestSnapshot)
         assertThat(dataFiles)
             .`as`("loser's data file must NOT be present — its INSERT was aborted before commit")
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .doesNotContain(loserFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .doesNotContain(loserFragment.path)
         assertThat(dataFiles)
             .`as`("no new data files should land on the table — winner only dropped a column")
             .hasSize(preDataFileCount.toInt())
 
         assertThat(catalog.getTableColumns(tableId, latestSnapshot))
             .`as`("winner's DROP COLUMN must be visible at the latest snapshot")
-            .extracting(java.util.function.Function<DucklakeColumn, Long> { it.columnId() })
+            .extracting(java.util.function.Function<DucklakeColumn, Long> { it.columnId })
             .doesNotContain(nameColumnId)
     }
 }

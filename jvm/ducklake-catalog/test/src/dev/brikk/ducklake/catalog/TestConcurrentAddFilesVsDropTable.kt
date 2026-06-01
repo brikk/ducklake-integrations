@@ -85,12 +85,12 @@ class TestConcurrentAddFilesVsDropTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                    .filter { it.columnName() == "id" }
+                    .filter { it.columnName == "id" }
                     .findFirst()
                     .orElseThrow()
-                    .columnId()
+                    .columnId
         }
 
         @AfterAll

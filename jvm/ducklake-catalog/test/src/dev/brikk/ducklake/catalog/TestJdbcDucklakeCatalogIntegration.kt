@@ -55,7 +55,7 @@ class TestJdbcDucklakeCatalogIntegration {
         val catalog = catalog!!
         val snapshot = catalog.getSnapshot(snapshotId).orElseThrow()
         assertThat(snapshotId).isGreaterThan(0)
-        assertThat(catalog.getSnapshotAtOrBefore(snapshot.snapshotTime()))
+        assertThat(catalog.getSnapshotAtOrBefore(snapshot.snapshotTime))
             .isPresent()
             .get()
             .extracting(DucklakeSnapshot::snapshotId)
@@ -66,12 +66,12 @@ class TestJdbcDucklakeCatalogIntegration {
     fun testListSchemasAndTables() {
         val catalog = catalog!!
         assertThat(catalog.listSchemas(snapshotId))
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .contains("test_schema")
 
         val schema = getSchema("test_schema")
-        assertThat(catalog.listTables(schema.schemaId(), snapshotId))
-            .extracting(java.util.function.Function<DucklakeTable, String> { it.tableName() })
+        assertThat(catalog.listTables(schema.schemaId, snapshotId))
+            .extracting(java.util.function.Function<DucklakeTable, String> { it.tableName })
             .contains("simple_table", "partitioned_table")
     }
 
@@ -79,19 +79,19 @@ class TestJdbcDucklakeCatalogIntegration {
     fun testGetTableAndDataFiles() {
         val catalog = catalog!!
         val table = getTable("test_schema", "simple_table")
-        assertThat(catalog.getTableById(table.tableId(), snapshotId))
+        assertThat(catalog.getTableById(table.tableId, snapshotId))
             .isPresent()
             .get()
             .extracting(DucklakeTable::tableName)
             .isEqualTo("simple_table")
 
-        assertThat(catalog.getDataFiles(table.tableId(), snapshotId))
+        assertThat(catalog.getDataFiles(table.tableId, snapshotId))
             .isNotEmpty()
             .allSatisfy { file ->
-                assertThat(file.path()).isNotBlank()
-                assertThat(file.fileFormat()).isEqualTo("parquet")
-                assertThat(file.recordCount()).isGreaterThan(0)
-                assertThat(file.fileSizeBytes()).isGreaterThan(0)
+                assertThat(file.path).isNotBlank()
+                assertThat(file.fileFormat).isEqualTo("parquet")
+                assertThat(file.recordCount).isGreaterThan(0)
+                assertThat(file.fileSizeBytes).isGreaterThan(0)
             }
     }
 
@@ -99,21 +99,21 @@ class TestJdbcDucklakeCatalogIntegration {
     fun testGetDataFileIdsForPredicate() {
         val catalog = catalog!!
         val table = getTable("test_schema", "simple_table")
-        val columns = catalog.getTableColumns(table.tableId(), snapshotId)
+        val columns = catalog.getTableColumns(table.tableId, snapshotId)
 
         val priceColumnId = getColumnId(columns, "price")
         val dateColumnId = getColumnId(columns, "created_date")
 
         assertThat(
             catalog.findDataFileIdsInRange(
-                table.tableId(),
+                table.tableId,
                 snapshotId,
                 ColumnRangePredicate(priceColumnId, "30.0", "30.0"),
             ),
         ).isNotEmpty()
         assertThat(
             catalog.findDataFileIdsInRange(
-                table.tableId(),
+                table.tableId,
                 snapshotId,
                 ColumnRangePredicate(priceColumnId, "1000.0", "1000.0"),
             ),
@@ -121,14 +121,14 @@ class TestJdbcDucklakeCatalogIntegration {
 
         assertThat(
             catalog.findDataFileIdsInRange(
-                table.tableId(),
+                table.tableId,
                 snapshotId,
                 ColumnRangePredicate(dateColumnId, "2024-02-01", "2024-02-01"),
             ),
         ).isNotEmpty()
         assertThat(
             catalog.findDataFileIdsInRange(
-                table.tableId(),
+                table.tableId,
                 snapshotId,
                 ColumnRangePredicate(dateColumnId, "2025-01-01", "2025-01-01"),
             ),
@@ -139,50 +139,50 @@ class TestJdbcDucklakeCatalogIntegration {
     fun testGetColumnStatsReturnsTypedMinMax() {
         val catalog = catalog!!
         val table = getTable("test_schema", "simple_table")
-        val columns = catalog.getTableColumns(table.tableId(), snapshotId)
-        val statsList = catalog.getColumnStats(table.tableId(), snapshotId)
+        val columns = catalog.getTableColumns(table.tableId, snapshotId)
+        val statsList = catalog.getColumnStats(table.tableId, snapshotId)
 
         val priceColumnId = getColumnId(columns, "price")
         val idColumnId = getColumnId(columns, "id")
         val priceStats = statsList.stream()
-            .filter { it.columnId() == priceColumnId }
+            .filter { it.columnId == priceColumnId }
             .findFirst()
             .orElseThrow()
         val idStats = statsList.stream()
-            .filter { it.columnId() == idColumnId }
+            .filter { it.columnId == idColumnId }
             .findFirst()
             .orElseThrow()
 
-        assertThat(priceStats.minValue().orElseThrow().toDouble()).isLessThanOrEqualTo(19.99)
-        assertThat(priceStats.maxValue().orElseThrow().toDouble()).isGreaterThanOrEqualTo(59.99)
-        assertThat(idStats.minValue().orElseThrow().toLong()).isEqualTo(1L)
-        assertThat(idStats.maxValue().orElseThrow().toLong()).isEqualTo(5L)
-        assertThat(priceStats.totalValueCount()).isEqualTo(5L)
-        assertThat(priceStats.totalNullCount()).isEqualTo(0L)
+        assertThat(priceStats.minValue.orElseThrow().toDouble()).isLessThanOrEqualTo(19.99)
+        assertThat(priceStats.maxValue.orElseThrow().toDouble()).isGreaterThanOrEqualTo(59.99)
+        assertThat(idStats.minValue.orElseThrow().toLong()).isEqualTo(1L)
+        assertThat(idStats.maxValue.orElseThrow().toLong()).isEqualTo(5L)
+        assertThat(priceStats.totalValueCount).isEqualTo(5L)
+        assertThat(priceStats.totalNullCount).isEqualTo(0L)
     }
 
     @Test
     fun testPartitionSpecsReturned() {
         val catalog = catalog!!
         val table = getTable("test_schema", "partitioned_table")
-        val specs = catalog.getPartitionSpecs(table.tableId(), snapshotId)
+        val specs = catalog.getPartitionSpecs(table.tableId, snapshotId)
 
         assertThat(specs).hasSize(1)
-        assertThat(specs.first().fields()).hasSize(1)
-        assertThat(specs.first().fields().first().transform()).isEqualTo(DucklakePartitionTransform.IDENTITY)
+        assertThat(specs.first().fields).hasSize(1)
+        assertThat(specs.first().fields.first().transform).isEqualTo(DucklakePartitionTransform.IDENTITY)
     }
 
     @Test
     fun testFilePartitionValuesReturned() {
         val catalog = catalog!!
         val table = getTable("test_schema", "partitioned_table")
-        val values = catalog.getFilePartitionValues(table.tableId(), snapshotId)
+        val values = catalog.getFilePartitionValues(table.tableId, snapshotId)
 
         assertThat(values).hasSize(3)
         assertThat(values.values)
             .allSatisfy { fileValues ->
                 assertThat(fileValues).hasSize(1)
-                assertThat(fileValues.first().partitionKeyIndex()).isEqualTo(0)
+                assertThat(fileValues.first().partitionKeyIndex).isEqualTo(0)
             }
     }
 
@@ -190,39 +190,39 @@ class TestJdbcDucklakeCatalogIntegration {
     fun testDateRangeStatsCanBeInterpretedAsEpochDays() {
         val catalog = catalog!!
         val table = getTable("test_schema", "simple_table")
-        val columns = catalog.getTableColumns(table.tableId(), snapshotId)
-        val statsList = catalog.getColumnStats(table.tableId(), snapshotId)
+        val columns = catalog.getTableColumns(table.tableId, snapshotId)
+        val statsList = catalog.getColumnStats(table.tableId, snapshotId)
 
         val dateColumnId = getColumnId(columns, "created_date")
         val dateStats = statsList.stream()
-            .filter { it.columnId() == dateColumnId }
+            .filter { it.columnId == dateColumnId }
             .findFirst()
             .orElseThrow()
 
-        assertThat(LocalDate.parse(dateStats.minValue().orElseThrow())).isEqualTo(LocalDate.of(2024, 1, 5))
-        assertThat(LocalDate.parse(dateStats.maxValue().orElseThrow())).isEqualTo(LocalDate.of(2024, 3, 10))
+        assertThat(LocalDate.parse(dateStats.minValue.orElseThrow())).isEqualTo(LocalDate.of(2024, 1, 5))
+        assertThat(LocalDate.parse(dateStats.maxValue.orElseThrow())).isEqualTo(LocalDate.of(2024, 3, 10))
     }
 
     private fun getSchema(schemaName: String): DucklakeSchema {
         return catalog!!.listSchemas(snapshotId).stream()
-            .filter { it.schemaName() == schemaName }
+            .filter { it.schemaName == schemaName }
             .findFirst()
             .orElseThrow { AssertionError("Missing schema: $schemaName") }
     }
 
     private fun getTable(schemaName: String, tableName: String): DucklakeTable {
         val schema = getSchema(schemaName)
-        return catalog!!.listTables(schema.schemaId(), snapshotId).stream()
-            .filter { it.tableName() == tableName }
+        return catalog!!.listTables(schema.schemaId, snapshotId).stream()
+            .filter { it.tableName == tableName }
             .findFirst()
             .orElseThrow { AssertionError("Missing table: $schemaName.$tableName") }
     }
 
     private fun getColumnId(columns: List<DucklakeColumn>, columnName: String): Long {
         return columns.stream()
-            .filter { it.columnName() == columnName }
+            .filter { it.columnName == columnName }
             .findFirst()
             .orElseThrow { AssertionError("Missing column: $columnName") }
-            .columnId()
+            .columnId
     }
 }

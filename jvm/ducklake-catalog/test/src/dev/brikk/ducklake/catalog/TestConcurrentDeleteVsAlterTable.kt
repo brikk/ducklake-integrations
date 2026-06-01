@@ -53,13 +53,13 @@ class TestConcurrentDeleteVsAlterTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             nameColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "name" }
+                .filter { c -> c.columnName == "name" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
-            sharedDataFileId = catalog.getDataFiles(tableId, snapshotId).first().dataFileId()
+                .columnId
+            sharedDataFileId = catalog.getDataFiles(tableId, snapshotId).first().dataFileId
         }
 
         @JvmStatic
@@ -111,7 +111,7 @@ class TestConcurrentDeleteVsAlterTable {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTableColumns(tableId, latestSnapshot))
             .`as`("winner's DROP COLUMN visible at the latest snapshot")
-            .extracting(java.util.function.Function<DucklakeColumn, Long> { it.columnId() })
+            .extracting(java.util.function.Function<DucklakeColumn, Long> { it.columnId })
             .doesNotContain(nameColumnId)
     }
 }

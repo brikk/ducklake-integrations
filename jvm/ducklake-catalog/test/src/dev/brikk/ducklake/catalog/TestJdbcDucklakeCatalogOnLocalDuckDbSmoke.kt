@@ -97,7 +97,7 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
         val catalog = catalog!!
         val snapshotId = catalog.currentSnapshotId
         assertThat(catalog.listSchemas(snapshotId))
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .contains("main")
     }
 
@@ -108,7 +108,7 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
         catalog.createSchema(schemaName)
 
         val schema = catalog.listSchemas(catalog.currentSnapshotId).stream()
-            .filter { it.schemaName() == schemaName }
+            .filter { it.schemaName == schemaName }
             .findFirst()
             .orElseThrow { AssertionError("schema not visible after createSchema") }
 
@@ -123,12 +123,12 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
         catalog.createTable(schemaName, "smoke_tbl", cols, Optional.empty(), Optional.empty())
 
         val snapshotId = catalog.currentSnapshotId
-        assertThat(catalog.listTables(schema.schemaId(), snapshotId))
-            .extracting(java.util.function.Function<DucklakeTable, String> { it.tableName() })
+        assertThat(catalog.listTables(schema.schemaId, snapshotId))
+            .extracting(java.util.function.Function<DucklakeTable, String> { it.tableName })
             .containsExactly("smoke_tbl")
 
         catalog.dropTable(schemaName, "smoke_tbl")
-        assertThat(catalog.listTables(schema.schemaId(), catalog.currentSnapshotId))
+        assertThat(catalog.listTables(schema.schemaId, catalog.currentSnapshotId))
             .`as`(
                 "dropTable must end-snapshot the row (UPDATE on ducklake_table) " +
                     "and listTables must respect it",
@@ -137,7 +137,7 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
 
         catalog.dropSchema(schemaName)
         assertThat(catalog.listSchemas(catalog.currentSnapshotId))
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .doesNotContain(schemaName)
     }
 }

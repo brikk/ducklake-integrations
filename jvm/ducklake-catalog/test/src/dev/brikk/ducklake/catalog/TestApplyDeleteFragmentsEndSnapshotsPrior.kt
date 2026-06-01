@@ -71,9 +71,9 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
 
             val snapshotId = cat.currentSnapshotId
             val table = cat.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
-            dataFileId = cat.getDataFiles(tableId, snapshotId).first().dataFileId()
-            initialRecordCount = cat.getTableStats(tableId).orElseThrow().recordCount()
+            tableId = table.tableId
+            dataFileId = cat.getDataFiles(tableId, snapshotId).first().dataFileId
+            initialRecordCount = cat.getTableStats(tableId).orElseThrow().recordCount
             // simple_table is seeded with 5 rows in a single data file
             assertThat(initialRecordCount).isEqualTo(5L)
         }
@@ -103,7 +103,7 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
         catalog!!.commitDelete(tableId, listOf(first))
 
         val activeAfterFirst = countActiveDeleteFiles(dataFileId)
-        val recordCountAfterFirst = catalog!!.getTableStats(tableId).orElseThrow().recordCount()
+        val recordCountAfterFirst = catalog!!.getTableStats(tableId).orElseThrow().recordCount
         assertThat(activeAfterFirst)
             .`as`("exactly one active delete file after the first commit")
             .isEqualTo(1L)
@@ -124,7 +124,7 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
         catalog!!.commitDelete(tableId, listOf(second))
 
         val activeAfterSecond = countActiveDeleteFiles(dataFileId)
-        val recordCountAfterSecond = catalog!!.getTableStats(tableId).orElseThrow().recordCount()
+        val recordCountAfterSecond = catalog!!.getTableStats(tableId).orElseThrow().recordCount
 
         assertThat(activeAfterSecond)
             .`as`(

@@ -51,12 +51,12 @@ class TestConcurrentInsertVsDropTable {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "id" }
+                .filter { c -> c.columnName == "id" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
         }
 
         @AfterAll

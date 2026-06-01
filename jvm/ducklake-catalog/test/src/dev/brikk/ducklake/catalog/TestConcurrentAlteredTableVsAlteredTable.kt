@@ -62,7 +62,7 @@ class TestConcurrentAlteredTableVsAlteredTable {
 
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTableColumns(tableId, latestSnapshot))
-                .extracting(java.util.function.Function<DucklakeColumn, String> { it.columnName() })
+                .extracting(java.util.function.Function<DucklakeColumn, String> { it.columnName })
                 .`as`("only the winner's column lands; loser's altered_table aborted")
                 .contains("winner_col")
                 .doesNotContain("loser_col")
@@ -90,7 +90,7 @@ class TestConcurrentAlteredTableVsAlteredTable {
             catalog = JdbcDucklakeCatalog(config)
 
             val snapshotId = catalog.currentSnapshotId
-            tableId = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow().tableId()
+            tableId = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow().tableId
         }
 
         @AfterAll

@@ -105,7 +105,7 @@ class TestConcurrentCreateTableInDroppedSchema {
             .`as`("winner's dropSchema must be visible at the latest snapshot")
             .isEmpty
         assertThat(catalog.listSchemas(latestSnapshot))
-            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName() })
+            .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .`as`("no resurrected schema; loser did not re-create it")
             .doesNotContain("about_to_be_dropped")
     }

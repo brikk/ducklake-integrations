@@ -55,20 +55,20 @@ class TestConcurrentInsertDifferentTables {
 
             val snapshotId = catalog.currentSnapshotId
             val simpleTable = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            simpleTableId = simpleTable.tableId()
+            simpleTableId = simpleTable.tableId
             simpleIdColumnId = catalog.getTableColumns(simpleTableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "id" }
+                .filter { c -> c.columnName == "id" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
 
             val partitionedTable = catalog.getTable("test_schema", "partitioned_table", snapshotId).orElseThrow()
-            partitionedTableId = partitionedTable.tableId()
+            partitionedTableId = partitionedTable.tableId
             partitionedIdColumnId = catalog.getTableColumns(partitionedTableId, snapshotId).stream()
-                .filter { c -> c.columnName() == "id" }
+                .filter { c -> c.columnName == "id" }
                 .findFirst()
                 .orElseThrow()
-                .columnId()
+                .columnId
         }
 
         @AfterAll
@@ -141,23 +141,23 @@ class TestConcurrentInsertDifferentTables {
             .`as`("winner's data file must land on simple_table")
             .hasSize((preSimpleFileCount + 1).toInt())
         assertThat(simpleFiles)
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .contains(winnerFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .contains(winnerFragment.path)
 
         val partitionedFiles = catalog.getDataFiles(partitionedTableId, latestSnapshot)
         assertThat(partitionedFiles)
             .`as`("loser's data file must land on partitioned_table (proves no cross-talk)")
             .hasSize((prePartitionedFileCount + 1).toInt())
         assertThat(partitionedFiles)
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .contains(loserFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .contains(loserFragment.path)
 
         // Cross-talk negative checks: winner's file must NOT appear on the loser's table and vice versa.
         assertThat(simpleFiles)
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .doesNotContain(loserFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .doesNotContain(loserFragment.path)
         assertThat(partitionedFiles)
-            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-            .doesNotContain(winnerFragment.path())
+            .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+            .doesNotContain(winnerFragment.path)
     }
 }

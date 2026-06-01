@@ -61,8 +61,8 @@ class TestConcurrentAddFilesVsDropColumn {
         val dataFiles = catalog.getDataFiles(tableId, latestSnapshot)
         assertThat(dataFiles)
                 .`as`("loser's data file must NOT be present — its add_files was aborted before commit")
-                .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path() })
-                .doesNotContain(loserFragment.path())
+                .extracting(java.util.function.Function<DucklakeDataFile, String> { it.path })
+                .doesNotContain(loserFragment.path)
     }
 
     companion object {
@@ -89,12 +89,12 @@ class TestConcurrentAddFilesVsDropColumn {
 
             val snapshotId = catalog.currentSnapshotId
             val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
-            tableId = table.tableId()
+            tableId = table.tableId
             nameColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                    .filter { it.columnName() == "name" }
+                    .filter { it.columnName == "name" }
                     .findFirst()
                     .orElseThrow()
-                    .columnId()
+                    .columnId
         }
 
         @AfterAll

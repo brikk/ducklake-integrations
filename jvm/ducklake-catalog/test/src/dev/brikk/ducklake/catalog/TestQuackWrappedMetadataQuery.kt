@@ -70,7 +70,7 @@ internal class TestQuackWrappedMetadataQuery {
                     .`as`("the same query routed through quack_query_by_name must succeed and " +
                             "map back to the generated DucklakeSnapshotRecord type")
                     .isNotNull
-            assertThat(row.snapshotId)
+            assertThat(row!!.snapshotId)
                     .`as`("snapshot_id of the row returned by max() — should be the latest snapshot")
                     .isPositive()
             // schema_version is BIGINT in the metadata; assert it survives the wrapper
