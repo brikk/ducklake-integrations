@@ -87,7 +87,8 @@
       "Bash(git checkout *)",
       "Bash(./gradlew :trino-ducklake:compileKotlin)",
       "Bash(./gradlew :trino-ducklake:test)",
-      "Bash(python3 -c 'import sys,re; total=0; failed=0; skipped=0; errors=0 *)"
+      "Bash(python3 -c 'import sys,re; total=0; failed=0; skipped=0; errors=0 *)",
+      "Bash(python3 -c 'import json; d=json.load\\(open\\('\\\\''/Users/jminard/DEV/brikk/repos/ducklake-integrations/.ai/kotlin-port/adversarial-review-result.json'\\\\''\\)\\); print\\('\\\\''type:'\\\\'', type\\(d\\).__name__\\); print\\('\\\\''top-level keys:'\\\\'', list\\(d.keys\\(\\)\\) if isinstance\\(d, dict\\) else f'\\\\''list of {len\\(d\\)} items'\\\\''\\); *)"
     ]
   }
 }
