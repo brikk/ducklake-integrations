@@ -62,7 +62,7 @@ public class DucklakePageSink(
     private val writerOptions: ParquetWriterOptions
     private val trinoVersion: String = trinoVersion
     private val targetMaxFileSize: Long
-    private val fileFormat: String = handle.fileFormat()
+    private val fileFormat: String = handle.fileFormat
 
     private val columnTypes: List<Type>
     private val columnNames: List<String>
@@ -97,14 +97,14 @@ public class DucklakePageSink(
             parquetWriterConfig.getBlockSize().toBytes()
         }
 
-        this.columnTypes = handle.columns().stream()
+        this.columnTypes = handle.columns.stream()
                 .map(DucklakeColumnHandle::columnType)
                 .collect(toImmutableList())
-        this.columnNames = handle.columns().stream()
+        this.columnNames = handle.columns.stream()
                 .map(DucklakeColumnHandle::columnName)
                 .collect(toImmutableList())
         this.unsignedRangeChecker = DucklakeUnsignedRangeChecker.build(
-                handle.columns(), handle.allCatalogColumns())
+                handle.columns, handle.allCatalogColumns)
 
         // Build the Parquet schema only when we're actually writing Parquet.
         // The DuckDB-format path doesn't use these fields, and ParquetSchemaConverter
@@ -115,8 +115,8 @@ public class DucklakePageSink(
                     columnTypes, columnNames, false, false)
             this.primitiveTypes = schemaConverter.getPrimitiveTypes()
             this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                    handle.columns(),
-                    handle.allCatalogColumns(),
+                    handle.columns,
+                    handle.allCatalogColumns,
                     schemaConverter.getMessageType())
         }
         else {
@@ -125,12 +125,12 @@ public class DucklakePageSink(
         }
 
         // Set up partitioner if table is partitioned
-        if (handle.partitionSpec().isPresent()) {
+        if (handle.partitionSpec.isPresent()) {
             this.partitioner = DucklakePagePartitioner(
                     requireNonNull(pageIndexerFactory, "pageIndexerFactory is null")!!,
-                    handle.partitionSpec().get(),
-                    handle.columns(),
-                    handle.temporalPartitionEncoding())
+                    handle.partitionSpec.get(),
+                    handle.columns,
+                    handle.temporalPartitionEncoding)
         }
         else {
             this.partitioner = null
@@ -283,7 +283,7 @@ public class DucklakePageSink(
         val fileName = "ducklake-" + UUID.randomUUID() + ".parquet"
         val relativePath = buildRelativePath(partitionValues, fileName)
 
-        val filePath = Location.of(handle.tableDataPath()).appendPath(relativePath)
+        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
         writtenFilePaths.add(filePath)
 
         val outputFile = fileSystem.newOutputFile(filePath)
@@ -300,7 +300,7 @@ public class DucklakePageSink(
                 Optional.empty())
 
         val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
-        return ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns(), handle.allCatalogColumns())
+        return ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns, handle.allCatalogColumns)
     }
 
     @Throws(IOException::class)
@@ -308,20 +308,20 @@ public class DucklakePageSink(
         val fileName = "ducklake-" + UUID.randomUUID() + ".db"
         val relativePath = buildRelativePath(partitionValues, fileName)
 
-        val filePath = Location.of(handle.tableDataPath()).appendPath(relativePath)
+        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
         writtenFilePaths.add(filePath)
 
         val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
 
         // Pick the writer impl based on the session-driven duckdb_writer_mode on the handle.
-        if (DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM.equals(handle.duckDbWriterMode(), ignoreCase = true)) {
+        if (DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM.equals(handle.duckDbWriterMode, ignoreCase = true)) {
             return DuckDbArrowStreamFileWriter(
                     fileSystem,
                     filePath,
                     relativePath,
                     partitionValues,
                     partitionId,
-                    handle.columns(),
+                    handle.columns,
                     duckDbLocalTempDir())
         }
         return DuckDbFileWriter(
@@ -330,7 +330,7 @@ public class DucklakePageSink(
                 relativePath,
                 partitionValues,
                 partitionId,
-                handle.columns(),
+                handle.columns,
                 duckDbLocalTempDir())
     }
 

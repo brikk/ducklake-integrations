@@ -80,7 +80,7 @@ public open class DucklakeMergeSink(
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = HashMap()
 
     init {
-        this.dataColumnCount = this.mergeHandle.insertHandle().columns().size
+        this.dataColumnCount = this.mergeHandle.insertHandle.columns.size
     }
 
     override fun storeMergedRows(page: Page) {
@@ -105,9 +105,9 @@ public open class DucklakeMergeSink(
     }
 
     private fun resolveDataFileId(rowId: Long): Long {
-        for (range in mergeHandle.dataFileRanges()) {
+        for (range in mergeHandle.dataFileRanges) {
             if (range.containsRowId(rowId)) {
-                return range.dataFileId()
+                return range.dataFileId
             }
         }
         throw IllegalStateException("No data file found for row ID: " + rowId)
@@ -183,7 +183,7 @@ public open class DucklakeMergeSink(
         val newDeleteCount: Long = totalPositions - preNewSize
 
         val fileName = "ducklake-delete-" + UUID.randomUUID() + ".parquet"
-        val tableDataPath: String = mergeHandle.insertHandle().tableDataPath()
+        val tableDataPath: String = mergeHandle.insertHandle.tableDataPath
         val filePath: Location = Location.of(tableDataPath).appendPath(fileName)
 
         val outputFile = fileSystem.newOutputFile(filePath)
@@ -249,9 +249,9 @@ public open class DucklakeMergeSink(
     }
 
     private fun findExistingDeleteFilePaths(dataFileId: Long): List<String> {
-        for (range in mergeHandle.dataFileRanges()) {
-            if (range.dataFileId() == dataFileId) {
-                return range.existingDeleteFilePaths()
+        for (range in mergeHandle.dataFileRanges) {
+            if (range.dataFileId == dataFileId) {
+                return range.existingDeleteFilePaths
             }
         }
         return emptyList()

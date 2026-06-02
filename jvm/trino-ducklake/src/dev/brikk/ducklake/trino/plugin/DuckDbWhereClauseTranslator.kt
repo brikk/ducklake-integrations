@@ -86,8 +86,8 @@ public object DuckDbWhereClauseTranslator {
     }
 
     private fun translateDomain(column: DucklakeColumnHandle, domain: Domain): Optional<String> {
-        val name = quoteIdentifier(column.columnName())
-        val type: Type = column.columnType()
+        val name = quoteIdentifier(column.columnName)
+        val type: Type = column.columnType
 
         if (domain.isAll()) {
             return Optional.empty()

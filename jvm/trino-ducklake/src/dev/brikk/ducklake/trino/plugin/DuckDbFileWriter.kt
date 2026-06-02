@@ -149,9 +149,9 @@ constructor(
                 sql.append(", ")
             }
             val col = columns.get(i)
-            sql.append('"').append(col.columnName().replace("\"", "\"\"")).append('"')
-            sql.append(' ').append(toDuckDbSqlType(col.columnType()))
-            if (!col.nullable()) {
+            sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
+            sql.append(' ').append(toDuckDbSqlType(col.columnType))
+            if (!col.nullable) {
                 sql.append(" NOT NULL")
             }
         }
@@ -346,10 +346,10 @@ constructor(
         val minMaxColumns: MutableList<Int> = java.util.ArrayList()
         for (i in 0 until columns.size) {
             val col = columns.get(i)
-            val name = '"' + col.columnName().replace("\"", "\"\"") + '"'
+            val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             // Always emit a per-column COUNT(col) so we can derive null_count.
             sql.append(", COUNT(").append(name).append(")")
-            if (supportsMinMax(col.columnType())) {
+            if (supportsMinMax(col.columnType)) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
                 minMaxColumns.add(i)
             }
@@ -385,10 +385,10 @@ constructor(
             val col = columns.get(i)
             val valueCount = valueCounts[i]
             val nullCount = Math.max(0, totalCount - valueCount)
-            val min = formatStatValue(col.columnType(), minValues[i])
-            val max = formatStatValue(col.columnType(), maxValues[i])
+            val min = formatStatValue(col.columnType, minValues[i])
+            val max = formatStatValue(col.columnType, maxValues[i])
             result.add(DucklakeFileColumnStats(
-                    col.columnId(),
+                    col.columnId,
                     0L, // column_size_bytes — not readily available without per-block scan; safe at 0
                     valueCount,
                     nullCount,

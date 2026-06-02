@@ -169,7 +169,7 @@ class TestDucklakeCrossEngineSortedTableProperties
             val sorting = property as SortingProperty<ColumnHandle>
             val handle = sorting.column
             assertThat(handle).isInstanceOf(DucklakeColumnHandle::class.java)
-            assertThat((handle as DucklakeColumnHandle).columnName()).isEqualTo(expectedColumnName)
+            assertThat((handle as DucklakeColumnHandle).columnName).isEqualTo(expectedColumnName)
             assertThat(sorting.order).isEqualTo(expectedOrder)
         }
     }

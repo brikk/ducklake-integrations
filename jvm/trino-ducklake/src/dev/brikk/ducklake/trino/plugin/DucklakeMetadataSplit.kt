@@ -19,35 +19,17 @@ import io.trino.spi.HostAddress
 import io.trino.spi.connector.ConnectorSplit
 
 import io.airlift.slice.SizeOf.instanceSize
-import java.util.Objects
 
-class DucklakeMetadataSplit
+@JvmRecord
+data class DucklakeMetadataSplit @JsonCreator constructor(
+        @get:JvmName("baseTableId")
+        @param:JsonProperty("baseTableId") val baseTableId: Long,
+        @get:JvmName("snapshotId")
+        @param:JsonProperty("snapshotId") val snapshotId: Long,
+        @get:JvmName("metadataTableType")
+        @param:JsonProperty("metadataTableType") val metadataTableType: DucklakeMetadataTableType)
         : ConnectorSplit
 {
-    private val baseTableId: Long
-    private val snapshotId: Long
-    private val metadataTableType: DucklakeMetadataTableType
-
-    @JsonCreator
-    constructor(
-            @JsonProperty("baseTableId") baseTableId: Long,
-            @JsonProperty("snapshotId") snapshotId: Long,
-            @JsonProperty("metadataTableType") metadataTableType: DucklakeMetadataTableType)
-    {
-        this.baseTableId = baseTableId
-        this.snapshotId = snapshotId
-        this.metadataTableType = metadataTableType
-    }
-
-    @JsonProperty("baseTableId")
-    fun baseTableId(): Long = baseTableId
-
-    @JsonProperty("snapshotId")
-    fun snapshotId(): Long = snapshotId
-
-    @JsonProperty("metadataTableType")
-    fun metadataTableType(): DucklakeMetadataTableType = metadataTableType
-
     override fun isRemotelyAccessible(): Boolean
     {
         return true
@@ -61,25 +43,6 @@ class DucklakeMetadataSplit
     override fun getRetainedSizeInBytes(): Long
     {
         return INSTANCE_SIZE.toLong()
-    }
-
-    override fun equals(other: Any?): Boolean
-    {
-        if (this === other) return true
-        if (other !is DucklakeMetadataSplit) return false
-        return baseTableId == other.baseTableId
-                && snapshotId == other.snapshotId
-                && metadataTableType == other.metadataTableType
-    }
-
-    override fun hashCode(): Int
-    {
-        return Objects.hash(baseTableId, snapshotId, metadataTableType)
-    }
-
-    override fun toString(): String
-    {
-        return "DucklakeMetadataSplit[baseTableId=$baseTableId, snapshotId=$snapshotId, metadataTableType=$metadataTableType]"
     }
 
     companion object {

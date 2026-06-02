@@ -21,44 +21,22 @@ import io.trino.spi.type.Type
 import io.airlift.slice.SizeOf.estimatedSizeOf
 import io.airlift.slice.SizeOf.instanceSize
 import io.trino.spi.type.BigintType.BIGINT
-import java.util.Objects
 
 /**
  * Handle for a Ducklake column.
  */
-class DucklakeColumnHandle
+@JvmRecord
+data class DucklakeColumnHandle @JsonCreator constructor(
+        @get:JvmName("columnId")
+        @param:JsonProperty("columnId") val columnId: Long,
+        @get:JvmName("columnName")
+        @param:JsonProperty("columnName") val columnName: String,
+        @get:JvmName("columnType")
+        @param:JsonProperty("columnType") val columnType: Type,
+        @get:JvmName("nullable")
+        @param:JsonProperty("nullable") val nullable: Boolean)
         : ColumnHandle
 {
-    private val columnId: Long
-    private val columnName: String
-    private val columnType: Type
-    private val nullable: Boolean
-
-    @JsonCreator
-    constructor(
-            @JsonProperty("columnId") columnId: Long,
-            @JsonProperty("columnName") columnName: String,
-            @JsonProperty("columnType") columnType: Type,
-            @JsonProperty("nullable") nullable: Boolean)
-    {
-        this.columnId = columnId
-        this.columnName = columnName
-        this.columnType = columnType
-        this.nullable = nullable
-    }
-
-    @JsonProperty("columnId")
-    fun columnId(): Long = columnId
-
-    @JsonProperty("columnName")
-    fun columnName(): String = columnName
-
-    @JsonProperty("columnType")
-    fun columnType(): Type = columnType
-
-    @JsonProperty("nullable")
-    fun nullable(): Boolean = nullable
-
     fun isRowIdColumn(): Boolean
     {
         return columnId == ROW_ID_COLUMN_ID
@@ -74,21 +52,6 @@ class DucklakeColumnHandle
         // INSTANCE_SIZE already accounts for primitive fields (columnId, nullable).
         // columnType is omitted as Type instances are shared by Trino type registry.
         return INSTANCE_SIZE.toLong() + estimatedSizeOf(columnName)
-    }
-
-    override fun equals(other: Any?): Boolean
-    {
-        if (this === other) return true
-        if (other !is DucklakeColumnHandle) return false
-        return columnId == other.columnId
-                && columnName == other.columnName
-                && columnType == other.columnType
-                && nullable == other.nullable
-    }
-
-    override fun hashCode(): Int
-    {
-        return Objects.hash(columnId, columnName, columnType, nullable)
     }
 
     companion object {

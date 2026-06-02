@@ -398,7 +398,7 @@ class DuckDbExpressionTranslator private constructor() {
             if (column.isRowIdColumn()) {
                 return null
             }
-            val escaped = column.columnName().replace("\"", "\"\"")
+            val escaped = column.columnName.replace("\"", "\"\"")
             return "\"" + escaped + "\""
         }
 

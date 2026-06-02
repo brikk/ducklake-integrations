@@ -91,7 +91,7 @@ class DucklakePageSinkProvider @Inject constructor(
                 .setBatchSize(parquetWriterConfig.batchSize)
                 .build()
 
-        val insertSink = createPageSink(ducklakeMergeHandle.insertHandle(), session)
+        val insertSink = createPageSink(ducklakeMergeHandle.insertHandle, session)
 
         return DucklakeMergeSink(
                 ducklakeMergeHandle,

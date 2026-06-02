@@ -70,7 +70,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     NUMERIC_VALUE_OUT_OF_RANGE,
                     String.format(
                             "Value %s for column \"%s\" is out of range for DuckLake %s (allowed: 0..%s)",
-                            value, column.columnName(), ducklakeType, maxLiteral))
+                            value, column.columnName, ducklakeType, maxLiteral))
         }
     }
 
@@ -141,7 +141,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
     }
 
     private class Uint64Check(channel: Int, column: DucklakeColumnHandle) : Check(channel, column, "uint64") {
-        private val type: DecimalType = column.columnType() as DecimalType
+        private val type: DecimalType = column.columnType as DecimalType
 
         override fun validate(block: Block) {
             val positions = block.getPositionCount()
@@ -193,7 +193,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
             var channel = 0
             while (channel < columns.size) {
                 val column: DucklakeColumnHandle = columns.get(channel)
-                val ducklakeType: String? = catalogColumnTypeById.get(column.columnId())
+                val ducklakeType: String? = catalogColumnTypeById.get(column.columnId)
                 if (ducklakeType == null) {
                     channel++
                     continue
@@ -228,7 +228,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     // uint64 read maps to DECIMAL(20, 0); anything else means the table schema
                     // was mutated out from under us and we should skip rather than throw —
                     // this is defensive and shouldn't trigger in practice.
-                    if (column.columnType() is DecimalType && !(column.columnType() as DecimalType).isShort()) {
+                    if (column.columnType is DecimalType && !(column.columnType as DecimalType).isShort()) {
                         Uint64Check(channel, column)
                     }
                     else {

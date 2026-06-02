@@ -46,7 +46,7 @@ object DuckDbSelectSqlBuilder {
                 if (i > 0) {
                     sql.append(", ")
                 }
-                val name = columns[i].columnName().replace("\"", "\"\"")
+                val name = columns[i].columnName.replace("\"", "\"\"")
                 sql.append('"').append(name).append('"')
             }
         }

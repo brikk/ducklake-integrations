@@ -95,6 +95,26 @@
         ]
       },
       {
+        "name": "convert_handles_to_jvm_record_data_class",
+        "scope": "6 Jackson-serialized handles + 1 nested data class (DataFileRange)",
+        "files_converted": [
+          "DucklakeColumnHandle.kt",
+          "DucklakeTableHandle.kt",
+          "DucklakeWritableTableHandle.kt",
+          "DucklakeMergeTableHandle.kt (+ nested DataFileRange)",
+          "DucklakeMetadataSplit.kt",
+          "DucklakeInlinedSplit.kt"
+        ],
+        "before": "regular class with @JsonCreator constructor, @JsonProperty fun foo() accessors, manual equals/hashCode/toString, Objects.hash",
+        "after": "@JvmRecord data class with @get:JvmName / @param:JsonProperty on val params; auto-generated equals/hashCode; custom toString kept only where format diverges from data-class default (ColumnHandle, TableHandle, WritableTableHandle)",
+        "call_sites_updated": "~270 .foo() → .foo across 16 main-source .kt files and 5 test .kt files",
+        "rationale": "Brings the 6 laggards in line with the existing precedent (DucklakeSplit, DucklakeMetadataTableHandle). Drops ~600 lines of boilerplate equals/hashCode/Objects.hash.",
+        "side_effects": [
+          "DucklakeTableHandle.pushedExpressions and DucklakeWritableTableHandle.duckDbWriterMode were made strictly non-null (previously coerced null→default in init). Verified: all in-tree callers pass non-null values; Jackson always emits a list / a string. Wire-format compatibility unchanged.",
+          "Custom toString dropped from DucklakeMergeTableHandle (+DataFileRange), DucklakeInlinedSplit, DucklakeMetadataSplit — verified no tests grep their printed format."
+        ]
+      },
+      {
         "name": "drop_jvmstatic_from_internal_companions",
         "scope": "17 internal-helper files (28 @JvmStatic annotations removed)",
         "files": [
@@ -126,21 +146,9 @@
   },
   "not_applied": [
     {
-      "name": "convert_handles_to_jvm_record_data_class",
-      "rationale": "Six handles (DucklakeColumnHandle, DucklakeTableHandle, DucklakeWritableTableHandle, DucklakeMergeTableHandle, DucklakeMetadataSplit, DucklakeInlinedSplit) use regular-class+manual-equals/hashCode/toString instead of @JvmRecord data class. DucklakeSplit and DucklakeMetadataTableHandle already use @JvmRecord — they are the precedent.",
-      "blast_radius": "Converting to @JvmRecord data class with @get:JvmName preserves Java-side `obj.foo()` access but forces Kotlin call sites onto property syntax (`obj.foo`). Inventory found 78+ Kotlin call sites using `.columnName()/.columnId()/.columnType()/.nullable()` and 143+ call sites for the other handles' accessors — 220+ mechanical updates across 15+ files. The cost is real and the win is style consistency, not behavior.",
-      "decision": "Defer to a dedicated PR after the trino-main slice is locked in. Document the precedent (see DucklakeSplit, DucklakeMetadataTableHandle) so any new handle starts at @JvmRecord. The existing manual equals/hashCode/toString in the six laggards is mechanically correct — no functional bug.",
-      "future_work_marker": "Add // TODO(kit: convert to @JvmRecord data class — see kit-notes.json) on each of the six handle declarations when this kit is iterated."
-    },
-    {
       "name": "collapse_optional_to_nullable_on_internal_paths",
       "rationale": "203 Optional.empty/of/ofNullable occurrences across 26 .kt files. Many are SPI override return types (ConnectorMetadata.getInfo etc.) that must stay Optional. Many are Jackson-serialized field types on handles (e.g. DucklakeSplit.affinityKey: Optional<String>) that the catalog/wire format depends on.",
       "decision": "Skipped in this slice. Splitting internal-only Optional<T> sites from SPI/wire sites requires per-call-site analysis — risk/value worse than the requireNonNull cleanup."
-    },
-    {
-      "name": "move_companion_helpers_to_top_level_or_extract_object",
-      "rationale": "Several files have a companion object whose body is only static helpers (e.g. DuckDbExpressionTranslator.translate*, DucklakeParquetSchemaBuilder.build*). Top-level `internal fun` is more idiomatic but the migration ripples through every call site (`ClassName.foo()` → `foo()`) and the import lists.",
-      "decision": "Deferred. Document the preference here; future authors should default to top-level fun for new helpers."
     },
     {
       "name": "move_companion_helpers_to_top_level",
@@ -165,6 +173,6 @@
   "verification": {
     "command": "cd jvm && ./gradlew :trino-ducklake:test",
     "expected": "825/0/0",
-    "last_run": "2026-06-01 — passed after the final batch (DURING fixes + requireNonNull/copyOf cleanup + @JvmStatic removal). total=825 failures=0 errors=0 skipped=0."
+    "last_run": "2026-06-01 — passed after the handle-migration batch (DURING fixes + requireNonNull/copyOf cleanup + @JvmStatic removal + 6 handles → @JvmRecord data class + ~270 call-site updates). total=825 failures=0 errors=0 skipped=0."
   }
 }

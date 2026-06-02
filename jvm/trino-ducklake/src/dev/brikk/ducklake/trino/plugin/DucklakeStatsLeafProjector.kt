@@ -49,7 +49,7 @@ object DucklakeStatsLeafProjector {
             if (top.isRowIdColumn()) {
                 continue
             }
-            collect(top.columnId(), top.columnType(), childrenByParent, leaves, runningIndex)
+            collect(top.columnId, top.columnType, childrenByParent, leaves, runningIndex)
         }
         return leaves.build()
     }

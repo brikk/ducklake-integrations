@@ -312,7 +312,7 @@ class TestDucklakeCatalog {
                 Optional.empty())
 
         assertThat(tableHandle).isInstanceOf(DucklakeTableHandle::class.java)
-        assertThat((tableHandle as DucklakeTableHandle).snapshotId()).isEqualTo(historicalSnapshotId)
+        assertThat((tableHandle as DucklakeTableHandle).snapshotId).isEqualTo(historicalSnapshotId)
     }
 
     @Test

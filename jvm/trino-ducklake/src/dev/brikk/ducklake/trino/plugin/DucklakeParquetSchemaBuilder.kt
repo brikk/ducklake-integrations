@@ -56,7 +56,7 @@ public class DucklakeParquetSchemaBuilder private constructor() {
             // Build top-level name -> columnId map
             val topLevelColumnIds: MutableMap<String, Long> = HashMap()
             for (handle in topLevelColumns) {
-                topLevelColumnIds.put(handle.columnName(), handle.columnId())
+                topLevelColumnIds.put(handle.columnName, handle.columnId)
             }
 
             // Rebuild each field with field_id

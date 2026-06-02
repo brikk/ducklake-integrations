@@ -215,8 +215,8 @@ class DucklakeMetadata(
         val ducklakeTableHandle = tableHandle as DucklakeTableHandle
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
-                ducklakeTableHandle.tableId(),
-                ducklakeTableHandle.snapshotId())
+                ducklakeTableHandle.tableId,
+                ducklakeTableHandle.snapshotId)
 
         val columnMetadata: List<ColumnMetadata> = columns.stream()
                 .map { column ->
@@ -239,12 +239,12 @@ class DucklakeMetadata(
             return ConnectorTableProperties()
         }
         val handle: DucklakeTableHandle = table
-        val sortKeys: List<DucklakeSortKey> = catalog.getSortKeys(handle.tableId(), handle.snapshotId())
+        val sortKeys: List<DucklakeSortKey> = catalog.getSortKeys(handle.tableId, handle.snapshotId)
         if (sortKeys.isEmpty()) {
             return ConnectorTableProperties()
         }
         val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = java.util.HashMap()
-        for (column in catalog.getTableColumns(handle.tableId(), handle.snapshotId())) {
+        for (column in catalog.getTableColumns(handle.tableId, handle.snapshotId)) {
             columnHandlesByLowercaseName.put(
                     column.columnName.lowercase(java.util.Locale.ROOT),
                     DucklakeColumnHandle(
@@ -299,8 +299,8 @@ class DucklakeMetadata(
         val ducklakeTableHandle = tableHandle as DucklakeTableHandle
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
-                ducklakeTableHandle.tableId(),
-                ducklakeTableHandle.snapshotId())
+                ducklakeTableHandle.tableId,
+                ducklakeTableHandle.snapshotId)
 
         val columnHandles: ImmutableMap.Builder<String, ColumnHandle> = ImmutableMap.builder()
         for (column in columns) {
@@ -323,9 +323,9 @@ class DucklakeMetadata(
         val ducklakeColumnHandle = columnHandle as DucklakeColumnHandle
 
         return ColumnMetadata.builder()
-                .setName(ducklakeColumnHandle.columnName())
-                .setType(ducklakeColumnHandle.columnType())
-                .setNullable(ducklakeColumnHandle.nullable())
+                .setName(ducklakeColumnHandle.columnName)
+                .setType(ducklakeColumnHandle.columnType)
+                .setNullable(ducklakeColumnHandle.nullable)
                 .build()
     }
 
@@ -336,14 +336,14 @@ class DucklakeMetadata(
         }
 
         val table = tableHandle as DucklakeTableHandle
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(table.tableId(), table.snapshotId())
+        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(table.tableId, table.snapshotId)
         val hasDeleteFiles = dataFiles.stream().anyMatch { dataFile -> dataFile.deleteFilePath.isPresent }
         if (hasDeleteFiles) {
             // Conservative mode: delete-file snapshots can make row-level table stats stale across engines.
             // Prefer unknown over wrong.
             return TableStatistics.empty()
         }
-        if (catalog.hasInlinedDeletes(table.tableId(), table.snapshotId())) {
+        if (catalog.hasInlinedDeletes(table.tableId, table.snapshotId)) {
             // Same conservative policy for inlined deletes: file-level stats predate the
             // deletions, so any column min/max/null fractions can be wrong relative to the
             // surviving rows. Prefer unknown over wrong.
@@ -352,7 +352,7 @@ class DucklakeMetadata(
 
         val hasLiveInlinedRows = hasLiveInlinedRows(table)
 
-        val tableStats: Optional<DucklakeTableStats> = catalog.getTableStats(table.tableId())
+        val tableStats: Optional<DucklakeTableStats> = catalog.getTableStats(table.tableId)
         val recordCount: Long
         if (tableStats.isPresent) {
             recordCount = tableStats.get().recordCount
@@ -388,7 +388,7 @@ class DucklakeMetadata(
             }
         }
 
-        val columnStatsList: List<DucklakeColumnStats> = catalog.getColumnStats(table.tableId(), table.snapshotId())
+        val columnStatsList: List<DucklakeColumnStats> = catalog.getColumnStats(table.tableId, table.snapshotId)
 
         // Index column stats by column ID
         val statsById: Map<Long, DucklakeColumnStats> = columnStatsList.stream()
@@ -396,7 +396,7 @@ class DucklakeMetadata(
 
         for (handle in columnHandles.values) {
             val column = handle as DucklakeColumnHandle
-            val colStats: DucklakeColumnStats? = statsById.get(column.columnId())
+            val colStats: DucklakeColumnStats? = statsById.get(column.columnId)
             if (colStats == null) {
                 continue
             }
@@ -417,7 +417,7 @@ class DucklakeMetadata(
                 colBuilder.setDataSize(Estimate.of(colStats.totalSizeBytes.toDouble()))
             }
 
-            toDoubleRange(column.columnType(), colStats).ifPresent { colBuilder.setRange(it) }
+            toDoubleRange(column.columnType, colStats).ifPresent { colBuilder.setRange(it) }
 
             stats.setColumnStatistics(column, colBuilder.build())
         }
@@ -427,25 +427,25 @@ class DucklakeMetadata(
 
     private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean
     {
-        return catalog.getInlinedDataInfos(table.tableId(), table.snapshotId()).stream()
-                .anyMatch { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, table.snapshotId()) }
+        return catalog.getInlinedDataInfos(table.tableId, table.snapshotId).stream()
+                .anyMatch { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
     }
 
     private fun getFallbackRecordCount(table: DucklakeTableHandle): OptionalLong
     {
         // Align with Iceberg/Delta behavior: if we can prove there is no data at this snapshot,
         // return row count 0 instead of unknown.
-        if (!catalog.getDataFiles(table.tableId(), table.snapshotId()).isEmpty()) {
+        if (!catalog.getDataFiles(table.tableId, table.snapshotId).isEmpty()) {
             // Data files exist but no table stats were found. Keep row count unknown.
             return OptionalLong.empty()
         }
 
-        val inlinedInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(table.tableId(), table.snapshotId())
+        val inlinedInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(table.tableId, table.snapshotId)
         if (inlinedInfos.isEmpty()) {
             return OptionalLong.of(0)
         }
 
-        val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId(), table.snapshotId())
+        val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, table.snapshotId)
         if (tableColumns.isEmpty()) {
             return OptionalLong.of(0)
         }
@@ -454,7 +454,7 @@ class DucklakeMetadata(
                 .mapToLong { info -> catalog.readInlinedData(
                         info.tableId,
                         info.schemaVersion,
-                        table.snapshotId(),
+                        table.snapshotId,
                         ImmutableList.of(tableColumns.first())).size.toLong() }
                 .sum()
         return OptionalLong.of(inlinedRowCount)
@@ -486,7 +486,7 @@ class DucklakeMetadata(
 
             // Classify predicates as enforced (partition-prunable) or unenforced (best-effort)
             val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
-                    table.tableId(), table.snapshotId())
+                    table.tableId, table.snapshotId)
 
             val enforced: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
             val unenforced: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
@@ -516,8 +516,8 @@ class DucklakeMetadata(
                 toTupleDomain(unenforced.buildOrThrow())
         }
 
-        val combinedEnforced: TupleDomain<DucklakeColumnHandle> = table.enforcedPredicate().intersect(newEnforced)
-        val combinedUnenforced: TupleDomain<DucklakeColumnHandle> = table.unenforcedPredicate().intersect(newUnenforced)
+        val combinedEnforced: TupleDomain<DucklakeColumnHandle> = table.enforcedPredicate.intersect(newEnforced)
+        val combinedUnenforced: TupleDomain<DucklakeColumnHandle> = table.unenforcedPredicate.intersect(newUnenforced)
 
         // Function-shape pushdown: anything DuckDbExpressionTranslator recognises in
         // constraint.getExpression() becomes a SQL fragment AND-ed into the WHERE clause
@@ -528,19 +528,19 @@ class DucklakeMetadata(
         val newExpressionClauses: List<String> = DuckDbExpressionTranslator.translateConjuncts(
                 constraint.getExpression(), constraint.getAssignments(), session)
         val combinedExpressions: List<String> = mergePushedExpressions(
-                table.pushedExpressions(), newExpressionClauses)
+                table.pushedExpressions, newExpressionClauses)
 
-        if (combinedEnforced == table.enforcedPredicate()
-                && combinedUnenforced == table.unenforcedPredicate()
-                && combinedExpressions == table.pushedExpressions()) {
+        if (combinedEnforced == table.enforcedPredicate
+                && combinedUnenforced == table.unenforcedPredicate
+                && combinedExpressions == table.pushedExpressions) {
             return Optional.empty()
         }
 
         val newHandle = DucklakeTableHandle(
-                table.schemaName(),
-                table.tableName(),
-                table.tableId(),
-                table.snapshotId(),
+                table.schemaName,
+                table.tableName,
+                table.tableId,
+                table.snapshotId,
                 combinedUnenforced,
                 combinedEnforced,
                 combinedExpressions)
@@ -676,7 +676,7 @@ class DucklakeMetadata(
     override fun dropTable(session: ConnectorSession, tableHandle: ConnectorTableHandle)
     {
         val handle = tableHandle as DucklakeTableHandle
-        translateCatalogExceptions(Runnable { catalog.dropTable(handle.schemaName(), handle.tableName()) })
+        translateCatalogExceptions(Runnable { catalog.dropTable(handle.schemaName, handle.tableName) })
     }
 
     // ==================== ALTER TABLE ====================
@@ -685,21 +685,21 @@ class DucklakeMetadata(
     {
         val handle = tableHandle as DucklakeTableHandle
         val columnSpec: TableColumnSpec = toColumnSpec(column.getName(), column.getType(), column.isNullable())
-        translateCatalogExceptions(Runnable { catalog.addColumn(handle.tableId(), columnSpec) })
+        translateCatalogExceptions(Runnable { catalog.addColumn(handle.tableId, columnSpec) })
     }
 
     override fun dropColumn(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnHandle)
     {
         val handle = tableHandle as DucklakeTableHandle
         val ducklakeColumn = column as DucklakeColumnHandle
-        translateCatalogExceptions(Runnable { catalog.dropColumn(handle.tableId(), ducklakeColumn.columnId()) })
+        translateCatalogExceptions(Runnable { catalog.dropColumn(handle.tableId, ducklakeColumn.columnId) })
     }
 
     override fun renameColumn(session: ConnectorSession, tableHandle: ConnectorTableHandle, source: ColumnHandle, target: String)
     {
         val handle = tableHandle as DucklakeTableHandle
         val ducklakeColumn = source as DucklakeColumnHandle
-        translateCatalogExceptions(Runnable { catalog.renameColumn(handle.tableId(), ducklakeColumn.columnId(), target) })
+        translateCatalogExceptions(Runnable { catalog.renameColumn(handle.tableId, ducklakeColumn.columnId, target) })
     }
 
     // ==================== INSERT ====================
@@ -716,26 +716,26 @@ class DucklakeMetadata(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId(), handle.snapshotId())
+        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
 
-        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId(), handle.snapshotId())
+        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
             Optional.empty()
         else
             Optional.of(partitionSpecs.last())
 
-        val tableDataPath: String = resolveTableDataPath(handle.schemaName(), handle.tableName(), handle.snapshotId())
+        val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 
         return DucklakeWritableTableHandle(
-                handle.schemaName(),
-                handle.tableName(),
-                handle.tableId(),
+                handle.schemaName,
+                handle.tableName,
+                handle.tableId,
                 ducklakeColumns,
                 allCatalogColumns,
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                resolveWriteFormat(session, handle.tableId(), handle.snapshotId()),
+                resolveWriteFormat(session, handle.tableId, handle.snapshotId),
                 DucklakeSessionProperties.getDuckDbWriterMode(session))
     }
 
@@ -750,7 +750,7 @@ class DucklakeMetadata(
         val writeFragments: List<DucklakeWriteFragment> = deserializeFragments(fragments)
 
         if (!writeFragments.isEmpty()) {
-            translateCatalogExceptions(Runnable { catalog.commitInsert(handle.tableId(), writeFragments) })
+            translateCatalogExceptions(Runnable { catalog.commitInsert(handle.tableId, writeFragments) })
         }
 
         return Optional.empty()
@@ -847,7 +847,7 @@ class DucklakeMetadata(
         val writeFragments: List<DucklakeWriteFragment> = deserializeFragments(fragments)
 
         if (!writeFragments.isEmpty()) {
-            translateCatalogExceptions(Runnable { catalog.commitInsert(handle.tableId(), writeFragments) })
+            translateCatalogExceptions(Runnable { catalog.commitInsert(handle.tableId, writeFragments) })
         }
 
         return Optional.empty()
@@ -919,7 +919,7 @@ class DucklakeMetadata(
         val handle = tableHandle as DucklakeTableHandle
 
         // Build insert handle for UPDATE support (delete+insert pattern)
-        val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId(), handle.snapshotId()).stream()
+        val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
                 .filter { col -> col.parentColumn.isEmpty }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
@@ -928,26 +928,26 @@ class DucklakeMetadata(
                         col.nullsAllowed) }
                 .collect(toImmutableList())
 
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId(), handle.snapshotId())
+        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
 
-        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId(), handle.snapshotId())
+        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
             Optional.empty()
         else
             Optional.of(partitionSpecs.last())
 
-        val tableDataPath: String = resolveTableDataPath(handle.schemaName(), handle.tableName(), handle.snapshotId())
+        val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 
         val insertHandle = DucklakeWritableTableHandle(
-                handle.schemaName(),
-                handle.tableName(),
-                handle.tableId(),
+                handle.schemaName,
+                handle.tableName,
+                handle.tableId,
                 ducklakeColumns,
                 allCatalogColumns,
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                resolveWriteFormat(session, handle.tableId(), handle.snapshotId()),
+                resolveWriteFormat(session, handle.tableId, handle.snapshotId),
                 DucklakeSessionProperties.getDuckDbWriterMode(session))
 
         // Build data file ranges for row ID → data file resolution. getDataFiles LEFT-JOINs
@@ -956,7 +956,7 @@ class DucklakeMetadata(
         // merge sink uses these paths to read prior-active positions and union them with
         // this commit's new deletes (B3a: writeDeleteFile must preserve prior deletions when
         // it produces a superseding file, otherwise positions resurrect).
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(handle.tableId(), handle.snapshotId())
+        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(handle.tableId, handle.snapshotId)
         val primaryByFileId: LinkedHashMap<Long, DucklakeDataFile> = LinkedHashMap()
         val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = LinkedHashMap()
         for (df in dataFiles) {
@@ -990,7 +990,7 @@ class DucklakeMetadata(
             computedStatistics: Collection<ComputedStatistics>)
     {
         val mergeHandle = mergeTableHandle as DucklakeMergeTableHandle
-        val tableHandle: DucklakeTableHandle = mergeHandle.tableHandle()
+        val tableHandle: DucklakeTableHandle = mergeHandle.tableHandle
 
         val deleteFragments: MutableList<DucklakeDeleteFragment> = ArrayList()
         val insertFragments: MutableList<DucklakeWriteFragment> = ArrayList()
@@ -1019,13 +1019,13 @@ class DucklakeMetadata(
 
         // Commit atomically in a single snapshot — critical for UPDATE (delete+insert must be atomic)
         if (!deleteFragments.isEmpty() && !insertFragments.isEmpty()) {
-            translateCatalogExceptions(Runnable { catalog.commitMerge(tableHandle.tableId(), deleteFragments, insertFragments) })
+            translateCatalogExceptions(Runnable { catalog.commitMerge(tableHandle.tableId, deleteFragments, insertFragments) })
         }
         else if (!deleteFragments.isEmpty()) {
-            translateCatalogExceptions(Runnable { catalog.commitDelete(tableHandle.tableId(), deleteFragments) })
+            translateCatalogExceptions(Runnable { catalog.commitDelete(tableHandle.tableId, deleteFragments) })
         }
         else if (!insertFragments.isEmpty()) {
-            translateCatalogExceptions(Runnable { catalog.commitInsert(tableHandle.tableId(), insertFragments) })
+            translateCatalogExceptions(Runnable { catalog.commitInsert(tableHandle.tableId, insertFragments) })
         }
     }
 
@@ -1366,7 +1366,7 @@ class DucklakeMetadata(
             // (spec evolution means different files may have different partition schemes)
             for (spec in specs) {
                 val field: Optional<DucklakePartitionField> = spec.fields.stream()
-                        .filter { partitionField -> partitionField.columnId == column.columnId() }
+                        .filter { partitionField -> partitionField.columnId == column.columnId }
                         .findFirst()
                 if (field.isEmpty) {
                     return ConstraintEnforcement.NOT_ENFORCED
@@ -1391,7 +1391,7 @@ class DucklakeMetadata(
             if (field.transform.isTemporal()) {
                 // Temporal transforms support safe partition pruning but do not fully enforce
                 // original predicates (e.g. day equality with month transform).
-                val type: Type = column.columnType()
+                val type: Type = column.columnType
                 if (type.equals(DATE) || type.equals(TIMESTAMP_MILLIS) || type.equals(TIMESTAMP_MICROS) || type.equals(TIMESTAMP_TZ_MILLIS) || type.equals(TIMESTAMP_TZ_MICROS)) {
                     return ConstraintEnforcement.PARTIALLY_ENFORCED
                 }
@@ -1415,7 +1415,7 @@ class DucklakeMetadata(
                 if (entry.key is DucklakeColumnHandle) {
                     val columnHandle = entry.key as DucklakeColumnHandle
                     // Only push down primitive types (arrays/complex types can't be pruned)
-                    if (!columnHandle.columnType().getTypeParameters().isEmpty()) {
+                    if (!columnHandle.columnType.getTypeParameters().isEmpty()) {
                         continue
                     }
                     ducklakeDomains.put(columnHandle, entry.value)

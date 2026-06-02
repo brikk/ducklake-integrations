@@ -19,40 +19,22 @@ import io.trino.spi.HostAddress
 import io.trino.spi.connector.ConnectorSplit
 
 import io.airlift.slice.SizeOf.instanceSize
-import java.util.Objects
 
 /**
  * Represents a split for reading DuckLake inlined data from the metadata catalog.
  * Carries only the coordinates needed to query the inlined data table;
  * actual data is read at page source creation time.
  */
-class DucklakeInlinedSplit
+@JvmRecord
+data class DucklakeInlinedSplit @JsonCreator constructor(
+        @get:JvmName("tableId")
+        @param:JsonProperty("tableId") val tableId: Long,
+        @get:JvmName("schemaVersion")
+        @param:JsonProperty("schemaVersion") val schemaVersion: Long,
+        @get:JvmName("snapshotId")
+        @param:JsonProperty("snapshotId") val snapshotId: Long)
         : ConnectorSplit
 {
-    private val tableId: Long
-    private val schemaVersion: Long
-    private val snapshotId: Long
-
-    @JsonCreator
-    constructor(
-            @JsonProperty("tableId") tableId: Long,
-            @JsonProperty("schemaVersion") schemaVersion: Long,
-            @JsonProperty("snapshotId") snapshotId: Long)
-    {
-        this.tableId = tableId
-        this.schemaVersion = schemaVersion
-        this.snapshotId = snapshotId
-    }
-
-    @JsonProperty("tableId")
-    fun tableId(): Long = tableId
-
-    @JsonProperty("schemaVersion")
-    fun schemaVersion(): Long = schemaVersion
-
-    @JsonProperty("snapshotId")
-    fun snapshotId(): Long = snapshotId
-
     override fun isRemotelyAccessible(): Boolean
     {
         return true
@@ -66,25 +48,6 @@ class DucklakeInlinedSplit
     override fun getRetainedSizeInBytes(): Long
     {
         return INSTANCE_SIZE.toLong()
-    }
-
-    override fun equals(other: Any?): Boolean
-    {
-        if (this === other) return true
-        if (other !is DucklakeInlinedSplit) return false
-        return tableId == other.tableId
-                && schemaVersion == other.schemaVersion
-                && snapshotId == other.snapshotId
-    }
-
-    override fun hashCode(): Int
-    {
-        return Objects.hash(tableId, schemaVersion, snapshotId)
-    }
-
-    override fun toString(): String
-    {
-        return "DucklakeInlinedSplit[tableId=$tableId, schemaVersion=$schemaVersion, snapshotId=$snapshotId]"
     }
 
     companion object {

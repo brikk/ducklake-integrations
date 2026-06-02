@@ -46,7 +46,7 @@ public open class DucklakePagePartitioner(
             var sourceColumnIndex = -1
             var sourceColumn: DucklakeColumnHandle? = null
             for (i in this.allColumns.indices) {
-                if (this.allColumns[i].columnId() == field.columnId) {
+                if (this.allColumns[i].columnId == field.columnId) {
                     sourceColumnIndex = i
                     sourceColumn = this.allColumns[i]
                     break
@@ -59,7 +59,7 @@ public open class DucklakePagePartitioner(
             // For the page indexer, the partition column type is:
             // - IDENTITY: the source column type
             // - Temporal / BUCKET: INTEGER (the computed partition value is an integer)
-            val indexerType: Type = if (field.transform.isIdentity()) sourceColumn!!.columnType() else INTEGER
+            val indexerType: Type = if (field.transform.isIdentity()) sourceColumn!!.columnType else INTEGER
 
             mappings.add(PartitionColumnMapping(field, sourceColumnIndex, sourceColumn!!, indexerType))
         }
@@ -93,7 +93,7 @@ public open class DucklakePagePartitioner(
         for (mapping in partitionColumnMappings) {
             val sourceBlock = page.getBlock(mapping.sourceColumnIndex)
             val value = DucklakePartitionComputer.computePartitionValue(
-                    mapping.sourceColumn.columnType(),
+                    mapping.sourceColumn.columnType,
                     sourceBlock,
                     position,
                     mapping.field.transform,
@@ -110,7 +110,7 @@ public open class DucklakePagePartitioner(
     public open fun getPartitionColumnName(partitionKeyIndex: Int): String {
         for (mapping in partitionColumnMappings) {
             if (mapping.field.partitionKeyIndex == partitionKeyIndex) {
-                return mapping.sourceColumn.columnName()
+                return mapping.sourceColumn.columnName
             }
         }
         throw IllegalArgumentException("Unknown partition key index: " + partitionKeyIndex)
@@ -132,7 +132,7 @@ public open class DucklakePagePartitioner(
             else {
                 // Transform temporal / bucket values into integer partition values
                 partitionBlocks[i] = transformBlockToInteger(
-                        mapping.sourceColumn.columnType(),
+                        mapping.sourceColumn.columnType,
                         sourceBlock,
                         mapping.field.transform,
                         mapping.field.arity)

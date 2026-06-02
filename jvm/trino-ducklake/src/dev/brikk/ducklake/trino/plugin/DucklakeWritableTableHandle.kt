@@ -20,111 +20,34 @@ import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import io.trino.spi.connector.ConnectorInsertTableHandle
 import io.trino.spi.connector.ConnectorOutputTableHandle
 
-import java.util.Objects
 import java.util.Optional
 
-class DucklakeWritableTableHandle
+@JvmRecord
+data class DucklakeWritableTableHandle @JsonCreator constructor(
+        @get:JvmName("schemaName")
+        @param:JsonProperty("schemaName") val schemaName: String,
+        @get:JvmName("tableName")
+        @param:JsonProperty("tableName") val tableName: String,
+        @get:JvmName("tableId")
+        @param:JsonProperty("tableId") val tableId: Long,
+        @get:JvmName("columns")
+        @param:JsonProperty("columns") val columns: List<DucklakeColumnHandle>,
+        @get:JvmName("allCatalogColumns")
+        @param:JsonProperty("allCatalogColumns") val allCatalogColumns: List<DucklakeColumn>,
+        @get:JvmName("tableDataPath")
+        @param:JsonProperty("tableDataPath") val tableDataPath: String,
+        @get:JvmName("partitionSpec")
+        @param:JsonProperty("partitionSpec") val partitionSpec: Optional<DucklakePartitionSpec>,
+        @get:JvmName("temporalPartitionEncoding")
+        @param:JsonProperty("temporalPartitionEncoding") val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding,
+        @get:JvmName("fileFormat")
+        @param:JsonProperty("fileFormat") val fileFormat: String,
+        @get:JvmName("duckDbWriterMode")
+        @param:JsonProperty("duckDbWriterMode") val duckDbWriterMode: String)
         : ConnectorInsertTableHandle, ConnectorOutputTableHandle
 {
-    private val schemaName: String
-    private val tableName: String
-    private val tableId: Long
-    private val columns: List<DucklakeColumnHandle>
-    private val allCatalogColumns: List<DucklakeColumn>
-    private val tableDataPath: String
-    private val partitionSpec: Optional<DucklakePartitionSpec>
-    private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding
-    private val fileFormat: String
-    private val duckDbWriterMode: String
-
-    @JsonCreator
-    constructor(
-            @JsonProperty("schemaName") schemaName: String,
-            @JsonProperty("tableName") tableName: String,
-            @JsonProperty("tableId") tableId: Long,
-            @JsonProperty("columns") columns: List<DucklakeColumnHandle>,
-            @JsonProperty("allCatalogColumns") allCatalogColumns: List<DucklakeColumn>,
-            @JsonProperty("tableDataPath") tableDataPath: String,
-            @JsonProperty("partitionSpec") partitionSpec: Optional<DucklakePartitionSpec>,
-            @JsonProperty("temporalPartitionEncoding") temporalPartitionEncoding: DucklakeTemporalPartitionEncoding,
-            @JsonProperty("fileFormat") fileFormat: String,
-            @JsonProperty("duckDbWriterMode") duckDbWriterMode: String?)
-    {
-        this.schemaName = schemaName
-        this.tableName = tableName
-        this.tableId = tableId
-        this.columns = columns.toList()
-        this.allCatalogColumns = allCatalogColumns.toList()
-        this.tableDataPath = tableDataPath
-        this.partitionSpec = partitionSpec
-        this.temporalPartitionEncoding = temporalPartitionEncoding
-        this.fileFormat = fileFormat
-        this.duckDbWriterMode = duckDbWriterMode ?: DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM
-    }
-
-    @JsonProperty("schemaName")
-    fun schemaName(): String = schemaName
-
-    @JsonProperty("tableName")
-    fun tableName(): String = tableName
-
-    @JsonProperty("tableId")
-    fun tableId(): Long = tableId
-
-    @JsonProperty("columns")
-    fun columns(): List<DucklakeColumnHandle> = columns
-
-    @JsonProperty("allCatalogColumns")
-    fun allCatalogColumns(): List<DucklakeColumn> = allCatalogColumns
-
-    @JsonProperty("tableDataPath")
-    fun tableDataPath(): String = tableDataPath
-
-    @JsonProperty("partitionSpec")
-    fun partitionSpec(): Optional<DucklakePartitionSpec> = partitionSpec
-
-    @JsonProperty("temporalPartitionEncoding")
-    fun temporalPartitionEncoding(): DucklakeTemporalPartitionEncoding = temporalPartitionEncoding
-
-    @JsonProperty("fileFormat")
-    fun fileFormat(): String = fileFormat
-
-    @JsonProperty("duckDbWriterMode")
-    fun duckDbWriterMode(): String = duckDbWriterMode
-
     override fun toString(): String
     {
         return schemaName + "." + tableName + "#" + tableId
-    }
-
-    override fun equals(other: Any?): Boolean
-    {
-        if (this === other) return true
-        if (other !is DucklakeWritableTableHandle) return false
-        return schemaName == other.schemaName
-                && tableName == other.tableName
-                && tableId == other.tableId
-                && columns == other.columns
-                && allCatalogColumns == other.allCatalogColumns
-                && tableDataPath == other.tableDataPath
-                && partitionSpec == other.partitionSpec
-                && temporalPartitionEncoding == other.temporalPartitionEncoding
-                && fileFormat == other.fileFormat
-                && duckDbWriterMode == other.duckDbWriterMode
-    }
-
-    override fun hashCode(): Int
-    {
-        return Objects.hash(
-                schemaName,
-                tableName,
-                tableId,
-                columns,
-                allCatalogColumns,
-                tableDataPath,
-                partitionSpec,
-                temporalPartitionEncoding,
-                fileFormat,
-                duckDbWriterMode)
     }
 }

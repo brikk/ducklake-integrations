@@ -18,7 +18,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.connector.SchemaTableName
 import io.trino.spi.predicate.TupleDomain
-import java.util.Objects
 
 /**
  * Handle for a Ducklake table, including snapshot context and pushed-down predicates.
@@ -31,34 +30,24 @@ import java.util.Objects
  * so Trino re-applies them above the scan — double evaluation on {@code .db}
  * splits is cheap because the result set is already reduced.
  */
-class DucklakeTableHandle
-        : ConnectorTableHandle {
-    private val schemaName: String
-    private val tableName: String
-    private val tableId: Long
-    private val snapshotId: Long
-    private val unenforcedPredicate: TupleDomain<DucklakeColumnHandle>
-    private val enforcedPredicate: TupleDomain<DucklakeColumnHandle>
-    private val pushedExpressions: List<String>
-
-    @JsonCreator
-    constructor(
-            @JsonProperty("schemaName") schemaName: String,
-            @JsonProperty("tableName") tableName: String,
-            @JsonProperty("tableId") tableId: Long,
-            @JsonProperty("snapshotId") snapshotId: Long,
-            @JsonProperty("unenforcedPredicate") unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
-            @JsonProperty("enforcedPredicate") enforcedPredicate: TupleDomain<DucklakeColumnHandle>,
-            @JsonProperty("pushedExpressions") pushedExpressions: List<String>?) {
-        this.schemaName = schemaName
-        this.tableName = tableName
-        this.tableId = tableId
-        this.snapshotId = snapshotId
-        this.unenforcedPredicate = unenforcedPredicate
-        this.enforcedPredicate = enforcedPredicate
-        this.pushedExpressions = pushedExpressions?.toList() ?: emptyList()
-    }
-
+@JvmRecord
+data class DucklakeTableHandle @JsonCreator constructor(
+        @get:JvmName("schemaName")
+        @param:JsonProperty("schemaName") val schemaName: String,
+        @get:JvmName("tableName")
+        @param:JsonProperty("tableName") val tableName: String,
+        @get:JvmName("tableId")
+        @param:JsonProperty("tableId") val tableId: Long,
+        @get:JvmName("snapshotId")
+        @param:JsonProperty("snapshotId") val snapshotId: Long,
+        @get:JvmName("unenforcedPredicate")
+        @param:JsonProperty("unenforcedPredicate") val unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
+        @get:JvmName("enforcedPredicate")
+        @param:JsonProperty("enforcedPredicate") val enforcedPredicate: TupleDomain<DucklakeColumnHandle>,
+        @get:JvmName("pushedExpressions")
+        @param:JsonProperty("pushedExpressions") val pushedExpressions: List<String>)
+        : ConnectorTableHandle
+{
     constructor(
             schemaName: String,
             tableName: String,
@@ -71,55 +60,11 @@ class DucklakeTableHandle
     constructor(schemaName: String, tableName: String, tableId: Long, snapshotId: Long)
             : this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all(), emptyList())
 
-    @JsonProperty("schemaName")
-    fun schemaName(): String = schemaName
-
-    @JsonProperty("tableName")
-    fun tableName(): String = tableName
-
-    @JsonProperty("tableId")
-    fun tableId(): Long = tableId
-
-    @JsonProperty("snapshotId")
-    fun snapshotId(): Long = snapshotId
-
-    @JsonProperty("unenforcedPredicate")
-    fun unenforcedPredicate(): TupleDomain<DucklakeColumnHandle> = unenforcedPredicate
-
-    @JsonProperty("enforcedPredicate")
-    fun enforcedPredicate(): TupleDomain<DucklakeColumnHandle> = enforcedPredicate
-
-    @JsonProperty("pushedExpressions")
-    fun pushedExpressions(): List<String> = pushedExpressions
-
     fun getSchemaTableName(): SchemaTableName {
         return SchemaTableName(schemaName, tableName)
     }
 
     override fun toString(): String {
         return schemaName + "." + tableName + "@" + snapshotId
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is DucklakeTableHandle) return false
-        return schemaName == other.schemaName
-                && tableName == other.tableName
-                && tableId == other.tableId
-                && snapshotId == other.snapshotId
-                && unenforcedPredicate == other.unenforcedPredicate
-                && enforcedPredicate == other.enforcedPredicate
-                && pushedExpressions == other.pushedExpressions
-    }
-
-    override fun hashCode(): Int {
-        return Objects.hash(
-                schemaName,
-                tableName,
-                tableId,
-                snapshotId,
-                unenforcedPredicate,
-                enforcedPredicate,
-                pushedExpressions)
     }
 }

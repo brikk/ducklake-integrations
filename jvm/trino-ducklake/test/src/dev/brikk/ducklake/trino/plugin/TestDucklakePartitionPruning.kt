@@ -125,8 +125,8 @@ class TestDucklakePartitionPruning {
         val newHandle = result.get().handle as DucklakeTableHandle
 
         // Region predicate should be enforced (partition column with identity transform)
-        assertThat(newHandle.enforcedPredicate().isAll).isFalse()
-        assertThat(newHandle.enforcedPredicate().domains.orElseThrow()).containsKey(regionColumn)
+        assertThat(newHandle.enforcedPredicate.isAll).isFalse()
+        assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(regionColumn)
 
         // Remaining filter should NOT include region (it's enforced)
         val remaining: TupleDomain<ColumnHandle> = result.get().remainingFilter
@@ -165,8 +165,8 @@ class TestDucklakePartitionPruning {
         val newHandle = result.get().handle as DucklakeTableHandle
 
         // Amount should be unenforced (not a partition column)
-        assertThat(newHandle.enforcedPredicate().isAll).isTrue()
-        assertThat(newHandle.unenforcedPredicate().isAll).isFalse()
+        assertThat(newHandle.enforcedPredicate.isAll).isTrue()
+        assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
 
         // Remaining filter should include amount
         assertThat(result.get().remainingFilter.isAll).isFalse()
@@ -199,7 +199,7 @@ class TestDucklakePartitionPruning {
 
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
-        assertThat(newHandle.enforcedPredicate().isNone).isTrue()
+        assertThat(newHandle.enforcedPredicate.isNone).isTrue()
     }
 
     @Test
@@ -347,8 +347,8 @@ class TestDucklakePartitionPruning {
         val newHandle = result.get().handle as DucklakeTableHandle
 
         // No partition specs -> all predicates should be unenforced
-        assertThat(newHandle.enforcedPredicate().isAll).isTrue()
-        assertThat(newHandle.unenforcedPredicate().isAll).isFalse()
+        assertThat(newHandle.enforcedPredicate.isAll).isTrue()
+        assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
     }
 
     @Test
@@ -407,11 +407,11 @@ class TestDucklakePartitionPruning {
         val newHandle = result.get().handle as DucklakeTableHandle
 
         // event_date has temporal partition transforms (year, month) -> should be enforced
-        assertThat(newHandle.enforcedPredicate().isAll).isFalse()
-        assertThat(newHandle.enforcedPredicate().domains.orElseThrow()).containsKey(eventDateColumn)
+        assertThat(newHandle.enforcedPredicate.isAll).isFalse()
+        assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(eventDateColumn)
 
         // Temporal transform pruning is partial; engine must still verify the original predicate.
-        assertThat(newHandle.unenforcedPredicate().isAll).isFalse()
+        assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
         assertThat(result.get().remainingFilter.isAll).isFalse()
     }
 
@@ -839,10 +839,10 @@ class TestDucklakePartitionPruning {
         val newHandle = result.get().handle as DucklakeTableHandle
 
         // TIMESTAMP_TZ with temporal transforms should be partially enforced
-        assertThat(newHandle.enforcedPredicate().isAll).isFalse()
-        assertThat(newHandle.enforcedPredicate().domains.orElseThrow()).containsKey(insertedAtColumn)
+        assertThat(newHandle.enforcedPredicate.isAll).isFalse()
+        assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(insertedAtColumn)
         // Partially enforced: engine still needs to verify
-        assertThat(newHandle.unenforcedPredicate().isAll).isFalse()
+        assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
     }
 
     @Test

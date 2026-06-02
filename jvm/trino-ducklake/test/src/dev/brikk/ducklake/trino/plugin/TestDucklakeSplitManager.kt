@@ -154,8 +154,8 @@ class TestDucklakeSplitManager {
         assertThat(splits.first()).isInstanceOf(DucklakeInlinedSplit::class.java)
 
         val inlinedSplit = splits.first() as DucklakeInlinedSplit
-        assertThat(inlinedSplit.tableId()).isEqualTo(table.tableId)
-        assertThat(inlinedSplit.snapshotId()).isEqualTo(snapshotId)
+        assertThat(inlinedSplit.tableId).isEqualTo(table.tableId)
+        assertThat(inlinedSplit.snapshotId).isEqualTo(snapshotId)
     }
 
     @Test
@@ -216,14 +216,14 @@ class TestDucklakeSplitManager {
         assertThat(splits.first()).isInstanceOf(DucklakeInlinedSplit::class.java)
 
         val inlinedSplit = splits.first() as DucklakeInlinedSplit
-        assertThat(inlinedSplit.tableId()).isEqualTo(table.tableId)
-        assertThat(inlinedSplit.snapshotId()).isEqualTo(snapshotId)
+        assertThat(inlinedSplit.tableId).isEqualTo(table.tableId)
+        assertThat(inlinedSplit.snapshotId).isEqualTo(snapshotId)
 
         val columns = catalog!!.getTableColumns(table.tableId, snapshotId)
         val rows = catalog!!.readInlinedData(
-                inlinedSplit.tableId(),
-                inlinedSplit.schemaVersion(),
-                inlinedSplit.snapshotId(),
+                inlinedSplit.tableId,
+                inlinedSplit.schemaVersion,
+                inlinedSplit.snapshotId,
                 columns)
         assertThat(rows).isEmpty()
     }

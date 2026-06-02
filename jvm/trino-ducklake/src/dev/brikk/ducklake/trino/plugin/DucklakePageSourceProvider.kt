@@ -172,7 +172,7 @@ public class DucklakePageSourceProvider @Inject constructor(
             }
             if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true)) {
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
-                    table.pushedExpressions()
+                    table.pushedExpressions
                 else
                     emptyList()
                 return createDuckDbPageSource(
@@ -201,7 +201,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
         // Get the full column metadata to know column names for the SQL query
         val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(
-                inlinedSplit.tableId(), inlinedSplit.snapshotId())
+                inlinedSplit.tableId, inlinedSplit.snapshotId)
 
         // Handle empty projection (e.g., COUNT(*)) — we still need to know the row count.
         // Query with at least one column to get the correct number of rows.
@@ -217,9 +217,9 @@ public class DucklakePageSourceProvider @Inject constructor(
                     .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
             queryColumns = ducklakeColumns.stream()
                     .map { handle ->
-                        val col = columnById.get(handle.columnId())
+                        val col = columnById.get(handle.columnId)
                         if (col == null) {
-                            throw IllegalStateException("Column not found in table metadata: " + handle.columnName())
+                            throw IllegalStateException("Column not found in table metadata: " + handle.columnName)
                         }
                         col
                     }
@@ -228,9 +228,9 @@ public class DucklakePageSourceProvider @Inject constructor(
 
         // Read inlined data from the metadata catalog
         val rawRows: List<List<Any?>> = catalog.readInlinedData(
-                inlinedSplit.tableId(),
-                inlinedSplit.schemaVersion(),
-                inlinedSplit.snapshotId(),
+                inlinedSplit.tableId,
+                inlinedSplit.schemaVersion,
+                inlinedSplit.snapshotId,
                 queryColumns)
 
         if (emptyProjection) {
@@ -240,13 +240,13 @@ public class DucklakePageSourceProvider @Inject constructor(
                     .map { _ -> ImmutableList.of<Any>() as List<Any?> }
                     .collect(toImmutableList())
             val recordSet = InMemoryRecordSet(ImmutableList.of(), emptyRows)
-            log.debug("Created inlined page source with %d rows (empty projection) for tableId=%d", rawRows.size, inlinedSplit.tableId())
+            log.debug("Created inlined page source with %d rows (empty projection) for tableId=%d", rawRows.size, inlinedSplit.tableId)
             return RecordPageSource(recordSet)
         }
 
         // Extract Trino types for each column
         val types: List<Type> = ducklakeColumns.stream()
-                .map { it.columnType() }
+                .map { it.columnType }
                 .collect(toImmutableList())
 
         // Convert JDBC values to Trino-native values
@@ -261,7 +261,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 }
                 .collect(toImmutableList())
 
-        log.debug("Created inlined page source with %d rows for tableId=%d", rawRows.size, inlinedSplit.tableId())
+        log.debug("Created inlined page source with %d rows for tableId=%d", rawRows.size, inlinedSplit.tableId)
 
         val recordSet = InMemoryRecordSet(types, convertedRows)
         return RecordPageSource(recordSet)
@@ -273,13 +273,13 @@ public class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
         val projectedTypes: List<Type> = projectedColumns.stream()
-                .map { it.columnType() }
+                .map { it.columnType }
                 .collect(toImmutableList())
 
-        val rows: List<Map<String, Any?>> = when (metadataSplit.metadataTableType()) {
+        val rows: List<Map<String, Any?>> = when (metadataSplit.metadataTableType) {
             DucklakeMetadataTableType.FILES -> buildFilesRows(metadataSplit)
             DucklakeMetadataTableType.SNAPSHOTS -> buildSnapshotRows(catalog.listSnapshots())
-            DucklakeMetadataTableType.CURRENT_SNAPSHOT -> catalog.getSnapshot(metadataSplit.snapshotId())
+            DucklakeMetadataTableType.CURRENT_SNAPSHOT -> catalog.getSnapshot(metadataSplit.snapshotId)
                     .map { snapshot -> buildSnapshotRows(java.util.List.of(snapshot)) }
                     .orElse(emptyList())
             DucklakeMetadataTableType.SNAPSHOT_CHANGES -> buildSnapshotChangeRows(catalog.listSnapshotChanges())
@@ -294,7 +294,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
     private fun buildFilesRows(metadataSplit: DucklakeMetadataSplit): List<Map<String, Any?>>
     {
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(metadataSplit.baseTableId(), metadataSplit.snapshotId())
+        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(metadataSplit.baseTableId, metadataSplit.snapshotId)
         val rows: MutableList<Map<String, Any?>> = ArrayList(dataFiles.size)
         for (file in dataFiles) {
             val row: MutableMap<String, Any?> = LinkedHashMap()
@@ -462,11 +462,11 @@ public class DucklakePageSourceProvider @Inject constructor(
             }
 
             for (column in fileColumns) {
-                val columnName: String = column.columnName()
+                val columnName: String = column.columnName
                 // Try name-based match first, then fall back to field_id match (handles column renames)
                 var columnIO: ColumnIO? = messageColumnIO.getChild(columnName)
-                if (columnIO == null && column.columnId() > 0) {
-                    columnIO = fieldIdToColumnIO.get(column.columnId().toInt())
+                if (columnIO == null && column.columnId > 0) {
+                    columnIO = fieldIdToColumnIO.get(column.columnId.toInt())
                 }
                 // Finally, consult the catalog's name_map for files registered via
                 // add_files — covers the case where the parquet column name differs
@@ -474,7 +474,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 // where the file kept its original name). The map is empty for files
                 // without a mapping_id, so this is a no-op for INSERT-written files.
                 if (columnIO == null) {
-                    val parquetSourceName: String? = split.fieldIdToParquetSourceName.get(column.columnId())
+                    val parquetSourceName: String? = split.fieldIdToParquetSourceName.get(column.columnId)
                     if (parquetSourceName != null && parquetSourceName != columnName) {
                         columnIO = messageColumnIO.getChild(parquetSourceName)
                     }
@@ -491,7 +491,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 }
 
                 val field: Optional<Field> = DucklakeParquetTypeUtils.constructField(
-                        column.columnType(),
+                        column.columnType,
                         columnIO)
                 if (field.isEmpty()) {
                     // Could not construct field — return nulls (or partition constant if available)
@@ -597,7 +597,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 session, dataFileLocation, fileSystem, split)
 
         val fileColumnTypes: List<Type> = fileColumns.stream()
-                .map { it.columnType() }
+                .map { it.columnType }
                 .collect(toImmutableList())
 
         // Restrict the pushed-down predicate to columns we actually project (filter
@@ -712,7 +712,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         {
             val projected: MutableList<Any?> = ArrayList(columns.size)
             for (index in 0 until columns.size) {
-                val value: Any? = row.get(columns.get(index).columnName())
+                val value: Any? = row.get(columns.get(index).columnName)
                 projected.add(toNativeMetadataValue(value, types.get(index)))
             }
             return projected
@@ -759,7 +759,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
             for (entry in domains.get().entries) {
                 val columnHandle: DucklakeColumnHandle = entry.key
-                val descriptor: ColumnDescriptor? = topLevelDescriptors.get(columnHandle.columnName().lowercase(Locale.ENGLISH))
+                val descriptor: ColumnDescriptor? = topLevelDescriptors.get(columnHandle.columnName.lowercase(Locale.ENGLISH))
                 if (descriptor != null) {
                     predicate.put(descriptor, entry.value)
                 }
@@ -828,19 +828,19 @@ public class DucklakePageSourceProvider @Inject constructor(
          */
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
-            val partitionValue: String? = split.partitionValuesByColumnId.get(column.columnId())
+            val partitionValue: String? = split.partitionValuesByColumnId.get(column.columnId)
             if (partitionValue == null) {
-                return column.columnType().createNullBlock()
+                return column.columnType.createNullBlock()
             }
             try {
-                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType(), partitionValue)
-                return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType(), nativeValue)
+                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, partitionValue)
+                return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType, nativeValue)
             }
             catch (_: RuntimeException) {
                 // If the catalog's stored value can't be parsed to the column's type, fall back
                 // to NULL rather than failing the whole read. The pruning path already tolerates
                 // parse failures the same way.
-                return column.columnType().createNullBlock()
+                return column.columnType.createNullBlock()
             }
         }
     }

@@ -39,8 +39,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumnHandle(30, "price", DOUBLE, true))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
@@ -58,8 +58,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumnHandle(15, "count", BIGINT, true))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
@@ -84,8 +84,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumn(102, 1, Optional.empty(), 1, 3, "value", "INTEGER", true, Optional.of(100L)))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, allColumns, converter.messageType)
@@ -106,8 +106,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumnHandle(50, "tags", arrayType, true))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
@@ -124,8 +124,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumnHandle(75, "properties", mapType, true))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
@@ -141,8 +141,8 @@ internal class TestDucklakeParquetSchemaBuilder {
                 DucklakeColumnHandle(2, "name", VARCHAR, true))
 
         val converter = ParquetSchemaConverter(
-                columns.map { it.columnType() },
-                columns.map { it.columnName() },
+                columns.map { it.columnType },
+                columns.map { it.columnName },
                 false, false)
 
         val original: MessageType = converter.messageType

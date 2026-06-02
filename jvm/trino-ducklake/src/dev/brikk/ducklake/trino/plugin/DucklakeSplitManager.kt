@@ -87,38 +87,38 @@ public class DucklakeSplitManager @Inject constructor(
 
         val tableHandle: DucklakeTableHandle = table as DucklakeTableHandle
 
-        log.debug("Getting splits for table %s at snapshot %d", tableHandle.tableName(), tableHandle.snapshotId())
+        log.debug("Getting splits for table %s at snapshot %d", tableHandle.tableName, tableHandle.snapshotId)
 
         // Get all data files for this table at the snapshot
         var dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(
-                tableHandle.tableId(),
-                tableHandle.snapshotId())
+                tableHandle.tableId,
+                tableHandle.snapshotId)
 
-        log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName())
+        log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName)
 
         validateDeleteFileFormats(dataFiles, tableHandle)
 
         val tableHasNoDataFiles: Boolean = dataFiles.isEmpty()
-        val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId(), tableHandle.snapshotId())
+        val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId, tableHandle.snapshotId)
         var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos.stream()
-                .filter { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, tableHandle.snapshotId()) }
+                .filter { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, tableHandle.snapshotId) }
                 .map { info ->
                     log.debug("Found inlined data for table %s (tableId=%d, schemaVersion=%d)",
-                            tableHandle.tableName(), info.tableId, info.schemaVersion)
-                    DucklakeInlinedSplit(info.tableId, info.schemaVersion, tableHandle.snapshotId())
+                            tableHandle.tableName, info.tableId, info.schemaVersion)
+                    DucklakeInlinedSplit(info.tableId, info.schemaVersion, tableHandle.snapshotId)
                 }
                 .collect(toImmutableList())
 
         var parquetSplits: List<DucklakeSplit> = listOf()
         if (!dataFiles.isEmpty()) {
-            val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId(), tableHandle.snapshotId())
-                    .orElseThrow { IllegalStateException("Table metadata missing for table ID: " + tableHandle.tableId()) }
-            val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName(), tableHandle.snapshotId())
-                    .orElseThrow { IllegalStateException("Schema metadata missing for schema: " + tableHandle.schemaName()) }
+            val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId, tableHandle.snapshotId)
+                    .orElseThrow { IllegalStateException("Table metadata missing for table ID: " + tableHandle.tableId) }
+            val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName, tableHandle.snapshotId)
+                    .orElseThrow { IllegalStateException("Schema metadata missing for schema: " + tableHandle.schemaName) }
             val tableDataPath: String = pathResolver.resolveTableDataPath(schemaMetadata, tableMetadata)
 
             val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
-                    .intersect(tableHandle.unenforcedPredicate())
+                    .intersect(tableHandle.unenforcedPredicate)
             dataFiles = pruneDataFiles(dataFiles, tableHandle, constraint)
             dataFiles = pruneByPartitionValues(dataFiles, tableHandle)
 
@@ -126,13 +126,13 @@ public class DucklakeSplitManager @Inject constructor(
             // to build. The page source uses these to constant-fill partition columns
             // when the parquet body is missing them (hive-style external file imports).
             val specsForProjection: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
-                    tableHandle.tableId(), tableHandle.snapshotId())
+                    tableHandle.tableId, tableHandle.snapshotId)
             val activeSpec: Optional<DucklakePartitionSpec> = if (specsForProjection.isEmpty())
                 Optional.empty()
             else
                 Optional.of(specsForProjection.last())
             val partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>> = if (activeSpec.isPresent)
-                catalog.getFilePartitionValues(tableHandle.tableId(), tableHandle.snapshotId())
+                catalog.getFilePartitionValues(tableHandle.tableId, tableHandle.snapshotId)
             else
                 mapOf()
 
@@ -158,8 +158,8 @@ public class DucklakeSplitManager @Inject constructor(
             // the same deleted-row set as parquet delete files. Empty map when the per-table
             // metadata table doesn't exist (common case).
             val inlinedDeletesByFileId: Map<Long, java.util.Set<Long>> = if (catalog.hasInlinedDeletes(
-                            tableHandle.tableId(), tableHandle.snapshotId()))
-                catalog.getInlinedDeletes(tableHandle.tableId(), tableHandle.snapshotId())
+                            tableHandle.tableId, tableHandle.snapshotId))
+                catalog.getInlinedDeletes(tableHandle.tableId, tableHandle.snapshotId)
             else
                 emptyMap()
 
@@ -181,12 +181,12 @@ public class DucklakeSplitManager @Inject constructor(
         if (tableHasNoDataFiles && inlinedSplits.isEmpty() && !inlinedDataInfos.isEmpty()) {
             val latestInfo: DucklakeInlinedDataInfo = inlinedDataInfos.last()
             log.debug("Emitting empty inlined split for table %s (tableId=%d, schemaVersion=%d)",
-                    tableHandle.tableName(), latestInfo.tableId, latestInfo.schemaVersion)
-            inlinedSplits = listOf(DucklakeInlinedSplit(latestInfo.tableId, latestInfo.schemaVersion, tableHandle.snapshotId()))
+                    tableHandle.tableName, latestInfo.tableId, latestInfo.schemaVersion)
+            inlinedSplits = listOf(DucklakeInlinedSplit(latestInfo.tableId, latestInfo.schemaVersion, tableHandle.snapshotId))
         }
 
         if (parquetSplits.isEmpty() && inlinedSplits.isEmpty()) {
-            log.debug("No data files or inlined data found for table %s", tableHandle.tableName())
+            log.debug("No data files or inlined data found for table %s", tableHandle.tableName)
             return FixedSplitSource(listOf<ConnectorSplit>())
         }
 
@@ -196,7 +196,7 @@ public class DucklakeSplitManager @Inject constructor(
 
         log.debug("Created %d splits for table %s (%d parquet, %d inlined)",
                 allSplits.size,
-                tableHandle.tableName(),
+                tableHandle.tableName,
                 parquetSplits.size,
                 inlinedSplits.size)
 
@@ -245,15 +245,15 @@ public class DucklakeSplitManager @Inject constructor(
 
             val bounds: PredicateBounds = predicateBounds.get()
             val matchingFileIds: List<Long> = catalog.findDataFileIdsInRange(
-                    tableHandle.tableId(),
-                    tableHandle.snapshotId(),
-                    ColumnRangePredicate(columnHandle.columnId(), bounds.minValue, bounds.maxValue))
+                    tableHandle.tableId,
+                    tableHandle.snapshotId,
+                    ColumnRangePredicate(columnHandle.columnId, bounds.minValue, bounds.maxValue))
 
             pruningApplied = true
             candidateFileIds.retainAll(matchingFileIds)
 
             if (candidateFileIds.isEmpty()) {
-                log.debug("Pruned all data files for table %s using column %s", tableHandle.tableName(), columnHandle.columnName())
+                log.debug("Pruned all data files for table %s using column %s", tableHandle.tableName, columnHandle.columnName)
                 return listOf()
             }
         }
@@ -266,7 +266,7 @@ public class DucklakeSplitManager @Inject constructor(
                 .filter { file -> candidateFileIds.contains(file.dataFileId) }
                 .collect(toImmutableList())
 
-        log.debug("Pruned data files from %d to %d for table %s", dataFiles.size, prunedDataFiles.size, tableHandle.tableName())
+        log.debug("Pruned data files from %d to %d for table %s", dataFiles.size, prunedDataFiles.size, tableHandle.tableName)
         return prunedDataFiles
     }
 
@@ -363,7 +363,7 @@ public class DucklakeSplitManager @Inject constructor(
     private fun pruneByPartitionValues(
             dataFiles: List<DucklakeDataFile>,
             tableHandle: DucklakeTableHandle): List<DucklakeDataFile> {
-        val enforced: TupleDomain<DucklakeColumnHandle> = tableHandle.enforcedPredicate()
+        val enforced: TupleDomain<DucklakeColumnHandle> = tableHandle.enforcedPredicate
         if (enforced.isAll()) {
             return dataFiles
         }
@@ -375,13 +375,13 @@ public class DucklakeSplitManager @Inject constructor(
         }
 
         val specs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
-                tableHandle.tableId(), tableHandle.snapshotId())
+                tableHandle.tableId, tableHandle.snapshotId)
         if (specs.isEmpty()) {
             return dataFiles
         }
 
         val filePartValues: Map<Long, List<DucklakeFilePartitionValue>> =
-                catalog.getFilePartitionValues(tableHandle.tableId(), tableHandle.snapshotId())
+                catalog.getFilePartitionValues(tableHandle.tableId, tableHandle.snapshotId)
 
         // Build columnId -> list of (partitionKeyIndex, transform, arity) for all fields.
         // A single column can have multiple transforms (e.g., year + month on the same date column).
@@ -401,7 +401,7 @@ public class DucklakeSplitManager @Inject constructor(
         for (entry in enforced.getDomains().orElse(mapOf<DucklakeColumnHandle, Domain>()).entries) {
             val column: DucklakeColumnHandle = entry.key
             val domain: Domain = entry.value
-            val mappings: List<PartitionKeyMapping>? = columnToPartKeys[column.columnId()]
+            val mappings: List<PartitionKeyMapping>? = columnToPartKeys[column.columnId]
             if (mappings == null) {
                 continue
             }
@@ -421,7 +421,7 @@ public class DucklakeSplitManager @Inject constructor(
                         // Null partition value — can only match IS NULL predicates, don't prune
                         continue
                     }
-                    if (!partitionValueMatchesDomain(column.columnType(), partValue, domain, mapping.transform, mapping.arity)) {
+                    if (!partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)) {
                         return@removeIf true // this transform excludes the file
                     }
                 }
@@ -429,7 +429,7 @@ public class DucklakeSplitManager @Inject constructor(
             }
 
             if (candidateFileIds.isEmpty()) {
-                log.debug("Pruned all data files by partition values for table %s", tableHandle.tableName())
+                log.debug("Pruned all data files by partition values for table %s", tableHandle.tableName)
                 return listOf()
             }
         }
@@ -437,7 +437,7 @@ public class DucklakeSplitManager @Inject constructor(
         val result: List<DucklakeDataFile> = dataFiles.stream()
                 .filter { f -> candidateFileIds.contains(f.dataFileId) }
                 .collect(toImmutableList())
-        log.debug("Partition pruning: %d -> %d files for table %s", dataFiles.size, result.size, tableHandle.tableName())
+        log.debug("Partition pruning: %d -> %d files for table %s", dataFiles.size, result.size, tableHandle.tableName)
         return result
     }
 
@@ -563,8 +563,8 @@ public class DucklakeSplitManager @Inject constructor(
                         "Table %s.%s references a delete file with format '%s', which this connector cannot read. " +
                                 "Supported formats are 'parquet' (positional delete files) and 'puffin' (DuckLake " +
                                 "deletion-vector files). Compact the table to materialize deletes before reading.",
-                        tableHandle.schemaName(),
-                        tableHandle.tableName(),
+                        tableHandle.schemaName,
+                        tableHandle.tableName,
                         deleteFileFormat.get()))
             }
         }

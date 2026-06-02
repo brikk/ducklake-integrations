@@ -140,7 +140,7 @@ constructor(
     private val partitionValues: Map<Int, String?> = HashMap(partitionValues)
     private val partitionId: OptionalLong = partitionId
     private val columns: List<DucklakeColumnHandle> = columns.toList()
-    private val columnTypes: List<Type> = this.columns.stream().map { it.columnType() }.toList()
+    private val columnTypes: List<Type> = this.columns.stream().map { it.columnType }.toList()
     private val localTempFile: Path
 
     private val connection: DuckDBConnection
@@ -230,9 +230,9 @@ constructor(
                 sql.append(", ")
             }
             val col: DucklakeColumnHandle = columns.get(i)
-            sql.append('"').append(col.columnName().replace("\"", "\"\"")).append('"')
-            sql.append(' ').append(toDuckDbSqlType(col.columnType()))
-            if (!col.nullable()) {
+            sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
+            sql.append(' ').append(toDuckDbSqlType(col.columnType))
+            if (!col.nullable) {
                 sql.append(" NOT NULL")
             }
         }
@@ -243,7 +243,7 @@ constructor(
     private fun buildArrowSchema(): Schema {
         val fields: ImmutableList.Builder<Field> = ImmutableList.builder()
         for (col in columns) {
-            fields.add(toArrowField(col.columnName(), col.columnType(), col.nullable()))
+            fields.add(toArrowField(col.columnName, col.columnType, col.nullable))
         }
         return Schema(fields.build())
     }
@@ -354,9 +354,9 @@ constructor(
         val minMaxColumns: MutableList<Int> = ArrayList()
         for (i in columns.indices) {
             val col: DucklakeColumnHandle = columns.get(i)
-            val name = '"' + col.columnName().replace("\"", "\"\"") + '"'
+            val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             sql.append(", COUNT(").append(name).append(")")
-            if (!(col.columnType().equals(VARBINARY) || col.columnType().equals(UuidType.UUID))) {
+            if (!(col.columnType.equals(VARBINARY) || col.columnType.equals(UuidType.UUID))) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
                 minMaxColumns.add(i)
             }
@@ -391,9 +391,9 @@ constructor(
             val col: DucklakeColumnHandle = columns.get(i)
             val valueCount: Long = valueCounts[i]
             val nullCount: Long = Math.max(0, totalCount - valueCount)
-            val min: Optional<String> = formatStatValue(col.columnType(), minValues[i])
-            val max: Optional<String> = formatStatValue(col.columnType(), maxValues[i])
-            result.add(DucklakeFileColumnStats(col.columnId(), 0L, valueCount, nullCount, min, max, false))
+            val min: Optional<String> = formatStatValue(col.columnType, minValues[i])
+            val max: Optional<String> = formatStatValue(col.columnType, maxValues[i])
+            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
         }
         return result
     }
