@@ -1,0 +1,84 @@
+{
+  "slice": "catalog-test",
+  "kit_version": 1,
+  "generated_at": "2026-06-01",
+  "scope": "jvm/ducklake-catalog/test/src/dev/brikk/ducklake/catalog + jvm/ducklake-catalog/testFixtures/src/dev/brikk/ducklake/catalog",
+  "summary": "Zero applicable changes. The faithful port (commit 6e7425e) already landed clean Kotlin idioms in this slice, and the test-specific rule changes from the brief intentionally exclude the few cosmetic wins that would have applied in main code.",
+  "survey": {
+    "files_inspected": {
+      "test_kt": 35,
+      "testFixtures_kt": 6
+    },
+    "patterns_searched": {
+      "TODO(kit:)": 0,
+      "java.util.{List,Map,Set}.{of,copyOf}": 0,
+      "Objects.requireNonNull / requireNonNull(": 0,
+      "e.message!! / *.message!!": 0,
+      ".toLowerCase() / .lowercase() (default-locale)": 0,
+      "@JvmStatic occurrences": "54 across 35 files (test=51, testFixtures=3 helpers) — INTENTIONALLY KEPT per brief rule #1",
+      "Optional.* call sites": "24 occurrences across 12 files — DEFERRED per brief rule #7 + prior-slice precedent",
+      "try { ... } finally { ... }": "2 sites (TestWriteTransactionRetry.kt:148-167, ConcurrentWriterHarness.kt:92-125) — both multi-step orchestration teardowns (clear interrupt flag / shutdown executor + reset hook), NOT single-Closeable patterns"
+    },
+    "notes": [
+      "The only .toLowerCase / .lowercase() call in this slice is JdbcDucklakeCatalogTestDataGenerator.kt:139 which already reads `testName.lowercase(Locale.ROOT)` — the faithful-port pass got it right.",
+      "All requireNonNull occurrences are in *.java.old files (testFixtures CatalogQueries, CatalogTestSupport, CatalogPredicates); the .kt translations already dropped them on non-nullable Kotlin params — no further cleanup needed.",
+      "Try/finally bodies do not match the brief's safe-conversion criterion ('clearly closing one Closeable, not orchestrating multi-step teardown'). Left as-is per brief rule #2."
+    ]
+  },
+  "applied": {
+    "during_correctness_wins": [],
+    "idiom_cleanup": []
+  },
+  "not_applied": [
+    {
+      "name": "drop_jvmstatic_from_test_companions",
+      "rationale": "Brief mandatory rule #1: KEEP existing @JvmStatic in tests. JUnit may reflectively load companion-object helpers (e.g. @MethodSource providers, @BeforeAll hooks); the trino-main rule (drop because the module is 100% Kotlin) does not transfer to test code where the runner does reflective lookups.",
+      "decision": "Deliberately kept by policy. 51 sites in test/, 3 sites in testFixtures/ helpers."
+    },
+    {
+      "name": "collapse_optional_to_nullable_on_internal_paths",
+      "rationale": "Deferred across all prior slices (trino-main, catalog-main). Per brief rule #7. Catalog tests use Optional<T> mostly to interface with the main-source API (DucklakeWriteFragment.partitionId: OptionalLong, etc.) — flipping at test-call boundaries would require coordinated changes in the main slice already kit-applied.",
+      "decision": "Deferred per all prior slices."
+    },
+    {
+      "name": "resource_leak_fixes_use_block",
+      "rationale": "Brief rule #2: only swap try/finally → .use {} when the test was clearly closing one Closeable, not orchestrating a multi-step teardown. The two try/finally sites in this slice are: (1) TestWriteTransactionRetry restoring the interrupt flag, (2) ConcurrentWriterHarness shutting down the loser executor + resetting catalog.beforeWriteTransactionAction. Neither matches the safe-conversion criterion.",
+      "decision": "Not applicable — no safe conversions available."
+    },
+    {
+      "name": "locale_root_lowercase",
+      "rationale": "Only one lowercase call exists in the slice (JdbcDucklakeCatalogTestDataGenerator.kt:139) and it already passes Locale.ROOT. Nothing to fix.",
+      "decision": "Not applicable — port was already correct."
+    },
+    {
+      "name": "safe_sql_message",
+      "rationale": "Brief rule #4: fix only if the test is actually exercising an error path. No `.message!!` occurrences exist in this slice; the .kt translations either pass `e.message` through directly (System.Logger accepts Any?) or use `?:` defaults.",
+      "decision": "Not applicable."
+    },
+    {
+      "name": "convert_handles_to_jvm_record_data_class",
+      "rationale": "Brief rule #6: tests usually don't have Jackson-serialized handles. Confirmed: no @JsonCreator / handle-style data classes in this slice; tests only construct/consume the handles defined in main sources (which were already converted in trino-main slice).",
+      "decision": "Not applicable."
+    },
+    {
+      "name": "kotlin_collection_factories",
+      "rationale": "Survey returned zero `java.util.{List,Map,Set}.{of,copyOf}` calls in .kt sources. The faithful port already used Kotlin built-ins (emptyList(), listOf(), toList(), etc.).",
+      "decision": "Not applicable — port was already idiomatic."
+    },
+    {
+      "name": "drop_requireNonNull_on_kotlin_non_null_params",
+      "rationale": "Survey returned zero requireNonNull occurrences in .kt sources. The faithful port already dropped them on non-nullable Kotlin params.",
+      "decision": "Not applicable — port was already correct."
+    }
+  ],
+  "shared_helpers_introduced": [],
+  "shared_helpers_decision": {
+    "choice": "no IdiomKit in this slice",
+    "rationale": "With zero applicable changes, there is nothing to extract into a shared helper. The catalog-main slice (sibling, same module) also chose inline-only with the same rationale; the trino-main IdiomKit.kt remains the canonical reference if a future test ever needs lowercaseRoot / safeMessage."
+  },
+  "verification": {
+    "command": "cd jvm && ./gradlew :ducklake-catalog:test --console=plain",
+    "expected": "108/0/0/0 across 33 suites (matches .ai/kotlin-port/catalog-test/baseline.json and the catalog-main post-kit run)",
+    "last_run": "2026-06-01 — UP-TO-DATE (no source changes). Parsed from on-disk TEST-*.xml: suites=33 tests=108 failures=0 errors=0 skipped=0. Matches baseline exactly."
+  }
+}
