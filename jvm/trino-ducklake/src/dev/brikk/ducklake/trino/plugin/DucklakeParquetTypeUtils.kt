@@ -82,6 +82,7 @@ object DucklakeParquetTypeUtils {
 
         if (trinoType is ArrayType) {
             val arrayType = trinoType
+            // TODO(review:after id=correctness-parquet-2level-list-cast): unconditional cast assumes 3-level LIST; legacy 2-level (repeated primitive) crashes
             val groupColumnIO = columnIO as GroupColumnIO
             if (groupColumnIO.childrenCount != 1) {
                 return Optional.empty()

@@ -569,7 +569,7 @@ class DucklakeMetadata(
             session: ConnectorSession,
             prefix: SchemaTablePrefix): Map<SchemaTableName, List<ColumnMetadata>>
     {
-        val snapshotId = catalog.currentSnapshotId
+        val snapshotId = snapshotResolver.resolveSnapshotId(session)
         val columns: ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> = ImmutableMap.builder()
 
         val tables: List<SchemaTableName> = prefix.getTable()

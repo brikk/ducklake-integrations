@@ -198,6 +198,28 @@ open class TestDucklakePartitionAndTimeTravel : AbstractDucklakeIntegrationTest(
     }
 
     @Test
+    fun testInformationSchemaColumnsHonoursSessionSnapshot() {
+        // At the historical snapshot, schema_evolution_table only had (id, original_col);
+        // added_col was introduced by a later ALTER TABLE.
+        //
+        // Trino's MetadataManager.listTableColumns has two paths: a fast point-lookup that
+        // routes through getTableHandle+getTableMetadata (honours the session snapshot already),
+        // and a schema-wide bulk path that calls ConnectorMetadata.streamRelationColumns →
+        // listTableColumns(session, schema-only prefix). This filters by column_name (no
+        // table_name equality), so the bulk path runs and listTableColumns must resolve the
+        // session snapshot itself — otherwise added_col leaks from the current catalog snapshot
+        // into a session pinned to a snapshot that predates the ALTER.
+        val historicalSnapshot = getSchemaEvolutionHistoricalSnapshot()
+        val pinnedSession = Session.builder(session)
+            .setCatalogSessionProperty("ducklake", READ_SNAPSHOT_TIMESTAMP, historicalSnapshot.snapshotTime.toString())
+            .build()
+        assertQueryReturnsEmptyResult(
+            pinnedSession,
+            "SELECT table_name FROM information_schema.columns " +
+                "WHERE table_schema = 'test_schema' AND column_name = 'added_col'")
+    }
+
+    @Test
     fun testVersionedReadsReturnPreciseErrors() {
         val historicalSnapshot = getSchemaEvolutionHistoricalSnapshot()
         assertQueryFails(

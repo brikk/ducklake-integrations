@@ -1,9 +1,9 @@
 {
   "generated_at": "2026-06-02",
   "input_findings": 73,
-  "planted": 49,
-  "skipped_before_fixed": 13,
-  "skipped_user_decision": 2,
+  "planted": 50,
+  "skipped_before_fixed": 14,
+  "skipped_user_decision": 0,
   "skipped_other": 9,
   "markers": [
     {
@@ -59,6 +59,15 @@
       "title": "Per-key lock removed inside synchronized block lets two threads run the critical section concurrently",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.java:98-114",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.kt:72"
+    },
+    {
+      "id": "correctness-parquet-2level-list-cast",
+      "finding_index": 21,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Unconditional cast to GroupColumnIO for ArrayType throws ClassCastException on 2-level Parquet lists",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.java:90-97",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.kt:85"
     },
     {
       "id": "eff-snapshot-at-or-before-full-scan",
@@ -524,7 +533,7 @@
     {
       "finding_index": 13,
       "title": "listTableColumns reads columns at current snapshot, ignoring session/time-travel snapshot",
-      "reason": "user-decision-listTableColumns",
+      "reason": "before-userdecision-listtablecolumns",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:769"
     },
     {
@@ -538,12 +547,6 @@
       "title": "DuckDB connection leaked when extractColumnStats() or DETACH fails in finishAndBuildFragment",
       "reason": "other: addressed by DURING kit-fix (use{}/try-close)",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:380-393"
-    },
-    {
-      "finding_index": 21,
-      "title": "Unconditional cast to GroupColumnIO for ArrayType throws ClassCastException on 2-level Parquet lists",
-      "reason": "user-decision-parquetTypeUtils",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.java:90-97"
     },
     {
       "finding_index": 23,
