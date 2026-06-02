@@ -1,0 +1,99 @@
+{
+  "slice": "combine",
+  "kit_version": 1,
+  "generated_at": "2026-06-02",
+  "scope": "both modules: jvm/ducklake-catalog + jvm/trino-ducklake (src + test + testFixtures)",
+  "summary": "Reconciled the four per-slice kits. Across 239 ported .kt files, every helper introduced in the trino-main IdiomKit failed the >=3-actual-site bar. Deleted IdiomKit.kt; the unified kit is 'use inline Kotlin idioms; rely on the project-local helper at the one remaining first-line site'. No call-site edits were applied (no surviving helpers to roll out). Verified both suites green.",
+  "inputs": [
+    "jvm/ducklake-catalog/test/src/dev/brikk/ducklake/catalog/_idioms/kit-notes.json",
+    "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/_idioms/kit-notes.json",
+    "jvm/trino-ducklake/test/src/dev/brikk/ducklake/trino/plugin/_idioms/kit-notes.json",
+    "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/_idioms/kit-notes.json"
+  ],
+  "survey": {
+    "ported_kt_files": 239,
+    "patterns_in_ported_kt": {
+      "lowercase(Locale.ROOT)": {
+        "total_sites": 17,
+        "main_src_catalog": 2,
+        "main_src_trino": 12,
+        "test_catalog": 1,
+        "test_trino": 1,
+        "kit_source_self_reference": 1,
+        "calls_to_lowercaseRoot_helper": 0
+      },
+      "null_safe_message_chains": {
+        "total_actual_sites": 3,
+        "sites": [
+          "InProcessDuckDbExecutor.kt:276 — e.message?.lineSequence()?.firstOrNull() ?: e.message ?: \"(no message)\"",
+          "QuackDuckDbExecutor.kt:361 — firstLineOrFull(e.message ?: \"(no message)\")",
+          "JdbcDucklakeCatalog.kt:2303 — val message = sqlException.message ?: return false"
+        ],
+        "calls_to_safeMessage_helper": 0
+      },
+      "first_line_logic": {
+        "total_actual_sites": 2,
+        "sites": [
+          "InProcessDuckDbExecutor.kt:276 — inlined lineSequence().firstOrNull() chain",
+          "QuackDuckDbExecutor.kt:366-368 — private fun firstLineOrFull(message: String): String"
+        ],
+        "calls_to_firstLine_helper": 0,
+        "calls_to_firstLineOf_helper": 0
+      }
+    }
+  },
+  "decisions": {
+    "lowercaseRoot": {
+      "verdict": "DROP",
+      "rationale": "17 actual sites all already write lowercase(Locale.ROOT) directly. Both per-slice kits (trino-main, catalog-main) explicitly noted 'direct call is idiomatic enough' (same length, more familiar to Kotlin readers, no import to manage in IdiomKit's package). Zero callers ever migrated to .lowercaseRoot(). Speculative helper."
+    },
+    "safeMessage": {
+      "verdict": "DROP",
+      "rationale": "Only 3 null-safe message sites exist. Of those, 2 are in trino-main and are subsumed by first-line logic (so they would call firstLineOf, not safeMessage). The third (catalog-main) uses `?: return false` flow control — would not fit safeMessage's (e, fallback) signature anyway. Zero independent demand."
+    },
+    "firstLine": {
+      "verdict": "DROP",
+      "rationale": "Only 2 actual sites — InProcessDuckDbExecutor:276 (inline) and QuackDuckDbExecutor:366 (private firstLineOrFull). Below the 3-site bar. QuackDuckDbExecutor's project-local helper is fine as-is; promoting it to IdiomKit would add an import + cross-package reach for 1 caller. The per-slice trino-main kit explicitly said 'future PRs can collapse them' — at unified-kit time, that future has not arrived."
+    },
+    "firstLineOf": {
+      "verdict": "DROP",
+      "rationale": "Composition convenience for safeMessage+firstLine. With both ingredients dropped, this falls automatically. Zero call sites."
+    }
+  },
+  "actions_taken": [
+    {
+      "kind": "file_deleted",
+      "path": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/_idioms/IdiomKit.kt",
+      "reason": "All four helpers failed the >=3-site bar. The per-slice kit-notes.json next to the deleted file is preserved as the slice's audit trail; it documents the helpers as 'introduced, not yet rolled out' — the unified-kit verdict makes that disposition permanent."
+    },
+    {
+      "kind": "directory_preserved",
+      "path": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/_idioms/",
+      "contents_remaining": ["kit-notes.json"],
+      "reason": "Per-slice kit-notes is the workflow's per-slice audit artifact; it stays. The directory no longer contains executable code."
+    }
+  ],
+  "rollout": {
+    "helpers_kept": [],
+    "callsite_edits_applied": "none — no helpers survived",
+    "cross_module_helpers": "none — explicitly avoided per workflow constraint (catalog cannot see trino-ducklake; would require cross-module duplication)"
+  },
+  "final_state": {
+    "modules": {
+      "ducklake-catalog": {
+        "uses_idiom_kit": false,
+        "rationale": "1 lowercase(Locale.ROOT) inline; 1 ?: return false null-safe message. Zero helpers needed; cross-module IdiomKit would be duplication."
+      },
+      "trino-ducklake": {
+        "uses_idiom_kit": false,
+        "rationale": "Inline forms (lowercase(Locale.ROOT), e.message ?: ...) read better than the helper indirections at <=16 sites per pattern. The DuckDB-executor first-line logic is a project-local 3-line private fun — too localised to extract."
+      }
+    },
+    "default_for_future_authors": "Write Kotlin idioms inline. Reach for a helper only when a pattern appears in >=3 distinct sites AND the helper indirection is shorter or clearer than the inline form. The trino-main kit-notes.json shared_helpers_introduced section is the historical record of the speculative-helper experiment that the combine pass reversed."
+  },
+  "verification": {
+    "command": "cd jvm && ./gradlew :ducklake-catalog:test :trino-ducklake:test --console=plain",
+    "expected": "ducklake-catalog 108/0/0/0 across 33 suites; trino-ducklake 825/0/0/0 across 70 suites",
+    "last_run": "2026-06-02 — BUILD SUCCESSFUL (3m 7s). ducklake-catalog UP-TO-DATE (no source touched); trino-ducklake recompiled cleanly after IdiomKit.kt deletion (zero dangling references). Aggregated from on-disk TEST-*.xml: ducklake-catalog 33/108/0/0/0; trino-ducklake 70/825/0/0/0."
+  }
+}
