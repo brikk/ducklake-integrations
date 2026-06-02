@@ -436,6 +436,7 @@ class DuckDbExpressionTranslator private constructor() {
             if (type is DateType) {
                 // DATE is stack-represented as days-since-epoch.
                 val days = (value as Long)
+                // TODO(review:after id=lowtail-date-constant-out-of-range): DATE constant outside 4-digit-year range emits a literal DuckDB cannot parse
                 return "DATE '" + LocalDate.ofEpochDay(days) + "'"
             }
             return null

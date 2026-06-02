@@ -1,0 +1,597 @@
+{
+  "generated_at": "2026-06-02",
+  "input_findings": 73,
+  "planted": 49,
+  "skipped_before_fixed": 13,
+  "skipped_user_decision": 2,
+  "skipped_other": 9,
+  "markers": [
+    {
+      "id": "spi-listtables-omits-views",
+      "finding_index": 12,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "listTables omits views, violating the SPI contract",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:336-360",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.kt:268"
+    },
+    {
+      "id": "correctness-identity-partition-spec-mismatch",
+      "finding_index": 15,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Identity partition constant-fill ignores each file's own partition spec (partition-evolution mis-fill)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.java:609-636",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:584"
+    },
+    {
+      "id": "correctness-timestamptz-precision-truncation",
+      "finding_index": 16,
+      "category": "correctness",
+      "severity": "high",
+      "title": "TIMESTAMPTZ Appender write truncates sub-millisecond precision (data loss for TIMESTAMP(6)/(9) WITH TIME ZONE)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:337-348",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.kt:259"
+    },
+    {
+      "id": "spi-pagesink-no-memory-usage",
+      "finding_index": 18,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "getMemoryUsage() not overridden \u2014 buffered Parquet row groups are invisible to Trino memory accounting",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:58-394",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:50"
+    },
+    {
+      "id": "correctness-valuecount-includes-nulls",
+      "finding_index": 19,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "value_count populated from parquet num_values (includes nulls), inconsistent with DuckDB writer path and over-counts total rows downstream",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:89,112-116",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.kt:84"
+    },
+    {
+      "id": "correctness-cache-lock-removed-inside-sync",
+      "finding_index": 20,
+      "category": "correctness",
+      "severity": "high",
+      "title": "Per-key lock removed inside synchronized block lets two threads run the critical section concurrently",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.java:98-114",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.kt:72"
+    },
+    {
+      "id": "eff-snapshot-at-or-before-full-scan",
+      "finding_index": 22,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "getSnapshotAtOrBefore materializes the entire snapshot table to find one row",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:234-244",
+      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:200"
+    },
+    {
+      "id": "spi-rowidinjecting-no-metrics-isblocked",
+      "finding_index": 24,
+      "category": "correctness",
+      "severity": "low",
+      "title": "RowIdInjectingPageSource does not propagate getMetrics() (or isBlocked()) from delegate",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:953-1041",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.kt:892"
+    },
+    {
+      "id": "eff-effectivepredicate-filter-list-contains",
+      "finding_index": 25,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "effectivePredicate.filter uses O(n) List.contains per domain entry",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:603-604",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.kt:609"
+    },
+    {
+      "id": "lowtail-date-constant-out-of-range",
+      "finding_index": 26,
+      "category": "correctness",
+      "severity": "low",
+      "title": "DATE constant outside 4-digit-year range emits a literal DuckDB cannot parse",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.java:463-467",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.kt:439"
+    },
+    {
+      "id": "eff-inlined-rows-n-plus-1",
+      "finding_index": 27,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "N+1 fetchExists probe per inlined-data table during split planning",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.java:131-139",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:103"
+    },
+    {
+      "id": "lowtail-mapmap-unguarded-asgrouptype",
+      "finding_index": 29,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Unguarded asGroupType() on MAP key_value child can escape as ClassCastException",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.java:377",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.kt:360"
+    },
+    {
+      "id": "eff-addfiles-footer-double-read",
+      "finding_index": 30,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "Footer is read from the data source twice per file (extra tail round-trip)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesProcedure.java:278-318",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesProcedure.kt:275"
+    },
+    {
+      "id": "lowtail-mapmap-cce-classification",
+      "finding_index": 31,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Malformed parquet MAP shape throws ClassCastException instead of DucklakeAddFilesException",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.java:377",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.kt:360"
+    },
+    {
+      "id": "lowtail-inlinedlist-null-token-collision",
+      "finding_index": 32,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Unquoted 'NULL' token collides with blob/varchar payloads and non-finite floats",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.java:208-215",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.kt:208"
+    },
+    {
+      "id": "lowtail-decimal-halfup-silent-rescale",
+      "finding_index": 33,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Decimal conversion silently rounds (HALF_UP) instead of preserving stored scale",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.java:451-466",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.kt:433"
+    },
+    {
+      "id": "lowtail-quacktoken-minlen-unenforced",
+      "finding_index": 35,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Documented quack-token min-length (4 chars) is never enforced",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeConfig.java:281-287",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeConfig.kt:250"
+    },
+    {
+      "id": "correctness-rollover-empty-writer",
+      "finding_index": 36,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Rollover eagerly opens a successor writer that may stay empty, producing a zero-row data file",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:194-197",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:170"
+    },
+    {
+      "id": "spi-pagesink-no-completed-bytes",
+      "finding_index": 37,
+      "category": "correctness",
+      "severity": "low",
+      "title": "getCompletedBytes() not overridden \u2014 reported written bytes always 0",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:58-394",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:50"
+    },
+    {
+      "id": "eff-rollover-partition-recompute",
+      "finding_index": 38,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "Partition values recomputed twice on rollover",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:237-240",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:184"
+    },
+    {
+      "id": "eff-appendpartitioned-boxing",
+      "finding_index": 39,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "Per-page boxing into HashMap<Integer,List<Integer>> then re-unboxing to int[]",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:212-221",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:184"
+    },
+    {
+      "id": "eff-inprocess-detach-overhead",
+      "finding_index": 41,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "Per-split DETACH on a fresh in-memory connection is pure overhead immediately before connection close",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.java:274-291",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.kt:152"
+    },
+    {
+      "id": "lowtail-timestamp-precision-silent-coerce",
+      "finding_index": 43,
+      "category": "correctness",
+      "severity": "low",
+      "title": "timestamp precision round-trips silently for unsupported precisions",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.java:221-228",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.kt:204"
+    },
+    {
+      "id": "lowtail-time-precision-dropped",
+      "finding_index": 44,
+      "category": "correctness",
+      "severity": "low",
+      "title": "TIME/TIME WITH TIME ZONE precision dropped on write",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.java:233-238",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.kt:217"
+    },
+    {
+      "id": "lowtail-date-timestamp-literal-out-of-range",
+      "finding_index": 45,
+      "category": "correctness",
+      "severity": "low",
+      "title": "DATE/TIMESTAMP literals mis-render for years <1000, BC, or >9999",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.java:241-251",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.kt:230"
+    },
+    {
+      "id": "eff-insert-fragment-roundtrip",
+      "finding_index": 46,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "Insert fragments are deserialized then re-serialized to identical bytes for no effect",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:152-164",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:140"
+    },
+    {
+      "id": "eff-resolvedatafileid-linear-scan",
+      "finding_index": 47,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "resolveDataFileId does an O(rows x files) linear scan over data-file ranges per deleted row",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:112-127",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:107"
+    },
+    {
+      "id": "eff-snapshot-timestamp-double-parse",
+      "finding_index": 49,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "read_snapshot_timestamp is parsed twice (validator + getter)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSessionProperties.java:137-154",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSessionProperties.kt:132"
+    },
+    {
+      "id": "correctness-paritext-non-atomic-copy",
+      "finding_index": 50,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Non-atomic Files.copy into the live extension path can expose a partially-written binary to a racing reader",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.java:152-166",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.kt:168"
+    },
+    {
+      "id": "lowtail-paritext-warn-drops-stack",
+      "finding_index": 51,
+      "category": "correctness",
+      "severity": "low",
+      "title": "IOException is logged with only e.getMessage(), discarding stack trace and root cause",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.java:129-133",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.kt:175"
+    },
+    {
+      "id": "lowtail-quack-host-unescaped",
+      "finding_index": 52,
+      "category": "correctness",
+      "severity": "low",
+      "title": "host interpolated into single-quoted ATTACH string without escapeSqlString",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.java:141-155",
+      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
+    },
+    {
+      "id": "lowtail-quack-metadatacatalog-unquoted-use",
+      "finding_index": 53,
+      "category": "correctness",
+      "severity": "low",
+      "title": "validateIdentifier accepts numeric-only / keyword names that break the generated USE statement",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.java:180-197",
+      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
+    },
+    {
+      "id": "correctness-transform-pattern-case-sensitive",
+      "finding_index": 54,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "TRANSFORM_PATTERN is case-sensitive while BUCKET_PATTERN is case-insensitive \u2014 uppercase temporal transforms silently become identity columns",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.java:44,186-198",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.kt:68"
+    },
+    {
+      "id": "lowtail-transform-pattern-greedy-dot-plus",
+      "finding_index": 55,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Greedy .+ in TRANSFORM_PATTERN swallows nested parens and commas into the column name",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.java:186-187",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.kt:68"
+    },
+    {
+      "id": "correctness-readpath-not-supported-misclass",
+      "finding_index": 56,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "All read-path IOException/SQLException wrapped as NOT_SUPPORTED",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.java:141-143",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.kt:120"
+    },
+    {
+      "id": "lowtail-completedbytes-output-page-size",
+      "finding_index": 57,
+      "category": "correctness",
+      "severity": "low",
+      "title": "getCompletedBytes reports output Page size, not input bytes read",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.java:137-138",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.kt:78"
+    },
+    {
+      "id": "lowtail-sortkey-contiguity-unchecked",
+      "finding_index": 58,
+      "category": "correctness",
+      "severity": "low",
+      "title": "sortKeyIndex contiguity is never validated; a gap silently produces a false sort claim",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSortPropertyMapper.java:68-85",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSortPropertyMapper.kt:57"
+    },
+    {
+      "id": "lowtail-puffin-unchecked-escape",
+      "finding_index": 59,
+      "category": "correctness",
+      "severity": "low",
+      "title": "Corrupt blob can escape as unchecked exception instead of IOException",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.java:114-140",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.kt:82"
+    },
+    {
+      "id": "correctness-cache-no-download-size-verify",
+      "finding_index": 60,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Downloaded file size is never verified before being moved into the cache and returned",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.java:106-109",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.kt:72"
+    },
+    {
+      "id": "eff-paritext-prefetch-no-max-cap",
+      "finding_index": 61,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "Prefetch ignores maxFooterReadSize cap, can eagerly read/allocate a huge tail a stale hint would never reach in the normal path",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.java:59-68",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.kt:110"
+    },
+    {
+      "id": "lowtail-paritext-hint-overflow",
+      "finding_index": 62,
+      "category": "correctness",
+      "severity": "low",
+      "title": "footerSizeHint + POST_SCRIPT_SIZE can overflow to a negative long that bypasses both guards",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.java:62-65",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.kt:110"
+    },
+    {
+      "id": "eff-parquet-footer-double-serialize",
+      "finding_index": 63,
+      "category": "efficiency",
+      "severity": "low",
+      "title": "Footer Thrift metadata is serialized a second time solely to measure its length",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.java:92-96",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.kt:71"
+    },
+    {
+      "id": "correctness-discrete-values-ignores-inclusive",
+      "finding_index": 64,
+      "category": "correctness",
+      "severity": "low",
+      "title": "discreteValues branch ignores DiscreteValues.isInclusive(), inverting exclusion-set semantics",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeBucketPartitionMatcher.java:73-80",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeBucketPartitionMatcher.kt:75"
+    },
+    {
+      "id": "lowtail-parseboolean-1-0-collision",
+      "finding_index": 65,
+      "category": "correctness",
+      "severity": "medium",
+      "title": "Boolean.parseBoolean silently returns false for '1' and '0', causing wrong partition pruning and wrong projected constants for externally-written catalogs",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.java:74",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.kt:71"
+    },
+    {
+      "id": "eff-resolvedatafileid-treemap-floor",
+      "finding_index": 68,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "resolveDataFileId does a linear scan per deleted row over all data file ranges",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:119-127",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:107"
+    },
+    {
+      "id": "eff-insert-fragment-roundtrip-finish",
+      "finding_index": 69,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "Insert fragments are needlessly deserialized and reserialized inside finish()",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:156-160",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:140"
+    },
+    {
+      "id": "correctness-delete-footersize-zero",
+      "finding_index": 70,
+      "category": "correctness",
+      "severity": "high",
+      "title": "Delete-file footer_size=0 written unconditionally, crashing DuckDB reader",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2244",
+      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:2026"
+    },
+    {
+      "id": "correctness-snapshot-time-npe-message",
+      "finding_index": 71,
+      "category": "correctness",
+      "severity": "high",
+      "title": "NPE on nullable snapshot_time before requireNonNull can fire",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2319",
+      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:2388"
+    },
+    {
+      "id": "eff-fallback-recordcount-materialize",
+      "finding_index": 72,
+      "category": "efficiency",
+      "severity": "medium",
+      "title": "getFallbackRecordCount materialises entire inlined dataset into memory just to call .size()",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:525-531",
+      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.kt:436"
+    }
+  ],
+  "skipped": [
+    {
+      "finding_index": 0,
+      "title": "findDataFileIdsInRange does string-compares int128/uint128 stats, silently pruning matching files",
+      "reason": "before-B1",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2445-2458"
+    },
+    {
+      "finding_index": 1,
+      "title": "typedCompare uses non-existent type names, so getColumnStats min/max for all numeric/float columns is always lexicographic",
+      "reason": "before-B1",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:584-601"
+    },
+    {
+      "finding_index": 2,
+      "title": "applyDeleteFragments never end-snapshots a prior active delete file for the same data_file_id",
+      "reason": "before-B3",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2223-2260"
+    },
+    {
+      "finding_index": 3,
+      "title": "Delete-row filter mis-aligns file positions when the Parquet predicate prunes row groups/pages",
+      "reason": "before-B3",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:520-544, 907-946"
+    },
+    {
+      "finding_index": 4,
+      "title": "cleanupAfterFailure closes Arrow allocator/stream/connection while the consumer INSERT may still be running natively",
+      "reason": "before-B5",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbArrowStreamFileWriter.java:624-637"
+    },
+    {
+      "finding_index": 5,
+      "title": "$divide pushed as DuckDB '/' silently changes integer-division semantics, dropping rows",
+      "reason": "before-B2",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.java:706-721"
+    },
+    {
+      "finding_index": 6,
+      "title": "Unbounded-low exclusive-high predicate at a transform boundary prunes ALL files under CALENDAR encoding (silent data loss)",
+      "reason": "before-B4",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTemporalPartitionMatcher.java:108-136"
+    },
+    {
+      "finding_index": 7,
+      "title": "Non-monotonic wrapping guard omits YEAR but applies the decrement to YEAR, and does not account for an unbounded low bound",
+      "reason": "before-B4",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTemporalPartitionMatcher.java:128-134"
+    },
+    {
+      "finding_index": 8,
+      "title": "Cross-row-group min/max aggregation uses lexicographic string compare on numeric values, producing wrong per-file bounds",
+      "reason": "before-B1",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:103-106,192-200"
+    },
+    {
+      "finding_index": 9,
+      "title": "Decimal min/max decoded as big-endian BigInteger, but short decimals are stored little-endian (INT32/INT64) by Trino's parquet writer",
+      "reason": "before-B1",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:179-183"
+    },
+    {
+      "finding_index": 10,
+      "title": "Lexicographic stringMin/stringMax corrupts numeric min/max for multi-row-group files",
+      "reason": "before-B1",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:103-106"
+    },
+    {
+      "finding_index": 11,
+      "title": "typedCompare uses wrong column type names \u2014 numeric min/max accumulation always falls back to lexicographic comparison",
+      "reason": "before-B1",
+      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:587-595"
+    },
+    {
+      "finding_index": 13,
+      "title": "listTableColumns reads columns at current snapshot, ignoring session/time-travel snapshot",
+      "reason": "user-decision-listTableColumns",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:769"
+    },
+    {
+      "finding_index": 14,
+      "title": "On the DuckDB path, row-id injection and delete filtering assume unfiltered scan order but predicates are pushed to DuckDB",
+      "reason": "before-B3",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:603-624, 907-946"
+    },
+    {
+      "finding_index": 17,
+      "title": "DuckDB connection leaked when extractColumnStats() or DETACH fails in finishAndBuildFragment",
+      "reason": "other: addressed by DURING kit-fix (use{}/try-close)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:380-393"
+    },
+    {
+      "finding_index": 21,
+      "title": "Unconditional cast to GroupColumnIO for ArrayType throws ClassCastException on 2-level Parquet lists",
+      "reason": "user-decision-parquetTypeUtils",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.java:90-97"
+    },
+    {
+      "finding_index": 23,
+      "title": "Locale-sensitive toLowerCase on view dialect",
+      "reason": "other: addressed by DURING kit-fix (Locale.ROOT)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:1495"
+    },
+    {
+      "finding_index": 28,
+      "title": "DuckDB connection leaked when ATTACH/CREATE TABLE/createAppender fails in constructor",
+      "reason": "other: addressed by DURING kit-fix (try/close in catch)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:143-162"
+    },
+    {
+      "finding_index": 34,
+      "title": "NPE when SET TimeZone fails with a null-message SQLException masks the real error",
+      "reason": "other: addressed by DURING kit-fix (?:)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/QuackDuckDbExecutor.java:299"
+    },
+    {
+      "finding_index": 40,
+      "title": "NPE on null SQLException message masks the real TimeZone-rejection error",
+      "reason": "other: addressed by DURING kit-fix (?:)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.java:194-200"
+    },
+    {
+      "finding_index": 42,
+      "title": "toLowerCase() uses default locale (Turkish-i hazard)",
+      "reason": "other: addressed by DURING kit-fix (Locale.ROOT)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.java:77"
+    },
+    {
+      "finding_index": 48,
+      "title": "getRetainedSizeInBytes double-counts every delete-file path string",
+      "reason": "other: addressed by DURING kit-fix (no double-count)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplit.java:208-228"
+    },
+    {
+      "finding_index": 66,
+      "title": "getRetainedSizeInBytes double-counts primitive fields already included in INSTANCE_SIZE",
+      "reason": "other: addressed by DURING kit-fix (no double-count)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeColumnHandle.java:68-71"
+    },
+    {
+      "finding_index": 67,
+      "title": "outputStream leaked when ParquetWriter.write() or close() throws",
+      "reason": "other: addressed by DURING kit-fix (close in catch)",
+      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
+    }
+  ]
+}

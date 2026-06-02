@@ -69,6 +69,7 @@ object DucklakePartitionValueParser
             return LocalDate.parse(value).toEpochDay()
         }
         if (type.equals(BOOLEAN)) {
+            // TODO(review:after id=lowtail-parseboolean-1-0-collision): Boolean.parseBoolean silently returns false for '1' and '0'
             return java.lang.Boolean.parseBoolean(value)
         }
         throw IllegalArgumentException("Unsupported partition value type: " + type)

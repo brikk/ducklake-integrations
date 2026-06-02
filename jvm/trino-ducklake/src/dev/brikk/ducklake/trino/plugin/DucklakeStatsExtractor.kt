@@ -80,6 +80,7 @@ public object DucklakeStatsExtractor {
                 }
                 val columnMeta = rowGroup.getColumns().get(parquetColumnIndex).getMeta_data()
                 totalCompressedSize += columnMeta.getTotal_compressed_size()
+                // TODO(review:after id=correctness-valuecount-includes-nulls): value_count populated from parquet num_values includes nulls
                 totalValueCount += columnMeta.getNum_values()
 
                 if (columnMeta.isSetStatistics()) {

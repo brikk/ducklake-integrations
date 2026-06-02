@@ -272,6 +272,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             // FooterPrefetchingParquetDataSource uses it on subsequent reads to skip the
             // blind 48 KB tail read. Best-effort: any IO/parse failure falls back to 0 (the
             // read path tolerates 0 by doing the default blind read).
+            // TODO(review:after id=eff-addfiles-footer-double-read): footer is read from the data source twice per file (extra tail round-trip)
             val footerSize = readFooterLengthFromPostScript(dataSource)
 
             val recordCount = aggregateRecordCount(thriftMetadata)

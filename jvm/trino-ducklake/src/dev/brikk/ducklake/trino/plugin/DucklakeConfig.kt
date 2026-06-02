@@ -247,6 +247,7 @@ public class DucklakeConfig {
         return quackToken
     }
 
+    // TODO(review:after id=lowtail-quacktoken-minlen-unenforced): documented quack-token min-length (4 chars) is never enforced
     @Config("ducklake.quack.token")
     @ConfigDescription("Quack server auth token. Required when ducklake.execution-engine=quack. Min 4 characters (Quack server-side requirement).")
     fun setQuackToken(quackToken: String?): DucklakeConfig {

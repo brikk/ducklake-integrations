@@ -201,6 +201,7 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
         if (trinoType.equals(DateType.DATE)) {
             return "date"
         }
+        // TODO(review:after id=lowtail-timestamp-precision-silent-coerce): unsupported timestamp precisions silently collapse to micros
         if (trinoType is TimestampType) {
             val timestampType: TimestampType = trinoType
             return when (timestampType.getPrecision()) {
@@ -214,6 +215,7 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
         if (trinoType is TimestampWithTimeZoneType) {
             return "timestamptz"
         }
+        // TODO(review:after id=lowtail-time-precision-dropped): TIME/TIMETZ precision dropped on write (all collapse to micros)
         if (trinoType is TimeType) {
             return "time"
         }

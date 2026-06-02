@@ -72,6 +72,7 @@ object DucklakeBucketPartitionMatcher {
                         }
                         matched
                     },
+                    // TODO(review:after id=correctness-discrete-values-ignores-inclusive): branch ignores DiscreteValues.isInclusive() (inverting exclusion semantics)
                     Function<DiscreteValues, Boolean> { discreteValues ->
                         var matched = false
                         for (value in discreteValues.values) {

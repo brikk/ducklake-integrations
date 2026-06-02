@@ -62,6 +62,8 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
      * `Statement.execute()` call, which is what HikariCP does internally
      * for `connectionInitSql`.
      */
+    // TODO(review:after id=lowtail-quack-host-unescaped): host interpolated into single-quoted ATTACH string without escapeSqlString
+    // TODO(review:after id=lowtail-quack-metadatacatalog-unquoted-use): validateIdentifier accepts numeric/keyword names that break USE
     fun connectionInitSql(): String {
         val attachUri = "ducklake:quack:$host:$port"
         val sb = StringBuilder()

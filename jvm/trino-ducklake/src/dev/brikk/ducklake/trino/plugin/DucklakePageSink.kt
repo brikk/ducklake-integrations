@@ -47,6 +47,8 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
 
+// TODO(review:after id=spi-pagesink-no-memory-usage): getMemoryUsage() not overridden — buffered Parquet row groups invisible to Trino
+// TODO(review:after id=spi-pagesink-no-completed-bytes): getCompletedBytes() not overridden — reported written bytes always 0
 public class DucklakePageSink(
         handle: DucklakeWritableTableHandle,
         fileSystem: TrinoFileSystem,
@@ -164,6 +166,7 @@ public class DucklakePageSink(
         return ConnectorPageSink.NOT_BLOCKED
     }
 
+    // TODO(review:after id=correctness-rollover-empty-writer): rollover eagerly opens a successor writer that may stay empty
     @Throws(IOException::class)
     private fun appendUnpartitioned(page: Page) {
         if (writers.isEmpty()) {
@@ -179,6 +182,8 @@ public class DucklakePageSink(
         }
     }
 
+    // TODO(review:after id=eff-appendpartitioned-boxing): per-page boxing into HashMap<Integer,List<Integer>> then unboxing to int[]
+    // TODO(review:after id=eff-rollover-partition-recompute): partition values recomputed twice on rollover in appendPartitioned
     @Throws(IOException::class)
     private fun appendPartitioned(page: Page) {
         val partitioner = this.partitioner!!

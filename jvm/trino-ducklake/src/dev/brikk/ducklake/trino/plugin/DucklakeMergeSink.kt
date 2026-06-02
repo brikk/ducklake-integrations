@@ -104,6 +104,8 @@ public open class DucklakeMergeSink(
         }
     }
 
+    // TODO(review:after id=eff-resolvedatafileid-linear-scan): O(rows x files) linear scan over data file ranges per deleted row
+    // TODO(review:after id=eff-resolvedatafileid-treemap-floor): same scan-per-row; replace with NavigableMap floorEntry for O(log F)
     private fun resolveDataFileId(rowId: Long): Long {
         for (range in mergeHandle.dataFileRanges) {
             if (range.containsRowId(rowId)) {
@@ -138,6 +140,8 @@ public open class DucklakeMergeSink(
         try {
             val insertFragments: Collection<Slice> = insertSink.finish().get()
             // Prefix insert fragments with a type marker so finishMerge can distinguish them
+            // TODO(review:after id=eff-insert-fragment-roundtrip): insert fragments deserialized then re-serialized to identical bytes
+            // TODO(review:after id=eff-insert-fragment-roundtrip-finish): same round-trip inside finish() — comment claims tag/wrap that doesn't happen
             for (insertFragment in insertFragments) {
                 // Insert fragments use the DucklakeWriteFragment codec — we wrap them with a type tag
                 fragments.add(Slices.wrappedBuffer(*writeFragmentCodec.toJsonBytes(

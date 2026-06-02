@@ -129,6 +129,7 @@ public open class DucklakeSessionProperties @Inject constructor() {
             return if (snapshotId == null) OptionalLong.empty() else OptionalLong.of(snapshotId)
         }
 
+        // TODO(review:after id=eff-snapshot-timestamp-double-parse): read_snapshot_timestamp parsed twice (validator + getter)
         @JvmStatic
         public fun getReadSnapshotTimestamp(session: ConnectorSession): Optional<Instant> {
             val timestamp = session.getProperty(READ_SNAPSHOT_TIMESTAMP, String::class.java)

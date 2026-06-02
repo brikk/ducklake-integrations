@@ -75,6 +75,7 @@ public class DuckDbFilePageSource(
     private var completedPositions: Long = 0
     private var readTimeNanos: Long = 0
 
+    // TODO(review:after id=lowtail-completedbytes-output-page-size): reports output Page size, not input bytes read (violates SPI contract)
     override fun getCompletedBytes(): Long {
         return completedBytes
     }
@@ -116,6 +117,7 @@ public class DuckDbFilePageSource(
             completedBytes += page.sizeInBytes
             return SourcePage.create(page)
         }
+        // TODO(review:after id=correctness-readpath-not-supported-misclass): IO/SQL read failures wrapped as NOT_SUPPORTED instead of EXTERNAL
         catch (e: IOException) {
             throw TrinoException(NOT_SUPPORTED, "Failed to read DuckDB file " + describeAttachTarget(), e)
         }

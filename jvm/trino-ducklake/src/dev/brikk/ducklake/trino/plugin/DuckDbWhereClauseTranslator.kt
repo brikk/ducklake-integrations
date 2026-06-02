@@ -227,6 +227,7 @@ public object DuckDbWhereClauseTranslator {
             }
             return Optional.of(bd.toPlainString())
         }
+        // TODO(review:after id=lowtail-date-timestamp-literal-out-of-range): DATE/TIMESTAMP literals mis-render for years <1000, BC, or >9999
         if (type.equals(DATE)) {
             val days = value as Long
             return Optional.of("DATE '" + LocalDate.ofEpochDay(days) + "'")

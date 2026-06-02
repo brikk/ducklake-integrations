@@ -197,6 +197,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .map { toDucklakeSnapshot(it) }
     }
 
+    // TODO(review:after id=eff-snapshot-at-or-before-full-scan): materializes the entire snapshot table to find one row
     override fun getSnapshotAtOrBefore(timestamp: Instant): Optional<DucklakeSnapshot> {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         return dsl.selectFrom(snap)
@@ -2022,6 +2023,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             r.setFormat("parquet")
             r.setDeleteCount(fragment.deleteCount)
             r.setFileSizeBytes(fragment.fileSizeBytes)
+            // TODO(review:after id=correctness-delete-footersize-zero): delete-file footer_size=0 written unconditionally (insert path guards)
             r.setFooterSize(fragment.footerSize)
             deleteFileRecords.add(r)
 
@@ -2383,6 +2385,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
         }
 
+        // TODO(review:after id=correctness-snapshot-time-npe-message): NPE on nullable snapshot_time loses row identification context
         private fun toDucklakeSnapshot(r: DucklakeSnapshotRecord): DucklakeSnapshot {
             return DucklakeSnapshot(
                 r.snapshotId,

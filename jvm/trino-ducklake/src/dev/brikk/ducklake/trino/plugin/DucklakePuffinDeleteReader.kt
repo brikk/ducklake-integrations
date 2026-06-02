@@ -78,6 +78,7 @@ object DucklakePuffinDeleteReader {
     /**
      * Decode the raw blob bytes into row positions. Visible for testing.
      */
+    // TODO(review:after id=lowtail-puffin-unchecked-escape): corrupt blob can escape as unchecked exception instead of IOException
     @Throws(IOException::class)
     fun decodeBlob(blob: ByteArray): Set<Long> {
         if (blob.size < MIN_BLOB_SIZE) {

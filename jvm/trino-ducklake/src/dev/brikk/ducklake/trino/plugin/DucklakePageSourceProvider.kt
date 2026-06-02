@@ -606,6 +606,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         // DuckDB returns rows contiguously from row 0. RowIdInjectingPageSource's cumulative
         // nextRowOffset assumes contiguous output; predicate-pushed DuckDB scans return only
         // matching rows, breaking the position math. Trino still filters above the page source.
+        // TODO(review:after id=eff-effectivepredicate-filter-list-contains): effectivePredicate.filter uses O(n) List.contains per domain entry
         val filePredicate: TupleDomain<DucklakeColumnHandle> = if (splitHasActiveDeletes(split))
                 TupleDomain.all()
             else
@@ -888,6 +889,7 @@ public class DucklakePageSourceProvider @Inject constructor(
      * The row ID is computed as rowIdStart + (cumulative file position).
      * This must be applied BEFORE delete file filtering so the IDs match original file positions.
      */
+    // TODO(review:after id=spi-rowidinjecting-no-metrics-isblocked): RowIdInjectingPageSource does not propagate getMetrics() / isBlocked()
     private class RowIdInjectingPageSource : ConnectorPageSource
     {
         private val delegate: ConnectorPageSource

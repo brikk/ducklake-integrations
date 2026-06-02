@@ -105,6 +105,8 @@ public class FooterPrefetchingParquetDataSource private constructor(
         // (see tables/ducklake_data_file.md); the post-script sits immediately after.
         private const val POST_SCRIPT_SIZE: Int = 8
 
+        // TODO(review:after id=eff-paritext-prefetch-no-max-cap): prefetch ignores maxFooterReadSize cap, can read/allocate huge tail
+        // TODO(review:after id=lowtail-paritext-hint-overflow): footerSizeHint + POST_SCRIPT_SIZE can overflow to negative long bypassing guards
         @JvmStatic
         @Throws(IOException::class)
         public fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long): ParquetDataSource {

@@ -54,6 +54,7 @@ public class DucklakeSortPropertyMapper private constructor() {
          * keyed by lowercased column name. Used to
          * resolve simple column-reference expressions.
          */
+        // TODO(review:after id=lowtail-sortkey-contiguity-unchecked): sortKeyIndex contiguity never validated; gap silently produces a false sort claim
         public fun toLocalProperties(
                 sortKeys: List<DucklakeSortKey>,
                 columnHandlesByLowercaseName: Map<String, out ColumnHandle>): List<LocalProperty<ColumnHandle>> {

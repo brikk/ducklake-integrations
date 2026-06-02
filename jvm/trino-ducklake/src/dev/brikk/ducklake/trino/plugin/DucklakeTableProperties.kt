@@ -65,6 +65,8 @@ public open class DucklakeTableProperties @Inject constructor() {
         public const val DATA_FILE_FORMAT_PROPERTY: String = "data_file_format"
         public const val LOCATION_PROPERTY: String = "location"
 
+        // TODO(review:after id=correctness-transform-pattern-case-sensitive): TRANSFORM_PATTERN case-sensitive vs BUCKET_PATTERN insensitive
+        // TODO(review:after id=lowtail-transform-pattern-greedy-dot-plus): greedy .+ swallows nested parens/commas into column name
         private val TRANSFORM_PATTERN: Pattern = Pattern.compile("(year|month|day|hour)\\((.+)\\)")
         // bucket(N, col) — N positive integer, col is the source column name. Spaces tolerated.
         private val BUCKET_PATTERN: Pattern = Pattern.compile("bucket\\(\\s*(\\d+)\\s*,\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE)

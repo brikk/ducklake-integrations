@@ -100,6 +100,7 @@ public class DucklakeSplitManager @Inject constructor(
 
         val tableHasNoDataFiles: Boolean = dataFiles.isEmpty()
         val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId, tableHandle.snapshotId)
+        // TODO(review:after id=eff-inlined-rows-n-plus-1): N+1 fetchExists probe per inlined-data table during split planning
         var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos.stream()
                 .filter { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, tableHandle.snapshotId) }
                 .map { info ->
@@ -580,6 +581,7 @@ public class DucklakeSplitManager @Inject constructor(
          * column. The page source provider uses this map to constant-fill partition
          * columns that don't appear in the parquet body.
          */
+        // TODO(review:after id=correctness-identity-partition-spec-mismatch): identity partition constant-fill ignores each file's own partition spec
         private fun buildIdentityPartitionValues(
                 dataFileId: Long,
                 activePartitionSpec: Optional<DucklakePartitionSpec>,

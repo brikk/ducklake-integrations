@@ -205,6 +205,7 @@ public object DucklakeInlinedValueConverter {
                     i++
                 }
                 val token = inner.substring(start, i).trim()
+                // TODO(review:after id=lowtail-inlinedlist-null-token-collision): unquoted NULL token collides with blob payloads and non-finite floats (inf/nan)
                 elements.add(if (token == "NULL") null else token)
             }
             while (i < len && Character.isWhitespace(inner.get(i))) {
@@ -429,6 +430,7 @@ public object DucklakeInlinedValueConverter {
         return normalized
     }
 
+    // TODO(review:after id=lowtail-decimal-halfup-silent-rescale): decimal conversion silently rounds HALF_UP instead of preserving stored scale
     private fun toDecimal(value: Any, decimalType: DecimalType): Any {
         var decimal: BigDecimal
         if (value is BigDecimal) {

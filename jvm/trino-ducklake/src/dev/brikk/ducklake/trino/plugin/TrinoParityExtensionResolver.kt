@@ -165,6 +165,7 @@ public class TrinoParityExtensionResolver private constructor() {
                 // Always replace — the bundled bytes might have changed between
                 // plugin reloads; checking content equality would be more work than
                 // simply rewriting ~36MB once per JVM.
+                // TODO(review:after id=correctness-paritext-non-atomic-copy): non-atomic Files.copy into live extension path can expose partial binary
                 url.openStream().use { `in` ->
                     Files.copy(`in`, target, StandardCopyOption.REPLACE_EXISTING)
                 }
@@ -172,6 +173,7 @@ public class TrinoParityExtensionResolver private constructor() {
                         platform.get(), target.toAbsolutePath())
                 return Optional.of(target.toAbsolutePath().toString())
             }
+            // TODO(review:after id=lowtail-paritext-warn-drops-stack): IOException logged with only e.message, discarding stack/cause
             catch (e: IOException) {
                 log.warn("trino_parity: failed to extract bundled extension for platform %s — %s",
                         platform.get(), e.message)

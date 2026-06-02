@@ -265,6 +265,7 @@ class DucklakeMetadata(
                 localProperties)
     }
 
+    // TODO(review:after id=spi-listtables-omits-views): listTables omits views, violating the SPI contract
     override fun listTables(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName>
     {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
@@ -431,6 +432,7 @@ class DucklakeMetadata(
                 .anyMatch { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
     }
 
+    // TODO(review:after id=eff-fallback-recordcount-materialize): readInlinedData materialises entire inlined dataset just to call .size()
     private fun getFallbackRecordCount(table: DucklakeTableHandle): OptionalLong
     {
         // Align with Iceberg/Delta behavior: if we can prove there is no data at this snapshot,

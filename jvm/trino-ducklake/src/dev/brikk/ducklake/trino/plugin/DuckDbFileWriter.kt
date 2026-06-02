@@ -255,6 +255,7 @@ constructor(
                     .plusNanos((ts.getPicosOfMicro() / 1_000).toLong()))
             return
         }
+        // TODO(review:after id=correctness-timestamptz-precision-truncation): TIMESTAMPTZ Appender write truncates sub-millisecond precision
         if (type is TimestampWithTimeZoneType) {
             val epochMillis: Long
             if (type.isShort()) {

@@ -150,6 +150,7 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
                 }
             }
             if (connection != null) {
+                // TODO(review:after id=eff-inprocess-detach-overhead): per-split DETACH on fresh in-memory connection is pure overhead
                 try {
                     connection.createStatement().use { detach ->
                         detach.execute("DETACH " + ATTACHED_DB)

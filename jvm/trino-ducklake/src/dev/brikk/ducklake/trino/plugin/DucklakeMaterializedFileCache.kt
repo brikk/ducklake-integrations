@@ -68,6 +68,8 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
      * Return a local filesystem path for the given remote DuckDB file, downloading it
      * if not already present. Safe to call concurrently with the same key.
      */
+    // TODO(review:after id=correctness-cache-lock-removed-inside-sync): per-key lock removed inside synchronized block lets two threads race
+    // TODO(review:after id=correctness-cache-no-download-size-verify): downloaded file size never verified before move/return
     @Throws(IOException::class)
     public fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
         val key = cacheKey(remotePath, fileSize)

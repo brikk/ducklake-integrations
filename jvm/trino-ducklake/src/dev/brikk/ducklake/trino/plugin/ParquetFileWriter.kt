@@ -68,6 +68,7 @@ class ParquetFileWriter(
         val recordCount = fileMetaData.num_rows
         val fileSize = parquetWriter.estimatedWrittenBytes
 
+        // TODO(review:after id=eff-parquet-footer-double-serialize): footer Thrift metadata serialized a second time solely to measure its length
         var footerSize: Long
         try {
             val footerOutput = DynamicSliceOutput(40)
