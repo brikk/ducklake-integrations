@@ -50,7 +50,7 @@ data class DucklakeNameMapEntry(
                     sourceName,
                     targetFieldId,
                     isPartition,
-                    if (children == null) emptyList() else java.util.List.copyOf(children))
+                    if (children == null) emptyList() else children.toList())
         }
     }
 
@@ -58,5 +58,5 @@ data class DucklakeNameMapEntry(
             : this(sourceName, targetFieldId, false, emptyList())
 
     constructor(sourceName: String, targetFieldId: Long, children: List<DucklakeNameMapEntry>)
-            : this(sourceName, targetFieldId, false, java.util.List.copyOf(children))
+            : this(sourceName, targetFieldId, false, children.toList())
 }

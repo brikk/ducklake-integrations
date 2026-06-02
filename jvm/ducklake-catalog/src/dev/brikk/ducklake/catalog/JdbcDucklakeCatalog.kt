@@ -713,7 +713,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
         catch (e: DataAccessException) {
             // ducklake_inlined_data_tables may not exist in catalogs that never used inlining
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not query inlined data tables (table may not exist): {0}",
@@ -733,7 +732,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
         }
         catch (e: DataAccessException) {
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not probe inlined data rows from {0} (table may not exist): {1}",
@@ -762,7 +760,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
         }
         catch (e: DataAccessException) {
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not probe inlined deletions from {0} (table may not exist): {1}",
@@ -803,7 +800,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             grouped as Map<Long, java.util.Set<Long>>
         }
         catch (e: DataAccessException) {
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not read inlined deletions from {0} (table may not exist): {1}",
@@ -868,7 +864,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         catch (e: DataAccessException) {
             // The inlined data table may not exist if the table was created but never had data inserted,
             // or if the inlined data was flushed to Parquet files. Return empty in these cases.
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not read inlined data from {0} (table may not exist): {1}",
@@ -898,7 +893,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
         catch (e: DataAccessException) {
             // Fallback for catalogs without table_id in ducklake_schema_versions or older metadata.
-            // TODO(kit: kit-sql-msg)
             log.log(
                 System.Logger.Level.DEBUG,
                 "Could not resolve schema version via ducklake_schema_versions for table {0}: {1}",
@@ -2086,8 +2080,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
     private fun resolveColumnType(column: DucklakeColumn, childrenByParent: Map<Long, List<DucklakeColumn>>): String {
         val columnType = column.columnType
-        // TODO(kit: kit-locale)
-        return when (columnType.lowercase()) {
+        return when (columnType.lowercase(Locale.ROOT)) {
             "list" -> {
                 val children = childrenByParent.getOrDefault(column.columnId, emptyList())
                 if (children.size != 1) {
@@ -2205,7 +2198,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                     result.add(cs.columnId)
                 }
             }
-            return java.util.Set.copyOf(result)
+            return result.toSet()
         }
 
         private fun referencedDataFileIds(fragments: List<DucklakeDeleteFragment>): Set<Long> {
@@ -2213,7 +2206,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             for (f in fragments) {
                 result.add(f.dataFileId)
             }
-            return java.util.Set.copyOf(result)
+            return result.toSet()
         }
 
         private fun runConflictMatrix(
@@ -2307,7 +2300,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 return false
             }
 
-            // TODO(kit: kit-sql-msg)
             val message = sqlException.message ?: return false
 
             val lowerMessage = message.lowercase(Locale.ENGLISH)
@@ -2346,7 +2338,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 return true
             }
 
-            // TODO(kit: kit-sql-msg)
             val message = exception.message
             return message != null && (
                 message.contains("duplicate key value violates unique constraint") ||

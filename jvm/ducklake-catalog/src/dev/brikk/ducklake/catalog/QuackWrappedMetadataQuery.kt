@@ -18,7 +18,6 @@ import org.jooq.Query
 import org.jooq.Record
 import org.jooq.RecordMapper
 import org.jooq.ResultQuery
-import java.util.Objects.requireNonNull
 import java.util.stream.Collectors
 
 /**
@@ -50,7 +49,7 @@ import java.util.stream.Collectors
  * caller's generated record type without further coercion hints.
  */
 internal class QuackWrappedMetadataQuery(metadataCatalogName: String) : MetadataQuery {
-    private val metadataCatalogName: String = requireNonNull(metadataCatalogName, "metadataCatalogName is null")
+    private val metadataCatalogName: String = metadataCatalogName
 
     override fun <R : Record> fetchOne(dsl: DSLContext, query: ResultQuery<R>): R? {
         val wrapped = wrap(dsl.renderInlined(query))

@@ -24,6 +24,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * across files that share the same parquet schema — the catalog dedupes
  * identical maps per call.
  */
+@JvmRecord
 data class DucklakeNameMap(
     @get:JvmName("entries") val entries: List<DucklakeNameMapEntry>,
 ) {
@@ -34,7 +35,7 @@ data class DucklakeNameMap(
             @JsonProperty("entries") entries: List<DucklakeNameMapEntry>?,
         ): DucklakeNameMap {
             return DucklakeNameMap(
-                if (entries == null) emptyList() else java.util.List.copyOf(entries),
+                if (entries == null) emptyList() else entries.toList(),
             )
         }
     }

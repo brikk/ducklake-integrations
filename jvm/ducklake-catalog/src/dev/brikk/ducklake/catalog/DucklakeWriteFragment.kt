@@ -62,7 +62,7 @@ data class DucklakeWriteFragment(
         fileSizeBytes = fileSizeBytes,
         footerSize = footerSize,
         recordCount = recordCount,
-        columnStats = java.util.List.copyOf(columnStats),
+        columnStats = columnStats.toList(),
         partitionValues = emptyMap(),
         partitionId = OptionalLong.empty(),
         nameMap = Optional.empty(),
@@ -87,7 +87,7 @@ data class DucklakeWriteFragment(
         fileSizeBytes = fileSizeBytes,
         footerSize = footerSize,
         recordCount = recordCount,
-        columnStats = java.util.List.copyOf(columnStats),
+        columnStats = columnStats.toList(),
         partitionValues = Collections.unmodifiableMap(HashMap(partitionValues)),
         partitionId = partitionId,
         nameMap = Optional.empty(),
@@ -115,7 +115,7 @@ data class DucklakeWriteFragment(
         fileSizeBytes = fileSizeBytes,
         footerSize = footerSize,
         recordCount = recordCount,
-        columnStats = java.util.List.copyOf(columnStats),
+        columnStats = columnStats.toList(),
         partitionValues = Collections.unmodifiableMap(HashMap(partitionValues)),
         partitionId = partitionId,
         nameMap = Optional.empty(),
@@ -155,7 +155,7 @@ data class DucklakeWriteFragment(
                 fileSizeBytes = fileSizeBytes,
                 footerSize = footerSize,
                 recordCount = recordCount,
-                columnStats = java.util.List.copyOf(columnStats),
+                columnStats = columnStats.toList(),
                 partitionValues = if (partitionValues == null) {
                     emptyMap()
                 }

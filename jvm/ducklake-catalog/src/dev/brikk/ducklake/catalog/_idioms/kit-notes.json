@@ -1,0 +1,97 @@
+{
+  "slice": "catalog-main",
+  "kit_version": 1,
+  "generated_at": "2026-06-01",
+  "scope": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog",
+  "applied": {
+    "during_correctness_wins": [
+      {
+        "name": "locale_root_lowercase",
+        "site": "JdbcDucklakeCatalog.kt:2089",
+        "before": "columnType.lowercase()",
+        "after": "columnType.lowercase(Locale.ROOT)",
+        "reason": "DuckLake canonical column-type names ('list', 'struct', 'map', 'int32', 'decimal(p,s)', etc.) are ASCII. Default-locale lowercase folds Turkish 'I'/'İ' incorrectly and would silently fall through every when-branch. Pre-existing as TODO(kit: kit-locale) per PLAN.md DURING.",
+        "helper": "inlined — single call site; java.util.Locale was already imported"
+      },
+      {
+        "name": "safe_sql_message",
+        "site": "JdbcDucklakeCatalog.kt:716,736,765,806,871,901,2310,2349",
+        "before": "9 defensively-planted TODO(kit: kit-sql-msg) markers",
+        "after": "no code change — markers removed",
+        "reason": "All 9 sites already used null-safe access patterns: six pass `e.message` directly into System.Logger.log() (accepts Any?, no NPE possible); two declared the message as a `val` of nullable type and explicitly null-tested it (`?: return false` and `message != null && (…)`). The trino-main precedent for kit-sql-msg was `e.message!!` → `e.message ?: \"(no message)\"`; no such unsafe sites exist in catalog-main. Markers planted defensively by the port pass; verified each before removing."
+      }
+    ],
+    "idiom_cleanup": [
+      {
+        "name": "kotlin_collection_factories",
+        "scope": "5 files, 11 sites",
+        "before": "java.util.List.copyOf(x), java.util.Set.copyOf(x)",
+        "after": "x.toList(), x.toSet()",
+        "reason": "Kotlin built-ins are equivalent for defensive copies of non-null collections; reads more naturally and drops the java.util.* qualifier noise. None of the sites were `java.util.List.of(arg, arg, …)` with explicit arguments (the case that subtly changes the returned type's identity).",
+        "files": [
+          "DucklakeWriteFragment.kt (4 sites — replaceAll)",
+          "DucklakeNameMapEntry.kt (2 sites)",
+          "DucklakeNameMap.kt (1 site)",
+          "WriteChange.kt (2 sites — InsertedIntoTable / DeletedFromTable secondary ctors)",
+          "JdbcDucklakeCatalog.kt:2201,2209 (referencedColumnIds / referencedDataFileIds)"
+        ],
+        "kept_at": "no java.util.List.of(arg) with explicit arguments existed in catalog-main"
+      },
+      {
+        "name": "drop_requireNonNull_on_kotlin_non_null_params",
+        "before": "this.x = requireNonNull(x, \"x is null\") on Kotlin non-null `String` constructor params",
+        "after": "this.x = x",
+        "reason": "Kotlin compiler emits Intrinsics.checkNotNullParameter for non-nullable params; requireNonNull is dead code on those paths.",
+        "sites_dropped": [
+          "QuackWrappedMetadataQuery.kt:53 (metadataCatalogName) + unused import",
+          "QuackBackedDuckDbCatalogUrl.kt:48,50,51,52 (host, metadataCatalog, token, dataPath) + unused import"
+        ],
+        "kept_at": [
+          "SnapshotRange.kt:42-43 — `begin`, `end` are Field<Long>? (true null assertion when jOOQ Table.field() can't resolve the column by name)"
+        ]
+      },
+      {
+        "name": "promote_jackson_data_class_to_jvm_record",
+        "scope": "1 file",
+        "before": "data class DucklakeNameMap(...)",
+        "after": "@JvmRecord data class DucklakeNameMap(...)",
+        "reason": "Matches the @JvmRecord style established by the other 6 Jackson handles in this package (DucklakeWriteFragment, DucklakePartitionSpec, DucklakeFileColumnStats, DucklakeDeleteFragment, DucklakeColumn, DucklakePartitionField). No secondary constructor, no init block, so the @JvmRecord constraint set is satisfied.",
+        "not_promoted": [
+          "DucklakeNameMapEntry.kt — has two secondary constructors (constructor(sourceName, targetFieldId) and constructor(sourceName, targetFieldId, children)); @JvmRecord forbids secondary constructors so it stays plain `data class`."
+        ]
+      }
+    ]
+  },
+  "not_applied": [
+    {
+      "name": "collapse_optional_to_nullable_on_internal_paths",
+      "rationale": "Same SPI/wire-boundary risk as documented in trino-main kit-notes. Catalog has many Optional<T> fields on Jackson-serialized handles (e.g. DucklakeWriteFragment.partitionId: OptionalLong, DucklakeWriteFragment.nameMap: Optional<DucklakeNameMap>); flipping these to T? changes the JSON property layout and breaks wire-format compatibility. Splitting internal-only Optional sites from wire/SPI sites requires per-call-site analysis with poor risk/value.",
+      "decision": "Deferred per trino-main precedent."
+    },
+    {
+      "name": "drop_jvmstatic_on_companion_helpers",
+      "rationale": "Unlike trino-main (now 100% Kotlin in scope), the catalog module ships alongside `jvm/ducklake-catalog/generated/` (jOOQ codegen — Java, stays Java forever) and is consumed by downstream modules that include Java code paths (trino-ducklake currently 100% Kotlin, but future plugins / extensions may not be). The brief explicitly directs us to KEEP @JvmStatic everywhere it currently exists for this slice. Inspection confirms 16 .kt files use @JvmStatic; none were touched.",
+      "decision": "Deliberately kept by policy. See brief §'Mandatory rule changes from trino-main'."
+    },
+    {
+      "name": "resource_leak_fixes",
+      "rationale": "PLAN.md DURING lists DuckDbFileWriter / DucklakeMergeSink / DucklakeMetadata — all live in trino-ducklake, not in catalog. `grep finally` across jvm/ducklake-catalog/src/**/*.kt returned zero matches; nothing to fix here.",
+      "decision": "Not applicable to this slice."
+    },
+    {
+      "name": "getRetainedSizeInBytes_double_count",
+      "rationale": "Catalog module has no value/handle types that expose a `getRetainedSizeInBytes()` (this is a Trino airlift-stats SPI pattern, used by DucklakeSplit / DucklakeColumnHandle in trino-ducklake). No call sites in catalog.",
+      "decision": "Not applicable to this slice."
+    }
+  ],
+  "shared_helpers_introduced": [],
+  "shared_helpers_decision": {
+    "choice": "inline — no IdiomKit.kt in this slice",
+    "rationale": "The trino-main precedent introduced IdiomKit.lowercaseRoot / safeMessage / firstLine / firstLineOf but noted in its own kit-notes that the helpers were 'introduced, not yet rolled out' because each DURING fix was a one-liner. catalog-main has exactly one locale fix and zero actual SQL-message fixes (the 9 markers were defensively planted and the underlying code was already safe). With <2 real call sites, a dedicated helper file would add more noise than it removes. If a future catalog change does need the helper, this is the kit-notes entry to update; the trino-main IdiomKit is available as the canonical reference."
+  },
+  "verification": {
+    "command": "cd jvm && ./gradlew :ducklake-catalog:test :trino-ducklake:test",
+    "expected": "ducklake-catalog 108/0/0/0 across 33 suites; trino-ducklake 825/0/0/0 across 70 suites",
+    "last_run": "2026-06-01 — both modules passed. Parsed from on-disk TEST-*.xml: ducklake-catalog tests=108 failures=0 errors=0 skipped=0 (33 testsuites); trino-ducklake tests=825 failures=0 errors=0 skipped=0 (70 testsuites)."
+  }
+}

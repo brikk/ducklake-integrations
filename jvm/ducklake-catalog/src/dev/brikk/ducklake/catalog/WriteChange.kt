@@ -98,7 +98,7 @@ sealed interface WriteChange {
         @Suppress("UNUSED_PARAMETER") marker: Unit,
     ) : WriteChange {
         constructor(tableId: Long, referencedColumnIds: Set<Long>) :
-            this(tableId, java.util.Set.copyOf(referencedColumnIds), Unit)
+            this(tableId, referencedColumnIds.toSet(), Unit)
 
         override fun toChangesMadeEntry(): String =
             "inserted_into_table:$tableId"
@@ -132,7 +132,7 @@ sealed interface WriteChange {
         @Suppress("UNUSED_PARAMETER") marker: Unit,
     ) : WriteChange {
         constructor(tableId: Long, referencedDataFileIds: Set<Long>) :
-            this(tableId, java.util.Set.copyOf(referencedDataFileIds), Unit)
+            this(tableId, referencedDataFileIds.toSet(), Unit)
 
         override fun toChangesMadeEntry(): String =
             "deleted_from_table:$tableId"

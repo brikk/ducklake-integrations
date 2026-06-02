@@ -18,7 +18,6 @@ import java.net.URISyntaxException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.LinkedHashMap
-import java.util.Objects.requireNonNull
 
 /**
  * Parses the synthetic `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`
@@ -45,11 +44,11 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
         token: String,
         dataPath: String,
 ) {
-    private val host: String = requireNonNull(host, "host is null")
+    private val host: String = host
     private val port: Int = port
-    private val metadataCatalog: String = requireNonNull(metadataCatalog, "metadataCatalog is null")
-    private val token: String = requireNonNull(token, "token is null")
-    private val dataPath: String = requireNonNull(dataPath, "dataPath is null")
+    private val metadataCatalog: String = metadataCatalog
+    private val token: String = token
+    private val dataPath: String = dataPath
 
     fun host(): String = host
 
