@@ -1,0 +1,109 @@
+{
+  "slice": "trino-test",
+  "kit_version": 1,
+  "generated_at": "2026-06-01",
+  "scope": "jvm/trino-ducklake/test/src/dev/brikk/ducklake/trino/plugin",
+  "summary": "Five mechanical edits across three test files: dropped one unused requireNonNull import, converted two empty `java.util.Map.of()` calls to `emptyMap()`, and replaced two `if (msg == null) \"\" else msg!!.lowercase()` ternaries with `msg?.lowercase().orEmpty()` on error-path assertions. Behaviour-preserving. The trino-main kit-pass already handled the bulk of test-side work incidentally during the @JvmRecord handle migration (~270 `.foo()` → `.foo` call-site updates across ~5 test files); that surface is not counted in this slice.",
+  "survey": {
+    "files_inspected": {
+      "test_kt": 77
+    },
+    "patterns_searched": {
+      "TODO(kit:)": 0,
+      "java.util.{List,Map,Set}.{of,copyOf}": "8 sites across 3 files — 2 empty `Map.of()` converted to `emptyMap()`; 6 with-args `Map.of(k, v)` / `Set.of<T>(x)` KEPT per trino-main precedent (`kept_at: java.util.List.of(arg) (with arguments) — left as-is to avoid subtly changing the returned type's identity`)",
+      "Objects.requireNonNull / requireNonNull(": "1 site — only an unused import in DucklakeTestCatalogEnvironment.kt:23 (the file uses `requireNotNull(...)` Kotlin stdlib; the Java static import was dead). Dropped.",
+      "e.message!! / *.message!!": "2 sites in TestDucklakeArithmeticPushdownParity.kt:114,161 — both `if (thrown.message == null) \"\" else thrown.message!!.lowercase()` inside an error-path `assertThat(catchThrowable {...})`. Replaced with `thrown.message?.lowercase().orEmpty()`. Behaviour identical.",
+      ".toLowerCase() / .lowercase() (default-locale)": "3 sites — one in TestDucklakeDuckDbExecutorBackends.kt:92 reading `os.arch` (ASCII arch strings 'aarch64'/'x86_64'; not a catalog identifier — KEPT per brief rule #3). Two in TestDucklakeArithmeticPushdownParity (above) — those don't need Locale.ROOT (matching strings 'division by zero' etc. are ASCII assertion targets). Note: DucklakeTestCatalogEnvironment.kt:176 already uses `lowercase(Locale.ROOT)` — port pass was already correct.",
+      "@JvmStatic occurrences": "259 occurrences across 42 .kt files — INTENTIONALLY KEPT per brief rule #1 (JUnit reflective loading + Trino test framework reflects on companions for @BeforeAll/@AfterAll/@MethodSource).",
+      "Optional<T> call sites": "many across test surface — DEFERRED per brief rule #7 + all prior slices.",
+      "try { ... } finally { ... }": "many sites across test files (e.g. TestDucklakeDuckDbReadMode 17 sites, TestDucklakeArithmeticPushdownParity 6 sites). All inspected are multi-step teardown (computeActual + tryDropTable, executor shutdown, etc.) NOT single-Closeable patterns — KEPT per brief rule #2."
+    },
+    "notes": [
+      "The ~270-callsite update during the trino-main @JvmRecord handle migration (commit edab5b4) touched ~5 trino-test files for `.foo()` → `.foo` accessor changes. Per brief, those incidental edits do NOT count as this slice's kit pass.",
+      "The only `Map.of()` / `Set.of()` call sites with arguments build TupleDomain.withColumnDomains() input and a DynamicFilter.getColumnsCovered() return. Kept per trino-main precedent to avoid subtly altering returned-type identity in SPI-passed structures.",
+      "TestDucklakeInlinedDeleteHandling.kt:209 emits a Kotlin warning `This class is not recommended for use in Kotlin. Use 'kotlin.collections.Set' instead.` — pre-existing in the port; not in scope for this kit pass (would touch the test fixture's explicit-Java-set construction)."
+    ]
+  },
+  "applied": {
+    "during_correctness_wins": [
+      {
+        "name": "safe_sql_message",
+        "site": "TestDucklakeArithmeticPushdownParity.kt:114,161",
+        "before": "assertThat(if (thrown.message == null) \"\" else thrown.message!!.lowercase())",
+        "after": "assertThat(thrown.message?.lowercase().orEmpty())",
+        "reason": "Brief rule #4: error path (`assertThat(catchThrowable {...}).isNotNull()` directly above). The original branched on null to avoid NPE; the Kotlin-idiomatic null-safe chain is equivalent and reads cleaner.",
+        "helper": "inlined — Kotlin stdlib `?.` and `.orEmpty()` are noise-free; no IdiomKit needed."
+      }
+    ],
+    "idiom_cleanup": [
+      {
+        "name": "kotlin_collection_factories",
+        "scope": "2 files, 2 sites",
+        "before": "DuckDbS3Config.fromCatalogConfig(java.util.Map.of())",
+        "after": "DuckDbS3Config.fromCatalogConfig(emptyMap())",
+        "reason": "Empty `java.util.Map.of()` is the safe-conversion case per trino-main kit precedent (the kept_at note explicitly excludes only `Map.of(args)` with arguments). `emptyMap<String, String>()` infers via the call site, no java.util import needed.",
+        "files": [
+          "TestDucklakePageSourceProvider.kt:69",
+          "TestDucklakeInlinedDeleteHandling.kt:248"
+        ],
+        "kept_at": [
+          "TestDucklakePageSourceProvider.kt:97,105,156,511 — `java.util.Map.of(priceColumn, Domain.singleValue(DOUBLE, 30.0))` etc., used as `TupleDomain.withColumnDomains` input (with arguments).",
+          "TestDucklakePageSourceProvider.kt:514 — `java.util.Set.of<ColumnHandle>(column)`, returned from `DynamicFilter.getColumnsCovered()` (with argument).",
+          "TestDuckDbExpressionTranslator.kt:1191 — `java.util.Map.of<String, Any>(KEY, value)` for `TestingConnectorSession.builder().setPropertyValues(...)` (with arguments)."
+        ]
+      },
+      {
+        "name": "drop_requireNonNull_on_kotlin_non_null_params",
+        "scope": "1 file, 1 site (unused import only)",
+        "before": "import java.util.Objects.requireNonNull",
+        "after": "(import removed)",
+        "reason": "The file's two callers actually use Kotlin stdlib `requireNotNull(value) { \"...\" }` (camelCase, lazy message lambda), not the Java static import. Inspection confirmed zero in-file references to the Java `requireNonNull` symbol after the faithful port.",
+        "files": [
+          "DucklakeTestCatalogEnvironment.kt:23"
+        ]
+      }
+    ]
+  },
+  "not_applied": [
+    {
+      "name": "drop_jvmstatic_from_test_companions",
+      "rationale": "Brief mandatory rule #1: KEEP existing @JvmStatic in tests. JUnit reflectively loads @BeforeAll/@AfterAll/@MethodSource targets on companion objects; the Trino testing framework (QueryRunner builders, DistributedQueryRunner) similarly reflects on static factory methods. Removing @JvmStatic risks runtime resolution failures the compiler can't catch. The trino-main rule (drop because the module is 100% Kotlin) does NOT transfer to test code.",
+      "decision": "Deliberately kept by policy. 259 sites across 42 files."
+    },
+    {
+      "name": "collapse_optional_to_nullable_on_internal_paths",
+      "rationale": "Deferred across all prior slices (trino-main, catalog-main, catalog-test). Per brief rule #7. Trino tests use Optional<T> to interface with main-source APIs (DucklakeColumnHandle's pre-handle-migration callers, DucklakeTableHandle.snapshotId etc.) and Trino-SPI return types (ConnectorMetadata.getInfo). Flipping at test-call boundaries would require coordinated changes in the main slice already kit-applied.",
+      "decision": "Deferred per all prior slices."
+    },
+    {
+      "name": "resource_leak_fixes_use_block",
+      "rationale": "Brief rule #2: only swap try/finally → .use {} when the test was clearly closing one Closeable, not orchestrating multi-step teardown. All inspected try/finally sites in this slice are multi-step orchestration: `try { computeActual(...) ... } finally { tryDropTable(name) }` (drops a test table after the body runs — not Closeable), executor shutdown + flag reset patterns, JdbcDucklakeCatalog teardown chains. None match the safe-conversion criterion.",
+      "decision": "Not applicable — no safe single-Closeable conversions available."
+    },
+    {
+      "name": "locale_root_lowercase_on_arch_string",
+      "rationale": "Brief rule #3: fix only if there's a real catalog-identifier hazard. The one default-locale `lowercase()` in this slice (TestDucklakeDuckDbExecutorBackends.kt:92) reads `os.arch` (always ASCII: 'aarch64', 'x86_64', 'amd64'); the Turkish-locale hazard cannot apply. The two error-message lowercases in TestDucklakeArithmeticPushdownParity match ASCII substrings ('division by zero', 'divide by zero', '/ by zero') against thrown JDBC/SQL messages; cosmetic locale-correctness here would just be noise.",
+      "decision": "Not applicable — no catalog-identifier hazard exists."
+    },
+    {
+      "name": "convert_handles_to_jvm_record_data_class",
+      "rationale": "Brief rule #6: skip — tests don't have Jackson-serialized handles. Confirmed: zero @JsonCreator / @JsonProperty handle types in this slice; tests construct/consume the handles defined in main sources (which were already converted to @JvmRecord data class in the trino-main slice, commit edab5b4).",
+      "decision": "Not applicable."
+    },
+    {
+      "name": "move_companion_helpers_to_top_level",
+      "rationale": "Inherited deferral from trino-main kit-notes. Test helpers on companion objects (e.g. createDynamicFilter, drain, varcharConst) are local to single test files and not @JvmStatic-call-pattern-blocking; converting them ripples through every call site for no measurable readability win.",
+      "decision": "Deferred."
+    }
+  ],
+  "shared_helpers_introduced": [],
+  "shared_helpers_decision": {
+    "choice": "no IdiomKit in this slice",
+    "rationale": "With only 5 edits — 2 mechanical `Map.of()` → `emptyMap()`, 1 dead-import removal, 2 inlined `?.lowercase().orEmpty()` patterns — extracting a helper would add more noise than it removes. The trino-main IdiomKit.kt (lowercaseRoot, safeMessage, firstLine, firstLineOf) remains the canonical reference if a future test needs the helper. Test files now read identically to the precedent — no module-local infrastructure needed."
+  },
+  "verification": {
+    "command": "cd jvm && ./gradlew :trino-ducklake:test --console=plain",
+    "expected": "825/0/0/0 across 70 suites (matches .ai/kotlin-port/trino-test/baseline.json and the trino-main post-kit run)",
+    "last_run": "2026-06-01 — PASSED. Parsed from on-disk TEST-*.xml: suites=70 tests=825 failures=0 errors=0 skipped=0. Matches baseline exactly."
+  }
+}

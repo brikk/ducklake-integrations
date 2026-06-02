@@ -20,7 +20,6 @@ import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import org.junit.jupiter.api.Assumptions
 import java.nio.file.Path
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 
 /**

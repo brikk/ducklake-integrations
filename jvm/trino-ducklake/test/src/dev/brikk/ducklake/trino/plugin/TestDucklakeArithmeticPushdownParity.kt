@@ -111,7 +111,7 @@ class TestDucklakeArithmeticPushdownParity
                             + "the pushed predicate must not silently strip the offending row from DuckDB's output "
                             + "before Trino's above-scan re-evaluation can see it")
                     .isNotNull()
-            assertThat(if (thrown.message == null) "" else thrown.message!!.lowercase())
+            assertThat(thrown.message?.lowercase().orEmpty())
                     .`as`("the thrown exception must actually be a divide-by-zero, not some unrelated failure")
                     .containsAnyOf("division by zero", "divide by zero", "/ by zero")
         }
@@ -158,7 +158,7 @@ class TestDucklakeArithmeticPushdownParity
             assertThat(thrown)
                     .`as`("Trino integer modulo-by-zero must throw end-to-end on .db reads")
                     .isNotNull()
-            assertThat(if (thrown.message == null) "" else thrown.message!!.lowercase())
+            assertThat(thrown.message?.lowercase().orEmpty())
                     .`as`("the thrown exception must actually be a divide-by-zero, not some unrelated failure")
                     .containsAnyOf("division by zero", "divide by zero", "/ by zero")
         }
