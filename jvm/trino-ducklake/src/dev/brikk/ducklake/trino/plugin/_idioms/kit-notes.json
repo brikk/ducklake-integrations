@@ -1,0 +1,170 @@
+{
+  "slice": "trino-main",
+  "kit_version": 1,
+  "generated_at": "2026-06-01",
+  "scope": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin",
+  "applied": {
+    "during_correctness_wins": [
+      {
+        "name": "locale_root_lowercase",
+        "site": "DucklakeTypeConverter.kt:60-61",
+        "before": "ducklakeType.trim().lowercase()",
+        "after": "ducklakeType.trim().lowercase(Locale.ROOT)",
+        "reason": "Catalog type names are ASCII; default-locale lowercase folds Turkish 'I'/'İ' incorrectly. Pre-existing as TODO(kit) per PLAN.md DURING.",
+        "helper": "IdiomKit.lowercaseRoot (offered but not yet replacing direct call — direct call is idiomatic enough)"
+      },
+      {
+        "name": "locale_root_lowercase",
+        "site": "DucklakeMetadata.kt:1237",
+        "before": "view.dialect.lowercase()",
+        "after": "view.dialect.lowercase(Locale.ROOT)",
+        "reason": "View dialect strings ('trino', 'duckdb') compared case-insensitively; same Turkish-locale hazard."
+      },
+      {
+        "name": "safe_sql_message",
+        "site": "InProcessDuckDbExecutor.kt:276",
+        "before": "e.message!!.lineSequence().firstOrNull() ?: e.message",
+        "after": "e.message?.lineSequence()?.firstOrNull() ?: e.message ?: \"(no message)\"",
+        "reason": "DuckDB JDBC SQLException.message is nullable on a handful of internal paths; previous code NPEs."
+      },
+      {
+        "name": "safe_sql_message",
+        "site": "QuackDuckDbExecutor.kt:362,367-369",
+        "before": "firstLineOrFull(e.message!!) + (message as java.lang.String).lines().findFirst()",
+        "after": "firstLineOrFull(e.message ?: \"(no message)\") + message.lineSequence().firstOrNull() ?: message",
+        "reason": "Same NPE hazard; also drops the awkward `as java.lang.String` cast left over from a Java-Stream port."
+      },
+      {
+        "name": "resource_leak_init",
+        "site": "DuckDbFileWriter.kt:115-145",
+        "before": "init block opens connection then leaks it if createAppender throws",
+        "after": "try/catch closes app/conn in reverse construction order before rethrowing",
+        "reason": "Native DuckDB connection leak under SQLException during init; original Java had the same bug."
+      },
+      {
+        "name": "resource_leak_finalize",
+        "site": "DuckDbFileWriter.kt:288-305",
+        "before": "catch on SQLException only deletes the temp file; connection stays open",
+        "after": "best-effort connection.close() in the catch before propagating",
+        "reason": "Connection leak if appender.close or DETACH throws."
+      },
+      {
+        "name": "resource_leak_parquet_writer",
+        "site": "DucklakeMergeSink.kt:199-225",
+        "before": "parquetWriter.write then close, no try/finally — write throws → both writer and outputStream leak",
+        "after": "try block wraps write+close; catch closes the writer best-effort and rethrows",
+        "reason": "ParquetWriter closes its wrapped outputStream on close; a single best-effort close on exception suffices."
+      },
+      {
+        "name": "retained_size_double_count",
+        "site": "DucklakeColumnHandle.kt:74-78",
+        "before": "INSTANCE_SIZE + sizeOf(columnId) + estimatedSizeOf(columnName) + sizeOf(nullable)",
+        "after": "INSTANCE_SIZE + estimatedSizeOf(columnName)",
+        "reason": "INSTANCE_SIZE already accounts for primitive fields (long, boolean). PLAN.md DURING."
+      },
+      {
+        "name": "retained_size_double_count",
+        "site": "DucklakeSplit.kt:190-212",
+        "before": "deleteFileFooterSizes keys counted via map AND deleteFilePaths list AND 4×SIZE_OF_LONG for the prim longs already in INSTANCE_SIZE",
+        "after": "map only counts values; list counts the strings once; primitive longs accounted by INSTANCE_SIZE",
+        "reason": "Same string is shared by reference between the list and the map's keys; INSTANCE_SIZE already includes the 4 primitive long fields."
+      }
+    ],
+    "idiom_cleanup": [
+      {
+        "name": "drop_requireNonNull_on_kotlin_non_null_params",
+        "scope": "all handles, splits, internal classes",
+        "before": "this.x = Objects.requireNonNull(x, \"x is null\")",
+        "after": "this.x = x",
+        "reason": "Kotlin compiler emits Intrinsics.checkNotNullParameter for non-nullable params; requireNonNull is dead code. Kept ONLY where the parameter is T? (true null assertion).",
+        "kept_at": [
+          "DucklakeSnapshotResolver.kt:36-38 (T? param)",
+          "DucklakeMetadata.kt:133-139 (T? params)",
+          "DucklakeMetadataTableType.kt:33 (nullable lookup)",
+          "DucklakePageSink.kt:130 (nullable value)",
+          "DucklakeCatalogProvider.kt:26 (config returns String?)"
+        ]
+      },
+      {
+        "name": "kotlin_collection_factories",
+        "before": "java.util.List.copyOf(x), java.util.List.of(), java.util.Map.copyOf(x), java.util.Set.copyOf(x), java.util.Map.of(), java.util.Set.of()",
+        "after": "x.toList(), emptyList(), x.toMap(), x.toSet(), emptyMap(), emptySet()",
+        "reason": "Kotlin built-ins are equivalent for defensive copies and empty constants; reads more naturally and drops the java.util.* import noise.",
+        "kept_at": [
+          "java.util.List.of(arg) (with arguments) — left as-is to avoid subtly changing the returned type's identity"
+        ]
+      },
+      {
+        "name": "drop_jvmstatic_from_internal_companions",
+        "scope": "17 internal-helper files (28 @JvmStatic annotations removed)",
+        "files": [
+          "DuckDbExpressionTranslator.kt",
+          "DuckDbS3Config.kt",
+          "DuckDbSelectSqlBuilder.kt",
+          "DuckDbTuning.kt",
+          "DuckDbTuningSql.kt",
+          "DuckDbWhereClauseTranslator.kt",
+          "DucklakeAddFilesTypeChecker.kt",
+          "DucklakeBucketPartitionMatcher.kt",
+          "DucklakeDeleteFileReader.kt",
+          "DucklakeInlinedValueConverter.kt",
+          "DucklakeParquetSchemaBuilder.kt",
+          "DucklakeParquetTypeUtils.kt",
+          "DucklakePartitionComputer.kt",
+          "DucklakePartitionValueParser.kt",
+          "DucklakePuffinDeleteReader.kt",
+          "DucklakeSortPropertyMapper.kt"
+        ],
+        "rationale": "The trino-ducklake plugin is now 100% Kotlin; @JvmStatic was defensive port noise. Kotlin call sites still use `ClassName.foo()` syntax identically with or without it.",
+        "kept_at": [
+          "All SPI-surface classes (Trino plugin/Guice reflect on them): DucklakePlugin, DucklakeConnectorFactory, DucklakeConnector, DucklakeMetadata, DucklakeMetadataFactory, DucklakeSplitManager, DucklakePageSourceProvider, DucklakePageSourceProviderFactory, DucklakePageSinkProvider, DucklakeTransactionManager, DucklakeTransactionHandle, DucklakeSessionProperties, DucklakeTableProperties, DucklakeAlwaysOnSplitAffinityProvider, DucklakeAddFilesProcedure, DefaultDucklakeFileSystemFactory, DucklakeFileSystemFactory, DucklakeCatalogProvider, DucklakeModule.",
+          "All Jackson-serialized handles/splits: DucklakeColumnHandle (rowIdColumnHandle factory), DucklakeSplit, DucklakeTableHandle, DucklakeWritableTableHandle, DucklakeMergeTableHandle, DucklakeMetadataSplit, DucklakeInlinedSplit, DucklakeMetadataTableHandle, DucklakeMetadataTableType."
+        ],
+        "rule": "Drop @JvmStatic when EVERY caller is in this module AND no Java code (extension binary, generated, test fixture) imports the helper. Keep @JvmStatic on factory methods called via reflection (Trino plugin API)."
+      }
+    ]
+  },
+  "not_applied": [
+    {
+      "name": "convert_handles_to_jvm_record_data_class",
+      "rationale": "Six handles (DucklakeColumnHandle, DucklakeTableHandle, DucklakeWritableTableHandle, DucklakeMergeTableHandle, DucklakeMetadataSplit, DucklakeInlinedSplit) use regular-class+manual-equals/hashCode/toString instead of @JvmRecord data class. DucklakeSplit and DucklakeMetadataTableHandle already use @JvmRecord — they are the precedent.",
+      "blast_radius": "Converting to @JvmRecord data class with @get:JvmName preserves Java-side `obj.foo()` access but forces Kotlin call sites onto property syntax (`obj.foo`). Inventory found 78+ Kotlin call sites using `.columnName()/.columnId()/.columnType()/.nullable()` and 143+ call sites for the other handles' accessors — 220+ mechanical updates across 15+ files. The cost is real and the win is style consistency, not behavior.",
+      "decision": "Defer to a dedicated PR after the trino-main slice is locked in. Document the precedent (see DucklakeSplit, DucklakeMetadataTableHandle) so any new handle starts at @JvmRecord. The existing manual equals/hashCode/toString in the six laggards is mechanically correct — no functional bug.",
+      "future_work_marker": "Add // TODO(kit: convert to @JvmRecord data class — see kit-notes.json) on each of the six handle declarations when this kit is iterated."
+    },
+    {
+      "name": "collapse_optional_to_nullable_on_internal_paths",
+      "rationale": "203 Optional.empty/of/ofNullable occurrences across 26 .kt files. Many are SPI override return types (ConnectorMetadata.getInfo etc.) that must stay Optional. Many are Jackson-serialized field types on handles (e.g. DucklakeSplit.affinityKey: Optional<String>) that the catalog/wire format depends on.",
+      "decision": "Skipped in this slice. Splitting internal-only Optional<T> sites from SPI/wire sites requires per-call-site analysis — risk/value worse than the requireNonNull cleanup."
+    },
+    {
+      "name": "move_companion_helpers_to_top_level_or_extract_object",
+      "rationale": "Several files have a companion object whose body is only static helpers (e.g. DuckDbExpressionTranslator.translate*, DucklakeParquetSchemaBuilder.build*). Top-level `internal fun` is more idiomatic but the migration ripples through every call site (`ClassName.foo()` → `foo()`) and the import lists.",
+      "decision": "Deferred. Document the preference here; future authors should default to top-level fun for new helpers."
+    },
+    {
+      "name": "move_companion_helpers_to_top_level",
+      "rationale": "Several files have a companion object whose body is only static helpers (e.g. DuckDbExpressionTranslator.translate*, DucklakeParquetSchemaBuilder.build*). Top-level `internal fun` is more idiomatic but the migration ripples through every call site (`ClassName.foo()` → `foo()`) and the import lists.",
+      "decision": "Deferred. Document the preference here; future authors should default to top-level fun for new helpers."
+    }
+  ],
+  "shared_helpers_introduced": [
+    {
+      "name": "IdiomKit.lowercaseRoot",
+      "file": "_idioms/IdiomKit.kt",
+      "intended_users": "any catalog/identifier/SQL-keyword case fold",
+      "status": "introduced, not yet rolled out to all callers (the two DURING fixes inlined the lowercase(Locale.ROOT) call directly because it's a one-liner)"
+    },
+    {
+      "name": "IdiomKit.safeMessage / firstLine / firstLineOf",
+      "file": "_idioms/IdiomKit.kt",
+      "intended_users": "DuckDB JDBC error logging paths",
+      "status": "introduced, not yet rolled out to QuackDuckDbExecutor.firstLineOrFull / InProcessDuckDbExecutor warn path; those were fixed inline. Future PRs can collapse them to the kit helper."
+    }
+  ],
+  "verification": {
+    "command": "cd jvm && ./gradlew :trino-ducklake:test",
+    "expected": "825/0/0",
+    "last_run": "2026-06-01 — passed after the final batch (DURING fixes + requireNonNull/copyOf cleanup + @JvmStatic removal). total=825 failures=0 errors=0 skipped=0."
+  }
+}
