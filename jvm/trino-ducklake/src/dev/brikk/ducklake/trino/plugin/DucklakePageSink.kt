@@ -56,13 +56,13 @@ public class DucklakePageSink(
         trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
 ) : ConnectorPageSink {
-    private val handle: DucklakeWritableTableHandle = requireNonNull(handle, "handle is null")
-    private val fileSystem: TrinoFileSystem = requireNonNull(fileSystem, "fileSystem is null")
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = requireNonNull(fragmentCodec, "fragmentCodec is null")
+    private val handle: DucklakeWritableTableHandle = handle
+    private val fileSystem: TrinoFileSystem = fileSystem
+    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = fragmentCodec
     private val writerOptions: ParquetWriterOptions
-    private val trinoVersion: String = requireNonNull(trinoVersion, "trinoVersion is null")
+    private val trinoVersion: String = trinoVersion
     private val targetMaxFileSize: Long
-    private val fileFormat: String = requireNonNull(handle.fileFormat(), "fileFormat is null")
+    private val fileFormat: String = handle.fileFormat()
 
     private val columnTypes: List<Type>
     private val columnNames: List<String>

@@ -23,7 +23,6 @@ import io.trino.spi.type.DecimalType
 import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType
 import io.trino.spi.type.SmallintType
-import java.util.Objects.requireNonNull
 
 /**
  * Enforces DuckLake unsigned integer type ranges on the write path.
@@ -170,7 +169,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
     }
 
     public companion object {
-        private val NO_OP: DucklakeUnsignedRangeChecker = DucklakeUnsignedRangeChecker(java.util.List.of())
+        private val NO_OP: DucklakeUnsignedRangeChecker = DucklakeUnsignedRangeChecker(emptyList())
 
         private const val UINT8_MAX: Long = (1L shl 8) - 1
         private const val UINT16_MAX: Long = (1L shl 16) - 1
@@ -190,9 +189,6 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
         public fun build(
                 columns: List<DucklakeColumnHandle>,
                 catalogColumnTypeById: Map<Long, String>): DucklakeUnsignedRangeChecker {
-            requireNonNull(columns, "columns is null")
-            requireNonNull(catalogColumnTypeById, "catalogColumnTypeById is null")
-
             val builder: ImmutableList.Builder<Check> = ImmutableList.builder()
             var channel = 0
             while (channel < columns.size) {
@@ -216,7 +212,6 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
         public fun build(
                 columns: List<DucklakeColumnHandle>,
                 allCatalogColumns: List<DucklakeColumn>): DucklakeUnsignedRangeChecker {
-            requireNonNull(allCatalogColumns, "allCatalogColumns is null")
             return build(columns, allCatalogColumns.stream()
                     .collect(java.util.stream.Collectors.toMap({ c: DucklakeColumn -> c.columnId }, { c: DucklakeColumn -> c.columnType }, { a, _ -> a })))
         }

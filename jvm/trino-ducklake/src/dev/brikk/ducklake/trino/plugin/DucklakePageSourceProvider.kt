@@ -87,7 +87,6 @@ import java.util.HashMap
 import java.util.HashSet
 import java.util.LinkedHashMap
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.function.Function
@@ -107,15 +106,15 @@ public class DucklakePageSourceProvider @Inject constructor(
         executorFactory: DucklakeDuckDbExecutorFactory)
         : ConnectorPageSourceProvider
 {
-    private val fileSystemFactory: TrinoFileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null")
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null")
-    private val parquetReaderOptions: ParquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null")
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")
-    private val duckDbReadCache: DucklakeMaterializedFileCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null")
-    private val duckDbS3Config: DuckDbS3Config = requireNonNull(duckDbS3Config, "duckDbS3Config is null")
-    private val autoHttpfsThresholdBytes: Long = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
+    private val fileSystemFactory: TrinoFileSystemFactory = fileSystemFactory
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
+    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderOptions
+    private val catalog: DucklakeCatalog = catalog
+    private val duckDbReadCache: DucklakeMaterializedFileCache = duckDbReadCache
+    private val duckDbS3Config: DuckDbS3Config = duckDbS3Config
+    private val autoHttpfsThresholdBytes: Long = ducklakeConfig
             .getDuckdbAutoHttpfsThreshold().toBytes()
-    private val executorFactory: DucklakeDuckDbExecutorFactory = requireNonNull(executorFactory, "executorFactory is null")
+    private val executorFactory: DucklakeDuckDbExecutorFactory = executorFactory
 
     override fun createPageSource(
             transaction: ConnectorTransactionHandle?,
@@ -126,9 +125,6 @@ public class DucklakePageSourceProvider @Inject constructor(
             columns: List<ColumnHandle>,
             dynamicFilter: DynamicFilter): ConnectorPageSource
     {
-        requireNonNull(split, "split is null")
-        requireNonNull(columns, "columns is null")
-
         if (split is DucklakeMetadataSplit) {
             return createMetadataPageSource(split, columns)
         }
@@ -178,7 +174,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
                     table.pushedExpressions()
                 else
-                    java.util.List.of()
+                    emptyList()
                 return createDuckDbPageSource(
                         dataFileLocation,
                         ducklakeColumns,
@@ -285,7 +281,7 @@ public class DucklakePageSourceProvider @Inject constructor(
             DucklakeMetadataTableType.SNAPSHOTS -> buildSnapshotRows(catalog.listSnapshots())
             DucklakeMetadataTableType.CURRENT_SNAPSHOT -> catalog.getSnapshot(metadataSplit.snapshotId())
                     .map { snapshot -> buildSnapshotRows(java.util.List.of(snapshot)) }
-                    .orElse(java.util.List.of())
+                    .orElse(emptyList())
             DucklakeMetadataTableType.SNAPSHOT_CHANGES -> buildSnapshotChangeRows(catalog.listSnapshotChanges())
         }
 
@@ -628,7 +624,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         // B3b: drop pushed complex expressions when the split has active deletes — same
         // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
         // matching rows, breaking RowIdInjectingPageSource's cumulative-offset math.
-        val effectivePushedExpressions: List<String> = if (splitHasActiveDeletes(split)) java.util.List.of() else pushedExpressions
+        val effectivePushedExpressions: List<String> = if (splitHasActiveDeletes(split)) emptyList() else pushedExpressions
         var pageSource: ConnectorPageSource = DuckDbFilePageSource(
                 executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
                 duckDbTimeZone)
@@ -856,7 +852,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         private var nextRowOffset: Long = 0
 
         constructor(deletedRows: Set<Long>, rowIdStart: Long) {
-            this.deletedRows = java.util.Set.copyOf(requireNonNull(deletedRows, "deletedRows is null"))
+            this.deletedRows = deletedRows.toSet()
             this.rowIdStart = rowIdStart
         }
 
@@ -901,7 +897,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         private var nextRowOffset: Long = 0
 
         constructor(delegate: ConnectorPageSource, delegateChannelCount: Int, rowIdOutputPosition: Int, rowIdStart: Long) {
-            this.delegate = requireNonNull(delegate, "delegate is null")
+            this.delegate = delegate
             this.delegateChannelCount = delegateChannelCount
             this.rowIdOutputPosition = rowIdOutputPosition
             this.rowIdStart = rowIdStart

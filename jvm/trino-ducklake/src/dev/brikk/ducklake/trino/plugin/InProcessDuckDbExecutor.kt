@@ -36,8 +36,8 @@ import java.util.Properties
  */
 public class InProcessDuckDbExecutor
 internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : DucklakeDuckDbExecutor {
-    private val tuning: DuckDbTuning = java.util.Objects.requireNonNull(tuning, "tuning is null")
-    private val parityExtensionPath: String = java.util.Objects.requireNonNull(parityExtensionPath, "parityExtensionPath is null")
+    private val tuning: DuckDbTuning = tuning
+    private val parityExtensionPath: String = parityExtensionPath
 
     /**
      * Test-only convenience constructor: auto-resolves the bundled trino_parity
@@ -273,7 +273,7 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
                                     + "Subsequent splits with the same zone proceed without an explicit "
                                     + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "
                                     + "See dev-docs/archive/REPORT-datetime-tz-handling.md.",
-                            z, e.message!!.lineSequence().firstOrNull() ?: e.message)
+                            z, e.message?.lineSequence()?.firstOrNull() ?: e.message ?: "(no message)")
                 }
             }
         }

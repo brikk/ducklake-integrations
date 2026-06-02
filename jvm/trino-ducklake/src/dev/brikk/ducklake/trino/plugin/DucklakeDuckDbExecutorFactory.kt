@@ -17,7 +17,6 @@ import com.google.inject.Inject
 import io.trino.spi.StandardErrorCode.CONFIGURATION_INVALID
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
-import java.util.Objects.requireNonNull
 
 /**
  * Constructs the configured {@link DucklakeDuckDbExecutor} per split. A new
@@ -42,7 +41,7 @@ import java.util.Objects.requireNonNull
  * failure for missing macros.
  */
 class DucklakeDuckDbExecutorFactory @Inject constructor(config: DucklakeConfig) {
-    private val config: DucklakeConfig = requireNonNull(config, "config is null")
+    private val config: DucklakeConfig = config
 
     fun create(): DucklakeDuckDbExecutor {
         val tuning = config.toDuckDbTuning()

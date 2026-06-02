@@ -43,7 +43,7 @@ import io.trino.spi.type.VarbinaryType
 import io.trino.spi.type.VarcharType
 import java.lang.String.format
 import java.util.ArrayList
-import java.util.Objects.requireNonNull
+import java.util.Locale
 import java.util.Optional
 import java.util.regex.Pattern
 
@@ -52,15 +52,13 @@ import java.util.regex.Pattern
  * Handles all Ducklake primitive, nested, and special types.
  */
 public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeManager) {
-    private val typeManager: TypeManager = requireNonNull(typeManager, "typeManager is null")
+    private val typeManager: TypeManager = typeManager
 
     /**
      * Convert Ducklake type string to Trino Type
      */
     public open fun toTrinoType(ducklakeType: String): Type {
-        requireNonNull(ducklakeType, "ducklakeType is null")
-
-        val normalizedType: String = ducklakeType.trim().lowercase()
+        val normalizedType: String = ducklakeType.trim().lowercase(Locale.ROOT)
 
         if (normalizedType.startsWith("list<") && normalizedType.endsWith(">")) {
             val elementType = extractTypeArguments(normalizedType, "list").trim()
@@ -175,8 +173,6 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
      * Convert Trino type to Ducklake type string (for write operations)
      */
     public open fun toDucklakeType(trinoType: Type): String {
-        requireNonNull(trinoType, "trinoType is null")
-
         if (trinoType.equals(BooleanType.BOOLEAN)) {
             return "boolean"
         }

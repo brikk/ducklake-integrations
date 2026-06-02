@@ -59,7 +59,6 @@ public object DucklakeInlinedValueConverter {
      * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
      * Returns null for null input.
      */
-    @JvmStatic
     fun convertJdbcValue(jdbcValue: Any?, trinoType: Type): Any? {
         if (jdbcValue == null) {
             return null
@@ -229,7 +228,6 @@ public object DucklakeInlinedValueConverter {
      *
      * <p>Visible for testing.
      */
-    @JvmStatic
     internal fun decodeBlobText(text: String): ByteArray {
         val len = text.length
         val out = ByteArray(len)

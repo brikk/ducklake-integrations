@@ -42,7 +42,6 @@ import java.io.UncheckedIOException
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.LinkedHashSet
-import java.util.Objects.requireNonNull
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
@@ -64,18 +63,18 @@ public open class DucklakeMergeSink(
         insertSink: ConnectorPageSink)
     : ConnectorMergeSink
 {
-    private val mergeHandle: DucklakeMergeTableHandle = requireNonNull(mergeHandle, "mergeHandle is null")
-    private val fileSystem: TrinoFileSystem = requireNonNull(fileSystem, "fileSystem is null")
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = requireNonNull(deleteFragmentCodec, "deleteFragmentCodec is null")
-    private val writeFragmentCodec: JsonCodec<DucklakeWriteFragment> = requireNonNull(writeFragmentCodec, "writeFragmentCodec is null")
-    private val writerOptions: ParquetWriterOptions = requireNonNull(writerOptions, "writerOptions is null")
-    private val parquetReaderOptions: ParquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null")
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null")
-    private val trinoVersion: String = requireNonNull(trinoVersion, "trinoVersion is null")
+    private val mergeHandle: DucklakeMergeTableHandle = mergeHandle
+    private val fileSystem: TrinoFileSystem = fileSystem
+    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
+    private val writeFragmentCodec: JsonCodec<DucklakeWriteFragment> = writeFragmentCodec
+    private val writerOptions: ParquetWriterOptions = writerOptions
+    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderOptions
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
+    private val trinoVersion: String = trinoVersion
     private val dataColumnCount: Int
 
     // Insert sink for handling UPDATE inserts
-    private val insertSink: ConnectorPageSink = requireNonNull(insertSink, "insertSink is null")
+    private val insertSink: ConnectorPageSink = insertSink
 
     // Accumulated delete row IDs grouped by data file ID
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = HashMap()
@@ -206,17 +205,25 @@ public open class DucklakeMergeSink(
                 java.util.Optional.empty(),
                 java.util.Optional.empty())
 
-        // Write all positions (prior ∪ new) as a single page
-        val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, totalPositions.toInt())
-        for (position in unionPositions) {
-            BIGINT.writeLong(blockBuilder, position)
+        // Write all positions (prior ∪ new) as a single page. close() must be called even on
+        // write failure or both the writer and the wrapped output stream leak.
+        val fileMetaData: org.apache.parquet.format.FileMetaData
+        val fileSize: Long
+        try {
+            val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, totalPositions.toInt())
+            for (position in unionPositions) {
+                BIGINT.writeLong(blockBuilder, position)
+            }
+            val block: Block = blockBuilder.build()
+            parquetWriter.write(Page(block.getPositionCount(), block))
+            parquetWriter.close()
+            fileMetaData = parquetWriter.getFileMetaData()
+            fileSize = parquetWriter.getEstimatedWrittenBytes()
         }
-        val block: Block = blockBuilder.build()
-        parquetWriter.write(Page(block.getPositionCount(), block))
-        parquetWriter.close()
-
-        val fileMetaData = parquetWriter.getFileMetaData()
-        val fileSize: Long = parquetWriter.getEstimatedWrittenBytes()
+        catch (t: Throwable) {
+            try { parquetWriter.close() } catch (_: Exception) {}
+            throw t
+        }
 
         // Compute footer size
         var footerSize: Long
@@ -247,7 +254,7 @@ public open class DucklakeMergeSink(
                 return range.existingDeleteFilePaths()
             }
         }
-        return java.util.List.of()
+        return emptyList()
     }
 
     override fun abort() {

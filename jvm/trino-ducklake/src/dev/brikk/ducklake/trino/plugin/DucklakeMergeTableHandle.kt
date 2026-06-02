@@ -19,7 +19,6 @@ import io.trino.spi.connector.ConnectorMergeTableHandle
 import io.trino.spi.connector.ConnectorTableHandle
 
 import java.util.Objects
-import java.util.Objects.requireNonNull
 
 class DucklakeMergeTableHandle
         : ConnectorMergeTableHandle
@@ -34,9 +33,9 @@ class DucklakeMergeTableHandle
             @JsonProperty("insertHandle") insertHandle: DucklakeWritableTableHandle,
             @JsonProperty("dataFileRanges") dataFileRanges: List<DataFileRange>)
     {
-        this.tableHandle = requireNonNull(tableHandle, "tableHandle is null")
-        this.insertHandle = requireNonNull(insertHandle, "insertHandle is null")
-        this.dataFileRanges = java.util.List.copyOf(requireNonNull(dataFileRanges, "dataFileRanges is null"))
+        this.tableHandle = tableHandle
+        this.insertHandle = insertHandle
+        this.dataFileRanges = dataFileRanges.toList()
     }
 
     @JsonProperty("tableHandle")
@@ -89,10 +88,7 @@ class DucklakeMergeTableHandle
             this.dataFileId = dataFileId
             this.rowIdStart = rowIdStart
             this.recordCount = recordCount
-            this.existingDeleteFilePaths = if (existingDeleteFilePaths == null)
-                listOf()
-            else
-                java.util.List.copyOf(existingDeleteFilePaths)
+            this.existingDeleteFilePaths = existingDeleteFilePaths?.toList() ?: emptyList()
         }
 
         @JsonProperty("dataFileId")

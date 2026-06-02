@@ -27,7 +27,6 @@ import io.trino.spi.connector.ConnectorFactory
 import org.weakref.jmx.guice.MBeanModule
 
 import io.trino.plugin.base.Versions.checkStrictSpiVersionMatch
-import java.util.Objects.requireNonNull
 
 open class DucklakeConnectorFactory
         : ConnectorFactory
@@ -39,10 +38,6 @@ open class DucklakeConnectorFactory
 
     override fun create(catalogName: String, config: Map<String, String>, context: ConnectorContext): Connector
     {
-        requireNonNull(catalogName, "catalogName is null")
-        requireNonNull(config, "config is null")
-        requireNonNull(context, "context is null")
-
         checkStrictSpiVersionMatch(context, this)
 
         val classLoader = DucklakeConnectorFactory::class.java.classLoader

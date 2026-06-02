@@ -20,8 +20,6 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 
-import java.util.Objects.requireNonNull
-
 open class DucklakePageSourceProviderFactory @Inject constructor(
         fileSystemFactory: DucklakeFileSystemFactory,
         fileFormatDataSourceStats: FileFormatDataSourceStats,
@@ -33,14 +31,14 @@ open class DucklakePageSourceProviderFactory @Inject constructor(
         executorFactory: DucklakeDuckDbExecutorFactory)
         : ConnectorPageSourceProviderFactory
 {
-    private val fileSystemFactory: DucklakeFileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null")
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null")
+    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")
-    private val duckDbReadCache: DucklakeMaterializedFileCache = requireNonNull(duckDbReadCache, "duckDbReadCache is null")
-    private val duckDbS3Config: DuckDbS3Config = requireNonNull(duckDbS3Config, "duckDbS3Config is null")
-    private val ducklakeConfig: DucklakeConfig = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
-    private val executorFactory: DucklakeDuckDbExecutorFactory = requireNonNull(executorFactory, "executorFactory is null")
+    private val catalog: DucklakeCatalog = catalog
+    private val duckDbReadCache: DucklakeMaterializedFileCache = duckDbReadCache
+    private val duckDbS3Config: DuckDbS3Config = duckDbS3Config
+    private val ducklakeConfig: DucklakeConfig = ducklakeConfig
+    private val executorFactory: DucklakeDuckDbExecutorFactory = executorFactory
 
     override fun createPageSourceProvider(): DucklakePageSourceProvider
     {

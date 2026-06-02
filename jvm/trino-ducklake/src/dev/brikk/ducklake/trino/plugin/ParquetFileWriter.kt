@@ -25,7 +25,6 @@ import org.apache.parquet.format.Util
 import java.io.IOException
 import java.io.OutputStream
 import java.util.HashMap
-import java.util.Objects.requireNonNull
 import java.util.OptionalLong
 
 /**
@@ -41,16 +40,14 @@ class ParquetFileWriter(
         columns: List<DucklakeColumnHandle>,
         allCatalogColumns: List<DucklakeColumn>)
         : DucklakeFileWriter {
-    private val parquetWriter: ParquetWriter = requireNonNull(parquetWriter, "parquetWriter is null")
-    private val outputStream: OutputStream = requireNonNull(outputStream, "outputStream is null")
-    private val relativePath: String = requireNonNull(relativePath, "relativePath is null")
-    private val partitionValues: MutableMap<Int, String?> = HashMap(requireNonNull(partitionValues, "partitionValues is null"))
-    private val partitionId: OptionalLong = requireNonNull(partitionId, "partitionId is null")
+    private val parquetWriter: ParquetWriter = parquetWriter
+    private val outputStream: OutputStream = outputStream
+    private val relativePath: String = relativePath
+    private val partitionValues: MutableMap<Int, String?> = HashMap(partitionValues)
+    private val partitionId: OptionalLong = partitionId
     private val leafStatsTargets: List<LeafStatsTarget>
 
     init {
-        requireNonNull(columns, "columns is null")
-        requireNonNull(allCatalogColumns, "allCatalogColumns is null")
         this.leafStatsTargets = DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns)
     }
 

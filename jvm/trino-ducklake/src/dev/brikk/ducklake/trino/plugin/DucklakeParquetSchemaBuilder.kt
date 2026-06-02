@@ -39,7 +39,6 @@ public class DucklakeParquetSchemaBuilder private constructor() {
          * @param sourceMessageType the MessageType from ParquetSchemaConverter (without field IDs)
          * @return a new MessageType with field_id set on each field
          */
-        @JvmStatic
         public fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 allColumns: List<DucklakeColumn>,
@@ -79,7 +78,6 @@ public class DucklakeParquetSchemaBuilder private constructor() {
         /**
          * Overload for simple schemas without nested columns.
          */
-        @JvmStatic
         public fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 sourceMessageType: MessageType): MessageType {

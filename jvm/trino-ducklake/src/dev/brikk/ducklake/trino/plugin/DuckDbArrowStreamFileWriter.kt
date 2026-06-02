@@ -97,7 +97,6 @@ import java.time.ZoneOffset
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.UUID
@@ -135,12 +134,12 @@ constructor(
         partitionId: OptionalLong,
         columns: List<DucklakeColumnHandle>,
         localTempDir: Path) : DucklakeFileWriter {
-    private val fileSystem: TrinoFileSystem = requireNonNull(fileSystem, "fileSystem is null")
-    private val remoteLocation: Location = requireNonNull(remoteLocation, "remoteLocation is null")
-    private val relativePath: String = requireNonNull(relativePath, "relativePath is null")
-    private val partitionValues: Map<Int, String?> = HashMap(requireNonNull(partitionValues, "partitionValues is null"))
-    private val partitionId: OptionalLong = requireNonNull(partitionId, "partitionId is null")
-    private val columns: List<DucklakeColumnHandle> = java.util.List.copyOf(requireNonNull(columns, "columns is null"))
+    private val fileSystem: TrinoFileSystem = fileSystem
+    private val remoteLocation: Location = remoteLocation
+    private val relativePath: String = relativePath
+    private val partitionValues: Map<Int, String?> = HashMap(partitionValues)
+    private val partitionId: OptionalLong = partitionId
+    private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.stream().map { it.columnType() }.toList()
     private val localTempFile: Path
 

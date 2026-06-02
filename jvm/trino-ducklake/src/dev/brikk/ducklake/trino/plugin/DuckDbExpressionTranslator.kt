@@ -255,7 +255,7 @@ class DuckDbExpressionTranslator private constructor() {
             // WTZ as the first arg (re-zoning a WTZ value is `at_timezone`, which we
             // can't push — see SQL macros for the reason). Gate strictly to TIMESTAMP.
             gates[NameArity("with_timezone", 2)] = arg(0, TimestampType::class.java)
-            return java.util.Map.copyOf(gates)
+            return gates.toMap()
         }
 
         /**
@@ -313,14 +313,12 @@ class DuckDbExpressionTranslator private constructor() {
          * unpushed. Convenient for unit tests that synthesize a single call without
          * needing a [ConnectorSession].
          */
-        @JvmStatic
         fun translateConjuncts(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>): List<String> {
             return translateConjuncts(expression, assignments, null)
         }
 
-        @JvmStatic
         fun translateConjuncts(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>,
@@ -336,7 +334,7 @@ class DuckDbExpressionTranslator private constructor() {
                 val translated = translate(conjunct, assignments, session)
                 translated.ifPresent { out.add(it) }
             }
-            return java.util.List.copyOf(out)
+            return out.toList()
         }
 
         private fun isTautologyTrue(expression: ConnectorExpression): Boolean {
@@ -361,14 +359,12 @@ class DuckDbExpressionTranslator private constructor() {
          * Translate a single expression to DuckDB SQL. Returns [Optional.empty]
          * when any subterm is unrecognised. Never throws.
          */
-        @JvmStatic
         fun translate(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>): Optional<String> {
             return translate(expression, assignments, null)
         }
 
-        @JvmStatic
         fun translate(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>,

@@ -54,7 +54,6 @@ object DucklakePuffinDeleteReader {
     /**
      * Read all deleted row positions from a DuckLake puffin file.
      */
-    @JvmStatic
     @Throws(IOException::class)
     fun readDeletedPositions(inputFile: TrinoInputFile): Set<Long> {
         val length = inputFile.length()
@@ -79,7 +78,6 @@ object DucklakePuffinDeleteReader {
     /**
      * Decode the raw blob bytes into row positions. Visible for testing.
      */
-    @JvmStatic
     @Throws(IOException::class)
     fun decodeBlob(blob: ByteArray): Set<Long> {
         if (blob.size < MIN_BLOB_SIZE) {

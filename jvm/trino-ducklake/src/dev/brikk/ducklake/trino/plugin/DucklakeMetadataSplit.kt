@@ -20,7 +20,6 @@ import io.trino.spi.connector.ConnectorSplit
 
 import io.airlift.slice.SizeOf.instanceSize
 import java.util.Objects
-import java.util.Objects.requireNonNull
 
 class DucklakeMetadataSplit
         : ConnectorSplit
@@ -37,7 +36,7 @@ class DucklakeMetadataSplit
     {
         this.baseTableId = baseTableId
         this.snapshotId = snapshotId
-        this.metadataTableType = requireNonNull(metadataTableType, "metadataTableType is null")
+        this.metadataTableType = metadataTableType
     }
 
     @JsonProperty("baseTableId")

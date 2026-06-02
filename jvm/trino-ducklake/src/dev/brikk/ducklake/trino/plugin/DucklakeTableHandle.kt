@@ -50,13 +50,13 @@ class DucklakeTableHandle
             @JsonProperty("unenforcedPredicate") unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
             @JsonProperty("enforcedPredicate") enforcedPredicate: TupleDomain<DucklakeColumnHandle>,
             @JsonProperty("pushedExpressions") pushedExpressions: List<String>?) {
-        this.schemaName = Objects.requireNonNull(schemaName, "schemaName is null")
-        this.tableName = Objects.requireNonNull(tableName, "tableName is null")
+        this.schemaName = schemaName
+        this.tableName = tableName
         this.tableId = tableId
         this.snapshotId = snapshotId
-        this.unenforcedPredicate = Objects.requireNonNull(unenforcedPredicate, "unenforcedPredicate is null")
-        this.enforcedPredicate = Objects.requireNonNull(enforcedPredicate, "enforcedPredicate is null")
-        this.pushedExpressions = if (pushedExpressions == null) java.util.List.of() else java.util.List.copyOf(pushedExpressions)
+        this.unenforcedPredicate = unenforcedPredicate
+        this.enforcedPredicate = enforcedPredicate
+        this.pushedExpressions = pushedExpressions?.toList() ?: emptyList()
     }
 
     constructor(
@@ -66,10 +66,10 @@ class DucklakeTableHandle
             snapshotId: Long,
             unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
             enforcedPredicate: TupleDomain<DucklakeColumnHandle>)
-            : this(schemaName, tableName, tableId, snapshotId, unenforcedPredicate, enforcedPredicate, java.util.List.of())
+            : this(schemaName, tableName, tableId, snapshotId, unenforcedPredicate, enforcedPredicate, emptyList())
 
     constructor(schemaName: String, tableName: String, tableId: Long, snapshotId: Long)
-            : this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all(), java.util.List.of())
+            : this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all(), emptyList())
 
     @JsonProperty("schemaName")
     fun schemaName(): String = schemaName

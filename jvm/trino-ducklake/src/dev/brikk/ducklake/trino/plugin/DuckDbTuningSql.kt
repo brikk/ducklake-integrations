@@ -25,7 +25,6 @@ import java.util.ArrayList
  */
 class DuckDbTuningSql private constructor() {
     companion object {
-        @JvmStatic
         fun statements(tuning: DuckDbTuning): List<String> {
             val out: MutableList<String> = ArrayList()
             // Mandatory: connection reuse + sane retry posture for httpfs paths.
@@ -40,7 +39,6 @@ class DuckDbTuningSql private constructor() {
             return out
         }
 
-        @JvmStatic
         @Throws(SQLException::class)
         fun applyDirect(stmt: Statement, tuning: DuckDbTuning) {
             for (sql in statements(tuning)) {

@@ -34,7 +34,6 @@ import io.trino.spi.connector.ConnectorPageSinkProvider
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTableCredentials
 import io.trino.spi.connector.ConnectorTransactionHandle
-import java.util.Objects.requireNonNull
 import java.util.Optional
 
 class DucklakePageSinkProvider @Inject constructor(
@@ -48,16 +47,16 @@ class DucklakePageSinkProvider @Inject constructor(
         nodeVersion: NodeVersion,
         pageIndexerFactory: PageIndexerFactory)
         : ConnectorPageSinkProvider {
-    private val fileSystemFactory: DucklakeFileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null")
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = requireNonNull(fragmentCodec, "fragmentCodec is null")
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = requireNonNull(deleteFragmentCodec, "deleteFragmentCodec is null")
-    private val parquetWriterConfig: ParquetWriterConfig = requireNonNull(parquetWriterConfig, "parquetWriterConfig is null")
-    private val parquetReaderOptions: ParquetReaderOptions = requireNonNull(parquetReaderConfig, "parquetReaderConfig is null").toParquetReaderOptions()
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null")
-    private val duckdbTargetWriteBytes: Long = requireNonNull(ducklakeConfig, "ducklakeConfig is null")
+    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
+    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = fragmentCodec
+    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
+    private val parquetWriterConfig: ParquetWriterConfig = parquetWriterConfig
+    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
+    private val duckdbTargetWriteBytes: Long = ducklakeConfig
             .getDuckdbTargetWriteBytes().toBytes()
-    private val trinoVersion: String = requireNonNull(nodeVersion, "nodeVersion is null").toString()
-    private val pageIndexerFactory: PageIndexerFactory = requireNonNull(pageIndexerFactory, "pageIndexerFactory is null")
+    private val trinoVersion: String = nodeVersion.toString()
+    private val pageIndexerFactory: PageIndexerFactory = pageIndexerFactory
 
     override fun createPageSink(
             transactionHandle: ConnectorTransactionHandle,

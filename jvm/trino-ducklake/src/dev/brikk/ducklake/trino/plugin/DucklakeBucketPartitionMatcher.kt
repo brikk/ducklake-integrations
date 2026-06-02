@@ -34,7 +34,6 @@ import java.util.function.Function
  * to avoid false negatives.
  */
 object DucklakeBucketPartitionMatcher {
-    @JvmStatic
     fun partitionValueMatchesDomain(
             columnType: Type,
             partitionValue: String,
@@ -90,7 +89,6 @@ object DucklakeBucketPartitionMatcher {
         }
     }
 
-    @JvmStatic
     private fun hashesToBucket(columnType: Type, value: Any?, arity: Int, targetBucket: Int): Boolean {
         // Build a single-position block carrying this value so we can reuse the
         // exact hash function used at write time. Going through a block keeps the
@@ -101,7 +99,6 @@ object DucklakeBucketPartitionMatcher {
         return bucket == targetBucket
     }
 
-    @JvmStatic
     private fun nativeValueBlock(columnType: Type, value: Any?): ValueBlock {
         val builder = columnType.createBlockBuilder(null, 1)
         if (value == null) {

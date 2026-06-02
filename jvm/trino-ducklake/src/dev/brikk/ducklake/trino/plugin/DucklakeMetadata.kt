@@ -88,6 +88,7 @@ import java.time.ZoneOffset
 import java.util.ArrayList
 import java.util.HashSet
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -157,10 +158,6 @@ class DucklakeMetadata(
             startVersion: Optional<ConnectorTableVersion>,
             endVersion: Optional<ConnectorTableVersion>): ConnectorTableHandle?
     {
-        requireNonNull(tableName, "tableName is null")
-        requireNonNull(startVersion, "startVersion is null")
-        requireNonNull(endVersion, "endVersion is null")
-
         if (startVersion.isPresent && endVersion.isPresent) {
             throw TrinoException(NOT_SUPPORTED, "DuckLake does not support version ranges; provide only one table version bound")
         }
@@ -495,7 +492,7 @@ class DucklakeMetadata(
             val unenforced: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
 
             if (!newPredicate.isNone()) {
-                for (entry in newPredicate.getDomains().orElse(java.util.Map.of()).entries) {
+                for (entry in newPredicate.getDomains().orElse(emptyMap()).entries) {
                     when (classifyColumnConstraint(partitionSpecs, entry.key)) {
                         ConstraintEnforcement.FULLY_ENFORCED -> enforced.put(entry.key, entry.value)
                         ConstraintEnforcement.PARTIALLY_ENFORCED -> {
@@ -570,8 +567,6 @@ class DucklakeMetadata(
             session: ConnectorSession,
             prefix: SchemaTablePrefix): Map<SchemaTableName, List<ColumnMetadata>>
     {
-        requireNonNull(prefix, "prefix is null")
-
         val snapshotId = catalog.currentSnapshotId
         val columns: ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> = ImmutableMap.builder()
 
@@ -981,7 +976,7 @@ class DucklakeMetadata(
                         df.dataFileId,
                         df.rowIdStart,
                         df.recordCount,
-                        deletePathsByFileId.getOrDefault(df.dataFileId, java.util.List.of())) }
+                        deletePathsByFileId.getOrDefault(df.dataFileId, emptyList())) }
                 .collect(toImmutableList())
 
         return DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges)
@@ -1234,7 +1229,7 @@ class DucklakeMetadata(
      */
     private fun isViewAccessible(view: DucklakeView): Boolean
     {
-        val dialect: String = view.dialect.lowercase()
+        val dialect: String = view.dialect.lowercase(Locale.ROOT)
         if (TRINO_VIEW_DIALECT == dialect) {
             return true
         }

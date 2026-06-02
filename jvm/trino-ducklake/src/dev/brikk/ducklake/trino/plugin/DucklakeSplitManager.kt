@@ -53,7 +53,6 @@ import java.util.HashMap
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 import java.util.Optional
-import java.util.Objects.requireNonNull
 import java.util.stream.Collectors.toCollection
 
 /**
@@ -65,11 +64,11 @@ public class DucklakeSplitManager @Inject constructor(
         config: DucklakeConfig,
         pathResolver: DucklakePathResolver,
         splitAffinityProvider: SplitAffinityProvider) : ConnectorSplitManager {
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")
-    private val pathResolver: DucklakePathResolver = requireNonNull(pathResolver, "pathResolver is null")
+    private val catalog: DucklakeCatalog = catalog
+    private val pathResolver: DucklakePathResolver = pathResolver
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
     private val temporalPartitionEncodingReadLeniency: Boolean = config.isTemporalPartitionEncodingReadLeniency()
-    private val splitAffinityProvider: SplitAffinityProvider = requireNonNull(splitAffinityProvider, "splitAffinityProvider is null")
+    private val splitAffinityProvider: SplitAffinityProvider = splitAffinityProvider
 
     override fun getSplits(
             transaction: ConnectorTransactionHandle?,
@@ -162,7 +161,7 @@ public class DucklakeSplitManager @Inject constructor(
                             tableHandle.tableId(), tableHandle.snapshotId()))
                 catalog.getInlinedDeletes(tableHandle.tableId(), tableHandle.snapshotId())
             else
-                java.util.Map.of()
+                emptyMap()
 
             // Group by dataFileId to merge multiple delete files per data file
             // (a data file can accumulate multiple delete files across snapshots)
@@ -506,7 +505,7 @@ public class DucklakeSplitManager @Inject constructor(
             val hint: Long = df.deleteFileFooterSize.orElse(0L)
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
         }
-        val deleteFilePaths: List<String> = java.util.List.copyOf(deleteFileFooterSizes.keys)
+        val deleteFilePaths: List<String> = deleteFileFooterSizes.keys.toList()
 
         val partitionValuesByColumnId: Map<Long, String> = buildIdentityPartitionValues(
                 primary.dataFileId,
@@ -518,7 +517,7 @@ public class DucklakeSplitManager @Inject constructor(
                 .orElse(mapOf())
 
         @Suppress("UNCHECKED_CAST")
-        val inlinedDeletedRowPositions: Set<Long> = inlinedDeletesByFileId.getOrDefault(primary.dataFileId, java.util.Set.of()) as Set<Long>
+        val inlinedDeletedRowPositions: Set<Long> = inlinedDeletesByFileId.getOrDefault(primary.dataFileId, emptySet<Long>()) as Set<Long>
 
         val affinityKey: Optional<String> = splitAffinityProvider.getKey(dataFilePath, 0L, primary.fileSizeBytes)
 

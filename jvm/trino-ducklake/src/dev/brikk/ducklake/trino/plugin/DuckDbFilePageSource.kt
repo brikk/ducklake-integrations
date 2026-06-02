@@ -59,9 +59,9 @@ public class DuckDbFilePageSource(
     private val executor: DucklakeDuckDbExecutor = executor
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
-            java.util.List.copyOf(columns),
+            columns.toList(),
             effectivePredicate,
-            java.util.List.copyOf(pushedExpressions),
+            pushedExpressions.toList(),
             duckDbTimeZone)
     private val converter: DucklakeArrowToPageConverter = DucklakeArrowToPageConverter(columnTypes)
     private val emptyProjection: Boolean = this.request.isEmptyProjection()

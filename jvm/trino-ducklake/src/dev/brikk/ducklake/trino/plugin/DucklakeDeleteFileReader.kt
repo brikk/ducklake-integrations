@@ -69,7 +69,6 @@ public object DucklakeDeleteFileReader {
      * is unordered and dedup'd (the read path tolerates duplicate aliasing — see
      * `TestDeleteRowFilterTransformOverlap`).
      */
-    @JvmStatic
     @Throws(IOException::class)
     public fun readPositions(
             fileSystem: TrinoFileSystem,

@@ -57,7 +57,6 @@ public object DucklakePartitionComputer {
     /**
      * Convenience overload for IDENTITY / temporal transforms (no arity needed).
      */
-    @JvmStatic
     public fun computePartitionValue(
             columnType: Type,
             block: Block,
@@ -67,7 +66,6 @@ public object DucklakePartitionComputer {
         return computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding)
     }
 
-    @JvmStatic
     public fun computePartitionValue(
             columnType: Type,
             block: Block,
@@ -223,7 +221,6 @@ public object DucklakePartitionComputer {
      * Caller should reject these at table-property validation time; this is a defensive
      * runtime guard.
      */
-    @JvmStatic
     public fun computeBucket(type: Type, block: Block, position: Int, arity: Int): Int {
         val hash = murmur3Hash(type, block, position)
         return (hash and Integer.MAX_VALUE) % arity

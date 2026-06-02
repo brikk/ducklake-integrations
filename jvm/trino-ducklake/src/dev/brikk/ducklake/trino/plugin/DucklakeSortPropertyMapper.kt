@@ -54,7 +54,6 @@ public class DucklakeSortPropertyMapper private constructor() {
          * keyed by lowercased column name. Used to
          * resolve simple column-reference expressions.
          */
-        @JvmStatic
         public fun toLocalProperties(
                 sortKeys: List<DucklakeSortKey>,
                 columnHandlesByLowercaseName: Map<String, out ColumnHandle>): List<LocalProperty<ColumnHandle>> {
@@ -85,7 +84,6 @@ public class DucklakeSortPropertyMapper private constructor() {
          * a simple identifier (optionally double-quoted, per DuckDB dialect), otherwise
          * `null`.
          */
-        @JvmStatic
         internal fun parseColumnReference(expression: String?): String? {
             if (expression == null) {
                 return null
@@ -142,7 +140,6 @@ public class DucklakeSortPropertyMapper private constructor() {
             return isIdentifierStart(c) || (c >= '0' && c <= '9')
         }
 
-        @JvmStatic
         internal fun toSortOrder(direction: DucklakeSortDirection, nullOrder: DucklakeNullOrder): SortOrder {
             return when (direction) {
                 DucklakeSortDirection.ASC -> when (nullOrder) {

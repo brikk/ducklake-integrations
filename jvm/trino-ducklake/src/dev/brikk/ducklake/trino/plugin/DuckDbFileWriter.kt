@@ -62,9 +62,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.util.HashMap
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -97,12 +95,12 @@ constructor(
         columns: List<DucklakeColumnHandle>,
         localTempDir: Path,
 ) : DucklakeFileWriter {
-    private val fileSystem: TrinoFileSystem = requireNonNull(fileSystem, "fileSystem is null")
-    private val remoteLocation: Location = requireNonNull(remoteLocation, "remoteLocation is null")
-    private val relativePath: String = requireNonNull(relativePath, "relativePath is null")
-    private val partitionValues: Map<Int, String?> = HashMap(requireNonNull(partitionValues, "partitionValues is null"))
-    private val partitionId: OptionalLong = requireNonNull(partitionId, "partitionId is null")
-    private val columns: List<DucklakeColumnHandle> = java.util.List.copyOf(requireNonNull(columns, "columns is null"))
+    private val fileSystem: TrinoFileSystem = fileSystem
+    private val remoteLocation: Location = remoteLocation
+    private val relativePath: String = relativePath
+    private val partitionValues: Map<Int, String?> = partitionValues.toMap()
+    private val partitionId: OptionalLong = partitionId
+    private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.stream().map(DucklakeColumnHandle::columnType).toList()
     private val localTempFile: Path
     private val connection: DuckDBConnection
@@ -116,24 +114,28 @@ constructor(
         Files.createDirectories(localTempDir)
         this.localTempFile = localTempDir.resolve("ducklake-write-" + java.util.UUID.randomUUID() + ".db")
 
+        var conn: DuckDBConnection? = null
+        var app: DuckDBAppender? = null
         try {
-            this.connection = DriverManager.getConnection("jdbc:duckdb:") as DuckDBConnection
-            connection.createStatement().use { stmt ->
+            conn = DriverManager.getConnection("jdbc:duckdb:") as DuckDBConnection
+            conn.createStatement().use { stmt ->
                 stmt.execute(format(
                         "ATTACH '%s' AS %s (READ_WRITE)",
                         localTempFile.toAbsolutePath().toString().replace("'", "''"),
                         ATTACHED_DB))
                 stmt.execute(buildCreateTableSql())
             }
-            this.appender = connection.createAppender(ATTACHED_DB, ATTACHED_SCHEMA, ATTACHED_TABLE)
+            app = conn.createAppender(ATTACHED_DB, ATTACHED_SCHEMA, ATTACHED_TABLE)
+            this.connection = conn
+            this.appender = app
         }
         catch (e: SQLException) {
-            try {
-                Files.deleteIfExists(localTempFile)
-            }
-            catch (ignored: IOException) {
-                // best-effort cleanup
-            }
+            // Close in reverse construction order; swallow secondary failures so the original
+            // SQLException surfaces. Without this, a failure after the connection opens would
+            // leak the native DuckDB connection.
+            try { app?.close() } catch (_: Exception) {}
+            try { conn?.close() } catch (_: Exception) {}
+            try { Files.deleteIfExists(localTempFile) } catch (_: IOException) {}
             throw IOException("Failed to initialize DuckDB writer for " + remoteLocation, e)
         }
     }
@@ -296,6 +298,9 @@ constructor(
             connection.close()
         }
         catch (e: SQLException) {
+            // appender or DETACH failure leaves the connection open — close it best-effort
+            // so we don't leak the native DuckDB handle before propagating the original error.
+            try { connection.close() } catch (_: Exception) {}
             cleanupLocalFile()
             throw IOException("Failed to finalize DuckDB file " + remoteLocation, e)
         }

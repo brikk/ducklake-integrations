@@ -29,7 +29,6 @@ import java.sql.SQLException
 import java.sql.Statement
 import java.util.HexFormat
 import java.util.Locale
-import java.util.Objects.requireNonNull
 
 /**
  * Out-of-process DuckDB executor reached via the Quack RPC protocol. The JDBC
@@ -59,11 +58,11 @@ internal class QuackDuckDbExecutor(
         tuning: DuckDbTuning,
         parityExtensionPath: String,
 ) : DucklakeDuckDbExecutor {
-    private val host: String = requireNonNull(host, "host is null")
+    private val host: String = host
     private val port: Int = port
-    private val token: String = requireNonNull(token, "token is null")
-    private val tuning: DuckDbTuning = requireNonNull(tuning, "tuning is null")
-    private val parityExtensionPath: String = requireNonNull(parityExtensionPath, "parityExtensionPath is null")
+    private val token: String = token
+    private val tuning: DuckDbTuning = tuning
+    private val parityExtensionPath: String = parityExtensionPath
 
     /**
      * Path is the SERVER-SIDE filesystem path inside the Quack DuckDB process,
@@ -359,13 +358,13 @@ internal class QuackDuckDbExecutor(
                                     + "Subsequent splits with the same zone proceed without an explicit "
                                     + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "
                                     + "See dev-docs/archive/REPORT-datetime-tz-handling.md.",
-                            z, firstLineOrFull(e.message!!))
+                            z, firstLineOrFull(e.message ?: "(no message)"))
                 }
             }
         }
 
         private fun firstLineOrFull(message: String): String {
-            return (message as java.lang.String).lines().findFirst().orElse(message)
+            return message.lineSequence().firstOrNull() ?: message
         }
 
         private fun closeQuietly(vararg resources: AutoCloseable?) {

@@ -53,7 +53,6 @@ public class DucklakeAddFilesTypeChecker private constructor() {
         /**
          * @throws DucklakeAddFilesException when source is not assignable to target.
          */
-        @JvmStatic
         fun checkCompatible(target: Type, source: Type, columnPath: String, fileName: String, tableName: String) {
             if (isCompatible(target, source)) {
                 return

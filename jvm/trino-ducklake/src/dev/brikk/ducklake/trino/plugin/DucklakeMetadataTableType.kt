@@ -23,10 +23,6 @@ enum class DucklakeMetadataTableType(private val suffix: String) {
     CURRENT_SNAPSHOT("current_snapshot"),
     SNAPSHOT_CHANGES("snapshot_changes");
 
-    init {
-        requireNonNull(suffix, "suffix is null")
-    }
-
     fun suffix(): String {
         return suffix
     }

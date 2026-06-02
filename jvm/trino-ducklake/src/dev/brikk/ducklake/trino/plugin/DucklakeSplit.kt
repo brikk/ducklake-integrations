@@ -22,7 +22,6 @@ import io.airlift.slice.SizeOf.instanceSize
 import io.airlift.slice.SizeOf.sizeOf
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.predicate.TupleDomain
-import java.util.Objects.requireNonNull
 import java.util.Optional
 
 /**
@@ -85,18 +84,6 @@ public data class DucklakeSplit @JsonCreator constructor(
         @param:JsonProperty("affinityKey") val affinityKey: Optional<String>)
         : ConnectorSplit
 {
-    init {
-        requireNonNull(dataFilePath, "dataFilePath is null")
-        requireNonNull(deleteFilePaths, "deleteFilePaths is null")
-        requireNonNull(fileFormat, "fileFormat is null")
-        requireNonNull(fileStatisticsDomain, "fileStatisticsDomain is null")
-        requireNonNull(deleteFileFooterSizes, "deleteFileFooterSizes is null")
-        requireNonNull(partitionValuesByColumnId, "partitionValuesByColumnId is null")
-        requireNonNull(fieldIdToParquetSourceName, "fieldIdToParquetSourceName is null")
-        requireNonNull(inlinedDeletedRowPositions, "inlinedDeletedRowPositions is null")
-        requireNonNull(affinityKey, "affinityKey is null")
-    }
-
     // Convenience constructor without footer-size hints / partition values — used by
     // tests that don't exercise those paths. Production code in DucklakeSplitManager
     // always uses the canonical constructor.
@@ -108,7 +95,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             fileSizeBytes: Long,
             fileFormat: String,
             fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>)
-            : this(dataFilePath, java.util.List.copyOf(deleteFilePaths), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, java.util.Map.of<String, Long>(), java.util.Map.of<Long, String>(), java.util.Map.of<Long, String>(), java.util.Set.of<Long>(), Optional.empty())
+            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, emptyMap(), emptyMap(), emptyMap(), emptySet(), Optional.empty())
 
     // Eight-arg legacy constructor (no partition values) — kept for existing call sites
     // that don't carry partition-value data yet.
@@ -122,7 +109,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>,
             footerSize: Long,
             deleteFileFooterSizes: Map<String, Long>)
-            : this(dataFilePath, java.util.List.copyOf(deleteFilePaths), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, java.util.Map.copyOf(deleteFileFooterSizes), java.util.Map.of<Long, String>(), java.util.Map.of<Long, String>(), java.util.Set.of<Long>(), Optional.empty())
+            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), emptyMap(), emptyMap(), emptySet(), Optional.empty())
 
     // Ten-arg constructor used during the partition-value-projection introduction —
     // kept for callers that don't yet supply per-file source-name overrides.
@@ -137,7 +124,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             footerSize: Long,
             deleteFileFooterSizes: Map<String, Long>,
             partitionValuesByColumnId: Map<Long, String>)
-            : this(dataFilePath, java.util.List.copyOf(deleteFilePaths), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, java.util.Map.copyOf(deleteFileFooterSizes), java.util.Map.copyOf(partitionValuesByColumnId), java.util.Map.of<Long, String>(), java.util.Set.of<Long>(), Optional.empty())
+            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), emptyMap(), emptySet(), Optional.empty())
 
     // Eleven-arg constructor — kept for callers that don't carry inlined-delete row positions.
     public constructor(
@@ -152,7 +139,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             deleteFileFooterSizes: Map<String, Long>,
             partitionValuesByColumnId: Map<Long, String>,
             fieldIdToParquetSourceName: Map<Long, String>)
-            : this(dataFilePath, java.util.List.copyOf(deleteFilePaths), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, java.util.Map.copyOf(deleteFileFooterSizes), java.util.Map.copyOf(partitionValuesByColumnId), java.util.Map.copyOf(fieldIdToParquetSourceName), java.util.Set.of<Long>(), Optional.empty())
+            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), fieldIdToParquetSourceName.toMap(), emptySet(), Optional.empty())
 
     // Twelve-arg constructor — kept for callers that don't yet supply an affinity key.
     public constructor(
@@ -168,7 +155,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             partitionValuesByColumnId: Map<Long, String>,
             fieldIdToParquetSourceName: Map<Long, String>,
             inlinedDeletedRowPositions: Set<Long>)
-            : this(dataFilePath, java.util.List.copyOf(deleteFilePaths), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, java.util.Map.copyOf(deleteFileFooterSizes), java.util.Map.copyOf(partitionValuesByColumnId), java.util.Map.copyOf(fieldIdToParquetSourceName), java.util.Set.copyOf(inlinedDeletedRowPositions), Optional.empty())
+            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), fieldIdToParquetSourceName.toMap(), inlinedDeletedRowPositions.toSet(), Optional.empty())
 
     /**
      * Backward-compatible accessor for the single delete file path.
@@ -188,9 +175,10 @@ public data class DucklakeSplit @JsonCreator constructor(
     }
 
     override fun getRetainedSizeInBytes(): Long {
-        val deleteFooterSizesRetained: Long = deleteFileFooterSizes.entries.stream()
-                .mapToLong { entry -> estimatedSizeOf(entry.key) + SIZE_OF_LONG }
-                .sum()
+        // deleteFileFooterSizes is keyed by the same strings already held in deleteFilePaths
+        // (the map is a sparse hint table over the list). Count the strings once via the list
+        // and only the value-slots here so they aren't double-counted.
+        val deleteFooterSizesRetained: Long = deleteFileFooterSizes.size.toLong() * SIZE_OF_LONG
         val partitionValuesRetained: Long = partitionValuesByColumnId.entries.stream()
                 .mapToLong { entry -> SIZE_OF_LONG + estimatedSizeOf(entry.value) }
                 .sum()
@@ -198,10 +186,11 @@ public data class DucklakeSplit @JsonCreator constructor(
                 .mapToLong { entry -> SIZE_OF_LONG + estimatedSizeOf(entry.value) }
                 .sum()
         val inlinedDeletesRetained: Long = inlinedDeletedRowPositions.size.toLong() * SIZE_OF_LONG
+        // INSTANCE_SIZE accounts for the primitive long fields (rowIdStart, recordCount,
+        // fileSizeBytes, footerSize), so no extra SIZE_OF_LONG additions are needed for them.
         return (INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong { s -> SizeOf.estimatedSizeOf(s) }.sum()
-                + (SIZE_OF_LONG * 4) // rowIdStart, recordCount, fileSizeBytes, footerSize
                 + estimatedSizeOf(fileFormat)
                 + fileStatisticsDomain.getRetainedSizeInBytes { handle: DucklakeColumnHandle -> handle.getRetainedSizeInBytes() }
                 + deleteFooterSizesRetained

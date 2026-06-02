@@ -54,7 +54,6 @@ import java.lang.invoke.MethodType
 import java.util.HashSet
 import java.util.LinkedHashMap
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -81,12 +80,12 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         fileFormatDataSourceStats: FileFormatDataSourceStats,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")
-    private val fileSystemFactory: DucklakeFileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null")
-    private val typeConverter: DucklakeTypeConverter = requireNonNull(typeConverter, "typeConverter is null")
-    private val pathResolver: DucklakePathResolver = requireNonNull(pathResolver, "pathResolver is null")
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = requireNonNull(fileFormatDataSourceStats, "fileFormatDataSourceStats is null")
-    private val parquetReaderOptions: ParquetReaderOptions = requireNonNull(parquetReaderConfig, "parquetReaderConfig is null").toParquetReaderOptions()
+    private val catalog: DucklakeCatalog = catalog
+    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
+    private val typeConverter: DucklakeTypeConverter = typeConverter
+    private val pathResolver: DucklakePathResolver = pathResolver
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
+    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun get(): Procedure {
         return Procedure(

@@ -42,7 +42,6 @@ import io.trino.spi.type.VarcharType.VARCHAR
  */
 object DucklakePartitionValueParser
 {
-    @JvmStatic
     fun parseIdentity(type: Type, value: String): Any
     {
         if (type.equals(VARCHAR) || type is VarcharType) {

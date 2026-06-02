@@ -17,20 +17,17 @@ import com.google.inject.Inject
 
 import java.util.concurrent.ConcurrentHashMap
 
-import java.util.Objects.requireNonNull
-
 /**
  * Manages transactions for the Ducklake connector.
  * Each transaction maintains its own metadata instance.
  */
 open class DucklakeTransactionManager @Inject constructor(metadataFactory: DucklakeMetadataFactory)
 {
-    private val metadataFactory: DucklakeMetadataFactory = requireNonNull(metadataFactory, "metadataFactory is null")
+    private val metadataFactory: DucklakeMetadataFactory = metadataFactory
     private val transactions: MutableMap<DucklakeTransactionHandle, DucklakeMetadata> = ConcurrentHashMap()
 
     open fun begin(transaction: DucklakeTransactionHandle)
     {
-        requireNonNull(transaction, "transaction is null")
         val metadata = metadataFactory.create()
         transactions.put(transaction, metadata)
     }
@@ -47,7 +44,6 @@ open class DucklakeTransactionManager @Inject constructor(metadataFactory: Duckl
 
     open fun commit(transaction: DucklakeTransactionHandle)
     {
-        requireNonNull(transaction, "transaction is null")
         val metadata = transactions.remove(transaction)
         if (metadata == null) {
             throw IllegalArgumentException("Unknown transaction: " + transaction)
@@ -58,7 +54,6 @@ open class DucklakeTransactionManager @Inject constructor(metadataFactory: Duckl
 
     open fun rollback(transaction: DucklakeTransactionHandle)
     {
-        requireNonNull(transaction, "transaction is null")
         val metadata = transactions.remove(transaction)
         if (metadata == null) {
             throw IllegalArgumentException("Unknown transaction: " + transaction)

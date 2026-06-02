@@ -17,10 +17,9 @@ import com.google.inject.Inject
 import io.trino.filesystem.TrinoFileSystem
 import io.trino.filesystem.TrinoFileSystemFactory
 import io.trino.spi.security.ConnectorIdentity
-import java.util.Objects.requireNonNull
 
 class DefaultDucklakeFileSystemFactory @Inject constructor(fileSystemFactory: TrinoFileSystemFactory) : DucklakeFileSystemFactory {
-    private val fileSystemFactory: TrinoFileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null")
+    private val fileSystemFactory: TrinoFileSystemFactory = fileSystemFactory
 
     override fun create(identity: ConnectorIdentity): TrinoFileSystem {
         return fileSystemFactory.create(identity)

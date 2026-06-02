@@ -52,10 +52,6 @@ open class DucklakeSnapshotResolver(
     }
 
     fun resolveSnapshotId(session: ConnectorSession, querySnapshotId: OptionalLong, querySnapshotTimestamp: Optional<Instant>): Long {
-        requireNonNull(session, "session is null")
-        requireNonNull(querySnapshotId, "querySnapshotId is null")
-        requireNonNull(querySnapshotTimestamp, "querySnapshotTimestamp is null")
-
         if (querySnapshotId.isPresent && querySnapshotTimestamp.isPresent) {
             throw TrinoException(INVALID_ARGUMENTS, "Query snapshot reference cannot set both snapshot ID and snapshot timestamp")
         }
@@ -98,7 +94,6 @@ open class DucklakeSnapshotResolver(
     }
 
     fun resolveSnapshotIdAtOrBefore(timestamp: Instant): Long {
-        requireNonNull(timestamp, "timestamp is null")
         val snapshot: DucklakeSnapshot = catalog.getSnapshotAtOrBefore(timestamp)
                 .orElseThrow { TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: " + timestamp) }
         return snapshot.snapshotId

@@ -20,10 +20,8 @@ import io.trino.spi.type.Type
 
 import io.airlift.slice.SizeOf.estimatedSizeOf
 import io.airlift.slice.SizeOf.instanceSize
-import io.airlift.slice.SizeOf.sizeOf
 import io.trino.spi.type.BigintType.BIGINT
 import java.util.Objects
-import java.util.Objects.requireNonNull
 
 /**
  * Handle for a Ducklake column.
@@ -44,8 +42,8 @@ class DucklakeColumnHandle
             @JsonProperty("nullable") nullable: Boolean)
     {
         this.columnId = columnId
-        this.columnName = requireNonNull(columnName, "columnName is null")
-        this.columnType = requireNonNull(columnType, "columnType is null")
+        this.columnName = columnName
+        this.columnType = columnType
         this.nullable = nullable
     }
 
@@ -73,11 +71,9 @@ class DucklakeColumnHandle
 
     fun getRetainedSizeInBytes(): Long
     {
-        // columnType is omitted as Type instances are shared by Trino type registry
-        return (INSTANCE_SIZE.toLong()
-                + sizeOf(columnId)
-                + estimatedSizeOf(columnName)
-                + sizeOf(nullable))
+        // INSTANCE_SIZE already accounts for primitive fields (columnId, nullable).
+        // columnType is omitted as Type instances are shared by Trino type registry.
+        return INSTANCE_SIZE.toLong() + estimatedSizeOf(columnName)
     }
 
     override fun equals(other: Any?): Boolean

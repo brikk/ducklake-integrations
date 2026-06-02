@@ -22,7 +22,6 @@ import io.trino.spi.connector.ConnectorOutputTableHandle
 
 import java.util.Objects
 import java.util.Optional
-import java.util.Objects.requireNonNull
 
 class DucklakeWritableTableHandle
         : ConnectorInsertTableHandle, ConnectorOutputTableHandle
@@ -51,15 +50,15 @@ class DucklakeWritableTableHandle
             @JsonProperty("fileFormat") fileFormat: String,
             @JsonProperty("duckDbWriterMode") duckDbWriterMode: String?)
     {
-        this.schemaName = requireNonNull(schemaName, "schemaName is null")
-        this.tableName = requireNonNull(tableName, "tableName is null")
+        this.schemaName = schemaName
+        this.tableName = tableName
         this.tableId = tableId
-        this.columns = java.util.List.copyOf(requireNonNull(columns, "columns is null"))
-        this.allCatalogColumns = java.util.List.copyOf(requireNonNull(allCatalogColumns, "allCatalogColumns is null"))
-        this.tableDataPath = requireNonNull(tableDataPath, "tableDataPath is null")
-        this.partitionSpec = requireNonNull(partitionSpec, "partitionSpec is null")
-        this.temporalPartitionEncoding = requireNonNull(temporalPartitionEncoding, "temporalPartitionEncoding is null")
-        this.fileFormat = requireNonNull(fileFormat, "fileFormat is null")
+        this.columns = columns.toList()
+        this.allCatalogColumns = allCatalogColumns.toList()
+        this.tableDataPath = tableDataPath
+        this.partitionSpec = partitionSpec
+        this.temporalPartitionEncoding = temporalPartitionEncoding
+        this.fileFormat = fileFormat
         this.duckDbWriterMode = duckDbWriterMode ?: DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM
     }
 

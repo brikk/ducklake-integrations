@@ -30,7 +30,6 @@ package dev.brikk.ducklake.trino.plugin
  * </ul>
  */
 object DuckDbSelectSqlBuilder {
-    @JvmStatic
     fun buildSelectSql(
             fullyQualifiedTable: String,
             request: DucklakeDuckDbExecutor.ExecutionRequest): String {

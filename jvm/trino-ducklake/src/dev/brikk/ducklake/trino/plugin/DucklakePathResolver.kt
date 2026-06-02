@@ -20,16 +20,14 @@ import dev.brikk.ducklake.catalog.DucklakeTable
 
 import java.util.Optional
 
-import java.util.Objects.requireNonNull
-
 open class DucklakePathResolver(catalog: DucklakeCatalog, configuredDataPath: String?)
 {
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")
+    private val catalog: DucklakeCatalog = catalog
     private val configuredDataPath: String? = configuredDataPath
 
     @Inject
     constructor(catalog: DucklakeCatalog, config: DucklakeConfig)
-            : this(catalog, requireNonNull(config, "config is null").getDataPath())
+            : this(catalog, config.getDataPath())
 
     open fun resolveTableDataPath(schema: DucklakeSchema, table: DucklakeTable): String
     {

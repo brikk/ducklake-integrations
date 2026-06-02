@@ -27,7 +27,6 @@ import org.apache.parquet.io.ColumnIO
 import org.apache.parquet.io.GroupColumnIO
 import org.apache.parquet.io.PrimitiveColumnIO
 import org.apache.parquet.schema.Type.Repetition.OPTIONAL
-import java.util.Objects.requireNonNull
 import java.util.Optional
 
 /**
@@ -40,9 +39,7 @@ object DucklakeParquetTypeUtils {
      * Recursively handles all nested types (ROW, MAP, ARRAY).
      * Returns Optional.empty() if the columnIO is null (e.g., a struct field missing from an older Parquet file).
      */
-    @JvmStatic
     fun constructField(trinoType: Type, columnIO: ColumnIO?): Optional<Field> {
-        requireNonNull(trinoType, "trinoType is null")
         if (columnIO == null) {
             return Optional.empty()
         }

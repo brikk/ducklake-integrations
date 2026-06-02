@@ -64,7 +64,6 @@ public object DuckDbWhereClauseTranslator {
      * [Optional.empty] when the domain is "all" (no predicate to push) or when
      * nothing is translatable.
      */
-    @JvmStatic
     public fun toWhereClause(predicate: TupleDomain<DucklakeColumnHandle>): Optional<String> {
         if (predicate.isAll()) {
             return Optional.empty()
@@ -251,7 +250,6 @@ public object DuckDbWhereClauseTranslator {
         return '"' + name.replace("\"", "\"\"") + '"'
     }
 
-    @JvmStatic
     public fun formatLiteralOrThrow(type: Type, value: Any?): String {
         return formatLiteral(type, value)
                 .orElseThrow { IllegalArgumentException(format("Cannot format %s value as DuckDB literal", type)) }

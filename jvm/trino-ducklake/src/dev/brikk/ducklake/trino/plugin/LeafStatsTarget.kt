@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.spi.type.Type
-import java.util.Objects.requireNonNull
 
 /**
  * One parquet leaf column chunk, paired with the DuckLake catalog field_id
@@ -33,8 +32,4 @@ import java.util.Objects.requireNonNull
 data class LeafStatsTarget(
         @get:JvmName("fieldId") val fieldId: Long,
         @get:JvmName("leafType") val leafType: Type,
-        @get:JvmName("parquetColumnIndex") val parquetColumnIndex: Int) {
-    init {
-        requireNonNull(leafType, "leafType is null")
-    }
-}
+        @get:JvmName("parquetColumnIndex") val parquetColumnIndex: Int)

@@ -38,7 +38,7 @@ import io.trino.spi.procedure.Procedure
 import org.weakref.jmx.guice.ExportBinder.newExporter
 
 class DucklakeModule(catalogConfig: Map<String, String>) : Module {
-    private val catalogConfig: Map<String, String> = java.util.Map.copyOf(catalogConfig)
+    private val catalogConfig: Map<String, String> = catalogConfig.toMap()
 
     override fun configure(binder: Binder) {
         // Configuration

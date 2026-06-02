@@ -75,7 +75,7 @@ import java.lang.String.format
  * {@link io.trino.spi.StandardErrorCode#NOT_SUPPORTED}.
  */
 internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
-    private val columnTypes: List<Type> = java.util.List.copyOf(columnTypes)
+    private val columnTypes: List<Type> = columnTypes.toList()
 
     fun convert(root: VectorSchemaRoot): Page {
         val rowCount = root.getRowCount()

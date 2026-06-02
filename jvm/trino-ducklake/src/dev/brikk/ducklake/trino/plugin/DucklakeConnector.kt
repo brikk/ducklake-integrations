@@ -29,7 +29,6 @@ import io.trino.spi.session.PropertyMetadata
 import io.trino.spi.transaction.IsolationLevel
 import io.trino.spi.transaction.IsolationLevel.SERIALIZABLE
 import io.trino.spi.transaction.IsolationLevel.checkConnectorSupports
-import java.util.Objects.requireNonNull
 
 /**
  * Main connector implementation for Ducklake.
@@ -44,14 +43,14 @@ public class DucklakeConnector @Inject constructor(
         ducklakeSessionProperties: DucklakeSessionProperties,
         ducklakeTableProperties: DucklakeTableProperties,
         procedures: Set<Procedure>) : Connector {
-    private val lifeCycleManager: LifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null")
-    private val transactionManager: DucklakeTransactionManager = requireNonNull(transactionManager, "transactionManager is null")
-    private val splitManager: ConnectorSplitManager = requireNonNull(splitManager, "splitManager is null")
-    private val pageSourceProviderFactory: ConnectorPageSourceProviderFactory = requireNonNull(pageSourceProviderFactory, "pageSourceProviderFactory is null")
-    private val pageSinkProvider: ConnectorPageSinkProvider = requireNonNull(pageSinkProvider, "pageSinkProvider is null")
-    private val sessionProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(requireNonNull(ducklakeSessionProperties, "ducklakeSessionProperties is null").getSessionProperties())
-    private val tableProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(requireNonNull(ducklakeTableProperties, "ducklakeTableProperties is null").tableProperties)
-    private val procedures: Set<Procedure> = java.util.Set.copyOf(requireNonNull(procedures, "procedures is null"))
+    private val lifeCycleManager: LifeCycleManager = lifeCycleManager
+    private val transactionManager: DucklakeTransactionManager = transactionManager
+    private val splitManager: ConnectorSplitManager = splitManager
+    private val pageSourceProviderFactory: ConnectorPageSourceProviderFactory = pageSourceProviderFactory
+    private val pageSinkProvider: ConnectorPageSinkProvider = pageSinkProvider
+    private val sessionProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeSessionProperties.getSessionProperties())
+    private val tableProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeTableProperties.tableProperties)
+    private val procedures: Set<Procedure> = procedures.toSet()
 
     override fun getProcedures(): Set<Procedure> {
         return procedures

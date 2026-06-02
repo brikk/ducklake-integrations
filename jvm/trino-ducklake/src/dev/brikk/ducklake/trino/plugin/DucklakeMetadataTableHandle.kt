@@ -17,7 +17,6 @@ import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
 import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.connector.SchemaTableName
-import java.util.Objects.requireNonNull
 
 @JvmRecord
 data class DucklakeMetadataTableHandle @JsonCreator constructor(
@@ -33,13 +32,6 @@ data class DucklakeMetadataTableHandle @JsonCreator constructor(
         @param:JsonProperty("snapshotId") val snapshotId: Long,
         @get:JvmName("metadataTableType")
         @param:JsonProperty("metadataTableType") val metadataTableType: DucklakeMetadataTableType) : ConnectorTableHandle {
-    init {
-        requireNonNull(schemaName, "schemaName is null")
-        requireNonNull(tableName, "tableName is null")
-        requireNonNull(baseTableName, "baseTableName is null")
-        requireNonNull(metadataTableType, "metadataTableType is null")
-    }
-
     fun getSchemaTableName(): SchemaTableName {
         return SchemaTableName(schemaName, tableName)
     }

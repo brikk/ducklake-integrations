@@ -61,7 +61,6 @@ data class DuckDbS3Config(
     }
 
     companion object {
-        @JvmStatic
         fun fromCatalogConfig(config: Map<String, String>): DuckDbS3Config {
             val endpoint = trimmed(config["s3.endpoint"])
             val useSsl = endpoint.map { e -> !e.lowercase(java.util.Locale.ROOT).startsWith("http://") }
@@ -75,7 +74,6 @@ data class DuckDbS3Config(
                     useSsl)
         }
 
-        @JvmStatic
         private fun trimmed(value: String?): Optional<String> {
             if (value == null) {
                 return Optional.empty()
@@ -84,7 +82,6 @@ data class DuckDbS3Config(
             return if (t.isEmpty()) Optional.empty() else Optional.of(t)
         }
 
-        @JvmStatic
         private fun stripScheme(url: String): String {
             // DuckDB's S3 ENDPOINT field expects host:port, not a full URL. Strip http(s)://
             // if present so the user can paste the same value Trino's FileSystemModule accepts.

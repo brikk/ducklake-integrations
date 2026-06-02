@@ -34,7 +34,7 @@ public open class DucklakePagePartitioner(
         allColumns: List<DucklakeColumnHandle>,
         encoding: DucklakeTemporalPartitionEncoding) {
     private val partitionSpec: DucklakePartitionSpec = partitionSpec
-    private val allColumns: List<DucklakeColumnHandle> = java.util.List.copyOf(allColumns)
+    private val allColumns: List<DucklakeColumnHandle> = allColumns.toList()
     private val encoding: DucklakeTemporalPartitionEncoding = encoding
     private val pageIndexer: PageIndexer
     private val partitionColumnMappings: List<PartitionColumnMapping>

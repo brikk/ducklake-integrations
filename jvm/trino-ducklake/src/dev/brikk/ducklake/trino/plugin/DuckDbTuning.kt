@@ -31,7 +31,6 @@ data class DuckDbTuning(
         @get:JvmName("tempDirectoryMaxSize") val tempDirectoryMaxSize: Optional<DataSize>,
         @get:JvmName("enableObjectCache") val enableObjectCache: Boolean) {
     companion object {
-        @JvmStatic
         fun defaults(): DuckDbTuning {
             return DuckDbTuning(Optional.empty(), OptionalInt.empty(), Optional.empty(), Optional.empty(), true)
         }
