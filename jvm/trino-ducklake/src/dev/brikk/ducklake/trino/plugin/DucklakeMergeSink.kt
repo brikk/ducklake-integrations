@@ -15,7 +15,6 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
-import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeMergeTableHandle.DataFileRange
 import io.airlift.json.JsonCodec
 import io.airlift.log.Logger
@@ -42,6 +41,8 @@ import java.io.UncheckedIOException
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.LinkedHashSet
+import java.util.NavigableMap
+import java.util.TreeMap
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
@@ -55,7 +56,6 @@ public open class DucklakeMergeSink(
         mergeHandle: DucklakeMergeTableHandle,
         fileSystem: TrinoFileSystem,
         deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
-        writeFragmentCodec: JsonCodec<DucklakeWriteFragment>,
         writerOptions: ParquetWriterOptions,
         parquetReaderOptions: ParquetReaderOptions,
         fileFormatDataSourceStats: FileFormatDataSourceStats,
@@ -66,7 +66,6 @@ public open class DucklakeMergeSink(
     private val mergeHandle: DucklakeMergeTableHandle = mergeHandle
     private val fileSystem: TrinoFileSystem = fileSystem
     private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
-    private val writeFragmentCodec: JsonCodec<DucklakeWriteFragment> = writeFragmentCodec
     private val writerOptions: ParquetWriterOptions = writerOptions
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderOptions
     private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
@@ -79,8 +78,16 @@ public open class DucklakeMergeSink(
     // Accumulated delete row IDs grouped by data file ID
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = HashMap()
 
+    // Data-file ranges keyed by their (unique, non-overlapping) rowIdStart so resolveDataFileId
+    // can resolve a global rowId in O(log F) via floorEntry instead of an O(F) linear scan per
+    // deleted row. Built once here; ranges never change for the life of the sink.
+    private val rangeByRowIdStart: NavigableMap<Long, DataFileRange> = TreeMap()
+
     init {
         this.dataColumnCount = this.mergeHandle.insertHandle.columns.size
+        for (range in mergeHandle.dataFileRanges) {
+            rangeByRowIdStart.put(range.rowIdStart, range)
+        }
     }
 
     override fun storeMergedRows(page: Page) {
@@ -104,13 +111,14 @@ public open class DucklakeMergeSink(
         }
     }
 
-    // TODO(review:after id=eff-resolvedatafileid-linear-scan): O(rows x files) linear scan over data file ranges per deleted row
-    // TODO(review:after id=eff-resolvedatafileid-treemap-floor): same scan-per-row; replace with NavigableMap floorEntry for O(log F)
     private fun resolveDataFileId(rowId: Long): Long {
-        for (range in mergeHandle.dataFileRanges) {
-            if (range.containsRowId(rowId)) {
-                return range.dataFileId
-            }
+        // Ranges are contiguous [rowIdStart, rowIdStart + recordCount) and non-overlapping, so
+        // the range owning rowId is the one with the greatest rowIdStart <= rowId — a single
+        // floorEntry lookup, then a containment guard for the case rowId falls past the end of
+        // that range (no file covers it).
+        val entry = rangeByRowIdStart.floorEntry(rowId)
+        if (entry != null && entry.value.containsRowId(rowId)) {
+            return entry.value.dataFileId
         }
         throw IllegalStateException("No data file found for row ID: " + rowId)
     }
@@ -136,17 +144,14 @@ public open class DucklakeMergeSink(
             }
         }
 
-        // Collect insert fragments
+        // Collect insert fragments. They are already DucklakeWriteFragment JSON — the insert
+        // DucklakePageSink serialized them with that codec — and finishMerge distinguishes
+        // delete from insert fragments structurally (delete-fragment trial-parse plus a
+        // "ducklake-delete-" path-prefix check), not by any tag. So they pass through
+        // unchanged; the prior deserialize-then-reserialize was a byte-for-byte no-op.
         try {
             val insertFragments: Collection<Slice> = insertSink.finish().get()
-            // Prefix insert fragments with a type marker so finishMerge can distinguish them
-            // TODO(review:after id=eff-insert-fragment-roundtrip): insert fragments deserialized then re-serialized to identical bytes
-            // TODO(review:after id=eff-insert-fragment-roundtrip-finish): same round-trip inside finish() — comment claims tag/wrap that doesn't happen
-            for (insertFragment in insertFragments) {
-                // Insert fragments use the DucklakeWriteFragment codec — we wrap them with a type tag
-                fragments.add(Slices.wrappedBuffer(*writeFragmentCodec.toJsonBytes(
-                        writeFragmentCodec.fromJson(insertFragment.getBytes()))))
-            }
+            fragments.addAll(insertFragments)
         }
         catch (e: Exception) {
             throw RuntimeException("Failed to finish insert sink", e)

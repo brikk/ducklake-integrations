@@ -115,33 +115,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeConfig.kt:250"
     },
     {
-      "id": "correctness-rollover-empty-writer",
-      "finding_index": 36,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Rollover eagerly opens a successor writer that may stay empty, producing a zero-row data file",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:194-197",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:170"
-    },
-    {
-      "id": "eff-rollover-partition-recompute",
-      "finding_index": 38,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "Partition values recomputed twice on rollover",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:237-240",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:184"
-    },
-    {
-      "id": "eff-appendpartitioned-boxing",
-      "finding_index": 39,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "Per-page boxing into HashMap<Integer,List<Integer>> then re-unboxing to int[]",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:212-221",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:184"
-    },
-    {
       "id": "eff-inprocess-detach-overhead",
       "finding_index": 41,
       "category": "efficiency",
@@ -158,24 +131,6 @@
       "title": "DATE/TIMESTAMP literals mis-render for years <1000, BC, or >9999",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.java:241-251",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.kt:230"
-    },
-    {
-      "id": "eff-insert-fragment-roundtrip",
-      "finding_index": 46,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "Insert fragments are deserialized then re-serialized to identical bytes for no effect",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:152-164",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:140"
-    },
-    {
-      "id": "eff-resolvedatafileid-linear-scan",
-      "finding_index": 47,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "resolveDataFileId does an O(rows x files) linear scan over data-file ranges per deleted row",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:112-127",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:107"
     },
     {
       "id": "eff-snapshot-timestamp-double-parse",
@@ -311,24 +266,6 @@
       "title": "Boolean.parseBoolean silently returns false for '1' and '0', causing wrong partition pruning and wrong projected constants for externally-written catalogs",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.java:74",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.kt:71"
-    },
-    {
-      "id": "eff-resolvedatafileid-treemap-floor",
-      "finding_index": 68,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "resolveDataFileId does a linear scan per deleted row over all data file ranges",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:119-127",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:107"
-    },
-    {
-      "id": "eff-insert-fragment-roundtrip-finish",
-      "finding_index": 69,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "Insert fragments are needlessly deserialized and reserialized inside finish()",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:156-160",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:140"
     },
     {
       "id": "eff-fallback-recordcount-materialize",
@@ -480,5 +417,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 13
+  "resolved": 20
 }

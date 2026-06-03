@@ -39,7 +39,6 @@ import java.io.IOException
 import java.io.UncheckedIOException
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.HashMap
 import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
@@ -187,46 +186,64 @@ public class DucklakePageSink(
         return ConnectorPageSink.NOT_BLOCKED
     }
 
-    // TODO(review:after id=correctness-rollover-empty-writer): rollover eagerly opens a successor writer that may stay empty
     @Throws(IOException::class)
     private fun appendUnpartitioned(page: Page) {
-        if (writers.isEmpty()) {
-            writers.add(openNewWriter(mapOf()))
+        // Open the writer lazily — including the successor after a rollover, which leaves slot 0
+        // null rather than eagerly opening a fresh writer. Eager re-open would emit a zero-row
+        // data file (header+footer object + a recordCount=0 catalog row) whenever a rollover
+        // lands on the final page and no further write arrives.
+        var writer = if (writers.isEmpty()) null else writers.first()
+        if (writer == null) {
+            writer = openNewWriter(mapOf())
+            if (writers.isEmpty()) {
+                writers.add(writer)
+            }
+            else {
+                writers.set(0, writer)
+            }
         }
-
-        val writer = writers.first()!!
         writer.write(page)
 
         if (writer.getApproximateWrittenBytes() >= targetMaxFileSize) {
             closeWriter(0)
-            writers.set(0, openNewWriter(mapOf()))
         }
     }
 
-    // TODO(review:after id=eff-appendpartitioned-boxing): per-page boxing into HashMap<Integer,List<Integer>> then unboxing to int[]
-    // TODO(review:after id=eff-rollover-partition-recompute): partition values recomputed twice on rollover in appendPartitioned
     @Throws(IOException::class)
     private fun appendPartitioned(page: Page) {
         val partitioner = this.partitioner!!
         val writerIndexes = partitioner.partitionPage(page)
         val maxIndex = partitioner.getMaxIndex()
+        val positionCount = page.getPositionCount()
 
         // Ensure writers list is big enough
         while (writers.size <= maxIndex) {
             writers.add(null)
         }
 
-        // Group positions by writer index
-        val positionsByWriter: MutableMap<Int, MutableList<Int>> = HashMap()
-        for (position in 0 until page.getPositionCount()) {
-            positionsByWriter.computeIfAbsent(writerIndexes[position]) { _ -> ArrayList() }.add(position)
+        // Group positions by writer index directly into int[] buckets — one counting pass to
+        // size each bucket, one fill pass — avoiding the per-row Integer autoboxing and the
+        // per-entry stream re-materialization of a Map<Integer, List<Integer>> on the hot
+        // append path. Filling in position order keeps each bucket ascending, as before.
+        val counts = IntArray(maxIndex + 1)
+        for (position in 0 until positionCount) {
+            counts[writerIndexes[position]]++
+        }
+        val positionsByWriter = arrayOfNulls<IntArray>(maxIndex + 1)
+        for (writerIndex in 0..maxIndex) {
+            if (counts[writerIndex] > 0) {
+                positionsByWriter[writerIndex] = IntArray(counts[writerIndex])
+            }
+        }
+        val fillOffsets = IntArray(maxIndex + 1)
+        for (position in 0 until positionCount) {
+            val writerIndex = writerIndexes[position]
+            positionsByWriter[writerIndex]!![fillOffsets[writerIndex]++] = position
         }
 
         // Write to each partition's writer
-        for (entry in positionsByWriter.entries) {
-            val writerIndex = entry.key
-            val positions = entry.value
-            val posArray = positions.stream().mapToInt { it }.toArray()
+        for (writerIndex in 0..maxIndex) {
+            val posArray = positionsByWriter[writerIndex] ?: continue
 
             // Get or create writer for this partition
             var writer = writers.get(writerIndex)
@@ -241,11 +258,12 @@ public class DucklakePageSink(
             val partitionPage = page.getPositions(posArray, 0, posArray.size)
             writer.write(partitionPage)
 
-            // Rotate if over target size
+            // Rotate if over target size. Leave the slot null and re-open lazily on the next
+            // page that routes to this partition — opening the successor eagerly here would
+            // emit a zero-row data file if no further page lands on this writer, and would
+            // recompute this partition's (page-invariant) values a second time.
             if (writer.getApproximateWrittenBytes() >= targetMaxFileSize) {
                 closeWriter(writerIndex)
-                val partitionValues = partitioner.getPartitionValues(page, posArray[0])
-                writers.set(writerIndex, openNewWriter(partitionValues))
             }
         }
     }

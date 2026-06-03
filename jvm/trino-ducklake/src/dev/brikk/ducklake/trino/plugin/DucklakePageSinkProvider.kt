@@ -97,7 +97,6 @@ class DucklakePageSinkProvider @Inject constructor(
                 ducklakeMergeHandle,
                 fileSystemFactory.create(session),
                 deleteFragmentCodec,
-                fragmentCodec,
                 writerOptions,
                 parquetReaderOptions,
                 fileFormatDataSourceStats,
