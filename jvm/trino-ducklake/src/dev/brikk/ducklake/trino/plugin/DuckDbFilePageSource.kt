@@ -15,7 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import io.airlift.log.Logger
 import io.trino.spi.Page
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.connector.SourcePage
@@ -117,12 +117,17 @@ public class DuckDbFilePageSource(
             completedPositions += page.positionCount.toLong()
             return SourcePage.create(page)
         }
-        // TODO(review:after id=correctness-readpath-not-supported-misclass): IO/SQL read failures wrapped as NOT_SUPPORTED instead of EXTERNAL
+        // A read failure here (S3/httpfs error, dropped JDBC connection, DuckDB engine
+        // error, corrupt batch) is a genuine IO/runtime fault, not an unsupported feature.
+        // NOT_SUPPORTED is a USER_ERROR reserved for true type/feature gaps — which the
+        // Arrow→Page converter raises separately as its own NOT_SUPPORTED exceptions — so
+        // classify these as GENERIC_INTERNAL_ERROR to avoid misleading operators and
+        // defeating error-type-keyed retry classification.
         catch (e: IOException) {
-            throw TrinoException(NOT_SUPPORTED, "Failed to read DuckDB file " + describeAttachTarget(), e)
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file " + describeAttachTarget(), e)
         }
         catch (e: SQLException) {
-            throw TrinoException(NOT_SUPPORTED, "Failed to read DuckDB file " + describeAttachTarget(), e)
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file " + describeAttachTarget(), e)
         }
         finally {
             readTimeNanos += System.nanoTime() - start

@@ -436,8 +436,15 @@ class DuckDbExpressionTranslator private constructor() {
             if (type is DateType) {
                 // DATE is stack-represented as days-since-epoch.
                 val days = (value as Long)
-                // TODO(review:after id=lowtail-date-constant-out-of-range): DATE constant outside 4-digit-year range emits a literal DuckDB cannot parse
-                return "DATE '" + LocalDate.ofEpochDay(days) + "'"
+                val date = LocalDate.ofEpochDay(days)
+                // LocalDate.toString() renders years <1 (BC) with a '-' and years >9999 with a
+                // leading '+' (e.g. "+10000-01-01"), neither of which DuckDB's DATE literal parser
+                // accepts — pushing such a fragment would fail the whole query rather than the
+                // conjunct cleanly. Leave out-of-range constants unpushed for Trino-side eval.
+                if (date.year < 1 || date.year > 9999) {
+                    return null
+                }
+                return "DATE '" + date + "'"
             }
             return null
         }

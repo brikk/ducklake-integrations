@@ -130,8 +130,10 @@ public class TrinoParityExtensionResolver private constructor() {
                         Optional.of(target.toAbsolutePath().toString())
                     }
                     catch (e: IOException) {
-                        log.warn("trino_parity: failed to extract bundled extension for platform %s — %s",
-                                platform, e.message)
+                        // Pass the exception (not just e.message) so the cause chain / stack survives —
+                        // Files.createDirectories/Files.copy IOExceptions often have a terse or null
+                        // message, and this WARN is the only diagnostic before the call site degrades.
+                        log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform)
                         Optional.empty<String>()
                     }
                 }
@@ -173,10 +175,11 @@ public class TrinoParityExtensionResolver private constructor() {
                         platform.get(), target.toAbsolutePath())
                 return Optional.of(target.toAbsolutePath().toString())
             }
-            // TODO(review:after id=lowtail-paritext-warn-drops-stack): IOException logged with only e.message, discarding stack/cause
             catch (e: IOException) {
-                log.warn("trino_parity: failed to extract bundled extension for platform %s — %s",
-                        platform.get(), e.message)
+                // Pass the exception (not just e.message) so the cause chain / stack survives —
+                // Files.createDirectories/Files.copy IOExceptions often have a terse or null
+                // message, and this WARN is the only diagnostic before the call site degrades.
+                log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform.get())
                 return Optional.empty()
             }
         }

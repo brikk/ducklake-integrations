@@ -13,9 +13,17 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.trino.spi.block.Block
+import io.trino.spi.type.ArrayType
+import io.trino.spi.type.BigintType.BIGINT
+import io.trino.spi.type.DecimalType
+import io.trino.spi.type.DoubleType.DOUBLE
+import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.VarbinaryType.VARBINARY
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import java.math.BigDecimal
 
 /**
  * Unit tests for `DucklakeInlinedValueConverter.decodeBlobText` — the inverse of
@@ -86,5 +94,61 @@ class TestDucklakeInlinedValueConverter {
         // malformed input, so reject loudly rather than truncating silently.
         assertThatThrownBy { DucklakeInlinedValueConverter.decodeBlobText("abÿcd") }
                 .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    // ---- non-finite floats / doubles in inlined list text (id=lowtail-inlinedlist-null-token-collision) ----
+
+    @Test
+    fun testNonFiniteDoublesInListText() {
+        // DuckDB renders non-finite list<double> elements as bare inf/-inf/nan tokens; Java's
+        // Double.parseDouble would throw NumberFormatException on those without normalization.
+        val block = DucklakeInlinedValueConverter.convertJdbcValue("[1.5, inf, -inf, nan, NULL]", ArrayType(DOUBLE)) as Block
+        assertThat(block.positionCount).isEqualTo(5)
+        assertThat(DOUBLE.getDouble(block, 0)).isEqualTo(1.5)
+        assertThat(DOUBLE.getDouble(block, 1)).isEqualTo(Double.POSITIVE_INFINITY)
+        assertThat(DOUBLE.getDouble(block, 2)).isEqualTo(Double.NEGATIVE_INFINITY)
+        assertThat(DOUBLE.getDouble(block, 3)).isNaN()
+        assertThat(block.isNull(4)).isTrue()
+    }
+
+    @Test
+    fun testNonFiniteRealsInListText() {
+        val block = DucklakeInlinedValueConverter.convertJdbcValue("[inf, -inf, nan]", ArrayType(REAL)) as Block
+        assertThat(java.lang.Float.intBitsToFloat(REAL.getInt(block, 0))).isEqualTo(Float.POSITIVE_INFINITY)
+        assertThat(java.lang.Float.intBitsToFloat(REAL.getInt(block, 1))).isEqualTo(Float.NEGATIVE_INFINITY)
+        assertThat(java.lang.Float.intBitsToFloat(REAL.getInt(block, 2))).isNaN()
+    }
+
+    // ---- unquoted NULL token (id=lowtail-inlinedlist-null-token-collision) ----
+
+    @Test
+    fun testListNullTokenReadsAsNull() {
+        // The bare NULL token is a SQL null. A blob whose bytes spell "NULL" serializes
+        // identically (unquoted) and is genuinely indistinguishable at the text level; we
+        // deliberately resolve that inherent DuckDB-serialization ambiguity in favour of a
+        // genuine null (the common case, also pinned by the list<blob> cross-engine audit).
+        val blobBlock = DucklakeInlinedValueConverter.convertJdbcValue("[NULL]", ArrayType(VARBINARY)) as Block
+        assertThat(blobBlock.isNull(0)).isTrue()
+
+        val bigintBlock = DucklakeInlinedValueConverter.convertJdbcValue("[NULL]", ArrayType(BIGINT)) as Block
+        assertThat(bigintBlock.isNull(0)).isTrue()
+    }
+
+    // ---- decimal rescale (id=lowtail-decimal-halfup-silent-rescale) ----
+
+    @Test
+    fun testDecimalAtColumnScaleConverts() {
+        // Value already at the column scale: a no-op rescale, returns the unscaled long.
+        val value = DucklakeInlinedValueConverter.convertJdbcValue(BigDecimal("1.23"), DecimalType.createDecimalType(10, 2))
+        assertThat(value).isEqualTo(123L)
+    }
+
+    @Test
+    fun testDecimalScaleMismatchThrowsLoudlyInsteadOfRounding() {
+        // More fractional digits than the column scale used to be silently HALF_UP-rounded
+        // (1.23), diverging from a Parquet read. Now it throws like Trino's Decimals SPI does.
+        assertThatThrownBy {
+            DucklakeInlinedValueConverter.convertJdbcValue(BigDecimal("1.234"), DecimalType.createDecimalType(10, 2))
+        }.isInstanceOf(ArithmeticException::class.java)
     }
 }

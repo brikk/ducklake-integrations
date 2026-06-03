@@ -205,7 +205,14 @@ public object DucklakeInlinedValueConverter {
                     i++
                 }
                 val token = inner.substring(start, i).trim()
-                // TODO(review:after id=lowtail-inlinedlist-null-token-collision): unquoted NULL token collides with blob payloads and non-finite floats (inf/nan)
+                // An unquoted `NULL` token maps to a SQL null. DuckDB serializes blob bytes
+                // unquoted too, so a blob whose bytes spell exactly "NULL" is indistinguishable
+                // from a genuine null at the text level — an inherent ambiguity in DuckDB's list
+                // serialization. We resolve it in favour of the common, intended case (a genuine
+                // null element, pinned by TestDucklakeCrossEngineTypeAudit's list<blob> NULL test)
+                // rather than the rare blob-spelling-NULL payload; fixing the latter would break
+                // the former. The non-finite float/double tokens (inf/-inf/nan) ARE handled — see
+                // normalizeNonFiniteToken in toFloat/toDouble.
                 elements.add(if (token == "NULL") null else token)
             }
             while (i < len && Character.isWhitespace(inner.get(i))) {
@@ -310,14 +317,27 @@ public object DucklakeInlinedValueConverter {
         if (value is Number) {
             return value.toFloat()
         }
-        return java.lang.Float.parseFloat(toStringValue(value))
+        return java.lang.Float.parseFloat(normalizeNonFiniteToken(toStringValue(value)))
     }
 
     private fun toDouble(value: Any): Double {
         if (value is Number) {
             return value.toDouble()
         }
-        return java.lang.Double.parseDouble(toStringValue(value))
+        return java.lang.Double.parseDouble(normalizeNonFiniteToken(toStringValue(value)))
+    }
+
+    // DuckDB renders non-finite floats/doubles as the bare tokens `inf`, `-inf`, and `nan`
+    // (notably inside inlined `list<double>`/`list<real>` text), but Java's parsers expect
+    // `Infinity`/`-Infinity`/`NaN`. Map them so a non-finite list element round-trips instead
+    // of throwing NumberFormatException.
+    private fun normalizeNonFiniteToken(text: String): String {
+        return when (text.lowercase(java.util.Locale.ROOT)) {
+            "inf", "+inf", "infinity", "+infinity" -> "Infinity"
+            "-inf", "-infinity" -> "-Infinity"
+            "nan", "-nan" -> "NaN"
+            else -> text
+        }
     }
 
     private fun toEpochDays(value: Any): Long {
@@ -430,7 +450,6 @@ public object DucklakeInlinedValueConverter {
         return normalized
     }
 
-    // TODO(review:after id=lowtail-decimal-halfup-silent-rescale): decimal conversion silently rounds HALF_UP instead of preserving stored scale
     private fun toDecimal(value: Any, decimalType: DecimalType): Any {
         var decimal: BigDecimal
         if (value is BigDecimal) {
@@ -439,7 +458,11 @@ public object DucklakeInlinedValueConverter {
         else {
             decimal = BigDecimal(toStringValue(value))
         }
-        decimal = decimal.setScale(decimalType.getScale(), java.math.RoundingMode.HALF_UP)
+        // Rescale with UNNECESSARY (matching Trino's own Decimals SPI convention) so a genuine
+        // scale mismatch throws loudly instead of silently HALF_UP-rounding into a value that
+        // would diverge from a Parquet read. Correctly-stored DuckDB inlined decimals already
+        // carry the column scale, so this is a no-op on the normal path.
+        decimal = decimal.setScale(decimalType.getScale(), java.math.RoundingMode.UNNECESSARY)
 
         if (decimalType.isShort()) {
             return decimal.unscaledValue().longValueExact()

@@ -78,7 +78,6 @@ object DucklakePuffinDeleteReader {
     /**
      * Decode the raw blob bytes into row positions. Visible for testing.
      */
-    // TODO(review:after id=lowtail-puffin-unchecked-escape): corrupt blob can escape as unchecked exception instead of IOException
     @Throws(IOException::class)
     fun decodeBlob(blob: ByteArray): Set<Long> {
         if (blob.size < MIN_BLOB_SIZE) {
@@ -107,31 +106,51 @@ object DucklakePuffinDeleteReader {
         if (bitmapCount < 0 || bitmapCount > Int.MAX_VALUE) {
             throw IOException("Implausible bitmap_count in puffin blob: " + bitmapCount)
         }
+        // bitmap_count is consistency-checked against vector_size, but vector_size can itself be
+        // a small consistent-but-short value, so cross-check against the bytes actually remaining:
+        // each bitmap consumes at least 4 bytes (high_bits) before its Roaring body. Without this
+        // an over-large count would walk off the end below.
+        val bytesForBitmaps = expectedCheckedEnd - buf.position()
+        if (bitmapCount > bytesForBitmaps / 4L) {
+            throw IOException("Implausible bitmap_count " + bitmapCount + " for " + bytesForBitmaps
+                    + " remaining puffin-blob bytes")
+        }
 
         val positions: MutableSet<Long> = HashSet()
         var b: Long = 0
-        while (b < bitmapCount) {
-            val highBits = buf.getInt()
-            val highLong = highBits.toLong() shl 32
+        // Per-bitmap reads (getInt, RoaringBitmap.deserialize, buffer reposition) can throw
+        // unchecked BufferUnderflowException / IndexOutOfBoundsException / IllegalArgumentException
+        // on a truncated or garbage body — those would bypass this method's `throws IOException`
+        // contract and surface as a raw RuntimeException. Translate them to IOException so a
+        // corrupt delete file fails the split the same clean way every other corruption mode does.
+        try {
+            while (b < bitmapCount) {
+                val highBits = buf.getInt()
+                val highLong = highBits.toLong() shl 32
 
-            val rbStart = buf.position()
-            // RoaringBitmap.deserialize(ByteBuffer) internally slices the buffer (see
-            // RoaringArray.deserialize line ~548) so it does NOT advance the input buffer's
-            // position. We advance manually by the bitmap's serialized size after the read.
-            // The CRoaring portable format is LITTLE_ENDIAN and the library forces that order
-            // on its internal slice regardless of what we set here.
-            val bitmap = RoaringBitmap()
-            try {
-                bitmap.deserialize(buf)
+                val rbStart = buf.position()
+                // RoaringBitmap.deserialize(ByteBuffer) internally slices the buffer (see
+                // RoaringArray.deserialize line ~548) so it does NOT advance the input buffer's
+                // position. We advance manually by the bitmap's serialized size after the read.
+                // The CRoaring portable format is LITTLE_ENDIAN and the library forces that order
+                // on its internal slice regardless of what we set here.
+                val bitmap = RoaringBitmap()
+                try {
+                    bitmap.deserialize(buf)
+                }
+                catch (e: IOException) {
+                    throw IOException("Failed to deserialize Roaring bitmap at offset " + rbStart + " in puffin blob", e)
+                }
+                buf.position(rbStart + bitmap.serializedSizeInBytes())
+                for (low in bitmap) {
+                    positions.add(highLong or (low.toLong() and 0xFFFFFFFFL))
+                }
+                b++
             }
-            catch (e: IOException) {
-                throw IOException("Failed to deserialize Roaring bitmap at offset " + rbStart + " in puffin blob", e)
-            }
-            buf.position(rbStart + bitmap.serializedSizeInBytes())
-            for (low in bitmap) {
-                positions.add(highLong or (low.toLong() and 0xFFFFFFFFL))
-            }
-            b++
+        }
+        catch (e: RuntimeException) {
+            throw IOException("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count="
+                    + bitmapCount + ", blob size=" + blob.size + ")", e)
         }
 
         val checksummedEnd = buf.position()

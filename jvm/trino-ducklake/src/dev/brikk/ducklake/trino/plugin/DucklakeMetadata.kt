@@ -436,11 +436,11 @@ class DucklakeMetadata(
 
     private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean
     {
-        return catalog.getInlinedDataInfos(table.tableId, table.snapshotId).stream()
-                .anyMatch { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
+        // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
+        // that lists it), so no second per-table hasInlinedRows round trip is needed here.
+        return catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
     }
 
-    // TODO(review:after id=eff-fallback-recordcount-materialize): readInlinedData materialises entire inlined dataset just to call .size()
     private fun getFallbackRecordCount(table: DucklakeTableHandle): OptionalLong
     {
         // Align with Iceberg/Delta behavior: if we can prove there is no data at this snapshot,
@@ -455,17 +455,11 @@ class DucklakeMetadata(
             return OptionalLong.of(0)
         }
 
-        val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, table.snapshotId)
-        if (tableColumns.isEmpty()) {
-            return OptionalLong.of(0)
-        }
-
+        // Count via SELECT COUNT(*) per schema version rather than materialising the inlined
+        // row payload into memory just to call .size() (pg_ducklake #195 warns about OOM on
+        // large inlined heaps; a count is negligible by comparison).
         val inlinedRowCount: Long = inlinedInfos.stream()
-                .mapToLong { info -> catalog.readInlinedData(
-                        info.tableId,
-                        info.schemaVersion,
-                        table.snapshotId,
-                        ImmutableList.of(tableColumns.first())).size.toLong() }
+                .mapToLong { info -> catalog.countInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
                 .sum()
         return OptionalLong.of(inlinedRowCount)
     }

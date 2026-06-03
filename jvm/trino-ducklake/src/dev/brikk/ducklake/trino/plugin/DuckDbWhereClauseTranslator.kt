@@ -227,17 +227,27 @@ public object DuckDbWhereClauseTranslator {
             }
             return Optional.of(bd.toPlainString())
         }
-        // TODO(review:after id=lowtail-date-timestamp-literal-out-of-range): DATE/TIMESTAMP literals mis-render for years <1000, BC, or >9999
         if (type.equals(DATE)) {
             val days = value as Long
-            return Optional.of("DATE '" + LocalDate.ofEpochDay(days) + "'")
+            val date = LocalDate.ofEpochDay(days)
+            // DuckDB's DATE literal parser rejects the signed/extended forms LocalDate emits for
+            // years <1 (BC, '-') or >9999 ('+'); leave such values unpushed so Trino evaluates them.
+            if (date.year < 1 || date.year > 9999) {
+                return Optional.empty()
+            }
+            return Optional.of("DATE '" + date + "'")
         }
         if (type is TimestampType && type.isShort()) {
-            val timestampType: TimestampType = type
             val micros = value as Long
             val epochSeconds = floorDiv(micros, 1_000_000L)
             val nanoOfSecond = (floorMod(micros, 1_000_000L) * 1_000L).toInt()
             val ldt = LocalDateTime.ofEpochSecond(epochSeconds, nanoOfSecond, ZoneOffset.UTC)
+            // TIMESTAMP_MICROS uses the year-of-era pattern `yyyy`, which silently renders a BC
+            // year as a positive year (wrong instant, no era marker) and emits a leading '+' past
+            // 9999. Leave out-of-range temporal literals unpushed rather than mis-compare.
+            if (ldt.year < 1 || ldt.year > 9999) {
+                return Optional.empty()
+            }
             return Optional.of("TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'")
         }
         if (type is VarcharType) {

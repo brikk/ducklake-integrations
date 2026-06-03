@@ -99,10 +99,12 @@ public class DucklakeSplitManager @Inject constructor(
         validateDeleteFileFormats(dataFiles, tableHandle)
 
         val tableHasNoDataFiles: Boolean = dataFiles.isEmpty()
+        // getInlinedDataInfos already records, per schema version, whether rows are live at the
+        // snapshot (computed in the same EXISTS probe that confirms the table exists), so we filter
+        // on the carried flag instead of issuing a second per-element hasInlinedRows round trip.
         val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId, tableHandle.snapshotId)
-        // TODO(review:after id=eff-inlined-rows-n-plus-1): N+1 fetchExists probe per inlined-data table during split planning
         var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos.stream()
-                .filter { info -> catalog.hasInlinedRows(info.tableId, info.schemaVersion, tableHandle.snapshotId) }
+                .filter { info -> info.hasLiveRows }
                 .map { info ->
                     log.debug("Found inlined data for table %s (tableId=%d, schemaVersion=%d)",
                             tableHandle.tableName, info.tableId, info.schemaVersion)

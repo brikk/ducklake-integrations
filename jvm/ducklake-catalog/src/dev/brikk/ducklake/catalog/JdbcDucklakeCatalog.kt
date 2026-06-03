@@ -684,30 +684,36 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .orderBy(inlined.SCHEMA_VERSION)
                 .fetch()
                 .asSequence()
-                .filter { r ->
-                    val inlinedTable = InlinedDataTable.of(
-                        orZero(r.get(inlined.TABLE_ID)),
-                        orZero(r.get(inlined.SCHEMA_VERSION)),
-                    )
-                    if (!inlinedTable.existsAsTable(dsl)) {
-                        // Catalog metadata can point to a dropped/non-materialized inlined table.
-                        // Treat this as "no inlined data" so scan planning does not emit a dead split.
+                .mapNotNull { r ->
+                    val rowTableId = orZero(r.get(inlined.TABLE_ID))
+                    val rowSchemaVersion = orZero(r.get(inlined.SCHEMA_VERSION))
+                    val inlinedTable = InlinedDataTable.of(rowTableId, rowSchemaVersion)
+                    // One EXISTS probe per schema version yields BOTH bits callers need: a
+                    // DataAccessException means the catalog metadata points to a dropped/
+                    // non-materialized table (skip it, as the old existsAsTable filter did);
+                    // otherwise the boolean tells whether any rows are live at this snapshot.
+                    // Carrying hasLiveRows here lets split planning / hasLiveInlinedRows avoid
+                    // the redundant second per-table probe they used to make.
+                    val hasLiveRows: Boolean = try {
+                        dsl.fetchExists(
+                            DSL.selectOne()
+                                .from(inlinedTable.table)
+                                .where(inlinedTable.activeAt(snapshotId)),
+                        )
+                    }
+                    catch (e: DataAccessException) {
                         log.log(
                             System.Logger.Level.DEBUG,
-                            "Inlined data table {0} not available for table {1}",
-                            inlinedTable.name, tableId,
+                            "Inlined data table {0} not available for table {1}: {2}",
+                            inlinedTable.name, tableId, e.message,
                         )
-                        false
+                        return@mapNotNull null
                     }
-                    else {
-                        true
-                    }
-                }
-                .map { r ->
                     DucklakeInlinedDataInfo(
-                        orZero(r.get(inlined.TABLE_ID)),
+                        rowTableId,
                         r.get(inlined.TABLE_NAME),
-                        orZero(r.get(inlined.SCHEMA_VERSION)),
+                        rowSchemaVersion,
+                        hasLiveRows,
                     )
                 }
                 .toList()
@@ -739,6 +745,25 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 inlined.name, e.message,
             )
             false
+        }
+    }
+
+    override fun countInlinedRows(tableId: Long, schemaVersion: Long, snapshotId: Long): Long {
+        val inlined = InlinedDataTable.of(tableId, schemaVersion)
+        return try {
+            dsl.fetchCount(
+                DSL.selectOne()
+                    .from(inlined.table)
+                    .where(inlined.activeAt(snapshotId)),
+            ).toLong()
+        }
+        catch (e: DataAccessException) {
+            log.log(
+                System.Logger.Level.DEBUG,
+                "Could not count inlined data rows from {0} (table may not exist): {1}",
+                inlined.name, e.message,
+            )
+            0L
         }
     }
 
@@ -926,16 +951,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     ) {
         fun activeAt(snapshotId: Long): Condition {
             return SnapshotRange.activeAt(beginSnapshot, endSnapshot, snapshotId)
-        }
-
-        fun existsAsTable(dsl: DSLContext): Boolean {
-            return try {
-                dsl.selectOne().from(table).where(DSL.falseCondition()).fetch()
-                true
-            }
-            catch (e: DataAccessException) {
-                false
-            }
         }
 
         companion object {

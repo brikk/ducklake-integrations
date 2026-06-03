@@ -148,6 +148,11 @@ interface DucklakeCatalog {
     /**
      * List inlined data table descriptors for a table at the given snapshot.
      * A table can have multiple inlined data tables (one per schema_version).
+     * Descriptors whose physical table is missing (stale catalog metadata for a
+     * dropped/non-materialized table) are filtered out; each returned descriptor
+     * carries [DucklakeInlinedDataInfo.hasLiveRows] so callers can distinguish a
+     * real inlined split from the empty-table synthetic split without a second
+     * per-table probe.
      */
     fun getInlinedDataInfos(tableId: Long, snapshotId: Long): List<DucklakeInlinedDataInfo>
 
@@ -155,6 +160,13 @@ interface DucklakeCatalog {
      * Check if an inlined data table has any live rows at a given snapshot.
      */
     fun hasInlinedRows(tableId: Long, schemaVersion: Long, snapshotId: Long): Boolean
+
+    /**
+     * Count the rows of an inlined data table live at a given snapshot via a
+     * `SELECT COUNT(*)`, without materialising the row payload. Returns 0 when
+     * the physical table does not exist.
+     */
+    fun countInlinedRows(tableId: Long, schemaVersion: Long, snapshotId: Long): Long
 
     /**
      * Check whether this table has an inlined-delete metadata table

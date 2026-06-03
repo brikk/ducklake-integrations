@@ -16,42 +16,6 @@
       "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:200"
     },
     {
-      "id": "lowtail-date-constant-out-of-range",
-      "finding_index": 26,
-      "category": "correctness",
-      "severity": "low",
-      "title": "DATE constant outside 4-digit-year range emits a literal DuckDB cannot parse",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.java:463-467",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbExpressionTranslator.kt:439"
-    },
-    {
-      "id": "eff-inlined-rows-n-plus-1",
-      "finding_index": 27,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "N+1 fetchExists probe per inlined-data table during split planning",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.java:131-139",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:103"
-    },
-    {
-      "id": "lowtail-inlinedlist-null-token-collision",
-      "finding_index": 32,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Unquoted 'NULL' token collides with blob/varchar payloads and non-finite floats",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.java:208-215",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.kt:208"
-    },
-    {
-      "id": "lowtail-decimal-halfup-silent-rescale",
-      "finding_index": 33,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Decimal conversion silently rounds (HALF_UP) instead of preserving stored scale",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.java:451-466",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeInlinedValueConverter.kt:433"
-    },
-    {
       "id": "lowtail-quacktoken-minlen-unenforced",
       "finding_index": 35,
       "category": "correctness",
@@ -68,15 +32,6 @@
       "title": "Per-split DETACH on a fresh in-memory connection is pure overhead immediately before connection close",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.java:274-291",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.kt:152"
-    },
-    {
-      "id": "lowtail-date-timestamp-literal-out-of-range",
-      "finding_index": 45,
-      "category": "correctness",
-      "severity": "low",
-      "title": "DATE/TIMESTAMP literals mis-render for years <1000, BC, or >9999",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.java:241-251",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbWhereClauseTranslator.kt:230"
     },
     {
       "id": "eff-snapshot-timestamp-double-parse",
@@ -97,15 +52,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.kt:168"
     },
     {
-      "id": "lowtail-paritext-warn-drops-stack",
-      "finding_index": 51,
-      "category": "correctness",
-      "severity": "low",
-      "title": "IOException is logged with only e.getMessage(), discarding stack trace and root cause",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.java:129-133",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.kt:175"
-    },
-    {
       "id": "lowtail-quack-host-unescaped",
       "finding_index": 52,
       "category": "correctness",
@@ -124,15 +70,6 @@
       "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
     },
     {
-      "id": "correctness-readpath-not-supported-misclass",
-      "finding_index": 56,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "All read-path IOException/SQLException wrapped as NOT_SUPPORTED",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.java:141-143",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.kt:120"
-    },
-    {
       "id": "lowtail-sortkey-contiguity-unchecked",
       "finding_index": 58,
       "category": "correctness",
@@ -142,15 +79,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSortPropertyMapper.kt:57"
     },
     {
-      "id": "lowtail-puffin-unchecked-escape",
-      "finding_index": 59,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Corrupt blob can escape as unchecked exception instead of IOException",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.java:114-140",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.kt:82"
-    },
-    {
       "id": "eff-parquet-footer-double-serialize",
       "finding_index": 63,
       "category": "efficiency",
@@ -158,15 +86,6 @@
       "title": "Footer Thrift metadata is serialized a second time solely to measure its length",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.java:92-96",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.kt:71"
-    },
-    {
-      "id": "eff-fallback-recordcount-materialize",
-      "finding_index": 72,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "getFallbackRecordCount materialises entire inlined dataset into memory just to call .size()",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:525-531",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.kt:436"
     }
   ],
   "skipped": [
@@ -238,7 +157,7 @@
     },
     {
       "finding_index": 11,
-      "title": "typedCompare uses wrong column type names \u2014 numeric min/max accumulation always falls back to lexicographic comparison",
+      "title": "typedCompare uses wrong column type names — numeric min/max accumulation always falls back to lexicographic comparison",
       "reason": "before-B1",
       "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:587-595"
     },
@@ -309,5 +228,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 32
+  "resolved": 41
 }
