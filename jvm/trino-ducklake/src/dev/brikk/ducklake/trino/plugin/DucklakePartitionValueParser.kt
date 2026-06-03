@@ -69,9 +69,25 @@ object DucklakePartitionValueParser
             return LocalDate.parse(value).toEpochDay()
         }
         if (type.equals(BOOLEAN)) {
-            // TODO(review:after id=lowtail-parseboolean-1-0-collision): Boolean.parseBoolean silently returns false for '1' and '0'
-            return java.lang.Boolean.parseBoolean(value)
+            return parseBoolean(value)
         }
         throw IllegalArgumentException("Unsupported partition value type: " + type)
+    }
+
+    // Boolean.parseBoolean silently maps everything that isn't "true" to false, so an
+    // externally-written catalog that encodes boolean partitions as "1"/"0" (the form
+    // DuckLake's C++ extension may store, and the form JdbcDucklakeCatalog/DucklakeStatTypes
+    // already accept) would parse "1" as false — wrong pruning and a wrong projected
+    // constant. Mirror the catalog's encoding and throw on anything else so the callers'
+    // catch(RuntimeException) blocks fall back safely (don't-prune / NULL) instead of
+    // silently producing the wrong value.
+    private fun parseBoolean(value: String): Boolean {
+        if (value.equals("true", ignoreCase = true) || value == "1") {
+            return true
+        }
+        if (value.equals("false", ignoreCase = true) || value == "0") {
+            return false
+        }
+        throw IllegalArgumentException("Invalid boolean partition value: " + value)
     }
 }

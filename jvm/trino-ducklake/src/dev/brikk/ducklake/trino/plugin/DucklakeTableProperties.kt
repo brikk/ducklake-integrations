@@ -65,9 +65,14 @@ public open class DucklakeTableProperties @Inject constructor() {
         public const val DATA_FILE_FORMAT_PROPERTY: String = "data_file_format"
         public const val LOCATION_PROPERTY: String = "location"
 
-        // TODO(review:after id=correctness-transform-pattern-case-sensitive): TRANSFORM_PATTERN case-sensitive vs BUCKET_PATTERN insensitive
-        // TODO(review:after id=lowtail-transform-pattern-greedy-dot-plus): greedy .+ swallows nested parens/commas into column name
-        private val TRANSFORM_PATTERN: Pattern = Pattern.compile("(year|month|day|hour)\\((.+)\\)")
+        // year(col) / month(col) / day(col) / hour(col). Case-insensitive to match
+        // BUCKET_PATTERN (SQL function names are conventionally case-insensitive, and
+        // group(1) is upper-cased before the enum lookup anyway) — otherwise YEAR(d)
+        // would silently fall through to an identity partition on a column literally
+        // named "YEAR(d)". The column group rejects parens/commas ([^(),]+) so malformed
+        // transforms like year(foo(bar)) or day(a,b) don't get swallowed into a bogus
+        // column name; they fall through to identity and fail loudly as "column not found".
+        private val TRANSFORM_PATTERN: Pattern = Pattern.compile("(year|month|day|hour)\\(([^(),]+)\\)", Pattern.CASE_INSENSITIVE)
         // bucket(N, col) — N positive integer, col is the source column name. Spaces tolerated.
         private val BUCKET_PATTERN: Pattern = Pattern.compile("bucket\\(\\s*(\\d+)\\s*,\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE)
         // URI scheme prefix: <scheme>:// — e.g. s3://, gs://, file://, abfss://, hdfs://, gcs://

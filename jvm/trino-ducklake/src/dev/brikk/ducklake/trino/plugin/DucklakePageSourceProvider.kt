@@ -607,11 +607,14 @@ public class DucklakePageSourceProvider @Inject constructor(
         // DuckDB returns rows contiguously from row 0. RowIdInjectingPageSource's cumulative
         // nextRowOffset assumes contiguous output; predicate-pushed DuckDB scans return only
         // matching rows, breaking the position math. Trino still filters above the page source.
-        // TODO(review:after id=eff-effectivepredicate-filter-list-contains): effectivePredicate.filter uses O(n) List.contains per domain entry
+        // Hash-set membership so the per-domain filter is O(predicateColumns) rather than
+        // O(predicateColumns * fileColumns) — fileColumns is an ArrayList, so .contains is a
+        // linear scan with record-based equals per probe.
+        val fileColumnSet: Set<DucklakeColumnHandle> = HashSet(fileColumns)
         val filePredicate: TupleDomain<DucklakeColumnHandle> = if (splitHasActiveDeletes(split))
                 TupleDomain.all()
             else
-                effectivePredicate.filter { col, _ -> fileColumns.contains(col) }
+                effectivePredicate.filter { col, _ -> fileColumnSet.contains(col) }
 
         // Carry Trino's session zone through to the executor so it can run
         // `SET TimeZone` on attach. Required for Tier C correctness (TIMESTAMP

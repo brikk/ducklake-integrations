@@ -395,6 +395,16 @@ public class DucklakeSplitManager @Inject constructor(
             }
         }
 
+        // Partition-evolution guard (see buildIdentityPartitionValues): a file's partition
+        // values are keyed by the key indices of the spec it was written under, and specs
+        // number keys from 0. getPartitionSpecs returns only the spec(s) active at this
+        // snapshot, so a file written under a retired spec would have its values matched
+        // against the active spec's key->column mapping — pruning the wrong column and
+        // dropping correct rows. Skip pruning any file whose partition_id isn't one of the
+        // specs we actually have the field mapping for.
+        val specPartitionIds: Set<Long> = specs.map { it.partitionId }.toSet()
+        val partitionIdByFileId: Map<Long, Long?> = dataFiles.associate { it.dataFileId to it.partitionId.orElse(null) }
+
         val candidateFileIds: MutableSet<Long> = dataFiles.stream()
                 .map { it.dataFileId }
                 .collect(toCollection { LinkedHashSet<Long>() })
@@ -408,6 +418,10 @@ public class DucklakeSplitManager @Inject constructor(
             }
 
             candidateFileIds.removeIf { fileId ->
+                val filePartitionId: Long? = partitionIdByFileId[fileId]
+                if (filePartitionId != null && !specPartitionIds.contains(filePartitionId)) {
+                    return@removeIf false // foreign/retired spec — can't map key indices, don't prune
+                }
                 val values: List<DucklakeFilePartitionValue> = filePartValues.getOrDefault(fileId, listOf<DucklakeFilePartitionValue>())
                 // A file is pruned if ANY partition transform definitively excludes it
                 for (mapping in mappings) {
@@ -510,6 +524,7 @@ public class DucklakeSplitManager @Inject constructor(
 
         val partitionValuesByColumnId: Map<Long, String> = buildIdentityPartitionValues(
                 primary.dataFileId,
+                primary.partitionId,
                 activePartitionSpec,
                 partitionValuesByFile)
 
@@ -581,12 +596,26 @@ public class DucklakeSplitManager @Inject constructor(
          * column. The page source provider uses this map to constant-fill partition
          * columns that don't appear in the parquet body.
          */
-        // TODO(review:after id=correctness-identity-partition-spec-mismatch): identity partition constant-fill ignores each file's own partition spec
-        private fun buildIdentityPartitionValues(
+        internal fun buildIdentityPartitionValues(
                 dataFileId: Long,
+                filePartitionId: Optional<Long>,
                 activePartitionSpec: Optional<DucklakePartitionSpec>,
                 partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>): Map<Long, String> {
             if (activePartitionSpec.isEmpty) {
+                return mapOf()
+            }
+            val spec: DucklakePartitionSpec = activePartitionSpec.get()
+            // Partition-evolution guard. A file's stored partition values are keyed by the
+            // partition_key_index of the spec the file was WRITTEN under, and every spec
+            // numbers its keys from 0. ducklake_file_partition_value carries no partition_id,
+            // so the only safe keyIndex->columnId mapping is the file's own spec. When the
+            // file was written under a different (e.g. retired) spec than the active one,
+            // mapping its values through the active spec would constant-fill the wrong
+            // column — so decline to fill rather than surface corrupt data. The page source
+            // then reads the column from the file body (or yields NULL). A file with no
+            // partition_id (unpartitioned, or fixtures that don't record it) keeps the prior
+            // behavior of trusting the active spec — those carry no partition values anyway.
+            if (filePartitionId.isPresent && filePartitionId.get() != spec.partitionId) {
                 return mapOf()
             }
             val values: List<DucklakeFilePartitionValue> = partitionValuesByFile.getOrDefault(dataFileId, listOf<DucklakeFilePartitionValue>())
@@ -598,7 +627,7 @@ public class DucklakeSplitManager @Inject constructor(
                 byKeyIndex.put(v.partitionKeyIndex, v.partitionValue)
             }
             val out: MutableMap<Long, String> = HashMap()
-            for (field in activePartitionSpec.get().fields) {
+            for (field in spec.fields) {
                 if (field.transform != DucklakePartitionTransform.IDENTITY) {
                     continue
                 }

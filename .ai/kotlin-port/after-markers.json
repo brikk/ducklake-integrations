@@ -7,15 +7,6 @@
   "skipped_other": 9,
   "markers": [
     {
-      "id": "correctness-identity-partition-spec-mismatch",
-      "finding_index": 15,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Identity partition constant-fill ignores each file's own partition spec (partition-evolution mis-fill)",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.java:609-636",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:584"
-    },
-    {
       "id": "eff-snapshot-at-or-before-full-scan",
       "finding_index": 22,
       "category": "efficiency",
@@ -23,15 +14,6 @@
       "title": "getSnapshotAtOrBefore materializes the entire snapshot table to find one row",
       "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:234-244",
       "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:200"
-    },
-    {
-      "id": "eff-effectivepredicate-filter-list-contains",
-      "finding_index": 25,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "effectivePredicate.filter uses O(n) List.contains per domain entry",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:603-604",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.kt:609"
     },
     {
       "id": "lowtail-date-constant-out-of-range",
@@ -142,24 +124,6 @@
       "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
     },
     {
-      "id": "correctness-transform-pattern-case-sensitive",
-      "finding_index": 54,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "TRANSFORM_PATTERN is case-sensitive while BUCKET_PATTERN is case-insensitive \u2014 uppercase temporal transforms silently become identity columns",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.java:44,186-198",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.kt:68"
-    },
-    {
-      "id": "lowtail-transform-pattern-greedy-dot-plus",
-      "finding_index": 55,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Greedy .+ in TRANSFORM_PATTERN swallows nested parens and commas into the column name",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.java:186-187",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTableProperties.kt:68"
-    },
-    {
       "id": "correctness-readpath-not-supported-misclass",
       "finding_index": 56,
       "category": "correctness",
@@ -194,24 +158,6 @@
       "title": "Footer Thrift metadata is serialized a second time solely to measure its length",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.java:92-96",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.kt:71"
-    },
-    {
-      "id": "correctness-discrete-values-ignores-inclusive",
-      "finding_index": 64,
-      "category": "correctness",
-      "severity": "low",
-      "title": "discreteValues branch ignores DiscreteValues.isInclusive(), inverting exclusion-set semantics",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeBucketPartitionMatcher.java:73-80",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeBucketPartitionMatcher.kt:75"
-    },
-    {
-      "id": "lowtail-parseboolean-1-0-collision",
-      "finding_index": 65,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Boolean.parseBoolean silently returns false for '1' and '0', causing wrong partition pruning and wrong projected constants for externally-written catalogs",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.java:74",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePartitionValueParser.kt:71"
     },
     {
       "id": "eff-fallback-recordcount-materialize",
@@ -363,5 +309,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 26
+  "resolved": 32
 }

@@ -72,16 +72,25 @@ object DucklakeBucketPartitionMatcher {
                         }
                         matched
                     },
-                    // TODO(review:after id=correctness-discrete-values-ignores-inclusive): branch ignores DiscreteValues.isInclusive() (inverting exclusion semantics)
                     Function<DiscreteValues, Boolean> { discreteValues ->
-                        var matched = false
-                        for (value in discreteValues.values) {
-                            if (hashesToBucket(columnType, value, arity, targetBucket)) {
-                                matched = true
-                                break
-                            }
+                        if (!discreteValues.isInclusive) {
+                            // Exclusion set (x != v / NOT IN (...)): getValues() lists the
+                            // values to EXCLUDE. The file may hold any non-excluded value,
+                            // which can hash to any bucket — so we can never prune. (Latent
+                            // today: every bucket-able type is orderable and routes through
+                            // rangesFunction; guard it anyway against silent data loss.)
+                            true
                         }
-                        matched
+                        else {
+                            var matched = false
+                            for (value in discreteValues.values) {
+                                if (hashesToBucket(columnType, value, arity, targetBucket)) {
+                                    matched = true
+                                    break
+                                }
+                            }
+                            matched
+                        }
                     },
                     Function<AllOrNone, Boolean> { _ -> true })
         }
