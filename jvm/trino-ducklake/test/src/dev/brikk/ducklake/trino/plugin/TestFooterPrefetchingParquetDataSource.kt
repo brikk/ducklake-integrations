@@ -36,7 +36,7 @@ class TestFooterPrefetchingParquetDataSource {
     @Test
     fun testZeroHintFallsThroughUnwrapped() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 0L)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 0L, MAX_FOOTER_READ_SIZE)
 
         assertThat(wrapped).isSameAs(delegate)
     }
@@ -44,7 +44,7 @@ class TestFooterPrefetchingParquetDataSource {
     @Test
     fun testNegativeHintFallsThroughUnwrapped() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, -5L)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, -5L, MAX_FOOTER_READ_SIZE)
 
         assertThat(wrapped).isSameAs(delegate)
     }
@@ -54,7 +54,7 @@ class TestFooterPrefetchingParquetDataSource {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
         // Hint larger than the entire file — the catalog row is stale / corrupt; bail out
         // to the default path rather than attempting a nonsensical pre-fetch.
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, (FILE_BYTES.size + 1).toLong())
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, (FILE_BYTES.size + 1).toLong(), MAX_FOOTER_READ_SIZE)
 
         assertThat(wrapped).isSameAs(delegate)
     }
@@ -63,7 +63,7 @@ class TestFooterPrefetchingParquetDataSource {
     fun testHintShrinksFirstReadTailToExactFooter() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
         val hintedFooterSize = 2000L // plus 8-byte post-script = 2008 total tail bytes
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, hintedFooterSize)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, hintedFooterSize, MAX_FOOTER_READ_SIZE)
 
         // First readTail: MetadataReader asks for the default 48 KB. The wrapper should
         // return the 2008-byte pre-fetch instead — saving 46 KB of I/O on this file.
@@ -84,7 +84,7 @@ class TestFooterPrefetchingParquetDataSource {
         // Oversized footer (60 KB) — the default 48 KB blind read would under-fetch and
         // force a second round trip. With the hint, we pre-fetch the right size once.
         val hintedFooterSize = 60 * 1024L
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, hintedFooterSize)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, hintedFooterSize, MAX_FOOTER_READ_SIZE)
 
         val tail = wrapped.readTail(48 * 1024)
         assertThat(tail.length()).isEqualTo(60 * 1024 + 8)
@@ -94,7 +94,7 @@ class TestFooterPrefetchingParquetDataSource {
     @Test
     fun testSecondReadTailFallsThroughToDelegate() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 1000)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 1000, MAX_FOOTER_READ_SIZE)
 
         wrapped.readTail(48 * 1024) // consumes the cache
         wrapped.readTail(2048)       // cache was single-shot; must delegate
@@ -104,7 +104,7 @@ class TestFooterPrefetchingParquetDataSource {
     @Test
     fun testFirstReadTailReturnsFullCacheRegardlessOfRequestedLength() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000, MAX_FOOTER_READ_SIZE)
 
         // MetadataReader calls readTail(min(fileSize, 48 KB)) = 48 KB here. The wrapper
         // must return the full 2008-byte cache (not trim to 48 KB) — returning "more than
@@ -120,9 +120,53 @@ class TestFooterPrefetchingParquetDataSource {
     }
 
     @Test
+    fun testHintAboveMaxFooterReadSizeFallsThroughUnwrapped() {
+        val delegate = CountingInMemoryDataSource(FILE_BYTES)
+        // Hint fits inside the file but exceeds the configured footer-read cap. The wrapper
+        // must refuse — otherwise a stale/corrupt catalog footer_size would drive an
+        // arbitrarily large readTail/allocation that the un-wrapped reader would instead
+        // reject cheaply.
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 4000L, 2000L)
+
+        assertThat(wrapped).isSameAs(delegate)
+        assertThat(delegate.readTailCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun testOverflowHintFallsThroughUnwrappedWithoutReading() {
+        val delegate = CountingInMemoryDataSource(FILE_BYTES)
+        // footerSizeHint + POST_SCRIPT_SIZE would overflow to a negative long and bypass the
+        // file-size / Int.MAX guards; the max-footer-read cap rejects it first, so no
+        // oversized (or negative-cast) read is ever attempted.
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, Long.MAX_VALUE - 4, MAX_FOOTER_READ_SIZE)
+
+        assertThat(wrapped).isSameAs(delegate)
+        assertThat(delegate.readTailCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun testWrapWithPrefetchedTailServesGivenSliceThenDelegates() {
+        val delegate = CountingInMemoryDataSource(FILE_BYTES)
+        val tail = delegate.readTail(3000) // caller pre-reads the tail itself
+        assertThat(delegate.readTailCalls).isEqualTo(1)
+
+        val wrapped = FooterPrefetchingParquetDataSource.wrapWithPrefetchedTail(delegate, tail)
+
+        // First readTail returns the supplied slice without touching the delegate again.
+        val served = wrapped.readTail(48 * 1024)
+        assertThat(served.length()).isEqualTo(3000)
+        assertThat(served.bytes).isEqualTo(tail.bytes)
+        assertThat(delegate.readTailCalls).isEqualTo(1)
+
+        // Single-shot: the next readTail delegates.
+        wrapped.readTail(8)
+        assertThat(delegate.readTailCalls).isEqualTo(2)
+    }
+
+    @Test
     fun testReadFullyAndMetadataAlwaysDelegate() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000, MAX_FOOTER_READ_SIZE)
 
         // readFully is not intercepted — column data reads always hit the delegate.
         val chunk = wrapped.readFully(100, 50)
@@ -137,7 +181,7 @@ class TestFooterPrefetchingParquetDataSource {
     @Test
     fun testCloseDelegates() {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
-        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000)
+        val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000, MAX_FOOTER_READ_SIZE)
 
         wrapped.close()
         assertThat(delegate.closed).isTrue()
@@ -194,6 +238,10 @@ class TestFooterPrefetchingParquetDataSource {
     }
 
     companion object {
+        // Generous footer-read cap (Trino's default is 15 MB) — well above every hint these
+        // tests use, so the cap guard never trips except where a test sets its own small cap.
+        private const val MAX_FOOTER_READ_SIZE = 15L * 1024 * 1024
+
         // 64 KB of pseudo-random bytes — larger than Trino's default 48 KB footer guess so we
         // can distinguish "the wrapper took over" from "the default path happened to succeed".
         private val FILE_BYTES = generateBytes(64 * 1024)

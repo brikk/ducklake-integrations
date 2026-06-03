@@ -88,7 +88,8 @@ public object DucklakeDeleteFileReader {
                     memoryContext,
                     stats)
 
-            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(dataSource, footerSizeHint)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
 
             val parquetMetadata = MetadataReader.readFooter(
                     dataSource,

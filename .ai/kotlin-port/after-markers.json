@@ -16,15 +16,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:584"
     },
     {
-      "id": "correctness-parquet-2level-list-cast",
-      "finding_index": 21,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Unconditional cast to GroupColumnIO for ArrayType throws ClassCastException on 2-level Parquet lists",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.java:90-97",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeParquetTypeUtils.kt:85"
-    },
-    {
       "id": "eff-snapshot-at-or-before-full-scan",
       "finding_index": 22,
       "category": "efficiency",
@@ -59,33 +50,6 @@
       "title": "N+1 fetchExists probe per inlined-data table during split planning",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.java:131-139",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:103"
-    },
-    {
-      "id": "lowtail-mapmap-unguarded-asgrouptype",
-      "finding_index": 29,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Unguarded asGroupType() on MAP key_value child can escape as ClassCastException",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.java:377",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.kt:360"
-    },
-    {
-      "id": "eff-addfiles-footer-double-read",
-      "finding_index": 30,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "Footer is read from the data source twice per file (extra tail round-trip)",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesProcedure.java:278-318",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesProcedure.kt:275"
-    },
-    {
-      "id": "lowtail-mapmap-cce-classification",
-      "finding_index": 31,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Malformed parquet MAP shape throws ClassCastException instead of DucklakeAddFilesException",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.java:377",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeAddFilesNameMapper.kt:360"
     },
     {
       "id": "lowtail-inlinedlist-null-token-collision",
@@ -221,24 +185,6 @@
       "title": "Corrupt blob can escape as unchecked exception instead of IOException",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.java:114-140",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.kt:82"
-    },
-    {
-      "id": "eff-paritext-prefetch-no-max-cap",
-      "finding_index": 61,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "Prefetch ignores maxFooterReadSize cap, can eagerly read/allocate a huge tail a stale hint would never reach in the normal path",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.java:59-68",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.kt:110"
-    },
-    {
-      "id": "lowtail-paritext-hint-overflow",
-      "finding_index": 62,
-      "category": "correctness",
-      "severity": "low",
-      "title": "footerSizeHint + POST_SCRIPT_SIZE can overflow to a negative long that bypasses both guards",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.java:62-65",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/FooterPrefetchingParquetDataSource.kt:110"
     },
     {
       "id": "eff-parquet-footer-double-serialize",
@@ -417,5 +363,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 20
+  "resolved": 26
 }

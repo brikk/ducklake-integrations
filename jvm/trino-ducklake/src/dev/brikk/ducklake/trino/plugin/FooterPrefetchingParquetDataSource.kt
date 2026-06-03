@@ -105,12 +105,21 @@ public class FooterPrefetchingParquetDataSource private constructor(
         // (see tables/ducklake_data_file.md); the post-script sits immediately after.
         private const val POST_SCRIPT_SIZE: Int = 8
 
-        // TODO(review:after id=eff-paritext-prefetch-no-max-cap): prefetch ignores maxFooterReadSize cap, can read/allocate huge tail
-        // TODO(review:after id=lowtail-paritext-hint-overflow): footerSizeHint + POST_SCRIPT_SIZE can overflow to negative long bypassing guards
         @JvmStatic
         @Throws(IOException::class)
-        public fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long): ParquetDataSource {
+        public fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long, maxFooterReadSize: Long): ParquetDataSource {
             if (footerSizeHint <= 0) {
+                return delegate
+            }
+            // Bound the prefetch by the same cap Trino's MetadataReader enforces
+            // (maxFooterReadSize, default 15 MB). A stale/corrupt catalog footer_size that is
+            // still smaller than a large data file would otherwise pass the file-size guard and
+            // make us readTail() an arbitrarily large tail into memory — whereas the un-wrapped
+            // path reads only its default footer size, discovers the real length, and throws
+            // ParquetCorruptionException without ever allocating the oversized buffer. Checking
+            // the raw hint (which is far below Long.MAX_VALUE once capped) also makes the
+            // + POST_SCRIPT_SIZE addition below overflow-safe.
+            if (footerSizeHint > maxFooterReadSize) {
                 return delegate
             }
             val completeFooterSize = footerSizeHint + POST_SCRIPT_SIZE
@@ -121,6 +130,20 @@ public class FooterPrefetchingParquetDataSource private constructor(
             }
             val prefetched = delegate.readTail(completeFooterSize.toInt())
             return FooterPrefetchingParquetDataSource(delegate, prefetched)
+        }
+
+        /**
+         * Wraps [delegate] so the next `readTail` returns an already-read [prefetchedTail]
+         * instead of issuing a fresh read. Used when the caller has read the file tail itself
+         * (e.g. to probe the post-script footer length) and wants `MetadataReader.readFooter`
+         * to reuse those exact bytes rather than reading the tail a second time. The tail must
+         * be a genuine file-end slice (its last 8 bytes are the post-script) and at least as
+         * large as the read MetadataReader will request, or the reader falls through to the
+         * delegate as it would for a too-small hint.
+         */
+        @JvmStatic
+        public fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource {
+            return FooterPrefetchingParquetDataSource(delegate, prefetchedTail)
         }
     }
 }

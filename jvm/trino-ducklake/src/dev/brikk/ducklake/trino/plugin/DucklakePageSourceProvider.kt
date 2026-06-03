@@ -383,7 +383,8 @@ public class DucklakePageSourceProvider @Inject constructor(
             // footers (<48 KB), this trims the blind tail read down to the exact bytes;
             // for oversized footers, it replaces the fallback two-round-trip path with a
             // single-shot read. See FooterPrefetchingParquetDataSource.
-            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(dataSource, split.footerSize)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, split.footerSize, parquetReaderOptions.maxFooterReadSize.toBytes())
 
             // Read Parquet metadata
             val parquetMetadata: ParquetMetadata = MetadataReader.readFooter(

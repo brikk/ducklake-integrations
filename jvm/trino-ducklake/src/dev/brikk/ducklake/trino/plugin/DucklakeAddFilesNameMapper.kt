@@ -357,8 +357,16 @@ internal class DucklakeAddFilesNameMapper(
                     "Column \"%s\" in file \"%s\" has unexpected MAP shape (expected one child group, found %d)",
                     parquetName, fileName, group.getFieldCount()))
         }
-        // TODO(review:after id=lowtail-mapmap-unguarded-asgrouptype): unguarded asGroupType() on MAP key_value child can escape as ClassCastException
-        // TODO(review:after id=lowtail-mapmap-cce-classification): malformed MAP shape throws ClassCastException instead of DucklakeAddFilesException
+        // Guard the key_value child shape before asGroupType(): a MAP whose single child is a
+        // primitive (a malformed/foreign 2-level encoding) would otherwise throw a raw parquet
+        // ClassCastException that escapes the caller's DucklakeAddFilesException catch and
+        // surfaces as an internal error instead of a clean INVALID_PROCEDURE_ARGUMENT. Mirrors
+        // the !isPrimitive() guard mapList() already applies to its middle group.
+        if (group.getType(0).isPrimitive()) {
+            throw DucklakeAddFilesException(String.format(
+                    "Column \"%s\" in file \"%s\" has unexpected MAP shape (key_value child must be a group)",
+                    parquetName, fileName))
+        }
         val kvGroup: GroupType = group.getType(0).asGroupType()
         if (kvGroup.getFieldCount() != 2) {
             throw DucklakeAddFilesException(String.format(

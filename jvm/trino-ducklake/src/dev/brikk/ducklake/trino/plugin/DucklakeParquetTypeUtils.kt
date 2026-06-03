@@ -19,6 +19,8 @@ import io.trino.parquet.GroupField
 import io.trino.parquet.ParquetTypeUtils.getArrayElementColumn
 import io.trino.parquet.ParquetTypeUtils.getMapKeyValueColumn
 import io.trino.parquet.PrimitiveField
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.MapType
 import io.trino.spi.type.RowType
@@ -27,6 +29,7 @@ import org.apache.parquet.io.ColumnIO
 import org.apache.parquet.io.GroupColumnIO
 import org.apache.parquet.io.PrimitiveColumnIO
 import org.apache.parquet.schema.Type.Repetition.OPTIONAL
+import org.apache.parquet.schema.Type.Repetition.REPEATED
 import java.util.Optional
 
 /**
@@ -82,7 +85,22 @@ object DucklakeParquetTypeUtils {
 
         if (trinoType is ArrayType) {
             val arrayType = trinoType
-            // TODO(review:after id=correctness-parquet-2level-list-cast): unconditional cast assumes 3-level LIST; legacy 2-level (repeated primitive) crashes
+            // Legacy 2-level LIST: per the parquet back-compat rules a repeated *primitive* is a
+            // required list of required elements, with no intermediate group. add_files registers
+            // files written by other tools (Spark, legacy Hive) that may use this encoding, so the
+            // element ColumnIO can be a PrimitiveColumnIO rather than a GroupColumnIO. Mirror
+            // Trino's own ParquetTypeUtils.constructField: adjust the repetition/definition levels
+            // down one and wrap the primitive element in a GroupField, instead of unconditionally
+            // casting to GroupColumnIO (which threw ClassCastException at query time on such files).
+            if (columnIO is PrimitiveColumnIO) {
+                if (columnIO.type.repetition != REPEATED || repetitionLevel == 0 || definitionLevel == 0) {
+                    throw TrinoException(NOT_SUPPORTED, "Unsupported schema for Parquet column (" + columnIO.columnDescriptor + ")")
+                }
+                val elementField: Optional<Field> = Optional.of<Field>(PrimitiveField(
+                        arrayType.elementType, true, columnIO.columnDescriptor, columnIO.id))
+                return Optional.of(GroupField(
+                        trinoType, repetitionLevel - 1, definitionLevel - 1, true, ImmutableList.of(elementField)))
+            }
             val groupColumnIO = columnIO as GroupColumnIO
             if (groupColumnIO.childrenCount != 1) {
                 return Optional.empty()

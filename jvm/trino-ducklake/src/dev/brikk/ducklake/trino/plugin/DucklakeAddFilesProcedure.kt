@@ -232,8 +232,25 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     parquetReaderOptions,
                     memoryContext,
                     fileFormatDataSourceStats)
+            // Read the file tail exactly once and reuse it for both the footer_size probe and
+            // MetadataReader.readFooter. readFooter reads min(fileSize, footerReadSize) from the
+            // end and derives the metadata length from the same post-script we need; previously
+            // readFooterLengthFromPostScript then issued a *second*, uncached readTail(8) — an
+            // extra object-store round trip per file in the batch. We pre-read the tail at the
+            // size readFooter would use, parse footer_size from its post-script, and hand the
+            // bytes to readFooter via the single-shot prefetch wrapper (which falls through to
+            // the delegate if the footer turns out larger than this read, exactly as before).
+            val tailReadSize = Math.min(dataSource.getEstimatedSize(), parquetReaderOptions.footerReadSize.toBytes())
+            var footerSize = 0L
+            var footerSource: ParquetDataSource = dataSource
+            if (tailReadSize >= POST_SCRIPT_SIZE) {
+                val tail: io.airlift.slice.Slice = dataSource.readTail(tailReadSize.toInt())
+                footerSize = footerLengthFromPostScript(tail)
+                footerSource = FooterPrefetchingParquetDataSource.wrapWithPrefetchedTail(dataSource, tail)
+            }
+
             val parquetMetadata: ParquetMetadata = MetadataReader.readFooter(
-                    dataSource,
+                    footerSource,
                     parquetReaderOptions,
                     Optional.empty(),
                     Optional.empty())
@@ -265,15 +282,6 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             // hive-partition-overrides so the index stays aligned with RowGroup.columns.
             val stats: List<DucklakeFileColumnStats> = DucklakeStatsExtractor.extractStats(
                     thriftMetadata, result.leafStatsTargets)
-
-            // footer_size: read the 4-byte little-endian footer length from the parquet
-            // post-script (the trailer is `<thrift FileMetaData><4-byte LE length><4-byte magic>`).
-            // This is the same value DuckLake stores in ducklake_data_file.footer_size, and
-            // FooterPrefetchingParquetDataSource uses it on subsequent reads to skip the
-            // blind 48 KB tail read. Best-effort: any IO/parse failure falls back to 0 (the
-            // read path tolerates 0 by doing the default blind read).
-            // TODO(review:after id=eff-addfiles-footer-double-read): footer is read from the data source twice per file (extra tail round-trip)
-            val footerSize = readFooterLengthFromPostScript(dataSource)
 
             val recordCount = aggregateRecordCount(thriftMetadata)
 
@@ -362,9 +370,14 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             return thriftMetadata.getNum_rows()
         }
 
+        // Post-script size: 4-byte LE FileMetaData length + 4-byte magic. Mirrors Trino's
+        // MetadataReader.POST_SCRIPT_SIZE.
+        private const val POST_SCRIPT_SIZE: Int = 8
+
         /**
          * Read the 4-byte little-endian Thrift FileMetaData length from the parquet
-         * post-script. The trailer layout per the parquet spec:
+         * post-script at the end of an already-read file tail. The trailer layout per the
+         * parquet spec:
          *
          * <pre>
          *   [ Thrift FileMetaData ][ 4 bytes LE footer length ][ 4 bytes "PAR1" magic ]
@@ -373,40 +386,35 @@ public class DucklakeAddFilesProcedure @Inject constructor(
          * <p>This value is what DuckLake stores in {@code ducklake_data_file.footer_size}
          * (matches the existing {@link FooterPrefetchingParquetDataSource} contract:
          * footer_size is the Thrift FileMetaData length only, excluding the 8-byte
-         * post-script).
+         * post-script). The {@code tail} must be a genuine file-end slice — the post-script
+         * is its last 8 bytes.
          *
-         * <p>Best-effort: any IO error, short read, or non-magic trailer returns 0, in
+         * <p>Best-effort: any short slice, non-magic trailer, or parse error returns 0, in
          * which case the read path falls back to its default blind tail read — i.e.
          * the previous behavior. Correctness is unaffected.
          */
-        private fun readFooterLengthFromPostScript(dataSource: ParquetDataSource): Long {
+        private fun footerLengthFromPostScript(tail: io.airlift.slice.Slice): Long {
             try {
-                if (dataSource.getEstimatedSize() < 8) {
+                if (tail.length() < POST_SCRIPT_SIZE) {
                     return 0
                 }
-                val tail: io.airlift.slice.Slice = dataSource.readTail(8)
-                if (tail.length() < 8) {
-                    return 0
-                }
-                // Magic bytes at offset 4..7 of the tail: encrypted parquet uses "PARE"
+                val base = tail.length() - POST_SCRIPT_SIZE
+                // Magic bytes at the last 4 bytes of the tail: encrypted parquet uses "PARE"
                 // and the encrypted footer length sits in the same 4-byte LE slot, so we
                 // accept either marker. Anything else means this isn't a valid trailer.
-                val b4 = tail.getByte(4)
-                val b5 = tail.getByte(5)
-                val b6 = tail.getByte(6)
-                val b7 = tail.getByte(7)
+                val b4 = tail.getByte(base + 4)
+                val b5 = tail.getByte(base + 5)
+                val b6 = tail.getByte(base + 6)
+                val b7 = tail.getByte(base + 7)
                 val isParquetMagic = b4 == 'P'.code.toByte() && b5 == 'A'.code.toByte() && b6 == 'R'.code.toByte() && (b7 == '1'.code.toByte() || b7 == 'E'.code.toByte())
                 if (!isParquetMagic) {
                     return 0
                 }
                 // Airlift Slice is little-endian by contract, so getInt is already LE.
-                val footerLength = tail.getInt(0)
+                val footerLength = tail.getInt(base)
                 return if (footerLength >= 0) footerLength.toLong() else 0
             }
             catch (_: RuntimeException) {
-                return 0
-            }
-            catch (_: IOException) {
                 return 0
             }
         }
