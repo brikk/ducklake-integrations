@@ -247,13 +247,36 @@ internal class TestDucklakeStatsExtractor {
                 file, listOf(LeafStatsTarget(7L, INTEGER, 0)))
 
         assertThat(stats).hasSize(1)
-        assertThat(stats[0].valueCount).isEqualTo(20L)
+        // value_count is the NON-NULL count: each row group has num_values=10, with 1 and 2 nulls
+        // respectively, so (10-1) + (10-2) = 17. null counts accumulate to 3.
+        assertThat(stats[0].valueCount).isEqualTo(17L)
         assertThat(stats[0].nullCount).isEqualTo(3L)
         // INTEGER stats merge numerically across row groups: file-wide min=1, max=12.
         // Guards the old regression where string compare picked "8" as max ("8" > "12"
         // lexically) even though DuckLake stores min/max as text.
         assertThat(stats[0].minValue).contains("1")
         assertThat(stats[0].maxValue).contains("12")
+    }
+
+    @Test
+    fun extractStatsValueCountExcludesNulls() {
+        // Regression for the value_count-includes-nulls bug: a single row group of 100 values
+        // with 30 nulls must report value_count=70 (non-null), not 100. The invariant the
+        // DucklakeMetadata consumer relies on is value_count + null_count == row count, matching
+        // the DuckDB writer path (COUNT(col) for value_count) and the DuckLake spec
+        // (value_count = num_values - null_count). Emitting num_values (100) would inflate the
+        // consumer's totalCount past the file row count and suppress the column's stats.
+        val file = fileMetaData(
+                rowGroup(100L, column(INT_TYPE, intBytes(1), intBytes(99), 30L)))
+
+        val stats = DucklakeStatsExtractor.extractStats(
+                file, listOf(LeafStatsTarget(7L, INTEGER, 0)))
+
+        assertThat(stats).hasSize(1)
+        assertThat(stats[0].valueCount).isEqualTo(70L)
+        assertThat(stats[0].nullCount).isEqualTo(30L)
+        // The contract downstream code depends on: non-null value_count + null_count == row count.
+        assertThat(stats[0].valueCount + stats[0].nullCount).isEqualTo(100L)
     }
 
     // ==================== Thrift FileMetaData builders ====================

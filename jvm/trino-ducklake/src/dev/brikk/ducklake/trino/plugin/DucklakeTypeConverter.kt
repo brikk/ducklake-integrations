@@ -201,7 +201,6 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
         if (trinoType.equals(DateType.DATE)) {
             return "date"
         }
-        // TODO(review:after id=lowtail-timestamp-precision-silent-coerce): unsupported timestamp precisions silently collapse to micros
         if (trinoType is TimestampType) {
             val timestampType: TimestampType = trinoType
             return when (timestampType.getPrecision()) {
@@ -209,17 +208,33 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
                 3 -> "timestamp_ms"
                 6 -> "timestamp"
                 9 -> "timestamp_ns"
-                else -> "timestamp"
+                // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
+                // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
+                // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
+                else -> throw TrinoException(NOT_SUPPORTED, format(
+                        "Unsupported timestamp precision %d for DuckLake write; supported precisions are 0, 3, 6, 9",
+                        timestampType.getPrecision()))
             }
         }
         if (trinoType is TimestampWithTimeZoneType) {
             return "timestamptz"
         }
-        // TODO(review:after id=lowtail-time-precision-dropped): TIME/TIMETZ precision dropped on write (all collapse to micros)
+        // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather
+        // than silently coercing to micros (which would read back as TIME(6) / a changed precision).
         if (trinoType is TimeType) {
+            if (trinoType.getPrecision() != 6) {
+                throw TrinoException(NOT_SUPPORTED, format(
+                        "Unsupported time precision %d for DuckLake write; only precision 6 (microseconds) is supported",
+                        trinoType.getPrecision()))
+            }
             return "time"
         }
         if (trinoType is TimeWithTimeZoneType) {
+            if (trinoType.getPrecision() != 6) {
+                throw TrinoException(NOT_SUPPORTED, format(
+                        "Unsupported time with time zone precision %d for DuckLake write; only precision 6 (microseconds) is supported",
+                        trinoType.getPrecision()))
+            }
             return "timetz"
         }
         if (trinoType.equals(VarcharType.VARCHAR) || trinoType is VarcharType) {

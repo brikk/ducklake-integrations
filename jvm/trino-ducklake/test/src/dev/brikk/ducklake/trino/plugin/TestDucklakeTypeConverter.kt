@@ -24,7 +24,10 @@ import io.trino.spi.type.IntegerType
 import io.trino.spi.type.RealType
 import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType
+import io.trino.spi.type.TimeType
+import io.trino.spi.type.TimeWithTimeZoneType
 import io.trino.spi.type.TimestampType
+import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.TinyintType
 import io.trino.spi.type.UuidType
 import io.trino.spi.type.VarbinaryType
@@ -146,6 +149,51 @@ class TestDucklakeTypeConverter {
         // 0..3.4e38 which exceeds any Trino decimal, so we degrade to VARCHAR (data preserved
         // as text; no numeric operations).
         assertThat(converter.toTrinoType("uint128")).isEqualTo(VarcharType.VARCHAR)
+    }
+
+    // ==================== Write-path precision (toDucklakeType) ====================
+
+    @Test
+    fun testTimestampWriteMapsSupportedPrecisions() {
+        // DuckLake encodes only second/milli/micro/nano timestamps.
+        assertThat(converter.toDucklakeType(TimestampType.createTimestampType(0))).isEqualTo("timestamp_s")
+        assertThat(converter.toDucklakeType(TimestampType.createTimestampType(3))).isEqualTo("timestamp_ms")
+        assertThat(converter.toDucklakeType(TimestampType.createTimestampType(6))).isEqualTo("timestamp")
+        assertThat(converter.toDucklakeType(TimestampType.createTimestampType(9))).isEqualTo("timestamp_ns")
+    }
+
+    @Test
+    fun testTimestampWriteRejectsUnsupportedPrecision() {
+        // Precisions DuckLake cannot represent must fail loudly rather than silently collapse to
+        // micros (which would round-trip back as TIMESTAMP(6)).
+        for (precision in intArrayOf(1, 2, 4, 5, 7, 8)) {
+            assertThatThrownBy { converter.toDucklakeType(TimestampType.createTimestampType(precision)) }
+                    .`as`("timestamp precision %d should be rejected", precision)
+                    .isInstanceOf(TrinoException::class.java)
+                    .hasMessageContaining("Unsupported timestamp precision")
+        }
+    }
+
+    @Test
+    fun testTimeWriteAcceptsMicrosRejectsOthers() {
+        // DuckLake time/timetz are microsecond-only (precision 6).
+        assertThat(converter.toDucklakeType(TimeType.createTimeType(6))).isEqualTo("time")
+        assertThat(converter.toDucklakeType(TimeWithTimeZoneType.createTimeWithTimeZoneType(6))).isEqualTo("timetz")
+        for (precision in intArrayOf(0, 3, 9)) {
+            assertThatThrownBy { converter.toDucklakeType(TimeType.createTimeType(precision)) }
+                    .`as`("time precision %d should be rejected", precision)
+                    .isInstanceOf(TrinoException::class.java)
+                    .hasMessageContaining("Unsupported time precision")
+            assertThatThrownBy { converter.toDucklakeType(TimeWithTimeZoneType.createTimeWithTimeZoneType(precision)) }
+                    .`as`("time-with-time-zone precision %d should be rejected", precision)
+                    .isInstanceOf(TrinoException::class.java)
+                    .hasMessageContaining("Unsupported time with time zone precision")
+        }
+    }
+
+    @Test
+    fun testTimestampTzWriteIsMicros() {
+        assertThat(converter.toDucklakeType(TimestampWithTimeZoneType.createTimestampWithTimeZoneType(6))).isEqualTo("timestamptz")
     }
 
     // ==================== Unknown type still errors ====================

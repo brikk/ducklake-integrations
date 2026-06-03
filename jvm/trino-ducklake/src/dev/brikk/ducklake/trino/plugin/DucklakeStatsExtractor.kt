@@ -80,13 +80,12 @@ public object DucklakeStatsExtractor {
                 }
                 val columnMeta = rowGroup.getColumns().get(parquetColumnIndex).getMeta_data()
                 totalCompressedSize += columnMeta.getTotal_compressed_size()
-                // TODO(review:after id=correctness-valuecount-includes-nulls): value_count populated from parquet num_values includes nulls
-                totalValueCount += columnMeta.getNum_values()
 
+                var groupNullCount: Long = 0
                 if (columnMeta.isSetStatistics()) {
                     val stats = columnMeta.getStatistics()
                     if (stats.isSetNull_count()) {
-                        totalNullCount += stats.getNull_count()
+                        groupNullCount = stats.getNull_count()
                     }
 
                     if (stats.isSetMin_value() && stats.isSetMax_value()) {
@@ -102,6 +101,18 @@ public object DucklakeStatsExtractor {
                         }
                     }
                 }
+
+                totalNullCount += groupNullCount
+                // value_count is the NON-NULL value count. Parquet num_values counts all values
+                // (nulls included), but the catalog's value_count must hold the non-null count so
+                // that value_count + null_count == row count. This matches the DuckDB writer path
+                // (DuckDbFileWriter derives value_count from COUNT(col) and null_count from
+                // totalCount - value_count) and the DuckLake spec (ducklake_transaction.cpp:
+                // value_count = num_values - null_count). Emitting the raw num_values here would
+                // over-count rows for any column containing nulls, inflating the consumer's
+                // totalCount past the data-file row count and tripping the stats-suppression guard
+                // (and skewing nullsFraction) in DucklakeMetadata.getTableStatistics.
+                totalValueCount += (columnMeta.getNum_values() - groupNullCount)
             }
 
             result.add(DucklakeFileColumnStats(

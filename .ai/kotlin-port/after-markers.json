@@ -16,15 +16,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:584"
     },
     {
-      "id": "correctness-valuecount-includes-nulls",
-      "finding_index": 19,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "value_count populated from parquet num_values (includes nulls), inconsistent with DuckDB writer path and over-counts total rows downstream",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:89,112-116",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.kt:84"
-    },
-    {
       "id": "correctness-parquet-2level-list-cast",
       "finding_index": 21,
       "category": "correctness",
@@ -158,24 +149,6 @@
       "title": "Per-split DETACH on a fresh in-memory connection is pure overhead immediately before connection close",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.java:274-291",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.kt:152"
-    },
-    {
-      "id": "lowtail-timestamp-precision-silent-coerce",
-      "finding_index": 43,
-      "category": "correctness",
-      "severity": "low",
-      "title": "timestamp precision round-trips silently for unsupported precisions",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.java:221-228",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.kt:204"
-    },
-    {
-      "id": "lowtail-time-precision-dropped",
-      "finding_index": 44,
-      "category": "correctness",
-      "severity": "low",
-      "title": "TIME/TIME WITH TIME ZONE precision dropped on write",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.java:233-238",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeTypeConverter.kt:217"
     },
     {
       "id": "lowtail-date-timestamp-literal-out-of-range",
@@ -507,5 +480,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 10
+  "resolved": 13
 }
