@@ -129,14 +129,18 @@ public open class DucklakeSessionProperties @Inject constructor() {
             return if (snapshotId == null) OptionalLong.empty() else OptionalLong.of(snapshotId)
         }
 
-        // TODO(review:after id=eff-snapshot-timestamp-double-parse): read_snapshot_timestamp parsed twice (validator + getter)
         @JvmStatic
         public fun getReadSnapshotTimestamp(session: ConnectorSession): Optional<Instant> {
             val timestamp = session.getProperty(READ_SNAPSHOT_TIMESTAMP, String::class.java)
             if (timestamp == null) {
                 return Optional.empty()
             }
-            return Optional.of(parseSnapshotTimestamp(timestamp))
+            // The stored value was already validated by parseSnapshotTimestamp as the SET-time
+            // stringProperty validator, so parse directly here — Instant.parse is deterministic
+            // and cannot fail on the same string twice. Re-wrapping in the validator's try/catch
+            // was dead defensiveness that also nominally moved the failure surface from SET time
+            // to query-execution time.
+            return Optional.of(Instant.parse(timestamp))
         }
 
         @JvmStatic

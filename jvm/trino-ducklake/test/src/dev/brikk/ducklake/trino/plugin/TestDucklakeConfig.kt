@@ -49,6 +49,23 @@ class TestDucklakeConfig {
     }
 
     @Test
+    fun testQuackTokenMinLengthEnforcedOnlyForQuackEngine() {
+        // The documented 4-char minimum (Quack server-side requirement) is now enforced at
+        // catalog-load time via the @AssertTrue bean-validation method, so a too-short token is
+        // rejected up front instead of failing later at the Quack RPC handshake.
+        fun config(engine: DucklakeExecutionEngine, token: String?) =
+                DucklakeConfig().setExecutionEngine(engine).setQuackHost("quack-host").setQuackToken(token)
+
+        // Quack engine: 1-3 char tokens fail, >= 4 passes.
+        assertThat(config(DucklakeExecutionEngine.QUACK, "abc").isQuackTokenLongEnough()).isFalse()
+        assertThat(config(DucklakeExecutionEngine.QUACK, "abcd").isQuackTokenLongEnough()).isTrue()
+        // Null/blank is reported by isQuackEngineConfigComplete, not double-reported here.
+        assertThat(config(DucklakeExecutionEngine.QUACK, null).isQuackTokenLongEnough()).isTrue()
+        // Non-Quack engines never apply the constraint.
+        assertThat(config(DucklakeExecutionEngine.DUCKDB_LOCAL, "ab").isQuackTokenLongEnough()).isTrue()
+    }
+
+    @Test
     fun testDuckdbAutoHttpfsThresholdDefault() {
         // 64 MiB — files smaller than this materialize, larger ones stream via httpfs.
         // The default is small enough to keep typical tests on the materialize path

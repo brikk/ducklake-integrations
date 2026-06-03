@@ -62,10 +62,11 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
      * `Statement.execute()` call, which is what HikariCP does internally
      * for `connectionInitSql`.
      */
-    // TODO(review:after id=lowtail-quack-host-unescaped): host interpolated into single-quoted ATTACH string without escapeSqlString
-    // TODO(review:after id=lowtail-quack-metadatacatalog-unquoted-use): validateIdentifier accepts numeric/keyword names that break USE
     fun connectionInitSql(): String {
-        val attachUri = "ducklake:quack:$host:$port"
+        // host goes inside the single-quoted ATTACH literal below, so escape it for the same
+        // reason token/dataPath are escaped. URI.getHost() rejects quote-bearing authorities
+        // today, but escaping here keeps the literal safe regardless of how host is derived.
+        val attachUri = "ducklake:quack:${escapeSqlString(host)}:$port"
         val sb = StringBuilder()
         // Quack ships in core as of DuckDB 1.5.3; ducklake's QuackMetadataManager
         // also rides along in the bundled extension. Plain INSTALL/LOAD against
@@ -80,7 +81,13 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
         sb.append("ATTACH '").append(attachUri).append("' AS lake ")
                 .append("(DATA_PATH '").append(escapeSqlString(dataPath)).append("', ")
                 .append("METADATA_CATALOG '").append(metadataCatalog).append("');")
-        sb.append("USE ").append(metadataCatalog).append(".main;")
+        // Double-quote the catalog identifier in USE: validateIdentifier allows [A-Za-z0-9_]+,
+        // which includes numeric-only ("123") and reserved-word names that are not legal as a
+        // bare identifier (USE 123.main fails to parse). Quoting makes the statement valid for
+        // any accepted name and future-proofs against keyword collisions; the [A-Za-z0-9_]
+        // restriction guarantees no embedded quote, and DuckDB folds quoted identifiers
+        // case-insensitively so letter-leading names behave exactly as before.
+        sb.append("USE \"").append(metadataCatalog).append("\".main;")
         return sb.toString()
     }
 

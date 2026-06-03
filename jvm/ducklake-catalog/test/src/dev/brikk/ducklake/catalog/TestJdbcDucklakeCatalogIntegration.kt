@@ -17,7 +17,9 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.time.Instant
 import java.time.LocalDate
+import java.util.Optional
 
 class TestJdbcDucklakeCatalogIntegration {
     companion object {
@@ -60,6 +62,31 @@ class TestJdbcDucklakeCatalogIntegration {
             .get()
             .extracting(DucklakeSnapshot::snapshotId)
             .isEqualTo(snapshotId)
+    }
+
+    @Test
+    fun testGetSnapshotAtOrBeforeMatchesScan() {
+        // Regression for the SQL-pushdown rewrite of getSnapshotAtOrBefore (was: materialize the
+        // whole snapshot table and filter in Java). It must return the SAME row the scan produced
+        // for every probe: the reference here reproduces the old behavior (snapshot_time <= ts,
+        // first by snapshot_id DESC) over listSnapshots() — itself ordered by snapshot_id DESC.
+        val catalog = catalog!!
+        val snapshots = catalog.listSnapshots()
+        assertThat(snapshots).isNotEmpty()
+
+        fun scanAtOrBefore(ts: Instant): Optional<DucklakeSnapshot> =
+            snapshots.stream().filter { !it.snapshotTime.isAfter(ts) }.findFirst()
+
+        val probes = buildList {
+            add(snapshots.last().snapshotTime.minusSeconds(1)) // strictly before earliest -> empty
+            snapshots.forEach { add(it.snapshotTime) }          // each exact snapshot time
+            add(snapshots.first().snapshotTime.plusSeconds(3600)) // after latest -> latest row
+        }
+        for (ts in probes) {
+            assertThat(catalog.getSnapshotAtOrBefore(ts).map(DucklakeSnapshot::snapshotId))
+                .`as`("getSnapshotAtOrBefore(%s)", ts)
+                .isEqualTo(scanAtOrBefore(ts).map(DucklakeSnapshot::snapshotId))
+        }
     }
 
     @Test

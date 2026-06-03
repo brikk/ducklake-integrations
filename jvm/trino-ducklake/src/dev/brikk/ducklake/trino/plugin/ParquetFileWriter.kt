@@ -72,7 +72,13 @@ class ParquetFileWriter(
         val recordCount = fileMetaData.num_rows
         val fileSize = parquetWriter.estimatedWrittenBytes
 
-        // TODO(review:after id=eff-parquet-footer-double-serialize): footer Thrift metadata serialized a second time solely to measure its length
+        // We need the Thrift FileMetaData length (excluding the 8-byte trailer) for the write
+        // fragment. ParquetWriter.close() already computed this exact value, but it lives in a
+        // private OptionalInt footerReadSize with no getter (and serializeFooter is private
+        // static), so there is no way to reuse it without patching upstream trino-parquet —
+        // out of scope here. Re-serializing the footer once per closed file is the deliberate,
+        // accepted cost: the footer is metadata-only and tiny relative to the full-file
+        // encoding/compression that just finished, and this runs per file close, not per page.
         var footerSize: Long
         try {
             val footerOutput = DynamicSliceOutput(40)

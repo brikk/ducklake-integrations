@@ -153,6 +153,35 @@ class TestDucklakeSortPropertyMapper {
     }
 
     @Test
+    fun testNonContiguousSortKeyIndexTruncatesToValidPrefix() {
+        // A gap in sort_key_index (here 0 then 2, with 1 missing — e.g. a half-applied sort-info
+        // update) must NOT be treated as an adjacent [name, price] prefix: that would claim a
+        // secondary sort on price that the data does not have, and SortingProperty is
+        // order-sensitive, so the planner could elide a real sort and return mis-ordered rows.
+        // The mapper detects the discontinuity and bails to the safe prefix (the first key only).
+        val result = DucklakeSortPropertyMapper.toLocalProperties(
+                listOf(
+                        key(0, "name", "duckdb", DucklakeSortDirection.ASC, DucklakeNullOrder.NULLS_FIRST),
+                        key(2, "price", "duckdb", DucklakeSortDirection.ASC, DucklakeNullOrder.NULLS_FIRST)),
+                COLUMNS)
+        assertThat(result).containsExactly(SortingProperty(COL_NAME, SortOrder.ASC_NULLS_FIRST))
+    }
+
+    @Test
+    fun testContiguousSortKeysFromNonZeroBaseArePreserved() {
+        // The contiguity guard keys off the first index, not a hardcoded 0: a contiguous run that
+        // happens to start above 0 is still a valid, fully-honored prefix (no internal gap).
+        val result = DucklakeSortPropertyMapper.toLocalProperties(
+                listOf(
+                        key(1, "name", "duckdb", DucklakeSortDirection.ASC, DucklakeNullOrder.NULLS_FIRST),
+                        key(2, "event_ts", "duckdb", DucklakeSortDirection.DESC, DucklakeNullOrder.NULLS_LAST)),
+                COLUMNS)
+        assertThat(result).containsExactly(
+                SortingProperty(COL_NAME, SortOrder.ASC_NULLS_FIRST),
+                SortingProperty(COL_TS, SortOrder.DESC_NULLS_LAST))
+    }
+
+    @Test
     fun testEmptySortSpecReturnsEmpty() {
         assertThat(DucklakeSortPropertyMapper.toLocalProperties(listOf(), COLUMNS)).isEmpty()
     }

@@ -54,7 +54,6 @@ public class DucklakeSortPropertyMapper private constructor() {
          * keyed by lowercased column name. Used to
          * resolve simple column-reference expressions.
          */
-        // TODO(review:after id=lowtail-sortkey-contiguity-unchecked): sortKeyIndex contiguity never validated; gap silently produces a false sort claim
         public fun toLocalProperties(
                 sortKeys: List<DucklakeSortKey>,
                 columnHandlesByLowercaseName: Map<String, out ColumnHandle>): List<LocalProperty<ColumnHandle>> {
@@ -62,7 +61,19 @@ public class DucklakeSortPropertyMapper private constructor() {
                 return ImmutableList.of()
             }
             val properties = ImmutableList.builder<LocalProperty<ColumnHandle>>()
+            // Track the expected next sort_key_index so the safe-prefix guarantee is self-contained
+            // rather than relying on the caller's ORDER BY. A gap (e.g. indices 0, 2 with 1 missing
+            // due to a partial/half-applied sort-info update) would otherwise make the surviving
+            // keys masquerade as an adjacent leading prefix — exactly the "skipping an entry in the
+            // middle is a lie" scenario this class guards against. Start at the first key's index
+            // (don't assume 0) and break to the safe prefix on any discontinuity.
+            var expectedIndex = sortKeys[0].sortKeyIndex
             for (key in sortKeys) {
+                if (key.sortKeyIndex != expectedIndex) {
+                    // Non-contiguous index — bail to safe prefix. Same conservative stance as the
+                    // dialect / unresolved-column cases below.
+                    break
+                }
                 if (!DUCKDB_DIALECT.equals(key.dialect, ignoreCase = true)) {
                     // Unknown dialect — bail to safe prefix (possibly empty). Better to lose
                     // a planner optimization than to misreport order.
@@ -76,6 +87,7 @@ public class DucklakeSortPropertyMapper private constructor() {
                     break
                 }
                 properties.add(SortingProperty(handle, toSortOrder(key.direction, key.nullOrder)))
+                expectedIndex++
             }
             return properties.build()
         }

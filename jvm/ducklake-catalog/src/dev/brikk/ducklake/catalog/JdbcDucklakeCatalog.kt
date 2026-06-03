@@ -68,6 +68,7 @@ import org.jooq.tools.jdbc.JDBCUtils
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Instant
+import java.time.ZoneOffset
 import java.util.HashMap
 import java.util.HashSet
 import java.util.LinkedHashMap
@@ -197,15 +198,20 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .map { toDucklakeSnapshot(it) }
     }
 
-    // TODO(review:after id=eff-snapshot-at-or-before-full-scan): materializes the entire snapshot table to find one row
     override fun getSnapshotAtOrBefore(timestamp: Instant): Optional<DucklakeSnapshot> {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
+        // Push the predicate + ordering + limit into SQL so the database returns the single
+        // matching row instead of materializing the whole snapshot table and filtering in Java.
+        // !snapshotTime.isAfter(timestamp) is exactly snapshot_time <= timestamp; ordering stays
+        // by snapshot_id DESC (independent of snapshot_time monotonicity), so this is identical
+        // to the prior scan-and-findFirst. SNAPSHOT_TIME is an OffsetDateTime column; compare at
+        // UTC, which preserves the instant the Java filter used (snapshotTime() == toInstant()).
         return dsl.selectFrom(snap)
+            .where(snap.SNAPSHOT_TIME.le(timestamp.atOffset(ZoneOffset.UTC)))
             .orderBy(snap.SNAPSHOT_ID.desc())
-            .fetch { toDucklakeSnapshot(it) }
-            .stream()
-            .filter { snapshot -> !snapshot.snapshotTime.isAfter(timestamp) }
-            .findFirst()
+            .limit(1)
+            .fetchOptional()
+            .map { toDucklakeSnapshot(it) }
     }
 
     override fun listSnapshots(): List<DucklakeSnapshot> {

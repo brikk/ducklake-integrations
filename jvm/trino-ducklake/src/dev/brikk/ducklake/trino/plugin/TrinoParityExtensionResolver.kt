@@ -15,6 +15,8 @@ package dev.brikk.ducklake.trino.plugin
 
 import io.airlift.log.Logger
 import java.io.IOException
+import java.net.URL
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -124,9 +126,7 @@ public class TrinoParityExtensionResolver private constructor() {
                         val tempDir = Path.of(System.getProperty("java.io.tmpdir"), "trino-ducklake", platform)
                         Files.createDirectories(tempDir)
                         val target = tempDir.resolve(RESOURCE_FILE)
-                        url.openStream().use { `in` ->
-                            Files.copy(`in`, target, StandardCopyOption.REPLACE_EXISTING)
-                        }
+                        extractAtomically(url, tempDir, target)
                         Optional.of(target.toAbsolutePath().toString())
                     }
                     catch (e: IOException) {
@@ -167,10 +167,7 @@ public class TrinoParityExtensionResolver private constructor() {
                 // Always replace — the bundled bytes might have changed between
                 // plugin reloads; checking content equality would be more work than
                 // simply rewriting ~36MB once per JVM.
-                // TODO(review:after id=correctness-paritext-non-atomic-copy): non-atomic Files.copy into live extension path can expose partial binary
-                url.openStream().use { `in` ->
-                    Files.copy(`in`, target, StandardCopyOption.REPLACE_EXISTING)
-                }
+                extractAtomically(url, tempDir, target)
                 log.info("trino_parity: extracted bundled extension for platform %s to %s",
                         platform.get(), target.toAbsolutePath())
                 return Optional.of(target.toAbsolutePath().toString())
@@ -181,6 +178,37 @@ public class TrinoParityExtensionResolver private constructor() {
                 // message, and this WARN is the only diagnostic before the call site degrades.
                 log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform.get())
                 return Optional.empty()
+            }
+        }
+
+        /**
+         * Extract [url]'s bytes to [target] atomically: stream into a sibling temp file in the
+         * same directory, then [Files.move] it into place (ATOMIC_MOVE where the filesystem
+         * supports it). A reader — including a separate JVM/process sharing `java.io.tmpdir` —
+         * therefore only ever observes the complete binary, never a half-written ~36MB file.
+         * RESOLVE_LOCK serializes writers within this JVM but cannot exclude another process, so
+         * the move (not an in-place copy) is what actually closes the partial-read window.
+         */
+        @JvmStatic
+        @Throws(IOException::class)
+        private fun extractAtomically(url: URL, tempDir: Path, target: Path) {
+            val tmp = Files.createTempFile(tempDir, RESOURCE_FILE, ".tmp")
+            try {
+                url.openStream().use { `in` ->
+                    Files.copy(`in`, tmp, StandardCopyOption.REPLACE_EXISTING)
+                }
+                try {
+                    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                }
+                catch (e: AtomicMoveNotSupportedException) {
+                    // Rare for a temp dir; fall back to a plain replace. The remaining window is
+                    // still far smaller than streaming ~36MB directly into the live path.
+                    Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+            finally {
+                // No-op after a successful move; cleans up the partial temp file if copy/move threw.
+                Files.deleteIfExists(tmp)
             }
         }
 

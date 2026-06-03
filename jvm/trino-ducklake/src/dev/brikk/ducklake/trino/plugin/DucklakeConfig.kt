@@ -247,7 +247,6 @@ public class DucklakeConfig {
         return quackToken
     }
 
-    // TODO(review:after id=lowtail-quacktoken-minlen-unenforced): documented quack-token min-length (4 chars) is never enforced
     @Config("ducklake.quack.token")
     @ConfigDescription("Quack server auth token. Required when ducklake.execution-engine=quack. Min 4 characters (Quack server-side requirement).")
     fun setQuackToken(quackToken: String?): DucklakeConfig {
@@ -339,6 +338,19 @@ public class DucklakeConfig {
         }
         return quackHost != null && !quackHost!!.isBlank()
                 && quackToken != null && !quackToken!!.isBlank()
+    }
+
+    // Enforce the documented 4-char minimum (the @ConfigDescription on setQuackToken) at
+    // catalog-load time. Without this a 1-3 char token passes the blank-only check above and
+    // only fails later at the Quack server handshake as an opaque per-query runtime error.
+    @AssertTrue(message = "ducklake.quack.token must be at least 4 characters (Quack server-side requirement)")
+    fun isQuackTokenLongEnough(): Boolean {
+        if (executionEngine != DucklakeExecutionEngine.QUACK) {
+            return true
+        }
+        // A null/blank token is reported by isQuackEngineConfigComplete; don't double-report.
+        val token = quackToken
+        return token == null || token.isBlank() || token.length >= 4
     }
 
     fun toCatalogConfig(): DucklakeCatalogConfig {

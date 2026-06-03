@@ -105,7 +105,21 @@ internal class TestQuackBackedDuckDbCatalogUrl {
             "ATTACH 'ducklake:quack:h:9494' AS lake " +
                 "(DATA_PATH '/tmp/data', METADATA_CATALOG 'meta42')"
         )
-        assertThat(sql).contains("USE meta42.main")
+        assertThat(sql).contains("USE \"meta42\".main")
+    }
+
+    @Test
+    fun initSqlQuotesMetadataCatalogInUseSoNumericNamesParse() {
+        // validateIdentifier accepts [A-Za-z0-9_]+, which includes numeric-only and reserved-word
+        // names. Those are not legal as a bare identifier (USE 123.main fails to parse), so the
+        // USE statement double-quotes the catalog name. The name is restricted to [A-Za-z0-9_],
+        // so it can never contain an embedded quote.
+        val sql = QuackBackedDuckDbCatalogUrl.parse(
+            "jdbc:duckdb:quack://h:9494?metadata_catalog=123", "secrettoken", "/tmp/data"
+        )
+            .connectionInitSql()
+        assertThat(sql).contains("USE \"123\".main")
+        assertThat(sql).doesNotContain("USE 123.main")
     }
 
     @Test

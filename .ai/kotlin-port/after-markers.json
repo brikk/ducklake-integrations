@@ -5,89 +5,7 @@
   "skipped_before_fixed": 14,
   "skipped_user_decision": 0,
   "skipped_other": 9,
-  "markers": [
-    {
-      "id": "eff-snapshot-at-or-before-full-scan",
-      "finding_index": 22,
-      "category": "efficiency",
-      "severity": "medium",
-      "title": "getSnapshotAtOrBefore materializes the entire snapshot table to find one row",
-      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:234-244",
-      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:200"
-    },
-    {
-      "id": "lowtail-quacktoken-minlen-unenforced",
-      "finding_index": 35,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Documented quack-token min-length (4 chars) is never enforced",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeConfig.java:281-287",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeConfig.kt:250"
-    },
-    {
-      "id": "eff-inprocess-detach-overhead",
-      "finding_index": 41,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "Per-split DETACH on a fresh in-memory connection is pure overhead immediately before connection close",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.java:274-291",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/InProcessDuckDbExecutor.kt:152"
-    },
-    {
-      "id": "eff-snapshot-timestamp-double-parse",
-      "finding_index": 49,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "read_snapshot_timestamp is parsed twice (validator + getter)",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSessionProperties.java:137-154",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSessionProperties.kt:132"
-    },
-    {
-      "id": "correctness-paritext-non-atomic-copy",
-      "finding_index": 50,
-      "category": "correctness",
-      "severity": "low",
-      "title": "Non-atomic Files.copy into the live extension path can expose a partially-written binary to a racing reader",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.java:152-166",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/TrinoParityExtensionResolver.kt:168"
-    },
-    {
-      "id": "lowtail-quack-host-unescaped",
-      "finding_index": 52,
-      "category": "correctness",
-      "severity": "low",
-      "title": "host interpolated into single-quoted ATTACH string without escapeSqlString",
-      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.java:141-155",
-      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
-    },
-    {
-      "id": "lowtail-quack-metadatacatalog-unquoted-use",
-      "finding_index": 53,
-      "category": "correctness",
-      "severity": "low",
-      "title": "validateIdentifier accepts numeric-only / keyword names that break the generated USE statement",
-      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.java:180-197",
-      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/QuackBackedDuckDbCatalogUrl.kt:65"
-    },
-    {
-      "id": "lowtail-sortkey-contiguity-unchecked",
-      "finding_index": 58,
-      "category": "correctness",
-      "severity": "low",
-      "title": "sortKeyIndex contiguity is never validated; a gap silently produces a false sort claim",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSortPropertyMapper.java:68-85",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSortPropertyMapper.kt:57"
-    },
-    {
-      "id": "eff-parquet-footer-double-serialize",
-      "finding_index": 63,
-      "category": "efficiency",
-      "severity": "low",
-      "title": "Footer Thrift metadata is serialized a second time solely to measure its length",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.java:92-96",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/ParquetFileWriter.kt:71"
-    }
-  ],
+  "markers": [],
   "skipped": [
     {
       "finding_index": 0,
@@ -157,7 +75,7 @@
     },
     {
       "finding_index": 11,
-      "title": "typedCompare uses wrong column type names — numeric min/max accumulation always falls back to lexicographic comparison",
+      "title": "typedCompare uses wrong column type names \u2014 numeric min/max accumulation always falls back to lexicographic comparison",
       "reason": "before-B1",
       "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:587-595"
     },
@@ -228,5 +146,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 41
+  "resolved": 50
 }

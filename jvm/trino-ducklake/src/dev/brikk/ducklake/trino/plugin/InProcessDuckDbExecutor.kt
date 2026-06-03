@@ -150,17 +150,12 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
                 }
             }
             if (connection != null) {
-                // TODO(review:after id=eff-inprocess-detach-overhead): per-split DETACH on fresh in-memory connection is pure overhead
-                try {
-                    connection.createStatement().use { detach ->
-                        detach.execute("DETACH " + ATTACHED_DB)
-                    }
-                }
-                catch (t: Throwable) {
-                    if (suppressed == null) {
-                        suppressed = t
-                    }
-                }
+                // No explicit DETACH: this is a fresh per-split in-memory `jdbc:duckdb:` connection
+                // that is never reused, so connection.close() tears down the attached DB anyway.
+                // DETACH-on-close is meaningful only for engines whose server-side ATTACH state
+                // persists across queries (see DucklakeDuckDbExecutor.ExecutionContext) — the
+                // in-process path is not such an engine, so the extra round trip (and its spurious
+                // close-time WARN on an already-tearing-down connection) was pure overhead.
                 try {
                     connection.close()
                 }
