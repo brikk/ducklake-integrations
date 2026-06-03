@@ -16,15 +16,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeSplitManager.kt:584"
     },
     {
-      "id": "correctness-timestamptz-precision-truncation",
-      "finding_index": 16,
-      "category": "correctness",
-      "severity": "high",
-      "title": "TIMESTAMPTZ Appender write truncates sub-millisecond precision (data loss for TIMESTAMP(6)/(9) WITH TIME ZONE)",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:337-348",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.kt:259"
-    },
-    {
       "id": "correctness-valuecount-includes-nulls",
       "finding_index": 19,
       "category": "correctness",
@@ -32,15 +23,6 @@
       "title": "value_count populated from parquet num_values (includes nulls), inconsistent with DuckDB writer path and over-counts total rows downstream",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.java:89,112-116",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeStatsExtractor.kt:84"
-    },
-    {
-      "id": "correctness-cache-lock-removed-inside-sync",
-      "finding_index": 20,
-      "category": "correctness",
-      "severity": "high",
-      "title": "Per-key lock removed inside synchronized block lets two threads run the critical section concurrently",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.java:98-114",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.kt:72"
     },
     {
       "id": "correctness-parquet-2level-list-cast",
@@ -313,15 +295,6 @@
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePuffinDeleteReader.kt:82"
     },
     {
-      "id": "correctness-cache-no-download-size-verify",
-      "finding_index": 60,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "Downloaded file size is never verified before being moved into the cache and returned",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.java:106-109",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMaterializedFileCache.kt:72"
-    },
-    {
       "id": "eff-paritext-prefetch-no-max-cap",
       "finding_index": 61,
       "category": "efficiency",
@@ -383,24 +356,6 @@
       "title": "Insert fragments are needlessly deserialized and reserialized inside finish()",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:156-160",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.kt:140"
-    },
-    {
-      "id": "correctness-delete-footersize-zero",
-      "finding_index": 70,
-      "category": "correctness",
-      "severity": "high",
-      "title": "Delete-file footer_size=0 written unconditionally, crashing DuckDB reader",
-      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2244",
-      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:2026"
-    },
-    {
-      "id": "correctness-snapshot-time-npe-message",
-      "finding_index": 71,
-      "category": "correctness",
-      "severity": "high",
-      "title": "NPE on nullable snapshot_time before requireNonNull can fire",
-      "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:2319",
-      "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:2388"
     },
     {
       "id": "eff-fallback-recordcount-materialize",
@@ -552,5 +507,5 @@
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
   ],
-  "resolved": 5
+  "resolved": 10
 }

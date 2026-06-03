@@ -2023,8 +2023,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             r.setFormat("parquet")
             r.setDeleteCount(fragment.deleteCount)
             r.setFileSizeBytes(fragment.fileSizeBytes)
-            // TODO(review:after id=correctness-delete-footersize-zero): delete-file footer_size=0 written unconditionally (insert path guards)
-            r.setFooterSize(fragment.footerSize)
+            // footer_size is a hint column: SQL NULL means "no hint" and the reader falls back
+            // to a blind tail read; a literal 0 crashes DuckDB ("Invalid footer length"). The
+            // merge sink sets footerSize=0 when footer serialization throws (writeDeleteFile),
+            // so guard exactly as the insert path above does and map 0 to NULL.
+            if (fragment.footerSize > 0) {
+                r.setFooterSize(fragment.footerSize)
+            }
             deleteFileRecords.add(r)
 
             totalNewDeleteCount += fragment.newDeleteCount
@@ -2385,12 +2390,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
         }
 
-        // TODO(review:after id=correctness-snapshot-time-npe-message): NPE on nullable snapshot_time loses row identification context
         private fun toDucklakeSnapshot(r: DucklakeSnapshotRecord): DucklakeSnapshot {
             return DucklakeSnapshot(
                 r.snapshotId,
-                // snapshot_time is @Nullable in jOOQ but Java code dereferenced unguarded; preserve that NPE-on-null.
-                r.snapshotTime!!.toInstant(),
+                // snapshot_time is @Nullable in jOOQ. A bare deref NPEs with no context; name the
+                // offending row so a partially-written / legacy snapshot is identifiable.
+                checkNotNull(r.snapshotTime) { "snapshot_time is null for snapshot_id=${r.snapshotId}" }.toInstant(),
                 orZero(r.schemaVersion),
                 orZero(r.nextCatalogId),
                 orZero(r.nextFileId),

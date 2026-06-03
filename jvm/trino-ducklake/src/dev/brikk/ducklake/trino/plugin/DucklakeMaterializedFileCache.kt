@@ -67,9 +67,16 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
     /**
      * Return a local filesystem path for the given remote DuckDB file, downloading it
      * if not already present. Safe to call concurrently with the same key.
+     *
+     * The per-key lock is interned for the lifetime of the JVM — it is never removed from
+     * [keyLocks]. Removing it inside the `synchronized` block (as an earlier version did in
+     * a `finally`) could hand a stale monitor to an already-waiting thread: thread A clears
+     * the mapping and exits while B is parked on the old monitor, then C `computeIfAbsent`s a
+     * fresh monitor and enters — so B and C run the critical section under different locks at
+     * once and race on the shared `.partial` file. The unbounded map is cheap: keys are bounded
+     * by the set of distinct `(remotePath, fileSize)` pairs, which already matches the no-eviction
+     * design of the cache itself.
      */
-    // TODO(review:after id=correctness-cache-lock-removed-inside-sync): per-key lock removed inside synchronized block lets two threads race
-    // TODO(review:after id=correctness-cache-no-download-size-verify): downloaded file size never verified before move/return
     @Throws(IOException::class)
     public fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
         val key = cacheKey(remotePath, fileSize)
@@ -80,21 +87,25 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
 
         val lock = keyLocks.computeIfAbsent(key) { Any() }
         return synchronized(lock) {
-            try {
-                if (isReady(local, fileSize)) {
-                    local
-                }
-                else {
-                    val partial = cacheDir.resolve(key + ".partial")
-                    Files.deleteIfExists(partial)
-                    downloadTo(fileSystem, remotePath, partial)
-                    Files.move(partial, local, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                    log.debug("Materialized %s (%d bytes) -> %s", remotePath, fileSize, local)
-                    local
-                }
+            if (isReady(local, fileSize)) {
+                local
             }
-            finally {
-                keyLocks.remove(key, lock)
+            else {
+                val partial = cacheDir.resolve(key + ".partial")
+                Files.deleteIfExists(partial)
+                val downloaded = downloadTo(fileSystem, remotePath, partial)
+                if (downloaded != fileSize) {
+                    // Truncated/short download (interrupted stream, or stale catalog fileSize):
+                    // fail loudly here rather than moving a corrupt .db into place and handing it
+                    // to DuckDB ATTACH. isReady() only catches this on the *next* call for the key.
+                    Files.deleteIfExists(partial)
+                    throw IOException(
+                        "Truncated download for $remotePath: expected $fileSize bytes but read $downloaded",
+                    )
+                }
+                Files.move(partial, local, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                log.debug("Materialized %s (%d bytes) -> %s", remotePath, fileSize, local)
+                local
             }
         }
     }
@@ -120,12 +131,13 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
             return true
         }
 
+        /** Returns the number of bytes actually transferred so the caller can verify it. */
         @Throws(IOException::class)
-        private fun downloadTo(fileSystem: TrinoFileSystem, remotePath: Location, target: Path) {
+        private fun downloadTo(fileSystem: TrinoFileSystem, remotePath: Location, target: Path): Long {
             val inputFile = fileSystem.newInputFile(remotePath)
             inputFile.newStream().use { `in` ->
                 Files.newOutputStream(target).use { out ->
-                    `in`.transferTo(out)
+                    return `in`.transferTo(out)
                 }
             }
         }

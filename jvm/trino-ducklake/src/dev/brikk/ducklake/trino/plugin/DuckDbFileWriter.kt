@@ -255,18 +255,23 @@ constructor(
                     .plusNanos((ts.getPicosOfMicro() / 1_000).toLong()))
             return
         }
-        // TODO(review:after id=correctness-timestamptz-precision-truncation): TIMESTAMPTZ Appender write truncates sub-millisecond precision
         if (type is TimestampWithTimeZoneType) {
-            val epochMillis: Long
+            val instant: Instant
             if (type.isShort()) {
                 val packed = type.getLong(block, position)
-                epochMillis = unpackMillisUtc(packed)
+                instant = Instant.ofEpochMilli(unpackMillisUtc(packed))
             }
             else {
+                // LongTimestampWithTimeZone carries epochMillis + picosOfMilli. DuckDB TIMESTAMPTZ
+                // is microsecond precision, so carry the sub-millisecond nanos (picos/1000) through
+                // instead of truncating to whole milliseconds — otherwise TIMESTAMP(6)/(9) WITH TIME
+                // ZONE silently loses its micros. Mirrors the Arrow writer's populateTimestampTzVector
+                // and the sibling TIMESTAMP long path above.
                 val ts = type.getObject(block, position) as LongTimestampWithTimeZone
-                epochMillis = ts.getEpochMillis()
+                instant = Instant.ofEpochMilli(ts.getEpochMillis())
+                        .plusNanos((ts.getPicosOfMilli() / 1_000).toLong())
             }
-            appender.append(OffsetDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneOffset.UTC))
+            appender.append(OffsetDateTime.ofInstant(instant, ZoneOffset.UTC))
             return
         }
         if (type is VarcharType) {
