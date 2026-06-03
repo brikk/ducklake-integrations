@@ -166,7 +166,10 @@ within one slice already.
 
 ## Status (updated after each slice lands)
 
-- **Slices 1–7: shipped.** `resolved` = 41 / 50 in `after-markers.json`; `len(markers)` = 9
-  (all Slice 8). Slices 1–6 are merged + pushed to `main`; Slice 7 (`after/7-inlined-literals`)
-  is merged to `main` as well. See `project_after_backlog_progress.md` for the running ledger.
-- **Slice 8 is the last slice.** See `SLICE-8-HANDOFF.md`.
+- **COMPLETE — all 8 slices shipped.** `resolved` = 50 / 50 in `after-markers.json`; `markers[]`
+  is empty. Slices 1–8 are all merged + pushed to `main` as a linear fast-forward history. The
+  AFTER backlog is fully resolved; no Slice 9. See `project_after_backlog_progress.md` for the
+  running ledger and per-slice design notes. (`SLICE-8-HANDOFF.md` was deleted on merge, as each
+  slice's handoff is removed once the slice lands.)
+- **Final test baseline:** catalog 33 suites / 110 tests / 0-0-0; trino 77 suites / 862 tests /
+  0-0-0.

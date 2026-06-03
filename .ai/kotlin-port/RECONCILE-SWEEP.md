@@ -96,6 +96,11 @@ Never `gradle clean`.
 
 ---
 
+> **Closed (2026-06-03):** the ledger balanced and the AFTER initiative ran to completion —
+> all 50 markers resolved across 8 slices (see `AFTER-SLICES.md` Status and
+> `project_after_backlog_progress.md`). `after-markers.json` `resolved` = 50 / 50, `markers[]`
+> empty. Nothing further to reconcile.
+
 ## Outcome
 - **Balances + green** → port effort is provably complete. STOP here. Capture to memory:
   "Kotlin port done & on main; AFTER backlog = ~50 in-tree TODO(review:after) markers keyed
