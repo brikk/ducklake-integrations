@@ -889,7 +889,6 @@ public class DucklakePageSourceProvider @Inject constructor(
      * The row ID is computed as rowIdStart + (cumulative file position).
      * This must be applied BEFORE delete file filtering so the IDs match original file positions.
      */
-    // TODO(review:after id=spi-rowidinjecting-no-metrics-isblocked): RowIdInjectingPageSource does not propagate getMetrics() / isBlocked()
     private class RowIdInjectingPageSource : ConnectorPageSource
     {
         private val delegate: ConnectorPageSource
@@ -960,6 +959,16 @@ public class DucklakePageSourceProvider @Inject constructor(
         override fun getMemoryUsage(): Long
         {
             return delegate.getMemoryUsage()
+        }
+
+        override fun getMetrics(): io.trino.spi.metrics.Metrics
+        {
+            return delegate.getMetrics()
+        }
+
+        override fun isBlocked(): java.util.concurrent.CompletableFuture<*>
+        {
+            return delegate.isBlocked()
         }
 
         @Throws(IOException::class)

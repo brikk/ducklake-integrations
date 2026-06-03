@@ -7,15 +7,6 @@
   "skipped_other": 9,
   "markers": [
     {
-      "id": "spi-listtables-omits-views",
-      "finding_index": 12,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "listTables omits views, violating the SPI contract",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.java:336-360",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMetadata.kt:268"
-    },
-    {
       "id": "correctness-identity-partition-spec-mismatch",
       "finding_index": 15,
       "category": "correctness",
@@ -32,15 +23,6 @@
       "title": "TIMESTAMPTZ Appender write truncates sub-millisecond precision (data loss for TIMESTAMP(6)/(9) WITH TIME ZONE)",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.java:337-348",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFileWriter.kt:259"
-    },
-    {
-      "id": "spi-pagesink-no-memory-usage",
-      "finding_index": 18,
-      "category": "correctness",
-      "severity": "medium",
-      "title": "getMemoryUsage() not overridden \u2014 buffered Parquet row groups are invisible to Trino memory accounting",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:58-394",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:50"
     },
     {
       "id": "correctness-valuecount-includes-nulls",
@@ -77,15 +59,6 @@
       "title": "getSnapshotAtOrBefore materializes the entire snapshot table to find one row",
       "java_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.java:234-244",
       "kotlin_anchor": "jvm/ducklake-catalog/src/dev/brikk/ducklake/catalog/JdbcDucklakeCatalog.kt:200"
-    },
-    {
-      "id": "spi-rowidinjecting-no-metrics-isblocked",
-      "finding_index": 24,
-      "category": "correctness",
-      "severity": "low",
-      "title": "RowIdInjectingPageSource does not propagate getMetrics() (or isBlocked()) from delegate",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.java:953-1041",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSourceProvider.kt:892"
     },
     {
       "id": "eff-effectivepredicate-filter-list-contains",
@@ -176,15 +149,6 @@
       "title": "Rollover eagerly opens a successor writer that may stay empty, producing a zero-row data file",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:194-197",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:170"
-    },
-    {
-      "id": "spi-pagesink-no-completed-bytes",
-      "finding_index": 37,
-      "category": "correctness",
-      "severity": "low",
-      "title": "getCompletedBytes() not overridden \u2014 reported written bytes always 0",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.java:58-394",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakePageSink.kt:50"
     },
     {
       "id": "eff-rollover-partition-recompute",
@@ -329,15 +293,6 @@
       "title": "All read-path IOException/SQLException wrapped as NOT_SUPPORTED",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.java:141-143",
       "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.kt:120"
-    },
-    {
-      "id": "lowtail-completedbytes-output-page-size",
-      "finding_index": 57,
-      "category": "correctness",
-      "severity": "low",
-      "title": "getCompletedBytes reports output Page size, not input bytes read",
-      "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.java:137-138",
-      "kotlin_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DuckDbFilePageSource.kt:78"
     },
     {
       "id": "lowtail-sortkey-contiguity-unchecked",
@@ -596,5 +551,6 @@
       "reason": "other: addressed by DURING kit-fix (close in catch)",
       "java_anchor": "jvm/trino-ducklake/src/dev/brikk/ducklake/trino/plugin/DucklakeMergeSink.java:176-202"
     }
-  ]
+  ],
+  "resolved": 5
 }

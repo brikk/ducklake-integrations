@@ -60,6 +60,10 @@ class ParquetFileWriter(
         return parquetWriter.estimatedWrittenBytes
     }
 
+    override fun getRetainedBytes(): Long {
+        return parquetWriter.retainedBytes
+    }
+
     @Throws(IOException::class)
     override fun finishAndBuildFragment(): DucklakeWriteFragment {
         parquetWriter.close()

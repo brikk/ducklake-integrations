@@ -47,8 +47,6 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
 
-// TODO(review:after id=spi-pagesink-no-memory-usage): getMemoryUsage() not overridden — buffered Parquet row groups invisible to Trino
-// TODO(review:after id=spi-pagesink-no-completed-bytes): getCompletedBytes() not overridden — reported written bytes always 0
 public class DucklakePageSink(
         handle: DucklakeWritableTableHandle,
         fileSystem: TrinoFileSystem,
@@ -137,6 +135,29 @@ public class DucklakePageSink(
         else {
             this.partitioner = null
         }
+    }
+
+    override fun getMemoryUsage(): Long {
+        var total: Long = 0
+        for (writer in writers) {
+            if (writer != null) {
+                total += writer.getRetainedBytes()
+            }
+        }
+        return total
+    }
+
+    override fun getCompletedBytes(): Long {
+        var total: Long = 0
+        for (fragment in completedFragments) {
+            total += fragment.fileSizeBytes
+        }
+        for (writer in writers) {
+            if (writer != null) {
+                total += writer.getApproximateWrittenBytes()
+            }
+        }
+        return total
     }
 
     override fun appendPage(page: Page): CompletableFuture<*> {

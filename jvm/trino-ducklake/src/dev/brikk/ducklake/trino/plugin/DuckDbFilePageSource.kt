@@ -71,13 +71,14 @@ public class DuckDbFilePageSource(
 
     private var initialized: Boolean = false
     private var finished: Boolean = false
-    private var completedBytes: Long = 0
     private var completedPositions: Long = 0
     private var readTimeNanos: Long = 0
 
-    // TODO(review:after id=lowtail-completedbytes-output-page-size): reports output Page size, not input bytes read (violates SPI contract)
     override fun getCompletedBytes(): Long {
-        return completedBytes
+        // SPI contract: return input bytes processed; if unavailable, return 0.
+        // The DuckDB executor exposes no bytes-read accessor, so we cannot
+        // honestly report input bytes here.
+        return 0L
     }
 
     override fun getReadTimeNanos(): Long {
@@ -114,7 +115,6 @@ public class DuckDbFilePageSource(
                 page = converter.convert(arrowReader!!.vectorSchemaRoot)
             }
             completedPositions += page.positionCount.toLong()
-            completedBytes += page.sizeInBytes
             return SourcePage.create(page)
         }
         // TODO(review:after id=correctness-readpath-not-supported-misclass): IO/SQL read failures wrapped as NOT_SUPPORTED instead of EXTERNAL

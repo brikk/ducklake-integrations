@@ -265,30 +265,38 @@ class DucklakeMetadata(
                 localProperties)
     }
 
-    // TODO(review:after id=spi-listtables-omits-views): listTables omits views, violating the SPI contract
     override fun listTables(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName>
     {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
+        val relations: ImmutableList.Builder<SchemaTableName> = ImmutableList.builder()
 
         if (schemaName.isPresent) {
             val schema: Optional<DucklakeSchema> = catalog.getSchema(schemaName.get(), snapshotId)
             if (schema.isEmpty) {
                 return ImmutableList.of()
             }
-
-            return catalog.listTables(schema.get().schemaId, snapshotId).stream()
-                    .map { table -> SchemaTableName(schemaName.get(), table.tableName) }
-                    .collect(toImmutableList())
+            for (table in catalog.listTables(schema.get().schemaId, snapshotId)) {
+                relations.add(SchemaTableName(schemaName.get(), table.tableName))
+            }
+            for (view in catalog.listViews(schema.get().schemaId, snapshotId)) {
+                if (isViewAccessible(view)) {
+                    relations.add(SchemaTableName(schemaName.get(), view.viewName))
+                }
+            }
+            return relations.build()
         }
 
-        // List all tables across all schemas
-        val tables: ImmutableList.Builder<SchemaTableName> = ImmutableList.builder()
         for (schema in catalog.listSchemas(snapshotId)) {
             for (table in catalog.listTables(schema.schemaId, snapshotId)) {
-                tables.add(SchemaTableName(schema.schemaName, table.tableName))
+                relations.add(SchemaTableName(schema.schemaName, table.tableName))
+            }
+            for (view in catalog.listViews(schema.schemaId, snapshotId)) {
+                if (isViewAccessible(view)) {
+                    relations.add(SchemaTableName(schema.schemaName, view.viewName))
+                }
             }
         }
-        return tables.build()
+        return relations.build()
     }
 
     override fun getColumnHandles(session: ConnectorSession, tableHandle: ConnectorTableHandle): Map<String, ColumnHandle>

@@ -39,6 +39,14 @@ interface DucklakeFileWriter
     fun getApproximateWrittenBytes(): Long
 
     /**
+     * Bytes currently retained in memory by this writer (buffered row groups, column
+     * writers, etc.). Surfaced to Trino via {@link ConnectorPageSink#getMemoryUsage}
+     * so the engine can account for sink-side heap pressure. Defaults to 0 for
+     * writers that flush per-page.
+     */
+    fun getRetainedBytes(): Long = 0L
+
+    /**
      * Close the writer, finalize the data file at its destination, and return the
      * fragment record describing what was written. After this returns the writer
      * must not be used again.
