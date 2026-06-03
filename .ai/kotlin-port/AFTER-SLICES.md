@@ -159,6 +159,14 @@ within one slice already.
 - Update `after-markers.json` `markers[]` (remove the entry) and bump `planted` so the
   reconciliation invariant in `RECONCILE-SWEEP.md` continues to hold:
   `planted + skipped_before_fixed + skipped_other == input_findings`.
-- Test baseline to preserve (parse on-disk `TEST-*.xml`, not stdout):
-  catalog 33 suites / 108 tests / 0-0-0; trino 70 suites / 826 tests / 0-0-0.
-  Never `gradle clean`.
+- Test baseline to preserve (parse on-disk `TEST-*.xml`, not stdout). The baseline grows as
+  slices add regression tests — the current (post-Slice-7) baseline is **catalog 33 suites /
+  108 tests / 0-0-0; trino 77 suites / 859 tests / 0-0-0**. (The 70/826 figure in early drafts
+  was the end-of-port baseline before any AFTER slice added tests.) Never `gradle clean`.
+
+## Status (updated after each slice lands)
+
+- **Slices 1–7: shipped.** `resolved` = 41 / 50 in `after-markers.json`; `len(markers)` = 9
+  (all Slice 8). Slices 1–6 are merged + pushed to `main`; Slice 7 (`after/7-inlined-literals`)
+  is merged to `main` as well. See `project_after_backlog_progress.md` for the running ledger.
+- **Slice 8 is the last slice.** See `SLICE-8-HANDOFF.md`.
