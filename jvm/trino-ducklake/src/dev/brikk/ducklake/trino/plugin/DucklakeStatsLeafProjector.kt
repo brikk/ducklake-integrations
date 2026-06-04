@@ -54,7 +54,6 @@ object DucklakeStatsLeafProjector {
         return leaves.build()
     }
 
-    @JvmStatic
     private fun buildChildrenByParent(allCatalogColumns: List<DucklakeColumn>): Map<Long, MutableMap<String, DucklakeColumn>> {
         val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = HashMap()
         for (column in allCatalogColumns) {
@@ -67,7 +66,6 @@ object DucklakeStatsLeafProjector {
         return childrenByParent
     }
 
-    @JvmStatic
     private fun collect(
             fieldId: Long,
             type: Type,
@@ -75,43 +73,40 @@ object DucklakeStatsLeafProjector {
             out: ImmutableList.Builder<LeafStatsTarget>,
             runningIndex: IntArray) {
         if (type is RowType) {
-            val row = type
             val children: Map<String, DucklakeColumn> = childrenByParent[fieldId] ?: emptyMap()
-            for (field in row.fields) {
+            for (field in type.fields) {
                 val childName = field.name.orElseThrow {
-                    IllegalArgumentException("Anonymous row fields are not supported (parent field_id=" + fieldId + ")")
+                    IllegalArgumentException("Anonymous row fields are not supported (parent field_id=$fieldId)")
                 }
                 val child = children[childName]
                 if (child == null) {
                     throw IllegalStateException(
-                            "Catalog tree missing ROW child '" + childName + "' for parent field_id=" + fieldId)
+                            "Catalog tree missing ROW child '$childName' for parent field_id=$fieldId")
                 }
                 collect(child.columnId, field.type, childrenByParent, out, runningIndex)
             }
             return
         }
         if (type is ArrayType) {
-            val array = type
             val children: Map<String, DucklakeColumn> = childrenByParent[fieldId] ?: emptyMap()
             if (children.size != 1) {
                 throw IllegalStateException(
-                        "Catalog tree expected one ARRAY child for field_id=" + fieldId + ", found " + children.size)
+                        "Catalog tree expected one ARRAY child for field_id=$fieldId, found ${children.size}")
             }
-            val element = children.values.iterator().next()
-            collect(element.columnId, array.elementType, childrenByParent, out, runningIndex)
+            val element = children.values.first()
+            collect(element.columnId, type.elementType, childrenByParent, out, runningIndex)
             return
         }
         if (type is MapType) {
-            val map = type
             val children: Map<String, DucklakeColumn> = childrenByParent[fieldId] ?: emptyMap()
             val keyChild = children["key"]
             val valueChild = children["value"]
             if (keyChild == null || valueChild == null) {
                 throw IllegalStateException(
-                        "Catalog tree missing MAP key/value children for field_id=" + fieldId)
+                        "Catalog tree missing MAP key/value children for field_id=$fieldId")
             }
-            collect(keyChild.columnId, map.keyType, childrenByParent, out, runningIndex)
-            collect(valueChild.columnId, map.valueType, childrenByParent, out, runningIndex)
+            collect(keyChild.columnId, type.keyType, childrenByParent, out, runningIndex)
+            collect(valueChild.columnId, type.valueType, childrenByParent, out, runningIndex)
             return
         }
         out.add(LeafStatsTarget(fieldId, type, runningIndex[0]))

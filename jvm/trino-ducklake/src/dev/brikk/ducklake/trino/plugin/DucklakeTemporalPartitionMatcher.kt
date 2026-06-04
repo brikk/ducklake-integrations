@@ -43,7 +43,7 @@ public object DucklakeTemporalPartitionMatcher {
                 return true
             }
 
-            val transformedValue = java.lang.Long.parseLong(partitionValue)
+            val transformedValue = partitionValue.toLong()
             if (!readLeniency) {
                 return partitionValueMatchesDomainForEncoding(columnType, transformedValue, domain, transform, configuredEncoding)
             }
@@ -127,7 +127,7 @@ public object DucklakeTemporalPartitionMatcher {
         // When an exclusive high bound falls exactly on a partition transform boundary
         // (e.g. `< TIMESTAMP '2026-03-08 00:00:00'` with DAY transform), no data in that
         // partition can satisfy the predicate, so we must adjust the effective bound.
-        if (!columnType.equals(io.trino.spi.type.DateType.DATE) &&
+        if (columnType != io.trino.spi.type.DateType.DATE &&
                 range.getHighValue().isPresent && !range.isHighInclusive()) {
             val epochMicros = extractEpochMicros(columnType, range.getHighValue().get())
             if (isAtTransformBoundary(epochMicros, transform)) {
@@ -193,11 +193,11 @@ public object DucklakeTemporalPartitionMatcher {
 
         if (encoding == CALENDAR) {
             return when (transform) {
-                DucklakePartitionTransform.YEAR -> temporalValue.date.getYear().toLong()
-                DucklakePartitionTransform.MONTH -> temporalValue.date.getMonthValue().toLong()
-                DucklakePartitionTransform.DAY -> temporalValue.date.getDayOfMonth().toLong()
+                DucklakePartitionTransform.YEAR -> temporalValue.date.year.toLong()
+                DucklakePartitionTransform.MONTH -> temporalValue.date.monthValue.toLong()
+                DucklakePartitionTransform.DAY -> temporalValue.date.dayOfMonth.toLong()
                 DucklakePartitionTransform.HOUR -> temporalValue.hourOfDay.toLong()
-                else -> throw IllegalArgumentException("Unsupported transform for calendar encoding: " + transform)
+                else -> throw IllegalArgumentException("Unsupported transform for calendar encoding: $transform")
             }
         }
 
@@ -206,7 +206,7 @@ public object DucklakeTemporalPartitionMatcher {
             DucklakePartitionTransform.MONTH -> (temporalValue.date.getYear() - 1970L) * 12L + (temporalValue.date.getMonthValue() - 1L)
             DucklakePartitionTransform.DAY -> temporalValue.epochDay
             DucklakePartitionTransform.HOUR -> temporalValue.epochHour
-            else -> throw IllegalArgumentException("Unsupported transform for epoch encoding: " + transform)
+            else -> throw IllegalArgumentException("Unsupported transform for epoch encoding: $transform")
         }
     }
 
@@ -229,7 +229,7 @@ public object DucklakeTemporalPartitionMatcher {
         public companion object {
             @JvmStatic
             internal fun from(columnType: Type, value: Any): TemporalValue {
-                if (columnType.equals(io.trino.spi.type.DateType.DATE)) {
+                if (columnType == io.trino.spi.type.DateType.DATE) {
                     val epochDay = (value as Number).toLong()
                     val date = LocalDate.ofEpochDay(epochDay)
                     val epochHour = Math.multiplyExact(epochDay, 24L)
@@ -248,16 +248,14 @@ public object DucklakeTemporalPartitionMatcher {
 
     private fun extractEpochMicros(columnType: Type, value: Any): Long {
         if (columnType is TimestampType) {
-            val timestampType: TimestampType = columnType
-            if (timestampType.isShort()) {
+            if (columnType.isShort()) {
                 return value as Long
             }
             return (value as LongTimestamp).getEpochMicros()
         }
 
         if (columnType is TimestampWithTimeZoneType) {
-            val timestampWithTimeZoneType: TimestampWithTimeZoneType = columnType
-            if (timestampWithTimeZoneType.isShort()) {
+            if (columnType.isShort()) {
                 return unpackMillisUtc(value as Long) * 1_000L
             }
 
@@ -269,6 +267,6 @@ public object DucklakeTemporalPartitionMatcher {
             return value.toLong()
         }
 
-        throw IllegalArgumentException("Unsupported temporal predicate value type: " + value::class.java.getName())
+        throw IllegalArgumentException("Unsupported temporal predicate value type: ${value::class.java.name}")
     }
 }

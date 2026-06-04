@@ -45,7 +45,6 @@ object ConflictMatrix {
      * @param other     changes committed in the snapshot range
      *                  `(transactionStartSnapshotId, currentSnapshotId]`
      */
-    @JvmStatic
     fun check(myChanges: List<WriteChange>, other: InterveningChanges) {
         for (change in myChanges) {
             when (change) {
@@ -87,21 +86,21 @@ object ConflictMatrix {
         )
         // Upstream: another transaction created an entry (table/view) in this schema.
         val nameMap = other.createdTablesByName[c.schemaName]
-        if (nameMap != null && nameMap.isNotEmpty()) {
-            val firstName = nameMap.keys.iterator().next()
+        if (!nameMap.isNullOrEmpty()) {
+            val firstName = nameMap.keys.first()
             val kind = nameMap[firstName]
             throw conflict(
-                "drop schema \"" + c.schemaName + "\"",
-                "another transaction created " + kind + " \"" + firstName + "\" in this schema",
+                "drop schema \"${c.schemaName}\"",
+                "another transaction created $kind \"$firstName\" in this schema",
             )
         }
     }
 
     // ducklake_transaction.cpp:1212-1215
     private fun checkCreatedSchema(c: WriteChange.CreatedSchema, other: InterveningChanges) {
-        if (other.createdSchemas.contains(c.schemaName)) {
+        if (c.schemaName in other.createdSchemas) {
             throw conflict(
-                "create schema \"" + c.schemaName + "\"",
+                "create schema \"${c.schemaName}\"",
                 "another transaction created a schema with this name already",
             )
         }
@@ -110,42 +109,36 @@ object ConflictMatrix {
     // ducklake_transaction.cpp:1218-1243 (the created_table loop)
     private fun checkCreatedTable(c: WriteChange.CreatedTable, other: InterveningChanges) {
         // Schema this table is being created in must not have been dropped.
-        if (other.droppedSchemas.contains(c.schemaId)) {
+        if (c.schemaId in other.droppedSchemas) {
             throw conflict(
-                "create table \"" + c.tableName + "\" in schema \"" + c.schemaName + "\"",
+                "create table \"${c.tableName}\" in schema \"${c.schemaName}\"",
                 "another transaction dropped this schema",
             )
         }
         // No other transaction created an entry with this (schema, name) pair.
-        val nameMap = other.createdTablesByName[c.schemaName]
-        if (nameMap != null) {
-            val existingKind = nameMap[c.tableName]
-            if (existingKind != null) {
-                throw conflict(
-                    "create table \"" + c.tableName + "\" in schema \"" + c.schemaName + "\"",
-                    "this " + existingKind + " has been created by another transaction already",
-                )
-            }
+        val existingKind = other.createdTablesByName[c.schemaName]?.get(c.tableName)
+        if (existingKind != null) {
+            throw conflict(
+                "create table \"${c.tableName}\" in schema \"${c.schemaName}\"",
+                "this $existingKind has been created by another transaction already",
+            )
         }
     }
 
     // Same shape as checkCreatedTable, for views.
     private fun checkCreatedView(c: WriteChange.CreatedView, other: InterveningChanges) {
-        if (other.droppedSchemas.contains(c.schemaId)) {
+        if (c.schemaId in other.droppedSchemas) {
             throw conflict(
-                "create view \"" + c.viewName + "\" in schema \"" + c.schemaName + "\"",
+                "create view \"${c.viewName}\" in schema \"${c.schemaName}\"",
                 "another transaction dropped this schema",
             )
         }
-        val nameMap = other.createdTablesByName[c.schemaName]
-        if (nameMap != null) {
-            val existingKind = nameMap[c.viewName]
-            if (existingKind != null) {
-                throw conflict(
-                    "create view \"" + c.viewName + "\" in schema \"" + c.schemaName + "\"",
-                    "this " + existingKind + " has been created by another transaction already",
-                )
-            }
+        val existingKind = other.createdTablesByName[c.schemaName]?.get(c.viewName)
+        if (existingKind != null) {
+            throw conflict(
+                "create view \"${c.viewName}\" in schema \"${c.schemaName}\"",
+                "this $existingKind has been created by another transaction already",
+            )
         }
     }
 
@@ -206,16 +199,15 @@ object ConflictMatrix {
     }
 
     private fun conflictIfMember(id: Long, otherSet: Set<Long>, myAction: String, theirAction: String) {
-        if (otherSet.contains(id)) {
+        if (id in otherSet) {
             throw conflict("$myAction (id=$id)", "another transaction $theirAction")
         }
     }
 
     private fun conflict(myAction: String, theirAction: String): LogicalConflictException =
         LogicalConflictException(
-            "Transaction conflict - attempting to " + myAction +
-                " - but " + theirAction +
-                ". This conflict is not retried (re-running with the same payload" +
-                " would fail identically).",
+            "Transaction conflict - attempting to $myAction - but $theirAction. " +
+                "This conflict is not retried (re-running with the same payload " +
+                "would fail identically).",
         )
 }

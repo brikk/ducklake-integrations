@@ -58,7 +58,7 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
             Files.createDirectories(cacheDir)
         }
         catch (e: IOException) {
-            throw RuntimeException("Failed to create DuckDB read cache dir: " + cacheDir, e)
+            throw RuntimeException("Failed to create DuckDB read cache dir: $cacheDir", e)
         }
     }
 
@@ -77,8 +77,7 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
      * by the set of distinct `(remotePath, fileSize)` pairs, which already matches the no-eviction
      * design of the cache itself.
      */
-    @Throws(IOException::class)
-    public fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
+    fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
         val key = cacheKey(remotePath, fileSize)
         val local = cacheDir.resolve(key + ".db")
         if (isReady(local, fileSize)) {
@@ -117,7 +116,6 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
             return Paths.get(System.getProperty("java.io.tmpdir"), "ducklake-read")
         }
 
-        @Throws(IOException::class)
         private fun isReady(local: Path, expectedSize: Long): Boolean {
             if (!Files.exists(local)) {
                 return false
@@ -132,7 +130,6 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
         }
 
         /** Returns the number of bytes actually transferred so the caller can verify it. */
-        @Throws(IOException::class)
         private fun downloadTo(fileSystem: TrinoFileSystem, remotePath: Location, target: Path): Long {
             val inputFile = fileSystem.newInputFile(remotePath)
             inputFile.newStream().use { `in` ->

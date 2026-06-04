@@ -21,24 +21,17 @@ import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 
 open class DucklakePageSourceProviderFactory @Inject constructor(
-        fileSystemFactory: DucklakeFileSystemFactory,
-        fileFormatDataSourceStats: FileFormatDataSourceStats,
+        private val fileSystemFactory: DucklakeFileSystemFactory,
+        private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         parquetReaderConfig: ParquetReaderConfig,
-        catalog: DucklakeCatalog,
-        duckDbReadCache: DucklakeMaterializedFileCache,
-        duckDbS3Config: DuckDbS3Config,
-        ducklakeConfig: DucklakeConfig,
-        executorFactory: DucklakeDuckDbExecutorFactory)
+        private val catalog: DucklakeCatalog,
+        private val duckDbReadCache: DucklakeMaterializedFileCache,
+        private val duckDbS3Config: DuckDbS3Config,
+        private val ducklakeConfig: DucklakeConfig,
+        private val executorFactory: DucklakeDuckDbExecutorFactory)
         : ConnectorPageSourceProviderFactory
 {
-    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
-    private val catalog: DucklakeCatalog = catalog
-    private val duckDbReadCache: DucklakeMaterializedFileCache = duckDbReadCache
-    private val duckDbS3Config: DuckDbS3Config = duckDbS3Config
-    private val ducklakeConfig: DucklakeConfig = ducklakeConfig
-    private val executorFactory: DucklakeDuckDbExecutorFactory = executorFactory
 
     override fun createPageSourceProvider(): DucklakePageSourceProvider
     {

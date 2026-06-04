@@ -40,8 +40,7 @@ import io.trino.spi.TrinoException
  * see a clear configuration error at first use rather than a query-time
  * failure for missing macros.
  */
-class DucklakeDuckDbExecutorFactory @Inject constructor(config: DucklakeConfig) {
-    private val config: DucklakeConfig = config
+class DucklakeDuckDbExecutorFactory @Inject constructor(private val config: DucklakeConfig) {
 
     fun create(): DucklakeDuckDbExecutor {
         val tuning = config.toDuckDbTuning()

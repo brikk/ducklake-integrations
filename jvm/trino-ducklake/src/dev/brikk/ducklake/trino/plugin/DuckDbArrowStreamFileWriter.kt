@@ -140,7 +140,7 @@ constructor(
     private val partitionValues: Map<Int, String?> = HashMap(partitionValues)
     private val partitionId: OptionalLong = partitionId
     private val columns: List<DucklakeColumnHandle> = columns.toList()
-    private val columnTypes: List<Type> = this.columns.stream().map { it.columnType }.toList()
+    private val columnTypes: List<Type> = this.columns.map { it.columnType }
     private val localTempFile: Path
 
     private val connection: DuckDBConnection
@@ -159,8 +159,8 @@ constructor(
 
     init {
         Files.createDirectories(localTempDir)
-        this.localTempFile = localTempDir.resolve("ducklake-write-" + UUID.randomUUID() + ".db")
-        this.streamName = "trino_in_" + UUID.randomUUID().toString().replace('-', '_')
+        this.localTempFile = localTempDir.resolve("ducklake-write-${UUID.randomUUID()}.db")
+        this.streamName = "trino_in_${UUID.randomUUID().toString().replace('-', '_')}"
 
         var conn: DuckDBConnection? = null
         var alloc: BufferAllocator? = null
@@ -169,10 +169,8 @@ constructor(
         try {
             conn = DriverManager.getConnection("jdbc:duckdb:") as DuckDBConnection
             conn.createStatement().use { stmt ->
-                stmt.execute(format(
-                        "ATTACH '%s' AS %s (READ_WRITE)",
-                        localTempFile.toAbsolutePath().toString().replace("'", "''"),
-                        ATTACHED_DB))
+                stmt.execute(
+                        "ATTACH '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' AS $ATTACHED_DB (READ_WRITE)")
                 stmt.execute(buildCreateTableSql())
             }
 
@@ -193,22 +191,20 @@ constructor(
             catch (ignored: IOException) {
                 // best-effort
             }
-            throw IOException("Failed to initialize Arrow-stream DuckDB writer for " + remoteLocation, e)
+            throw IOException("Failed to initialize Arrow-stream DuckDB writer for $remoteLocation", e)
         }
         this.connection = conn!!
         this.allocator = alloc!!
         this.reader = rdr!!
         this.arrayStream = stream!!
 
-        this.consumerThread = Thread(this::runInsert, "ducklake-arrow-insert-" + streamName)
+        this.consumerThread = Thread(this::runInsert, "ducklake-arrow-insert-$streamName")
         this.consumerThread.isDaemon = true
         this.consumerThread.start()
     }
 
     private fun runInsert() {
-        val sql: String = format(
-                "INSERT INTO %s.%s.%s SELECT * FROM %s",
-                ATTACHED_DB, ATTACHED_SCHEMA, ATTACHED_TABLE, streamName)
+        val sql = "INSERT INTO $ATTACHED_DB.$ATTACHED_SCHEMA.$ATTACHED_TABLE SELECT * FROM $streamName"
         try {
             connection.createStatement().use { stmt ->
                 stmt.execute(sql)
@@ -229,7 +225,7 @@ constructor(
             if (i > 0) {
                 sql.append(", ")
             }
-            val col: DucklakeColumnHandle = columns.get(i)
+            val col = columns[i]
             sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
             sql.append(' ').append(toDuckDbSqlType(col.columnType))
             if (!col.nullable) {
@@ -279,7 +275,7 @@ constructor(
     @Throws(IOException::class)
     override fun finishAndBuildFragment(): DucklakeWriteFragment {
         if (closed) {
-            throw IOException("Arrow-stream DuckDB writer already closed: " + remoteLocation)
+            throw IOException("Arrow-stream DuckDB writer already closed: $remoteLocation")
         }
         closed = true
 
@@ -288,8 +284,7 @@ constructor(
             pageQueue.put(END_OF_STREAM)
             if (!consumerThread.join(java.time.Duration.ofSeconds(INSERT_JOIN_TIMEOUT_SECONDS))) {
                 cleanupAfterFailure()
-                throw IOException("Arrow-stream INSERT did not finish within "
-                        + INSERT_JOIN_TIMEOUT_SECONDS + "s for " + remoteLocation)
+                throw IOException("Arrow-stream INSERT did not finish within ${INSERT_JOIN_TIMEOUT_SECONDS}s for $remoteLocation")
             }
         }
         catch (e: InterruptedException) {
@@ -300,7 +295,7 @@ constructor(
         val err: Throwable? = consumerError.get()
         if (err != null) {
             cleanupAfterFailure()
-            throw IOException("Arrow-stream INSERT failed for " + remoteLocation, err)
+            throw IOException("Arrow-stream INSERT failed for $remoteLocation", err)
         }
 
         // Stats: query the just-written table while still attached. Same shape as
@@ -309,12 +304,12 @@ constructor(
         try {
             columnStats = extractColumnStats()
             connection.createStatement().use { stmt ->
-                stmt.execute("DETACH " + ATTACHED_DB)
+                stmt.execute("DETACH $ATTACHED_DB")
             }
         }
         catch (e: SQLException) {
             cleanupAfterFailure()
-            throw IOException("Failed to finalize Arrow-stream DuckDB file " + remoteLocation, e)
+            throw IOException("Failed to finalize Arrow-stream DuckDB file $remoteLocation", e)
         }
 
         // Release Arrow + DuckDB resources before uploading.
@@ -330,7 +325,7 @@ constructor(
         }
         catch (e: IOException) {
             cleanupLocalFile()
-            throw IOException("Failed to upload Arrow-stream DuckDB file to " + remoteLocation, e)
+            throw IOException("Failed to upload Arrow-stream DuckDB file to $remoteLocation", e)
         }
         cleanupLocalFile()
 
@@ -348,10 +343,10 @@ constructor(
     @Throws(SQLException::class)
     private fun extractColumnStats(): List<DucklakeFileColumnStats> {
         if (columns.isEmpty()) {
-            return listOf()
+            return emptyList()
         }
         val sql = StringBuilder("SELECT COUNT(*)")
-        val minMaxColumns: MutableList<Int> = ArrayList()
+        val minMaxColumns = mutableListOf<Int>()
         for (i in columns.indices) {
             val col: DucklakeColumnHandle = columns.get(i)
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
@@ -370,7 +365,7 @@ constructor(
         connection.createStatement().use { stmt ->
             stmt.executeQuery(sql.toString()).use { rs ->
                 if (!rs.next()) {
-                    throw SQLException("Stats query returned no rows for " + remoteLocation)
+                    throw SQLException("Stats query returned no rows for $remoteLocation")
                 }
                 var colIdx = 1
                 totalCount = rs.getLong(colIdx++)
@@ -386,11 +381,11 @@ constructor(
             }
         }
 
-        val result: MutableList<DucklakeFileColumnStats> = ArrayList(columns.size)
+        val result = ArrayList<DucklakeFileColumnStats>(columns.size)
         for (i in columns.indices) {
             val col: DucklakeColumnHandle = columns.get(i)
             val valueCount: Long = valueCounts[i]
-            val nullCount: Long = Math.max(0, totalCount - valueCount)
+            val nullCount = maxOf(0L, totalCount - valueCount)
             val min: Optional<String> = formatStatValue(col.columnType, minValues[i])
             val max: Optional<String> = formatStatValue(col.columnType, maxValues[i])
             result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
@@ -500,13 +495,9 @@ constructor(
             return true
         }
 
-        override fun bytesRead(): Long {
-            return 0L
-        }
+        override fun bytesRead(): Long = 0L
 
-        override fun getDictionaryVectors(): Map<Long, Dictionary> {
-            return mapOf()
-        }
+        override fun getDictionaryVectors(): Map<Long, Dictionary> = emptyMap()
 
         @Throws(IOException::class)
         override fun closeReadSource() {
@@ -514,9 +505,7 @@ constructor(
         }
 
         @Throws(IOException::class)
-        override fun readSchema(): Schema {
-            return schema
-        }
+        override fun readSchema(): Schema = schema
     }
 
     @Throws(IOException::class)
@@ -524,7 +513,7 @@ constructor(
         val root: VectorSchemaRoot = reader.getVectorSchemaRoot()
         val rowCount: Int = page.getPositionCount()
         val vectors: List<FieldVector> = root.getFieldVectors()
-        for (channel in 0 until columnTypes.size) {
+        for (channel in columnTypes.indices) {
             val vector: FieldVector = vectors.get(channel)
             // Do NOT call vector.reset() here. reset() zeros the existing buffer's
             // memory in place. The previous batch's exported Arrow C-data still
@@ -604,7 +593,7 @@ constructor(
             if (type.equals(UuidType.UUID)) {
                 return "UUID"
             }
-            throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: " + type)
+            throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
         }
 
         private fun toArrowField(name: String, type: Type, nullable: Boolean): Field {
@@ -681,7 +670,7 @@ constructor(
                 return Optional.of(if ((value as Boolean)) "true" else "false")
             }
             if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
-                return Optional.of((value as Number).toLong().toString() + "")
+                return Optional.of((value as Number).toLong().toString())
             }
             if (type.equals(REAL)) {
                 val f: Float = (value as Number).toFloat()
@@ -964,7 +953,7 @@ constructor(
             }
             else {
                 throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported TIMESTAMP precision in Arrow-stream writer: " + type.getPrecision())
+                        "Unsupported TIMESTAMP precision in Arrow-stream writer: ${type.getPrecision()}")
             }
         }
 

@@ -83,11 +83,10 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
         if (root.getFieldVectors().size != columnCount) {
             throw TrinoException(
                     NOT_SUPPORTED,
-                    format("DuckDB Arrow batch has %d columns but %d projected",
-                            root.getFieldVectors().size, columnCount))
+                    "DuckDB Arrow batch has ${root.fieldVectors.size} columns but $columnCount projected")
         }
         val blocks: Array<Block> = Array(columnCount) { i ->
-            convertColumn(columnTypes.get(i), root.getVector(i), rowCount)
+            convertColumn(columnTypes[i], root.getVector(i), rowCount)
         }
         return Page(rowCount, *blocks)
     }
@@ -159,7 +158,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                         builder.appendNull()
                     }
                     else {
-                        REAL.writeLong(builder, java.lang.Float.floatToRawIntBits(v.get(i)).toLong())
+                        REAL.writeLong(builder, v.get(i).toRawBits().toLong())
                     }
                 }
             }
@@ -227,7 +226,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                         builder.appendNull()
                     }
                     else {
-                        val s = String(v.get(i), java.nio.charset.StandardCharsets.UTF_8)
+                        val s = String(v.get(i), Charsets.UTF_8)
                         UuidType.UUID.writeSlice(builder, UuidType.javaUuidToTrinoUuid(java.util.UUID.fromString(s)))
                     }
                 }
@@ -235,7 +234,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             else {
                 throw TrinoException(
                         NOT_SUPPORTED,
-                        "DuckDB-format reader does not yet support type: " + type)
+                        "DuckDB-format reader does not yet support type: $type")
             }
             return builder.build()
         }
@@ -304,7 +303,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             else {
                 throw TrinoException(
                         NOT_SUPPORTED,
-                        "Unsupported Arrow timestamp vector for Trino type " + type + ": " + vector.javaClass.getSimpleName())
+                        "Unsupported Arrow timestamp vector for Trino type $type: ${vector.javaClass.simpleName}")
             }
         }
 
@@ -381,7 +380,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             else {
                 throw TrinoException(
                         NOT_SUPPORTED,
-                        "Unsupported Arrow timestamp_tz vector for Trino type " + type + ": " + vector.javaClass.getSimpleName())
+                        "Unsupported Arrow timestamp_tz vector for Trino type $type: ${vector.javaClass.simpleName}")
             }
         }
 
@@ -393,15 +392,12 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             if (arrowType !is ArrowType.Timestamp) {
                 return UTC_KEY
             }
-            val tzString = arrowType.getTimezone()
-            if (tzString == null) {
-                return UTC_KEY
-            }
+            val tzString = arrowType.timezone ?: return UTC_KEY
             try {
                 return TimeZoneKey.getTimeZoneKey(tzString)
             }
             catch (e: TimeZoneNotSupportedException) {
-                if (UNPARSEABLE_TZ_WARNED.putIfAbsent(tzString, java.lang.Boolean.TRUE) == null) {
+                if (UNPARSEABLE_TZ_WARNED.putIfAbsent(tzString, true) == null) {
                     log.warn("Arrow schema TimeZone '%s' is not a recognised Trino TimeZoneKey; "
                                     + "falling back to UTC for incoming TIMESTAMP WITH TIME ZONE values "
                                     + "of this column. Subsequent occurrences of the same zone string "
@@ -411,7 +407,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                 return UTC_KEY
             }
             catch (e: IllegalArgumentException) {
-                if (UNPARSEABLE_TZ_WARNED.putIfAbsent(tzString, java.lang.Boolean.TRUE) == null) {
+                if (UNPARSEABLE_TZ_WARNED.putIfAbsent(tzString, true) == null) {
                     log.warn("Arrow schema TimeZone '%s' is not a recognised Trino TimeZoneKey; "
                                     + "falling back to UTC for incoming TIMESTAMP WITH TIME ZONE values "
                                     + "of this column. Subsequent occurrences of the same zone string "

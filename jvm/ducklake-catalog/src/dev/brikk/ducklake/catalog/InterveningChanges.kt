@@ -45,7 +45,6 @@ class InterveningChanges {
      * created-vs-created name-collision check; tables and views share the
      * namespace within a schema, so they live in one map.
      */
-    @JvmField
     internal val createdTablesByName: MutableMap<String, MutableMap<String, String>> = HashMap()
 
     @JvmField
@@ -121,7 +120,7 @@ class InterveningChanges {
 
     internal fun createdNamesInSchema(schemaName: String): Set<String> {
         val nestedMap = createdTablesByName[schemaName] ?: return emptySet()
-        return LinkedHashSet(nestedMap.keys)
+        return nestedMap.keys.toList().toSet()
     }
 
     internal fun createdEntryKind(schemaName: String, entryName: String): String? {
@@ -144,7 +143,6 @@ class InterveningChanges {
          * `SnapshotChangeInformation::ParseChangesMade`
          * (ducklake_transaction_changes.cpp:131).
          */
-        @JvmStatic
         fun parse(changesMade: String?): InterveningChanges {
             val result = InterveningChanges()
             if (changesMade == null || changesMade.isEmpty()) {
@@ -155,8 +153,7 @@ class InterveningChanges {
                 val kind = parseChangeKind(cur)
                 if (cur.pos >= cur.input.length || cur.input[cur.pos] != ':') {
                     throw IllegalArgumentException(
-                        "Expected a colon after the change type at position " + cur.pos +
-                            " in: " + changesMade,
+                        "Expected a colon after the change type at position ${cur.pos} in: $changesMade",
                     )
                 }
                 cur.pos++
@@ -167,8 +164,7 @@ class InterveningChanges {
                 }
                 if (cur.input[cur.pos] != ',') {
                     throw IllegalArgumentException(
-                        "Expected a comma separating change entries at position " + cur.pos +
-                            " in: " + changesMade,
+                        "Expected a comma separating change entries at position ${cur.pos} in: $changesMade",
                     )
                 }
                 cur.pos++
@@ -181,7 +177,6 @@ class InterveningChanges {
          * into one [InterveningChanges]. Order doesn't matter — all merges
          * are set unions / map merges.
          */
-        @JvmStatic
         fun parseAll(changesMadeRows: List<String>): InterveningChanges {
             val combined = InterveningChanges()
             for (row in changesMadeRows) {
@@ -225,7 +220,7 @@ class InterveningChanges {
                 "created_scalar_macro", "created_table_macro",
                 "dropped_scalar_macro", "dropped_table_macro" -> { /* ignored */ }
                 else -> throw IllegalArgumentException(
-                    "Unsupported change type \"" + kind + "\" in changes_made",
+                    "Unsupported change type \"$kind\" in changes_made",
                 )
             }
         }
@@ -267,8 +262,7 @@ class InterveningChanges {
         private fun parseQuotedValue(input: String, startPos: Int): ParsedQuotedValue {
             if (startPos >= input.length || input[startPos] != '"') {
                 throw IllegalArgumentException(
-                    "Failed to parse quoted value - expected opening quote at position " + startPos +
-                        " in: " + input,
+                    "Failed to parse quoted value - expected opening quote at position $startPos in: $input",
                 )
             }
             val sb = StringBuilder()
@@ -288,7 +282,7 @@ class InterveningChanges {
                 p++
             }
             throw IllegalArgumentException(
-                "Failed to parse quoted value - unterminated quote in: " + input,
+                "Failed to parse quoted value - unterminated quote in: $input",
             )
         }
 
@@ -300,13 +294,13 @@ class InterveningChanges {
             val schema = parseQuotedValue(value, 0)
             if (schema.endPos >= value.length || value[schema.endPos] != '.') {
                 throw IllegalArgumentException(
-                    "Failed to parse catalog entry - expected a dot in: " + value,
+                    "Failed to parse catalog entry - expected a dot in: $value",
                 )
             }
             val name = parseQuotedValue(value, schema.endPos + 1)
             if (name.endPos < value.length) {
                 throw IllegalArgumentException(
-                    "Failed to parse catalog entry - trailing data after quoted value in: " + value,
+                    "Failed to parse catalog entry - trailing data after quoted value in: $value",
                 )
             }
             return ParsedCatalogEntry(schema.value, name.value)
@@ -316,7 +310,7 @@ class InterveningChanges {
             val parsed = parseQuotedValue(value, 0)
             if (parsed.endPos < value.length) {
                 throw IllegalArgumentException(
-                    "Failed to parse single quoted value - trailing data in: " + value,
+                    "Failed to parse single quoted value - trailing data in: $value",
                 )
             }
             return parsed.value
@@ -327,13 +321,13 @@ class InterveningChanges {
                 val parsed = value.toLong()
                 if (parsed < 0) {
                     throw IllegalArgumentException(
-                        "Negative IDs are not valid in changes_made: " + value,
+                        "Negative IDs are not valid in changes_made: $value",
                     )
                 }
                 return parsed
             } catch (e: NumberFormatException) {
                 throw IllegalArgumentException(
-                    "Expected an unsigned integer change value, got: " + value, e,
+                    "Expected an unsigned integer change value, got: $value", e,
                 )
             }
         }

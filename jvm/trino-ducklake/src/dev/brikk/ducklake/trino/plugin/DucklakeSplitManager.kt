@@ -59,16 +59,13 @@ import java.util.stream.Collectors.toCollection
  * Split manager for Ducklake connector.
  * Discovers data files from SQL catalog and creates splits for each Parquet file.
  */
-public class DucklakeSplitManager @Inject constructor(
-        catalog: DucklakeCatalog,
+class DucklakeSplitManager @Inject constructor(
+        private val catalog: DucklakeCatalog,
         config: DucklakeConfig,
-        pathResolver: DucklakePathResolver,
-        splitAffinityProvider: SplitAffinityProvider) : ConnectorSplitManager {
-    private val catalog: DucklakeCatalog = catalog
-    private val pathResolver: DucklakePathResolver = pathResolver
+        private val pathResolver: DucklakePathResolver,
+        private val splitAffinityProvider: SplitAffinityProvider) : ConnectorSplitManager {
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
     private val temporalPartitionEncodingReadLeniency: Boolean = config.isTemporalPartitionEncodingReadLeniency()
-    private val splitAffinityProvider: SplitAffinityProvider = splitAffinityProvider
 
     override fun getSplits(
             transaction: ConnectorTransactionHandle?,
@@ -115,9 +112,9 @@ public class DucklakeSplitManager @Inject constructor(
         var parquetSplits: List<DucklakeSplit> = listOf()
         if (!dataFiles.isEmpty()) {
             val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId, tableHandle.snapshotId)
-                    .orElseThrow { IllegalStateException("Table metadata missing for table ID: " + tableHandle.tableId) }
+                    .orElseThrow { IllegalStateException("Table metadata missing for table ID: ${tableHandle.tableId}") }
             val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName, tableHandle.snapshotId)
-                    .orElseThrow { IllegalStateException("Schema metadata missing for schema: " + tableHandle.schemaName) }
+                    .orElseThrow { IllegalStateException("Schema metadata missing for schema: ${tableHandle.schemaName}") }
             val tableDataPath: String = pathResolver.resolveTableDataPath(schemaMetadata, tableMetadata)
 
             val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
@@ -168,14 +165,9 @@ public class DucklakeSplitManager @Inject constructor(
 
             // Group by dataFileId to merge multiple delete files per data file
             // (a data file can accumulate multiple delete files across snapshots)
-            val groupedFiles: MutableMap<Long, MutableList<DucklakeDataFile>> = LinkedHashMap()
-            for (df in dataFiles) {
-                groupedFiles.computeIfAbsent(df.dataFileId) { _ -> ArrayList() }.add(df)
-            }
-            val finalInlinedDeletesByFileId: Map<Long, java.util.Set<Long>> = inlinedDeletesByFileId
-            parquetSplits = groupedFiles.values.stream()
-                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, finalInlinedDeletesByFileId) }
-                    .collect(toImmutableList())
+            val groupedFiles: Map<Long, List<DucklakeDataFile>> = dataFiles.groupBy { it.dataFileId }
+            parquetSplits = groupedFiles.values
+                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId) }
         }
 
         // Empty table (no data files at all) with an inlined data table: emit an inlined

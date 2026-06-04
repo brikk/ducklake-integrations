@@ -26,6 +26,7 @@ import io.trino.spi.session.PropertyMetadata
 import io.trino.spi.session.PropertyMetadata.stringProperty
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.VarcharType.VARCHAR
+import java.util.Locale
 import java.util.Optional
 import java.util.OptionalInt
 import java.util.regex.Pattern
@@ -78,7 +79,6 @@ public open class DucklakeTableProperties @Inject constructor() {
         // URI scheme prefix: <scheme>:// — e.g. s3://, gs://, file://, abfss://, hdfs://, gcs://
         private val URI_SCHEME_PATTERN: Pattern = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+\\-.]*://")
 
-        @JvmStatic
         private fun validateDataFileFormat(value: String?) {
             if (value == null) {
                 return
@@ -86,7 +86,7 @@ public open class DucklakeTableProperties @Inject constructor() {
             if (!FORMAT_PARQUET.equals(value, ignoreCase = true) && !FORMAT_DUCKDB.equals(value, ignoreCase = true)) {
                 throw TrinoException(
                         INVALID_TABLE_PROPERTY,
-                        DATA_FILE_FORMAT_PROPERTY + " must be one of: '" + FORMAT_PARQUET + "', '" + FORMAT_DUCKDB + "'")
+                        "$DATA_FILE_FORMAT_PROPERTY must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB'")
             }
         }
 
@@ -125,21 +125,20 @@ public open class DucklakeTableProperties @Inject constructor() {
             return Optional.of(TableLocationSpec(normalized, !isAbsolute))
         }
 
-        @JvmStatic
         private fun validateLocation(value: String?) {
             if (value == null) {
                 return
             }
             val trimmed = value.trim()
             if (trimmed.isEmpty()) {
-                throw TrinoException(INVALID_TABLE_PROPERTY, LOCATION_PROPERTY + " must not be blank")
+                throw TrinoException(INVALID_TABLE_PROPERTY, "$LOCATION_PROPERTY must not be blank")
             }
             // Reject path traversal — split on both '/' and '\' to catch Windows-style attempts.
             for (segment in trimmed.split("[/\\\\]".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()) {
                 if (segment == "..") {
                     throw TrinoException(
                             INVALID_TABLE_PROPERTY,
-                            LOCATION_PROPERTY + " must not contain '..' path-traversal segments: " + value)
+                            "$LOCATION_PROPERTY must not contain '..' path-traversal segments: $value")
                 }
             }
         }
@@ -148,18 +147,12 @@ public open class DucklakeTableProperties @Inject constructor() {
         @Suppress("UNCHECKED_CAST")
         public fun getPartitionFields(tableProperties: Map<String, Any?>): List<PartitionFieldSpec> {
             val partitionBy = tableProperties[PARTITIONED_BY_PROPERTY] as List<String>?
-            if (partitionBy == null || partitionBy.isEmpty()) {
-                return ImmutableList.of()
+            if (partitionBy.isNullOrEmpty()) {
+                return emptyList()
             }
-
-            val fields = ImmutableList.builder<PartitionFieldSpec>()
-            for (entry in partitionBy) {
-                fields.add(parsePartitionField(entry))
-            }
-            return fields.build()
+            return partitionBy.map { parsePartitionField(it) }
         }
 
-        @JvmStatic
         private fun parsePartitionField(entry: String): PartitionFieldSpec {
             val trimmed = entry.trim()
 
@@ -170,10 +163,10 @@ public open class DucklakeTableProperties @Inject constructor() {
                     arity = bucketMatcher.group(1).toInt()
                 }
                 catch (e: NumberFormatException) {
-                    throw TrinoException(INVALID_TABLE_PROPERTY, "Invalid bucket arity: " + bucketMatcher.group(1))
+                    throw TrinoException(INVALID_TABLE_PROPERTY, "Invalid bucket arity: ${bucketMatcher.group(1)}")
                 }
                 if (arity <= 0) {
-                    throw TrinoException(INVALID_TABLE_PROPERTY, "bucket(N, col) requires a positive arity, got " + arity)
+                    throw TrinoException(INVALID_TABLE_PROPERTY, "bucket(N, col) requires a positive arity, got $arity")
                 }
                 val columnName = bucketMatcher.group(2).trim()
                 return PartitionFieldSpec(columnName, DucklakePartitionTransform.BUCKET, OptionalInt.of(arity))
@@ -181,14 +174,14 @@ public open class DucklakeTableProperties @Inject constructor() {
 
             val matcher = TRANSFORM_PATTERN.matcher(trimmed)
             if (matcher.matches()) {
-                val transformName = matcher.group(1).uppercase(java.util.Locale.ENGLISH)
+                val transformName = matcher.group(1).uppercase(Locale.ENGLISH)
                 val columnName = matcher.group(2).trim()
                 val transform: DucklakePartitionTransform
                 try {
                     transform = DucklakePartitionTransform.valueOf(transformName)
                 }
                 catch (e: IllegalArgumentException) {
-                    throw TrinoException(INVALID_TABLE_PROPERTY, "Unknown partition transform: " + matcher.group(1))
+                    throw TrinoException(INVALID_TABLE_PROPERTY, "Unknown partition transform: ${matcher.group(1)}")
                 }
                 return PartitionFieldSpec(columnName, transform)
             }

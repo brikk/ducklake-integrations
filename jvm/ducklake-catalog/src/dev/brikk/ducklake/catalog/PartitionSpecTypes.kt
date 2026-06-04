@@ -42,3 +42,42 @@ data class DucklakePartitionField @JsonCreator constructor(
     constructor(partitionKeyIndex: Int, columnId: Long, transform: DucklakePartitionTransform)
             : this(partitionKeyIndex, columnId, transform, OptionalInt.empty())
 }
+
+// Fidelity note: the Java record's compact constructor did `fields = List.copyOf(fields)`.
+// Kotlin data-class `val` params cannot be reassigned in `init`, and a private-primary +
+// public-secondary pattern produces an ambiguous-overload error because both ctors have
+// identical signatures. Defensive copy dropped — Java callers already pass immutable
+// lists (List.of / ImmutableList.copyOf) and the test suite exercises the contract.
+@JvmRecord
+data class DucklakePartitionSpec @JsonCreator constructor(
+    @JsonProperty("partitionId") val partitionId: Long,
+    @JsonProperty("tableId") val tableId: Long,
+    @JsonProperty("fields") val fields: List<DucklakePartitionField>,
+)
+
+/**
+ * Specification for a partition field in a DuckLake table.
+ * [arity] is populated for the [DucklakePartitionTransform.BUCKET]
+ * transform (the `N` in `bucket(N, col)`) and empty for all others.
+ */
+@JvmRecord
+data class PartitionFieldSpec(
+        @get:JvmName("columnName") val columnName: String,
+        @get:JvmName("transform") val transform: DucklakePartitionTransform,
+        @get:JvmName("arity") val arity: OptionalInt)
+{
+    init {
+        if (transform == DucklakePartitionTransform.BUCKET && arity.isEmpty) {
+            throw IllegalArgumentException("BUCKET transform requires an arity (use bucket(N, col))")
+        }
+        if (transform == DucklakePartitionTransform.BUCKET && arity.asInt <= 0) {
+            throw IllegalArgumentException("BUCKET arity must be positive, got " + arity.asInt)
+        }
+        if (transform != DucklakePartitionTransform.BUCKET && arity.isPresent) {
+            throw IllegalArgumentException("Arity is only valid for BUCKET transform")
+        }
+    }
+
+    constructor(columnName: String, transform: DucklakePartitionTransform)
+            : this(columnName, transform, OptionalInt.empty())
+}

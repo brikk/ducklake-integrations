@@ -39,7 +39,7 @@ sealed interface WriteChange {
     @JvmRecord
     data class CreatedSchema(val schemaName: String) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_schema:" + WriteChange.writeQuotedValue(schemaName)
+            "created_schema:${WriteChange.writeQuotedValue(schemaName)}"
     }
 
     /**
@@ -66,7 +66,7 @@ sealed interface WriteChange {
         val tableName: String,
     ) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_table:" + WriteChange.writeQuotedValue(schemaName) + "." + WriteChange.writeQuotedValue(tableName)
+            "created_table:${WriteChange.writeQuotedValue(schemaName)}.${WriteChange.writeQuotedValue(tableName)}"
     }
 
     @JvmRecord
@@ -166,7 +166,7 @@ sealed interface WriteChange {
         val viewName: String,
     ) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_view:" + WriteChange.writeQuotedValue(schemaName) + "." + WriteChange.writeQuotedValue(viewName)
+            "created_view:${WriteChange.writeQuotedValue(schemaName)}.${WriteChange.writeQuotedValue(viewName)}"
     }
 
     @JvmRecord
@@ -195,16 +195,8 @@ sealed interface WriteChange {
          * are literal.
          */
         @JvmStatic
-        fun formatChangesMade(changes: List<WriteChange>): String {
-            val sb = StringBuilder()
-            for (i in changes.indices) {
-                if (i > 0) {
-                    sb.append(',')
-                }
-                sb.append(changes[i].toChangesMadeEntry())
-            }
-            return sb.toString()
-        }
+        fun formatChangesMade(changes: List<WriteChange>): String =
+            changes.joinToString(",") { it.toChangesMadeEntry() }
 
         /**
          * Matches upstream's `KeywordHelper::WriteQuoted` (DuckDB) as consumed by
@@ -214,6 +206,6 @@ sealed interface WriteChange {
          */
         @JvmStatic
         fun writeQuotedValue(value: String): String =
-            "\"" + value.replace("\"", "\"\"") + "\""
+            "\"${value.replace("\"", "\"\"")}\""
     }
 }

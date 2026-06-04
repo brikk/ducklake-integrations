@@ -55,7 +55,6 @@ import java.util.Optional
  * `RowGroup.columns`.
  */
 public object DucklakeStatsExtractor {
-    @JvmStatic
     public fun extractStats(
             fileMetaData: FileMetaData,
             leafTargets: List<LeafStatsTarget>): List<DucklakeFileColumnStats> {
@@ -128,12 +127,10 @@ public object DucklakeStatsExtractor {
         return result.build()
     }
 
-    @JvmStatic
     internal fun convertStatValue(value: ByteArray?, type: Type): Optional<String> {
         return convertStatValue(value, type, null)
     }
 
-    @JvmStatic
     internal fun convertStatValue(value: ByteArray?, type: Type, physicalType: org.apache.parquet.format.Type?): Optional<String> {
         if (value == null || value.size == 0) {
             return Optional.empty()
@@ -153,20 +150,20 @@ public object DucklakeStatsExtractor {
             }
             if (type is RealType) {
                 val floatVal = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getFloat()
-                if (java.lang.Float.isNaN(floatVal)) {
+                if (floatVal.isNaN()) {
                     return Optional.empty()
                 }
                 return Optional.of(floatVal.toString())
             }
             if (type is DoubleType) {
                 val doubleVal = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getDouble()
-                if (java.lang.Double.isNaN(doubleVal)) {
+                if (doubleVal.isNaN()) {
                     return Optional.empty()
                 }
                 return Optional.of(doubleVal.toString())
             }
             if (type is VarcharType) {
-                return Optional.of(String(value, java.nio.charset.StandardCharsets.UTF_8))
+                return Optional.of(String(value, Charsets.UTF_8))
             }
             if (type is VarbinaryType || type is UuidType) {
                 return Optional.empty()
@@ -176,7 +173,6 @@ public object DucklakeStatsExtractor {
                 return Optional.of(LocalDate.ofEpochDay(daysSinceEpoch.toLong()).toString())
             }
             if (type is TimestampType) {
-                val timestampType: TimestampType = type
                 val micros = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getLong()
                 val dateTime = LocalDateTime.ofInstant(
                         Instant.ofEpochSecond(Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1000L),

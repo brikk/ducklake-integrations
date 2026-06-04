@@ -65,13 +65,10 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
             internal val ducklakeType: String) {
         internal abstract fun validate(block: Block)
 
-        internal fun overflow(value: Any, maxLiteral: String): TrinoException {
-            return TrinoException(
-                    NUMERIC_VALUE_OUT_OF_RANGE,
-                    String.format(
-                            "Value %s for column \"%s\" is out of range for DuckLake %s (allowed: 0..%s)",
-                            value, column.columnName, ducklakeType, maxLiteral))
-        }
+        internal fun overflow(value: Any, maxLiteral: String): TrinoException =
+            TrinoException(
+                NUMERIC_VALUE_OUT_OF_RANGE,
+                "Value $value for column \"${column.columnName}\" is out of range for DuckLake $ducklakeType (allowed: 0..$maxLiteral)")
     }
 
     private class SmallintUnsignedCheck(

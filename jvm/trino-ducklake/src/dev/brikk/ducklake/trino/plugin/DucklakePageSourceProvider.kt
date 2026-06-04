@@ -96,25 +96,18 @@ import java.util.function.Function
  * Leverages Trino's ParquetPageSource for all Parquet reading logic.
  */
 public class DucklakePageSourceProvider @Inject constructor(
-        fileSystemFactory: TrinoFileSystemFactory,
-        fileFormatDataSourceStats: FileFormatDataSourceStats,
-        parquetReaderOptions: ParquetReaderOptions,
-        catalog: DucklakeCatalog,
-        duckDbReadCache: DucklakeMaterializedFileCache,
-        duckDbS3Config: DuckDbS3Config,
+        private val fileSystemFactory: TrinoFileSystemFactory,
+        private val fileFormatDataSourceStats: FileFormatDataSourceStats,
+        private val parquetReaderOptions: ParquetReaderOptions,
+        private val catalog: DucklakeCatalog,
+        private val duckDbReadCache: DucklakeMaterializedFileCache,
+        private val duckDbS3Config: DuckDbS3Config,
         ducklakeConfig: DucklakeConfig,
-        executorFactory: DucklakeDuckDbExecutorFactory)
+        private val executorFactory: DucklakeDuckDbExecutorFactory)
         : ConnectorPageSourceProvider
 {
-    private val fileSystemFactory: TrinoFileSystemFactory = fileSystemFactory
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
-    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderOptions
-    private val catalog: DucklakeCatalog = catalog
-    private val duckDbReadCache: DucklakeMaterializedFileCache = duckDbReadCache
-    private val duckDbS3Config: DuckDbS3Config = duckDbS3Config
     private val autoHttpfsThresholdBytes: Long = ducklakeConfig
             .getDuckdbAutoHttpfsThreshold().toBytes()
-    private val executorFactory: DucklakeDuckDbExecutorFactory = executorFactory
 
     override fun createPageSource(
             transaction: ConnectorTransactionHandle?,
@@ -184,10 +177,10 @@ public class DucklakePageSourceProvider @Inject constructor(
                         fileSystem,
                         session)
             }
-            throw TrinoException(NOT_SUPPORTED, "Unsupported file format: " + format)
+            throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
         }
         catch (e: IOException) {
-            throw RuntimeException("Failed to create page source for file: " + ducklakeSplit.dataFilePath, e)
+            throw RuntimeException("Failed to create page source for file: ${ducklakeSplit.dataFilePath}", e)
         }
     }
 
@@ -217,11 +210,8 @@ public class DucklakePageSourceProvider @Inject constructor(
                     .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
             queryColumns = ducklakeColumns.stream()
                     .map { handle ->
-                        val col = columnById.get(handle.columnId)
-                        if (col == null) {
-                            throw IllegalStateException("Column not found in table metadata: " + handle.columnName)
-                        }
-                        col
+                        columnById[handle.columnId]
+                                ?: throw IllegalStateException("Column not found in table metadata: ${handle.columnName}")
                     }
                     .collect(toImmutableList())
         }
@@ -253,9 +243,9 @@ public class DucklakePageSourceProvider @Inject constructor(
         // InMemoryRecordSet expects null for null values in the row lists
         val convertedRows: List<List<Any?>> = rawRows.stream()
                 .map { row ->
-                    val converted: MutableList<Any?> = java.util.ArrayList(row.size)
-                    for (i in 0 until row.size) {
-                        converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row.get(i), types.get(i)))
+                    val converted: MutableList<Any?> = ArrayList(row.size)
+                    for (i in row.indices) {
+                        converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], types[i]))
                     }
                     converted as List<Any?>
                 }
@@ -298,14 +288,14 @@ public class DucklakePageSourceProvider @Inject constructor(
         val rows: MutableList<Map<String, Any?>> = ArrayList(dataFiles.size)
         for (file in dataFiles) {
             val row: MutableMap<String, Any?> = LinkedHashMap()
-            row.put("data_file_id", file.dataFileId)
-            row.put("path", file.path)
-            row.put("file_format", file.fileFormat)
-            row.put("record_count", file.recordCount)
-            row.put("file_size_bytes", file.fileSizeBytes)
-            row.put("row_id_start", file.rowIdStart)
-            row.put("partition_id", file.partitionId.orElse(null))
-            row.put("delete_file_path", file.deleteFilePath.orElse(null))
+            row["data_file_id"] = file.dataFileId
+            row["path"] = file.path
+            row["file_format"] = file.fileFormat
+            row["record_count"] = file.recordCount
+            row["file_size_bytes"] = file.fileSizeBytes
+            row["row_id_start"] = file.rowIdStart
+            row["partition_id"] = file.partitionId.orElse(null)
+            row["delete_file_path"] = file.deleteFilePath.orElse(null)
             rows.add(row)
         }
         return rows
@@ -313,8 +303,8 @@ public class DucklakePageSourceProvider @Inject constructor(
 
     private fun applyDeleteFile(fileSystem: TrinoFileSystem, split: DucklakeSplit, dataSource: ConnectorPageSource): ConnectorPageSource
     {
-        val hasDeleteFiles: Boolean = !split.deleteFilePaths.isEmpty()
-        val hasInlinedDeletes: Boolean = !split.inlinedDeletedRowPositions.isEmpty()
+        val hasDeleteFiles: Boolean = split.deleteFilePaths.isNotEmpty()
+        val hasInlinedDeletes: Boolean = split.inlinedDeletedRowPositions.isNotEmpty()
         if (!hasDeleteFiles && !hasInlinedDeletes) {
             return dataSource
         }
@@ -416,10 +406,9 @@ public class DucklakePageSourceProvider @Inject constructor(
             // start=0 throughout), and getFilteredRowGroups below is called with start=0 /
             // length=split.fileSizeBytes(), so this invariant holds. Any change to split
             // granularity MUST re-derive position math (or do the performant fix above).
-            val parquetTupleDomain: TupleDomain<ColumnDescriptor> = if (splitHasActiveDeletes(split))
-                    TupleDomain.all()
-                else
-                    toParquetTupleDomain(descriptorsByPath, effectivePredicate)
+            val parquetTupleDomain: TupleDomain<ColumnDescriptor> =
+                    if (splitHasActiveDeletes(split)) TupleDomain.all()
+                    else toParquetTupleDomain(descriptorsByPath, effectivePredicate)
             val parquetPredicate: TupleDomainParquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC)
             val rowGroups: List<RowGroupInfo> = getFilteredRowGroups(
                     0,
@@ -436,12 +425,12 @@ public class DucklakePageSourceProvider @Inject constructor(
             // Separate out the synthetic $row_id column (used for DELETE/UPDATE/MERGE)
             var rowIdOutputPosition = -1
             val fileColumns: MutableList<DucklakeColumnHandle> = ArrayList()
-            for (i in 0 until columns.size) {
-                if (columns.get(i).isRowIdColumn()) {
+            for (i in columns.indices) {
+                if (columns[i].isRowIdColumn()) {
                     rowIdOutputPosition = i
                 }
                 else {
-                    fileColumns.add(columns.get(i))
+                    fileColumns.add(columns[i])
                 }
             }
 
@@ -457,7 +446,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 if (field.getId() != null) {
                     val childIO: ColumnIO? = messageColumnIO.getChild(field.getName())
                     if (childIO != null) {
-                        fieldIdToColumnIO.put(field.getId().intValue(), childIO)
+                        fieldIdToColumnIO[field.getId().intValue()] = childIO
                     }
                 }
             }
@@ -467,7 +456,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 // Try name-based match first, then fall back to field_id match (handles column renames)
                 var columnIO: ColumnIO? = messageColumnIO.getChild(columnName)
                 if (columnIO == null && column.columnId > 0) {
-                    columnIO = fieldIdToColumnIO.get(column.columnId.toInt())
+                    columnIO = fieldIdToColumnIO[column.columnId.toInt()]
                 }
                 // Finally, consult the catalog's name_map for files registered via
                 // add_files — covers the case where the parquet column name differs
@@ -475,7 +464,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 // where the file kept its original name). The map is empty for files
                 // without a mapping_id, so this is a no-op for INSERT-written files.
                 if (columnIO == null) {
-                    val parquetSourceName: String? = split.fieldIdToParquetSourceName.get(column.columnId)
+                    val parquetSourceName: String? = split.fieldIdToParquetSourceName[column.columnId]
                     if (parquetSourceName != null && parquetSourceName != columnName) {
                         columnIO = messageColumnIO.getChild(parquetSourceName)
                     }
@@ -545,12 +534,12 @@ public class DucklakePageSourceProvider @Inject constructor(
                     dataSource.close()
                 }
                 catch (ex: IOException) {
-                    if (!e.equals(ex)) {
+                    if (e != ex) {
                         e.addSuppressed(ex)
                     }
                 }
             }
-            throw RuntimeException("Failed to create Parquet page source for file: " + split.dataFilePath, e)
+            throw RuntimeException("Failed to create Parquet page source for file: ${split.dataFilePath}", e)
         }
         catch (e: RuntimeException) {
             if (dataSource != null) {
@@ -581,12 +570,12 @@ public class DucklakePageSourceProvider @Inject constructor(
         // parquet path.
         var rowIdOutputPosition = -1
         val fileColumns: MutableList<DucklakeColumnHandle> = ArrayList()
-        for (i in 0 until columns.size) {
-            if (columns.get(i).isRowIdColumn()) {
+        for (i in columns.indices) {
+            if (columns[i].isRowIdColumn()) {
                 rowIdOutputPosition = i
             }
             else {
-                fileColumns.add(columns.get(i))
+                fileColumns.add(columns[i])
             }
         }
 
@@ -665,7 +654,7 @@ public class DucklakePageSourceProvider @Inject constructor(
             // (small files are cheap to download and warm reads are then local). At or
             // above the threshold we stream blocks via httpfs to avoid the full pull.
             DucklakeSessionProperties.READ_MODE_AUTO -> split.fileSizeBytes >= autoHttpfsThresholdBytes
-            else -> throw TrinoException(NOT_SUPPORTED, "Unsupported duckdb_read_mode: " + mode)
+            else -> throw TrinoException(NOT_SUPPORTED, "Unsupported duckdb_read_mode: $mode")
         }
 
         val url: String = dataFileLocation.toString()
@@ -764,7 +753,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
             for (entry in domains.get().entries) {
                 val columnHandle: DucklakeColumnHandle = entry.key
-                val descriptor: ColumnDescriptor? = topLevelDescriptors.get(columnHandle.columnName.lowercase(Locale.ENGLISH))
+                val descriptor: ColumnDescriptor? = topLevelDescriptors[columnHandle.columnName.lowercase(Locale.ENGLISH)]
                 if (descriptor != null) {
                     predicate.put(descriptor, entry.value)
                 }
@@ -791,7 +780,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         @JvmStatic
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean
         {
-            return !split.deleteFilePaths.isEmpty() || !split.inlinedDeletedRowPositions.isEmpty()
+            return split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
         }
 
         private fun isPuffinPath(path: String): Boolean
@@ -893,20 +882,13 @@ public class DucklakePageSourceProvider @Inject constructor(
      * The row ID is computed as rowIdStart + (cumulative file position).
      * This must be applied BEFORE delete file filtering so the IDs match original file positions.
      */
-    private class RowIdInjectingPageSource : ConnectorPageSource
+    private class RowIdInjectingPageSource(
+        private val delegate: ConnectorPageSource,
+        private val delegateChannelCount: Int,
+        private val rowIdOutputPosition: Int,
+        private val rowIdStart: Long) : ConnectorPageSource
     {
-        private val delegate: ConnectorPageSource
-        private val delegateChannelCount: Int
-        private val rowIdOutputPosition: Int
-        private val rowIdStart: Long
         private var nextRowOffset: Long = 0
-
-        constructor(delegate: ConnectorPageSource, delegateChannelCount: Int, rowIdOutputPosition: Int, rowIdStart: Long) {
-            this.delegate = delegate
-            this.delegateChannelCount = delegateChannelCount
-            this.rowIdOutputPosition = rowIdOutputPosition
-            this.rowIdStart = rowIdStart
-        }
 
         override fun getCompletedBytes(): Long
         {

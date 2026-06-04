@@ -57,9 +57,9 @@ public class DucklakeAddFilesTypeChecker private constructor() {
             if (isCompatible(target, source)) {
                 return
             }
-            throw DucklakeAddFilesException(String.format(
-                    "Failed to map column \"%s\" from file \"%s\" to table \"%s\": expected %s, found %s",
-                    columnPath, fileName, tableName, describe(target), describe(source)))
+            throw DucklakeAddFilesException(
+                "Failed to map column \"$columnPath\" from file \"$fileName\" to table \"$tableName\": " +
+                    "expected ${describe(target)}, found ${describe(source)}")
         }
 
         private fun isCompatible(target: Type, source: Type): Boolean {

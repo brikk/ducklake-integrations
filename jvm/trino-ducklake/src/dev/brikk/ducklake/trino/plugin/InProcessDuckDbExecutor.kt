@@ -25,6 +25,7 @@ import java.sql.DriverManager
 import java.sql.SQLException
 import java.sql.Statement
 import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * In-process [DucklakeDuckDbExecutor]: per-split embedded DuckDB via
@@ -35,9 +36,7 @@ import java.util.Properties
  * execution changes vs the pre-refactor code.
  */
 public class InProcessDuckDbExecutor
-internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : DucklakeDuckDbExecutor {
-    private val tuning: DuckDbTuning = tuning
-    private val parityExtensionPath: String = parityExtensionPath
+internal constructor(private val tuning: DuckDbTuning, private val parityExtensionPath: String) : DucklakeDuckDbExecutor {
 
     /**
      * Test-only convenience constructor: auto-resolves the bundled trino_parity
@@ -213,7 +212,7 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
 
         private fun buildSelectSql(request: DucklakeDuckDbExecutor.ExecutionRequest): String {
             return DuckDbSelectSqlBuilder.buildSelectSql(
-                    ATTACHED_DB + ".main." + ATTACHED_TABLE, request)
+                    "$ATTACHED_DB.main.$ATTACHED_TABLE", request)
         }
 
         private fun describeAttachTarget(target: DuckDbAttachTarget): String {
@@ -236,8 +235,8 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
             }
         }
 
-        private val TIMEZONE_FAILURE_WARNED: java.util.concurrent.ConcurrentHashMap<String, Boolean> =
-                java.util.concurrent.ConcurrentHashMap()
+        private val TIMEZONE_FAILURE_WARNED: ConcurrentHashMap<String, Boolean> =
+                ConcurrentHashMap()
 
         /**
          * Best-effort `SET TimeZone = '<zone>'` after attach. Empty Optional
@@ -264,7 +263,7 @@ internal constructor(tuning: DuckDbTuning, parityExtensionPath: String) : Duckla
                 stmt.execute(sql)
             }
             catch (e: SQLException) {
-                if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, java.lang.Boolean.TRUE) == null) {
+                if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, true) == null) {
                     log.warn("DuckDB rejected SET TimeZone for normalised zone '%s' (in-process): %s. "
                                     + "Subsequent splits with the same zone proceed without an explicit "
                                     + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "

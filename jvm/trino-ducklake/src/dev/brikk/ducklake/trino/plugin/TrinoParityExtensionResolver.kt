@@ -114,7 +114,7 @@ public class TrinoParityExtensionResolver private constructor() {
         @JvmStatic
         public fun resolveBundledExtensionPathFor(platform: String): Optional<String> {
             return synchronized(RESOLVE_LOCK) {
-                val resourcePath = RESOURCE_DIR + "/" + platform + "/" + RESOURCE_FILE
+                val resourcePath = "$RESOURCE_DIR/$platform/$RESOURCE_FILE"
                 val url = TrinoParityExtensionResolver::class.java.classLoader.getResource(resourcePath)
                 if (url == null) {
                     log.info("trino_parity: no bundled extension for platform %s (resource %s missing)",
@@ -140,7 +140,6 @@ public class TrinoParityExtensionResolver private constructor() {
             }
         }
 
-        @JvmStatic
         private fun doResolve(): Optional<String> {
             val platform = detectPlatform()
             if (platform.isEmpty) {
@@ -148,7 +147,7 @@ public class TrinoParityExtensionResolver private constructor() {
                         System.getProperty("os.name"), System.getProperty("os.arch"))
                 return Optional.empty()
             }
-            val resourcePath = RESOURCE_DIR + "/" + platform.get() + "/" + RESOURCE_FILE
+            val resourcePath = "$RESOURCE_DIR/${platform.get()}/$RESOURCE_FILE"
             val url = TrinoParityExtensionResolver::class.java.classLoader.getResource(resourcePath)
             if (url == null) {
                 log.info("trino_parity: no bundled extension on classpath for platform %s (resource %s missing). Operators must set ducklake.duckdb.parity-extension-path or rebuild the plugin jar with the extension binary present.",
@@ -189,7 +188,6 @@ public class TrinoParityExtensionResolver private constructor() {
          * RESOLVE_LOCK serializes writers within this JVM but cannot exclude another process, so
          * the move (not an in-place copy) is what actually closes the partial-read window.
          */
-        @JvmStatic
         @Throws(IOException::class)
         private fun extractAtomically(url: URL, tempDir: Path, target: Path) {
             val tmp = Files.createTempFile(tempDir, RESOURCE_FILE, ".tmp")

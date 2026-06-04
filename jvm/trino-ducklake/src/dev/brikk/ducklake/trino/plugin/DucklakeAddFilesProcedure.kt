@@ -126,11 +126,11 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         val snapshotId = catalog.currentSnapshotId
         val schema: Optional<DucklakeSchema> = catalog.getSchema(schemaName, snapshotId)
         if (schema.isEmpty()) {
-            throw TrinoException(NOT_SUPPORTED, "Schema not found: " + schemaName)
+            throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
         }
         val table: Optional<DucklakeTable> = catalog.getTable(schemaName, tableName, snapshotId)
         if (table.isEmpty()) {
-            throw TrinoException(NOT_SUPPORTED, "Table not found: " + schemaName + "." + tableName)
+            throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
         }
         val tableInfo = table.get()
         val tableId = tableInfo.tableId
@@ -210,12 +210,12 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         try {
             inputFile = fileSystem.newInputFile(Location.of(filePath))
             if (!inputFile.exists()) {
-                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: " + filePath)
+                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
             }
             fileSize = inputFile.length()
         }
         catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: " + filePath, e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
         }
 
         val hivePartitionValues: Map<String, String> = if (hivePartitioning)
@@ -240,7 +240,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             // size readFooter would use, parse footer_size from its post-script, and hand the
             // bytes to readFooter via the single-shot prefetch wrapper (which falls through to
             // the delegate if the footer turns out larger than this read, exactly as before).
-            val tailReadSize = Math.min(dataSource.getEstimatedSize(), parquetReaderOptions.footerReadSize.toBytes())
+            val tailReadSize = minOf(dataSource.estimatedSize, parquetReaderOptions.footerReadSize.toBytes())
             var footerSize = 0L
             var footerSource: ParquetDataSource = dataSource
             if (tailReadSize >= POST_SCRIPT_SIZE) {
@@ -262,7 +262,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     ignoreExtraColumns,
                     hivePartitionValues,
                     filePath,
-                    schemaName + "." + tableName)
+                    "$schemaName.$tableName")
             val result: DucklakeAddFilesNameMapper.Result
             try {
                 result = mapper.map(fileMetadata.getSchema(), allColumns, topLevelColumns)
@@ -306,7 +306,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     Optional.of(nameMap))
         }
         catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read parquet footer: " + filePath, e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read parquet footer: $filePath", e)
         }
         finally {
             if (dataSource != null) {
@@ -335,9 +335,9 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         }
         val out: MutableMap<Int, String> = LinkedHashMap()
         for (field in activePartitionSpec.get().fields) {
-            val value = byFieldId.get(field.columnId.toInt())
+            val value = byFieldId[field.columnId.toInt()]
             if (value != null) {
-                out.put(field.partitionKeyIndex, value)
+                out[field.partitionKeyIndex] = value
             }
         }
         return out
@@ -460,7 +460,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                 }
                 else {
                     throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                            "files entry must be VARCHAR, got " + value.javaClass.getName())
+                            "files entry must be VARCHAR, got ${value.javaClass.name}")
                 }
             }
             return out

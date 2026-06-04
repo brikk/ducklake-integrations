@@ -33,7 +33,6 @@ import io.trino.spi.type.Type
 import io.trino.spi.type.VarcharType
 import java.lang.Math.floorDiv
 import java.lang.Math.floorMod
-import java.lang.String.format
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.LocalDate
@@ -75,14 +74,11 @@ public object DuckDbWhereClauseTranslator {
         if (domainsOpt.isEmpty) {
             return Optional.empty()
         }
-        val conjuncts: MutableList<String> = ArrayList()
-        for (entry in domainsOpt.get().entries) {
-            translateDomain(entry.key, entry.value).ifPresent { c -> conjuncts.add(c) }
-        }
+        val conjuncts = domainsOpt.get().entries.mapNotNull { translateDomain(it.key, it.value).orElse(null) }
         if (conjuncts.isEmpty()) {
             return Optional.empty()
         }
-        return Optional.of(java.lang.String.join(" AND ", conjuncts))
+        return Optional.of(conjuncts.joinToString(" AND "))
     }
 
     private fun translateDomain(column: DucklakeColumnHandle, domain: Domain): Optional<String> {
@@ -132,7 +128,7 @@ public object DuckDbWhereClauseTranslator {
             if (literals.size == 1) {
                 return Optional.of(name + " = " + literals.first())
             }
-            return Optional.of(name + " IN (" + java.lang.String.join(", ", literals) + ")")
+            return Optional.of(name + " IN (" + literals.joinToString(", ") + ")")
         }
 
         // Range-based value sets — sortedRangeSet exposes ordered ranges.
@@ -152,7 +148,7 @@ public object DuckDbWhereClauseTranslator {
             if (terms.size == 1) {
                 return Optional.of(terms.first())
             }
-            return Optional.of("(" + java.lang.String.join(" OR ", terms) + ")")
+            return Optional.of("(" + terms.joinToString(" OR ") + ")")
         }
         catch (e: UnsupportedOperationException) {
             return Optional.empty()
@@ -263,6 +259,6 @@ public object DuckDbWhereClauseTranslator {
 
     public fun formatLiteralOrThrow(type: Type, value: Any?): String {
         return formatLiteral(type, value)
-                .orElseThrow { IllegalArgumentException(format("Cannot format %s value as DuckDB literal", type)) }
+                .orElseThrow { IllegalArgumentException("Cannot format $type value as DuckDB literal") }
     }
 }

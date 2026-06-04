@@ -101,7 +101,7 @@ constructor(
     private val partitionValues: Map<Int, String?> = partitionValues.toMap()
     private val partitionId: OptionalLong = partitionId
     private val columns: List<DucklakeColumnHandle> = columns.toList()
-    private val columnTypes: List<Type> = this.columns.stream().map(DucklakeColumnHandle::columnType).toList()
+    private val columnTypes: List<Type> = this.columns.map(DucklakeColumnHandle::columnType)
     private val localTempFile: Path
     private val connection: DuckDBConnection
     private val appender: DuckDBAppender
@@ -112,7 +112,7 @@ constructor(
 
     init {
         Files.createDirectories(localTempDir)
-        this.localTempFile = localTempDir.resolve("ducklake-write-" + java.util.UUID.randomUUID() + ".db")
+        this.localTempFile = localTempDir.resolve("ducklake-write-${java.util.UUID.randomUUID()}.db")
 
         var conn: DuckDBConnection? = null
         var app: DuckDBAppender? = null
@@ -136,7 +136,7 @@ constructor(
             try { app?.close() } catch (_: Exception) {}
             try { conn?.close() } catch (_: Exception) {}
             try { Files.deleteIfExists(localTempFile) } catch (_: IOException) {}
-            throw IOException("Failed to initialize DuckDB writer for " + remoteLocation, e)
+            throw IOException("Failed to initialize DuckDB writer for $remoteLocation", e)
         }
     }
 
@@ -144,11 +144,11 @@ constructor(
         val sql = StringBuilder("CREATE TABLE ")
         sql.append(ATTACHED_DB).append('.').append(ATTACHED_SCHEMA).append('.').append(ATTACHED_TABLE)
         sql.append(" (")
-        for (i in 0 until columns.size) {
+        for (i in columns.indices) {
             if (i > 0) {
                 sql.append(", ")
             }
-            val col = columns.get(i)
+            val col = columns[i]
             sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
             sql.append(' ').append(toDuckDbSqlType(col.columnType))
             if (!col.nullable) {
@@ -165,8 +165,8 @@ constructor(
         try {
             for (position in 0 until positionCount) {
                 appender.beginRow()
-                for (channel in 0 until columnTypes.size) {
-                    appendValue(page.getBlock(channel), position, columnTypes.get(channel))
+                for (channel in columnTypes.indices) {
+                    appendValue(page.getBlock(channel), position, columnTypes[channel])
                 }
                 appender.endRow()
             }
@@ -178,7 +178,7 @@ constructor(
             writtenBytes += page.getSizeInBytes()
         }
         catch (e: SQLException) {
-            throw IOException("Failed to append row to DuckDB file " + remoteLocation, e)
+            throw IOException("Failed to append row to DuckDB file $remoteLocation", e)
         }
     }
 
@@ -278,7 +278,7 @@ constructor(
             appender.append(type.getSlice(block, position).toStringUtf8())
             return
         }
-        throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: " + type)
+        throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
     }
 
     override fun getApproximateWrittenBytes(): Long {
@@ -288,7 +288,7 @@ constructor(
     @Throws(IOException::class)
     override fun finishAndBuildFragment(): DucklakeWriteFragment {
         if (closed) {
-            throw IOException("DuckDB file writer already closed: " + remoteLocation)
+            throw IOException("DuckDB file writer already closed: $remoteLocation")
         }
         closed = true
 
@@ -299,7 +299,7 @@ constructor(
             // close so all rows are flushed, before DETACH).
             columnStats = extractColumnStats()
             connection.createStatement().use { stmt ->
-                stmt.execute("DETACH " + ATTACHED_DB)
+                stmt.execute("DETACH $ATTACHED_DB")
             }
             connection.close()
         }
@@ -308,7 +308,7 @@ constructor(
             // so we don't leak the native DuckDB handle before propagating the original error.
             try { connection.close() } catch (_: Exception) {}
             cleanupLocalFile()
-            throw IOException("Failed to finalize DuckDB file " + remoteLocation, e)
+            throw IOException("Failed to finalize DuckDB file $remoteLocation", e)
         }
 
         val fileSize: Long
@@ -318,7 +318,7 @@ constructor(
         }
         catch (e: IOException) {
             cleanupLocalFile()
-            throw IOException("Failed to upload DuckDB file to " + remoteLocation, e)
+            throw IOException("Failed to upload DuckDB file to $remoteLocation", e)
         }
         cleanupLocalFile()
 
@@ -345,13 +345,13 @@ constructor(
     @Throws(SQLException::class)
     private fun extractColumnStats(): List<DucklakeFileColumnStats> {
         if (columns.isEmpty()) {
-            return listOf()
+            return emptyList()
         }
 
         val sql = StringBuilder("SELECT COUNT(*)")
-        val minMaxColumns: MutableList<Int> = java.util.ArrayList()
-        for (i in 0 until columns.size) {
-            val col = columns.get(i)
+        val minMaxColumns: MutableList<Int> = mutableListOf()
+        for (i in columns.indices) {
+            val col = columns[i]
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             // Always emit a per-column COUNT(col) so we can derive null_count.
             sql.append(", COUNT(").append(name).append(")")
@@ -370,12 +370,12 @@ constructor(
         connection.createStatement().use { stmt ->
             stmt.executeQuery(sql.toString()).use { rs ->
                 if (!rs.next()) {
-                    throw SQLException("Stats query returned no rows for " + remoteLocation)
+                    throw SQLException("Stats query returned no rows for $remoteLocation")
                 }
                 var colIdx = 1
                 totalCount = rs.getLong(colIdx++)
                 var minMaxCursor = 0
-                for (i in 0 until columns.size) {
+                for (i in columns.indices) {
                     valueCounts[i] = rs.getLong(colIdx++)
                     if (minMaxCursor < minMaxColumns.size && minMaxColumns.get(minMaxCursor) == i) {
                         minValues[i] = rs.getObject(colIdx++)
@@ -386,11 +386,11 @@ constructor(
             }
         }
 
-        val result: MutableList<DucklakeFileColumnStats> = java.util.ArrayList(columns.size)
-        for (i in 0 until columns.size) {
-            val col = columns.get(i)
+        val result: MutableList<DucklakeFileColumnStats> = ArrayList(columns.size)
+        for (i in columns.indices) {
+            val col = columns[i]
             val valueCount = valueCounts[i]
-            val nullCount = Math.max(0, totalCount - valueCount)
+            val nullCount = maxOf(0L, totalCount - valueCount)
             val min = formatStatValue(col.columnType, minValues[i])
             val max = formatStatValue(col.columnType, maxValues[i])
             result.add(DucklakeFileColumnStats(
@@ -536,7 +536,7 @@ constructor(
                 return Optional.of(if (value as Boolean) "true" else "false")
             }
             if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
-                return Optional.of((value as Number).toLong().toString() + "")
+                return Optional.of((value as Number).toLong().toString())
             }
             if (type.equals(REAL)) {
                 val f = (value as Number).toFloat()

@@ -21,7 +21,6 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_VIEW
 import org.jooq.DSLContext
 import org.jooq.impl.DSL
-import java.util.TreeSet
 
 /**
  * Validates that every catalog entity an in-flight write transaction
@@ -48,7 +47,6 @@ import java.util.TreeSet
  * already PK-protected on the underlying catalog row INSERTs.
  */
 object LogicalConflictCheck {
-    @JvmStatic
     fun run(tx: DucklakeWriteTransaction, operationDescription: String) {
         val snapshotId = tx.getCurrentSnapshotId()
         val ctx = tx.dsl()
@@ -98,17 +96,11 @@ object LogicalConflictCheck {
             .and(col.COLUMN_ID.`in`(referenced))
             .and(activeAt(col, snapshotId))
             .fetchSet(col.COLUMN_ID)
-        val missing = TreeSet<Long>()
-        for (id in referenced) {
-            if (!active.contains(id)) {
-                missing.add(id)
-            }
-        }
+        val missing = referenced.filterNot { it in active }.sorted()
         if (missing.isNotEmpty()) {
             throw LogicalConflictException(
-                "Failed to " + operationDescription +
-                    ": concurrent commit end-snapshotted column_id(s) " + missing +
-                    " on table_id=" + change.tableId +
+                "Failed to $operationDescription: concurrent commit end-snapshotted" +
+                    " column_id(s) $missing on table_id=${change.tableId}" +
                     " (likely ALTER TABLE DROP COLUMN). The in-flight INSERT fragments" +
                     " reference these now-dropped columns; re-running with the same" +
                     " column-stats payload would fail identically, so this conflict" +
@@ -136,17 +128,11 @@ object LogicalConflictCheck {
             .and(file.DATA_FILE_ID.`in`(referenced))
             .and(activeAt(file, snapshotId))
             .fetchSet(file.DATA_FILE_ID)
-        val missing = TreeSet<Long>()
-        for (id in referenced) {
-            if (!active.contains(id)) {
-                missing.add(id)
-            }
-        }
+        val missing = referenced.filterNot { it in active }.sorted()
         if (missing.isNotEmpty()) {
             throw LogicalConflictException(
-                "Failed to " + operationDescription +
-                    ": concurrent commit end-snapshotted data_file_id(s) " + missing +
-                    " on table_id=" + change.tableId +
+                "Failed to $operationDescription: concurrent commit end-snapshotted" +
+                    " data_file_id(s) $missing on table_id=${change.tableId}" +
                     " (likely DROP TABLE or compaction). The in-flight DELETE fragments" +
                     " reference these now-removed data files; re-running with the same" +
                     " delete-target payload would fail identically, so this conflict" +
@@ -171,12 +157,11 @@ object LogicalConflictCheck {
         )
         if (!exists) {
             throw LogicalConflictException(
-                "Failed to " + operationDescription +
-                    ": concurrent commit end-snapshotted table_id=" + tableId +
-                    " (likely DROP TABLE) before this transaction's " + verb +
-                    " could commit. The in-flight payload's table reference is stale;" +
-                    " re-running with the same table_id would fail identically, so this" +
-                    " conflict is not retried.",
+                "Failed to $operationDescription: concurrent commit end-snapshotted" +
+                    " table_id=$tableId (likely DROP TABLE) before this transaction's" +
+                    " $verb could commit. The in-flight payload's table reference is" +
+                    " stale; re-running with the same table_id would fail identically," +
+                    " so this conflict is not retried.",
             )
         }
     }
@@ -196,9 +181,9 @@ object LogicalConflictCheck {
         )
         if (!exists) {
             throw LogicalConflictException(
-                "Failed to " + operationDescription +
-                    ": concurrent commit end-snapshotted schema_id=" + schemaId +
-                    " (likely DROP SCHEMA) before this transaction's drop could commit." +
+                "Failed to $operationDescription: concurrent commit end-snapshotted" +
+                    " schema_id=$schemaId (likely DROP SCHEMA) before this" +
+                    " transaction's drop could commit." +
                     " The in-flight payload's schema reference is stale.",
             )
         }
@@ -220,10 +205,9 @@ object LogicalConflictCheck {
         )
         if (!exists) {
             throw LogicalConflictException(
-                "Failed to " + operationDescription +
-                    ": concurrent commit end-snapshotted view_id=" + viewId +
-                    " (likely DROP VIEW) before this transaction's " + verb +
-                    " could commit. The in-flight payload's view reference is stale.",
+                "Failed to $operationDescription: concurrent commit end-snapshotted" +
+                    " view_id=$viewId (likely DROP VIEW) before this transaction's" +
+                    " $verb could commit. The in-flight payload's view reference is stale.",
             )
         }
     }

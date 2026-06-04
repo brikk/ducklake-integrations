@@ -29,6 +29,7 @@ import java.sql.SQLException
 import java.sql.Statement
 import java.util.HexFormat
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Out-of-process DuckDB executor reached via the Quack RPC protocol. The JDBC
@@ -52,17 +53,12 @@ import java.util.Locale
  * invocations from the same client and competing clients that race to first.
  */
 internal class QuackDuckDbExecutor(
-        host: String,
-        port: Int,
-        token: String,
-        tuning: DuckDbTuning,
-        parityExtensionPath: String,
+        private val host: String,
+        private val port: Int,
+        private val token: String,
+        private val tuning: DuckDbTuning,
+        private val parityExtensionPath: String,
 ) : DucklakeDuckDbExecutor {
-    private val host: String = host
-    private val port: Int = port
-    private val token: String = token
-    private val tuning: DuckDbTuning = tuning
-    private val parityExtensionPath: String = parityExtensionPath
 
     /**
      * Path is the SERVER-SIDE filesystem path inside the Quack DuckDB process,
@@ -97,9 +93,7 @@ internal class QuackDuckDbExecutor(
                 init.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '" + escapeLiteral(token) + "')")
                 // disable_ssl=true: quack_serve binds plain HTTP; upstream URL parser
                 // defaults SSL on for non-localhost hosts. Plain HTTP within the pod.
-                init.execute(String.format(
-                        "ATTACH 'quack:%s:%d' AS %s (disable_ssl true)",
-                        host, port, ENGINE_CATALOG))
+                init.execute("ATTACH 'quack:$host:$port' AS $ENGINE_CATALOG (disable_ssl true)")
                 // Tuning applied server-side via the wrapper — affects the long-lived
                 // Quack server's DuckDB, not the ephemeral local client.
                 for (tuningSql in DuckDbTuningSql.statements(tuning)) {
@@ -149,14 +143,10 @@ internal class QuackDuckDbExecutor(
 
     private fun buildServerSideAttachSql(target: DuckDbAttachTarget, serverAlias: String): String {
         return when (target) {
-            is DuckDbAttachTarget.LocalPath -> String.format(
-                    "ATTACH IF NOT EXISTS '%s' AS %s (READ_ONLY)",
-                    target.path.toAbsolutePath().toString().replace("'", "''"),
-                    serverAlias)
-            is DuckDbAttachTarget.HttpfsS3 -> String.format(
-                    "ATTACH IF NOT EXISTS '%s' AS %s (READ_ONLY)",
-                    target.s3Url.replace("'", "''"),
-                    serverAlias)
+            is DuckDbAttachTarget.LocalPath ->
+                "ATTACH IF NOT EXISTS '${target.path.toAbsolutePath().toString().replace("'", "''")}' AS $serverAlias (READ_ONLY)"
+            is DuckDbAttachTarget.HttpfsS3 ->
+                "ATTACH IF NOT EXISTS '${target.s3Url.replace("'", "''")}' AS $serverAlias (READ_ONLY)"
         }
     }
 
@@ -171,7 +161,7 @@ internal class QuackDuckDbExecutor(
      */
     private fun serverInitStatementsFor(target: DuckDbAttachTarget): List<String> {
         return when (target) {
-            is DuckDbAttachTarget.LocalPath -> listOf()
+            is DuckDbAttachTarget.LocalPath -> emptyList()
             is DuckDbAttachTarget.HttpfsS3 -> listOf(
                     "INSTALL httpfs",
                     "LOAD httpfs",
@@ -184,7 +174,7 @@ internal class QuackDuckDbExecutor(
 
     private fun buildInnerSelectSql(request: ExecutionRequest, serverAlias: String): String {
         return DuckDbSelectSqlBuilder.buildSelectSql(
-                serverAlias + ".main." + ATTACHED_TABLE, request)
+                "$serverAlias.main.$ATTACHED_TABLE", request)
     }
 
     private class QuackExecutionContext(
@@ -291,9 +281,7 @@ internal class QuackDuckDbExecutor(
          * default {@code Connection}.
          */
         private fun wrapAsSelect(innerSql: String): String {
-            return ("SELECT * FROM system.main.quack_query_by_name('"
-                    + ENGINE_CATALOG + "', '"
-                    + escapeLiteral(innerSql) + "')")
+            return "SELECT * FROM system.main.quack_query_by_name('$ENGINE_CATALOG', '${escapeLiteral(innerSql)}')"
         }
 
         /**
@@ -310,7 +298,7 @@ internal class QuackDuckDbExecutor(
             }
             try {
                 val md = MessageDigest.getInstance("SHA-256")
-                val digest = md.digest(key.toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                val digest = md.digest(key.toByteArray(Charsets.UTF_8))
                 return "ducklake_cache_" + HexFormat.of().formatHex(digest).substring(0, 16).lowercase(Locale.ROOT)
             }
             catch (e: NoSuchAlgorithmException) {
@@ -329,8 +317,7 @@ internal class QuackDuckDbExecutor(
             return value.replace("'", "''")
         }
 
-        private val TIMEZONE_FAILURE_WARNED: java.util.concurrent.ConcurrentHashMap<String, Boolean> =
-                java.util.concurrent.ConcurrentHashMap()
+        private val TIMEZONE_FAILURE_WARNED = ConcurrentHashMap<String, Boolean>()
 
         /**
          * Best-effort server-side {@code SET TimeZone = '<zone>'} via
@@ -348,12 +335,12 @@ internal class QuackDuckDbExecutor(
                 return
             }
             val z = zone.get()
-            val innerSql = "SET TimeZone = '" + escapeLiteral(z) + "'"
+            val innerSql = "SET TimeZone = '${escapeLiteral(z)}'"
             try {
                 drainWrappedQuery(stmt, innerSql)
             }
             catch (e: SQLException) {
-                if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, java.lang.Boolean.TRUE) == null) {
+                if (TIMEZONE_FAILURE_WARNED.putIfAbsent(z, true) == null) {
                     log.warn("Quack server-side DuckDB rejected SET TimeZone for normalised zone '%s': %s. "
                                     + "Subsequent splits with the same zone proceed without an explicit "
                                     + "SET; Tier A/B pushdown unaffected, Tier C correctness may diverge. "

@@ -74,7 +74,7 @@ public object DucklakeInlinedValueConverter {
             return toLong(jdbcValue)
         }
         if (trinoType is RealType) {
-            return java.lang.Float.floatToIntBits(toFloat(jdbcValue)).toLong()
+            return toFloat(jdbcValue).toBits().toLong()
         }
         if (trinoType.equals(DOUBLE)) {
             return toDouble(jdbcValue)
@@ -136,7 +136,7 @@ public object DucklakeInlinedValueConverter {
                     @Suppress("UNCHECKED_CAST")
                     return raw as Array<Any?>
                 }
-                throw IllegalArgumentException("Unexpected raw JDBC array contents: " + raw.javaClass.getName())
+                throw IllegalArgumentException("Unexpected raw JDBC array contents: ${raw.javaClass.name}")
             }
             catch (e: SQLException) {
                 throw IllegalArgumentException("Failed to read JDBC array value", e)
@@ -152,24 +152,24 @@ public object DucklakeInlinedValueConverter {
         if (jdbcValue is ByteArray) {
             return parseDucklakeListText(String(jdbcValue, StandardCharsets.UTF_8))
         }
-        throw IllegalArgumentException("Unexpected array JDBC value: " + jdbcValue.javaClass.getName())
+        throw IllegalArgumentException("Unexpected array JDBC value: ${jdbcValue.javaClass.name}")
     }
 
     private fun parseDucklakeListText(raw: String): Array<Any?> {
         val text = raw.trim()
         if (!text.startsWith("[") || !text.endsWith("]")) {
-            throw IllegalArgumentException("Invalid inlined list text: " + raw)
+            throw IllegalArgumentException("Invalid inlined list text: $raw")
         }
         val inner = text.substring(1, text.length - 1).trim()
         if (inner.isEmpty()) {
             return arrayOfNulls(0)
         }
 
-        val elements: MutableList<Any?> = java.util.ArrayList()
+        val elements = mutableListOf<Any?>()
         val len = inner.length
         var i = 0
         while (i < len) {
-            while (i < len && Character.isWhitespace(inner.get(i))) {
+            while (i < len && inner[i].isWhitespace()) {
                 i++
             }
             if (i >= len) {
@@ -215,7 +215,7 @@ public object DucklakeInlinedValueConverter {
                 // normalizeNonFiniteToken in toFloat/toDouble.
                 elements.add(if (token == "NULL") null else token)
             }
-            while (i < len && Character.isWhitespace(inner.get(i))) {
+            while (i < len && inner[i].isWhitespace()) {
                 i++
             }
             if (i < len && inner.get(i) == ',') {
@@ -242,25 +242,24 @@ public object DucklakeInlinedValueConverter {
         var j = 0
         var i = 0
         while (i < len) {
-            val c = text.get(i)
+            val c = text[i]
             if (c == '\\') {
                 // DuckDB never emits a bare backslash — 0x5C is always escaped as \x5C — so we
                 // require a complete \xNN here. Anything else is malformed input.
                 if (i + 3 >= len || text.get(i + 1) != 'x') {
-                    throw IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: " + text)
+                    throw IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: $text")
                 }
                 val hi = hexDigit(text.get(i + 2))
                 val lo = hexDigit(text.get(i + 3))
                 if (hi < 0 || lo < 0) {
-                    throw IllegalArgumentException("Invalid hex digits in \\xNN escape: " + text)
+                    throw IllegalArgumentException("Invalid hex digits in \\xNN escape: $text")
                 }
                 out[j++] = ((hi shl 4) or lo).toByte()
                 i += 4
                 continue
             }
             if (c.code > 0x7F) {
-                throw IllegalArgumentException("Non-ASCII char 0x" + Integer.toHexString(c.code)
-                        + " in blob text — DuckDB escapes these as \\xNN: " + text)
+                throw IllegalArgumentException("Non-ASCII char 0x${Integer.toHexString(c.code)} in blob text — DuckDB escapes these as \\xNN: $text")
             }
             out[j++] = c.code.toByte()
             i++
@@ -268,9 +267,7 @@ public object DucklakeInlinedValueConverter {
         if (j == out.size) {
             return out
         }
-        val trimmed = ByteArray(j)
-        System.arraycopy(out, 0, trimmed, 0, j)
-        return trimmed
+        return out.copyOf(j)
     }
 
     private fun hexDigit(c: Char): Int {
@@ -303,28 +300,28 @@ public object DucklakeInlinedValueConverter {
         if (value is Number) {
             return value.toInt() != 0
         }
-        return java.lang.Boolean.parseBoolean(toStringValue(value))
+        return toStringValue(value).toBoolean()
     }
 
     private fun toLong(value: Any): Long {
         if (value is Number) {
             return value.toLong()
         }
-        return java.lang.Long.parseLong(toStringValue(value))
+        return toStringValue(value).toLong()
     }
 
     private fun toFloat(value: Any): Float {
         if (value is Number) {
             return value.toFloat()
         }
-        return java.lang.Float.parseFloat(normalizeNonFiniteToken(toStringValue(value)))
+        return normalizeNonFiniteToken(toStringValue(value)).toFloat()
     }
 
     private fun toDouble(value: Any): Double {
         if (value is Number) {
             return value.toDouble()
         }
-        return java.lang.Double.parseDouble(normalizeNonFiniteToken(toStringValue(value)))
+        return normalizeNonFiniteToken(toStringValue(value)).toDouble()
     }
 
     // DuckDB renders non-finite floats/doubles as the bare tokens `inf`, `-inf`, and `nan`
@@ -332,7 +329,7 @@ public object DucklakeInlinedValueConverter {
     // `Infinity`/`-Infinity`/`NaN`. Map them so a non-finite list element round-trips instead
     // of throwing NumberFormatException.
     private fun normalizeNonFiniteToken(text: String): String {
-        return when (text.lowercase(java.util.Locale.ROOT)) {
+        return when (text.lowercase()) {
             "inf", "+inf", "infinity", "+infinity" -> "Infinity"
             "-inf", "-infinity" -> "-Infinity"
             "nan", "-nan" -> "NaN"

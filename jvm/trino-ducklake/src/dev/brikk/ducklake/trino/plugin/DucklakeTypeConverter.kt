@@ -51,8 +51,7 @@ import java.util.regex.Pattern
  * Converts Ducklake type strings to Trino types.
  * Handles all Ducklake primitive, nested, and special types.
  */
-public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeManager) {
-    private val typeManager: TypeManager = typeManager
+public open class DucklakeTypeConverter @Inject constructor(private val typeManager: TypeManager) {
 
     /**
      * Convert Ducklake type string to Trino Type
@@ -72,7 +71,7 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
             for (fieldPart in fieldParts) {
                 val colonIndex = fieldPart.indexOf(':')
                 if (colonIndex < 0) {
-                    throw TrinoException(NOT_SUPPORTED, format("Invalid struct field (missing colon): %s", fieldPart))
+                    throw TrinoException(NOT_SUPPORTED, "Invalid struct field (missing colon): $fieldPart")
                 }
                 val fieldName = fieldPart.substring(0, colonIndex).trim()
                 val fieldType = fieldPart.substring(colonIndex + 1).trim()
@@ -85,10 +84,10 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
             val argsStr = extractTypeArguments(normalizedType, "map")
             val parts: List<String> = splitTopLevelCommas(argsStr)
             if (parts.size != 2) {
-                throw TrinoException(NOT_SUPPORTED, format("Invalid map type (expected 2 type arguments, got %d): %s", parts.size, ducklakeType))
+                throw TrinoException(NOT_SUPPORTED, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
             }
-            val keySignature: TypeSignature = toTrinoType(parts.get(0).trim()).getTypeSignature()
-            val valueSignature: TypeSignature = toTrinoType(parts.get(1).trim()).getTypeSignature()
+            val keySignature: TypeSignature = toTrinoType(parts[0].trim()).getTypeSignature()
+            val valueSignature: TypeSignature = toTrinoType(parts[1].trim()).getTypeSignature()
             return typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                     TypeParameter.typeParameter(keySignature),
                     TypeParameter.typeParameter(valueSignature)))
@@ -158,12 +157,12 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
                 // Check for decimal(P,S)
                 val decimalMatcher = DECIMAL_PATTERN.matcher(normalizedType)
                 if (decimalMatcher.matches()) {
-                    val precision = Integer.parseInt(decimalMatcher.group(1))
-                    val scale = Integer.parseInt(decimalMatcher.group(2))
+                    val precision = decimalMatcher.group(1).toInt()
+                    val scale = decimalMatcher.group(2).toInt()
                     DecimalType.createDecimalType(precision, scale)
                 }
                 else {
-                    throw TrinoException(NOT_SUPPORTED, format("Unsupported Ducklake type: %s", ducklakeType))
+                    throw TrinoException(NOT_SUPPORTED, "Unsupported Ducklake type: $ducklakeType")
                 }
             }
         }
@@ -195,15 +194,13 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
             return "float64"
         }
         if (trinoType is DecimalType) {
-            val decimalType: DecimalType = trinoType
-            return format("decimal(%d,%d)", decimalType.getPrecision(), decimalType.getScale())
+            return "decimal(${trinoType.getPrecision()},${trinoType.getScale()})"
         }
         if (trinoType.equals(DateType.DATE)) {
             return "date"
         }
         if (trinoType is TimestampType) {
-            val timestampType: TimestampType = trinoType
-            return when (timestampType.getPrecision()) {
+            return when (trinoType.getPrecision()) {
                 0 -> "timestamp_s"
                 3 -> "timestamp_ms"
                 6 -> "timestamp"
@@ -211,9 +208,8 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
                 // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
                 // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
                 // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
-                else -> throw TrinoException(NOT_SUPPORTED, format(
-                        "Unsupported timestamp precision %d for DuckLake write; supported precisions are 0, 3, 6, 9",
-                        timestampType.getPrecision()))
+                else -> throw TrinoException(NOT_SUPPORTED,
+                        "Unsupported timestamp precision ${trinoType.getPrecision()} for DuckLake write; supported precisions are 0, 3, 6, 9")
             }
         }
         if (trinoType is TimestampWithTimeZoneType) {
@@ -223,17 +219,15 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
         // than silently coercing to micros (which would read back as TIME(6) / a changed precision).
         if (trinoType is TimeType) {
             if (trinoType.getPrecision() != 6) {
-                throw TrinoException(NOT_SUPPORTED, format(
-                        "Unsupported time precision %d for DuckLake write; only precision 6 (microseconds) is supported",
-                        trinoType.getPrecision()))
+                throw TrinoException(NOT_SUPPORTED,
+                        "Unsupported time precision ${trinoType.getPrecision()} for DuckLake write; only precision 6 (microseconds) is supported")
             }
             return "time"
         }
         if (trinoType is TimeWithTimeZoneType) {
             if (trinoType.getPrecision() != 6) {
-                throw TrinoException(NOT_SUPPORTED, format(
-                        "Unsupported time with time zone precision %d for DuckLake write; only precision 6 (microseconds) is supported",
-                        trinoType.getPrecision()))
+                throw TrinoException(NOT_SUPPORTED,
+                        "Unsupported time with time zone precision ${trinoType.getPrecision()} for DuckLake write; only precision 6 (microseconds) is supported")
             }
             return "timetz"
         }
@@ -259,7 +253,7 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
             return "map"
         }
 
-        throw TrinoException(NOT_SUPPORTED, format("Unsupported Trino type: %s", trinoType))
+        throw TrinoException(NOT_SUPPORTED, "Unsupported Trino type: $trinoType")
     }
 
     public companion object {
@@ -273,12 +267,12 @@ public open class DucklakeTypeConverter @Inject constructor(typeManager: TypeMan
 
         // Splits a string at top-level commas, respecting nested angle brackets
         private fun splitTopLevelCommas(input: String): List<String> {
-            val parts: MutableList<String> = ArrayList()
+            val parts = mutableListOf<String>()
             var depth = 0
             var start = 0
             var i = 0
             while (i < input.length) {
-                val c = input.get(i)
+                val c = input[i]
                 if (c == '<') {
                     depth++
                 }

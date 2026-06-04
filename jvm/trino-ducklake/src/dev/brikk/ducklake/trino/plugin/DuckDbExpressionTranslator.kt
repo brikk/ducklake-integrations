@@ -35,7 +35,6 @@ import io.trino.spi.type.TinyintType
 import io.trino.spi.type.Type
 import io.trino.spi.type.VarcharType
 import java.time.LocalDate
-import java.util.ArrayList
 import java.util.Optional
 
 /**
@@ -217,7 +216,7 @@ class DuckDbExpressionTranslator private constructor() {
         private val TYPE_GATES: Map<NameArity, ArgTypeGate> = buildTypeGates()
 
         private fun buildTypeGates(): Map<NameArity, ArgTypeGate> {
-            val gates: MutableMap<NameArity, ArgTypeGate> = java.util.HashMap()
+            val gates: MutableMap<NameArity, ArgTypeGate> = mutableMapOf()
             // Tier B always accepted (DATE or TIMESTAMP no-TZ); Tier C (TIMESTAMP WITH
             // TIME ZONE) conditionally accepted when the session sets
             // `pushdown_timestamp_with_timezone` = true. Chunk 2 set DuckDB's session
@@ -322,8 +321,8 @@ class DuckDbExpressionTranslator private constructor() {
         fun translateConjuncts(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>,
-                @org.jetbrains.annotations.Nullable session: ConnectorSession?): List<String> {
-            val out: MutableList<String> = ArrayList()
+                session: ConnectorSession?): List<String> {
+            val out: MutableList<String> = mutableListOf()
             for (conjunct in conjuncts(expression)) {
                 if (isTautologyTrue(conjunct)) {
                     // `Constraint.alwaysTrue()` and any `WHERE TRUE` reduce to a Constant(TRUE)
@@ -332,7 +331,7 @@ class DuckDbExpressionTranslator private constructor() {
                     continue
                 }
                 val translated = translate(conjunct, assignments, session)
-                translated.ifPresent { out.add(it) }
+                translated.ifPresent(out::add)
             }
             return out.toList()
         }
@@ -340,13 +339,13 @@ class DuckDbExpressionTranslator private constructor() {
         private fun isTautologyTrue(expression: ConnectorExpression): Boolean {
             return expression is Constant &&
                     expression.getType() is BooleanType &&
-                    java.lang.Boolean.TRUE == expression.getValue()
+                    expression.getValue() == true
         }
 
         private fun conjuncts(expression: ConnectorExpression): List<ConnectorExpression> {
             if (expression is Call &&
                     expression.getFunctionName().equals(StandardFunctions.AND_FUNCTION_NAME)) {
-                val out: MutableList<ConnectorExpression> = ArrayList()
+                val out: MutableList<ConnectorExpression> = mutableListOf()
                 for (child in expression.getArguments()) {
                     out.addAll(conjuncts(child))
                 }
@@ -368,7 +367,7 @@ class DuckDbExpressionTranslator private constructor() {
         fun translate(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>,
-                @org.jetbrains.annotations.Nullable session: ConnectorSession?): Optional<String> {
+                session: ConnectorSession?): Optional<String> {
             return try {
                 Optional.ofNullable(translateOrNull(expression, assignments, session))
             }
@@ -399,7 +398,7 @@ class DuckDbExpressionTranslator private constructor() {
                 return null
             }
             val escaped = column.columnName.replace("\"", "\"\"")
-            return "\"" + escaped + "\""
+            return "\"$escaped\""
         }
 
         private fun translateConstant(constant: Constant): String? {
@@ -409,18 +408,18 @@ class DuckDbExpressionTranslator private constructor() {
                 return "NULL"
             }
             if (type is BooleanType) {
-                return if ((value as Boolean)) "TRUE" else "FALSE"
+                return if (value as Boolean) "TRUE" else "FALSE"
             }
             if (type is BigintType ||
                     type is IntegerType ||
                     type is SmallintType ||
                     type is TinyintType) {
                 // All represented as long on the stack.
-                return java.lang.Long.toString((value as Long))
+                return (value as Long).toString()
             }
             if (type is DoubleType) {
                 val d: Double = (value as Double)
-                if (java.lang.Double.isNaN(d) || java.lang.Double.isInfinite(d)) {
+                if (d.isNaN() || d.isInfinite()) {
                     return null
                 }
                 return java.lang.Double.toString(d)
@@ -478,7 +477,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (left == null || right == null) {
                     return null
                 }
-                return "(" + left + " " + operator + " " + right + ")"
+                return "($left $operator $right)"
             }
             val arithmetic = arithmeticOperator(name)
             if (arithmetic != null && args.size == 2) {

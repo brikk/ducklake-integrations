@@ -14,6 +14,14 @@
 package dev.brikk.ducklake.catalog
 
 /**
+ * Base exception for Ducklake catalog operations.
+ */
+open class DucklakeException : RuntimeException {
+    constructor(message: String) : super(message)
+    constructor(message: String, cause: Throwable?) : super(message, cause)
+}
+
+/**
  * Thrown when a catalog operation fails due to a concurrent commit
  * (optimistic concurrency conflict on the snapshot sequence).
  *
@@ -34,5 +42,37 @@ open class TransactionConflictException(
      */
     open fun retryable(): Boolean {
         return true
+    }
+}
+
+/**
+ * A [TransactionConflictException] surfaced by [LogicalConflictCheck]:
+ * a concurrent commit removed (or otherwise mutated) a catalog entity that
+ * the in-flight transaction's payload references. Examples:
+ *
+ *  * `commitInsert` fragments name a `column_id` that an
+ *    intervening `DROP COLUMN` end-snapshotted.
+ *  * `commitDelete` fragments target a `data_file_id` that
+ *    an intervening `DROP TABLE` or compaction end-snapshotted.
+ *  * `addColumn` / `dropColumn` / `commitInsert` on a
+ *    `table_id` that an intervening `DROP TABLE`
+ *    end-snapshotted.
+ *
+ * This conflict is *not retryable*: the action's per-call arguments
+ * (table IDs, fragment column / file IDs) are captured before the catalog
+ * call and would feed the same stale references into a retry. The
+ * [WriteTransactionRetry] loop bails out on these and rethrows
+ * immediately.
+ */
+open class LogicalConflictException
+        : TransactionConflictException
+{
+    constructor(message: String) : super(message, null)
+
+    constructor(message: String, cause: Throwable?) : super(message, cause)
+
+    override fun retryable(): Boolean
+    {
+        return false
     }
 }

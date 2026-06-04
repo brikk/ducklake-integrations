@@ -44,7 +44,6 @@ object DucklakeStatTypes {
      * integer, floating point, or decimal) and therefore must be compared
      * numerically rather than lexically.
      */
-    @JvmStatic
     fun isNumericType(canonicalType: String?): Boolean {
         if (canonicalType == null) {
             return false
@@ -65,7 +64,6 @@ object DucklakeStatTypes {
      * `null` input or any value that fails to parse — callers treat
      * `null` as "unknown, do not prune" to avoid false negatives.
      */
-    @JvmStatic
     fun parseStat(canonicalType: String?, value: String?): Comparable<*>? {
         if (value == null) {
             return null
@@ -88,16 +86,13 @@ object DucklakeStatTypes {
     }
 
     /** Type-aware comparison of two stored stat strings. Lexical for everything but numbers. */
-    @JvmStatic
-    fun compare(a: String, b: String, canonicalType: String?): Int {
-        return compare(a, b, isNumericType(canonicalType))
-    }
+    fun compare(a: String, b: String, canonicalType: String?): Int =
+        compare(a, b, isNumericType(canonicalType))
 
     /**
      * Core comparison: numeric stats compare as [BigDecimal]; all others
      * (and any numeric value that fails to parse) fall back to lexical order.
      */
-    @JvmStatic
     fun compare(a: String, b: String, numeric: Boolean): Int {
         if (numeric) {
             try {

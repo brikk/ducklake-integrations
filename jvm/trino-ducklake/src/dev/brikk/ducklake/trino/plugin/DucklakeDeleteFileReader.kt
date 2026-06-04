@@ -33,6 +33,7 @@ import io.trino.plugin.hive.parquet.ParquetPageSource
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
+import io.trino.spi.block.Block
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
@@ -63,14 +64,14 @@ import java.util.OptionalLong
  * code. Keeping the reader in one place is a B3a invariant: if the two paths drift,
  * the union could mis-interpret values and either lose or re-introduce deletions.
  */
-public object DucklakeDeleteFileReader {
+object DucklakeDeleteFileReader {
     /**
      * Reads all non-null positions from a single parquet delete file. The returned set
      * is unordered and dedup'd (the read path tolerates duplicate aliasing — see
      * `TestDeleteRowFilterTransformOverlap`).
      */
     @Throws(IOException::class)
-    public fun readPositions(
+    fun readPositions(
             fileSystem: TrinoFileSystem,
             deleteFilePath: String,
             footerSizeHint: Long,
@@ -132,7 +133,7 @@ public object DucklakeDeleteFileReader {
                     Optional.empty(),
                     Optional.empty())
 
-            val deletedRows: MutableSet<Long> = HashSet()
+            val deletedRows = mutableSetOf<Long>()
             val pageSource: ConnectorPageSource = ParquetPageSource(parquetReader)
             try {
                 while (!pageSource.isFinished()) {
@@ -165,7 +166,7 @@ public object DucklakeDeleteFileReader {
                     }
                 }
             }
-            throw RuntimeException("Failed to read delete file: " + deleteFilePath, e)
+            throw RuntimeException("Failed to read delete file: $deleteFilePath", e)
         }
         catch (e: RuntimeException) {
             if (dataSource != null) {
@@ -178,7 +179,7 @@ public object DucklakeDeleteFileReader {
                     }
                 }
             }
-            throw RuntimeException("Failed to read delete file: " + deleteFilePath, e)
+            throw RuntimeException("Failed to read delete file: $deleteFilePath", e)
         }
     }
 
@@ -191,9 +192,8 @@ public object DucklakeDeleteFileReader {
             if (columnIO !is PrimitiveColumnIO) {
                 continue
             }
-            val primitiveColumnIO: PrimitiveColumnIO = columnIO
 
-            val primitiveTypeName: PrimitiveTypeName = primitiveColumnIO.getPrimitive()
+            val primitiveTypeName: PrimitiveTypeName = columnIO.getPrimitive()
             val columnType: Type? = when (primitiveTypeName) {
                 PrimitiveTypeName.INT64 -> BIGINT
                 PrimitiveTypeName.INT32 -> INTEGER
@@ -202,7 +202,7 @@ public object DucklakeDeleteFileReader {
 
             if (columnType != null) {
                 val fieldDefinition: Field = DucklakeParquetTypeUtils.constructField(columnType, columnIO)
-                        .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for delete file column: " + field.getName()) }
+                        .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for delete file column: ${field.name}") }
                 return DeleteFileColumn(field.getName(), columnType, fieldDefinition)
             }
         }
@@ -210,14 +210,14 @@ public object DucklakeDeleteFileReader {
         throw TrinoException(NOT_SUPPORTED, "Delete file must contain at least one INT32/INT64 primitive column")
     }
 
-    private fun readDeleteValue(type: Type, block: io.trino.spi.block.Block, position: Int): Long {
+    private fun readDeleteValue(type: Type, block: Block, position: Int): Long {
         if (type.equals(BIGINT)) {
             return BIGINT.getLong(block, position)
         }
         if (type.equals(INTEGER)) {
             return INTEGER.getInt(block, position).toLong()
         }
-        throw IllegalArgumentException("Unsupported delete file value type: " + type)
+        throw IllegalArgumentException("Unsupported delete file value type: $type")
     }
 
     private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException {
@@ -226,7 +226,7 @@ public object DucklakeDeleteFileReader {
         }
         return TrinoException(
                 NOT_SUPPORTED,
-                "Error reading Parquet file: " + dataSourceId,
+                "Error reading Parquet file: $dataSourceId",
                 exception)
     }
 

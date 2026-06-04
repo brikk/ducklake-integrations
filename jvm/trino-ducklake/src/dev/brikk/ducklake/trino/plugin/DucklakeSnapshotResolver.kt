@@ -33,9 +33,9 @@ open class DucklakeSnapshotResolver(
         catalog: DucklakeCatalog?,
         catalogDefaultSnapshotId: OptionalLong?,
         catalogDefaultSnapshotTimestamp: Optional<Instant>?) {
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")!!
-    private val catalogDefaultSnapshotId: OptionalLong = requireNonNull(catalogDefaultSnapshotId, "catalogDefaultSnapshotId is null")!!
-    private val catalogDefaultSnapshotTimestamp: Optional<Instant> = requireNonNull(catalogDefaultSnapshotTimestamp, "catalogDefaultSnapshotTimestamp is null")!!
+    private val catalog: DucklakeCatalog = requireNotNull(catalog) { "catalog is null" }
+    private val catalogDefaultSnapshotId: OptionalLong = requireNotNull(catalogDefaultSnapshotId) { "catalogDefaultSnapshotId is null" }
+    private val catalogDefaultSnapshotTimestamp: Optional<Instant> = requireNotNull(catalogDefaultSnapshotTimestamp) { "catalogDefaultSnapshotTimestamp is null" }
 
     init {
         if (this.catalogDefaultSnapshotId.isPresent && this.catalogDefaultSnapshotTimestamp.isPresent) {
@@ -86,16 +86,16 @@ open class DucklakeSnapshotResolver(
 
     fun resolveSnapshotIdById(snapshotId: Long): Long {
         if (snapshotId <= 0) {
-            throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID must be greater than 0: " + snapshotId)
+            throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID must be greater than 0: $snapshotId")
         }
         val snapshot: DucklakeSnapshot = catalog.getSnapshot(snapshotId)
-                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID does not exist: " + snapshotId) }
+                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID does not exist: $snapshotId") }
         return snapshot.snapshotId
     }
 
     fun resolveSnapshotIdAtOrBefore(timestamp: Instant): Long {
         val snapshot: DucklakeSnapshot = catalog.getSnapshotAtOrBefore(timestamp)
-                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: " + timestamp) }
+                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: $timestamp") }
         return snapshot.snapshotId
     }
 }

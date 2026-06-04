@@ -134,7 +134,7 @@ public class DucklakeConfig {
             this.defaultSnapshotTimestamp = Optional.of(Instant.parse(defaultSnapshotTimestamp))
         }
         catch (e: DateTimeParseException) {
-            throw IllegalArgumentException("Invalid ducklake.default-snapshot-timestamp value: " + defaultSnapshotTimestamp, e)
+            throw IllegalArgumentException("Invalid ducklake.default-snapshot-timestamp value: $defaultSnapshotTimestamp", e)
         }
         return this
     }
@@ -167,7 +167,7 @@ public class DucklakeConfig {
             this.temporalPartitionEncoding = DucklakeTemporalPartitionEncoding.fromString(temporalPartitionEncoding)
         }
         catch (e: IllegalArgumentException) {
-            throw IllegalArgumentException("Invalid ducklake.temporal-partition-encoding value: " + temporalPartitionEncoding + " (expected: calendar or epoch)", e)
+            throw IllegalArgumentException("Invalid ducklake.temporal-partition-encoding value: $temporalPartitionEncoding (expected: calendar or epoch)", e)
         }
         return this
     }

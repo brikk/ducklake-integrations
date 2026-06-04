@@ -378,7 +378,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 Optional.ofNullable(r.get(file.END_SNAPSHOT)),
                 orZero(r.get(file.FILE_ORDER)),
                 r.get(dataFilePath),
-                java.lang.Boolean.TRUE == r.get(dataFilePathIsRelative),
+                r.get(dataFilePathIsRelative) == true,
                 r.get(file.FILE_FORMAT),
                 orZero(r.get(file.RECORD_COUNT)),
                 orZero(r.get(file.FILE_SIZE_BYTES)),
@@ -962,7 +962,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         companion object {
             @JvmStatic
             fun of(tableId: Long, schemaVersion: Long): InlinedDataTable {
-                val name = String.format("ducklake_inlined_data_%d_%d", tableId, schemaVersion)
+                val name = "ducklake_inlined_data_${tableId}_$schemaVersion"
                 return InlinedDataTable(
                     name,
                     DSL.table(DSL.name(name)),
@@ -1216,10 +1216,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         cause: Throwable?,
     ): TransactionConflictException {
         val interveningChanges = getInterveningChangesSummary(ctx, expectedSnapshotId, currentSnapshotId)
-        val message = "Concurrent DuckLake commit while attempting to " + operationDescription +
-            ": expected base snapshot " + expectedSnapshotId +
-            ", but current snapshot is " + currentSnapshotId +
-            ". Intervening changes: " + interveningChanges
+        val message = "Concurrent DuckLake commit while attempting to $operationDescription" +
+            ": expected base snapshot $expectedSnapshotId" +
+            ", but current snapshot is $currentSnapshotId" +
+            ". Intervening changes: $interveningChanges"
         return TransactionConflictException(message, cause)
     }
 
@@ -1671,7 +1671,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             }
             val columnOrder = orZero(existing.get(col.COLUMN_ORDER))
             val columnType = existing.get(col.COLUMN_TYPE)
-            val nullsAllowed = java.lang.Boolean.TRUE == existing.get(col.NULLS_ALLOWED)
+            val nullsAllowed = existing.get(col.NULLS_ALLOWED) == true
 
             // End-snapshot the current version
             ctx.update(col)
@@ -2019,10 +2019,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         // so superseding the prior is correct (no rows resurrect — the new file carries the
         // union). Record-count math below uses the DELTA (newDeleteCount), not the union
         // total, because the prior's positions were already deducted at first commit.
-        val touchedDataFileIds: MutableSet<Long> = HashSet()
-        for (fragment in deleteFragments) {
-            touchedDataFileIds.add(fragment.dataFileId)
-        }
+        val touchedDataFileIds: Set<Long> = deleteFragments.mapTo(HashSet()) { it.dataFileId }
         if (touchedDataFileIds.isNotEmpty()) {
             ctx.update(delfile)
                 .set(delfile.END_SNAPSHOT, tx.getNewSnapshotId())
@@ -2219,23 +2216,11 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
         }
 
-        private fun referencedColumnIds(fragments: List<DucklakeWriteFragment>): Set<Long> {
-            val result = HashSet<Long>()
-            for (f in fragments) {
-                for (cs in f.columnStats) {
-                    result.add(cs.columnId)
-                }
-            }
-            return result.toSet()
-        }
+        private fun referencedColumnIds(fragments: List<DucklakeWriteFragment>): Set<Long> =
+            fragments.flatMap { it.columnStats }.mapTo(HashSet()) { it.columnId }
 
-        private fun referencedDataFileIds(fragments: List<DucklakeDeleteFragment>): Set<Long> {
-            val result = HashSet<Long>()
-            for (f in fragments) {
-                result.add(f.dataFileId)
-            }
-            return result.toSet()
-        }
+        private fun referencedDataFileIds(fragments: List<DucklakeDeleteFragment>): Set<Long> =
+            fragments.mapTo(HashSet()) { it.dataFileId }
 
         private fun runConflictMatrix(
             ctx: DSLContext,
@@ -2406,7 +2391,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 orZero(r.columnOrder),
                 r.columnName!!,
                 r.columnType!!,
-                java.lang.Boolean.TRUE == r.nullsAllowed,
+                r.nullsAllowed == true,
                 Optional.ofNullable(r.parentColumn),
             )
         }

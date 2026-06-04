@@ -49,14 +49,13 @@ import java.util.Optional
  * path yet.
  */
 public class DuckDbFilePageSource(
-        executor: DucklakeDuckDbExecutor,
+        private val executor: DucklakeDuckDbExecutor,
         attachTarget: DuckDbAttachTarget,
         columns: List<DucklakeColumnHandle>,
         columnTypes: List<Type>,
         effectivePredicate: TupleDomain<DucklakeColumnHandle>,
         pushedExpressions: List<String>,
         duckDbTimeZone: Optional<String>) : ConnectorPageSource {
-    private val executor: DucklakeDuckDbExecutor = executor
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
             columns.toList(),
@@ -90,9 +89,7 @@ public class DuckDbFilePageSource(
     }
 
     override fun getNextSourcePage(): SourcePage? {
-        if (finished) {
-            return null
-        }
+        if (finished) return null
         val start = System.nanoTime()
         try {
             if (!initialized) {
@@ -124,10 +121,10 @@ public class DuckDbFilePageSource(
         // classify these as GENERIC_INTERNAL_ERROR to avoid misleading operators and
         // defeating error-type-keyed retry classification.
         catch (e: IOException) {
-            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file " + describeAttachTarget(), e)
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file ${describeAttachTarget()}", e)
         }
         catch (e: SQLException) {
-            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file " + describeAttachTarget(), e)
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read DuckDB file ${describeAttachTarget()}", e)
         }
         finally {
             readTimeNanos += System.nanoTime() - start
@@ -141,9 +138,7 @@ public class DuckDbFilePageSource(
         }
     }
 
-    override fun getMemoryUsage(): Long {
-        return if (executionContext == null) 0 else executionContext!!.memoryUsage()
-    }
+    override fun getMemoryUsage(): Long = executionContext?.memoryUsage() ?: 0L
 
     @Throws(IOException::class)
     override fun close() {

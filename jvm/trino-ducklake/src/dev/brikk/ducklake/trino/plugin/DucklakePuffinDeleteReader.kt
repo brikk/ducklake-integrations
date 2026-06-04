@@ -18,8 +18,6 @@ import org.roaringbitmap.RoaringBitmap
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Arrays
-import java.util.HashSet
 import java.util.zip.CRC32
 
 /**
@@ -58,7 +56,7 @@ object DucklakePuffinDeleteReader {
     fun readDeletedPositions(inputFile: TrinoInputFile): Set<Long> {
         val length = inputFile.length()
         if (length > Int.MAX_VALUE) {
-            throw IOException("Puffin delete file is unreasonably large: " + length + " bytes (path=" + inputFile.location() + ")")
+            throw IOException("Puffin delete file is unreasonably large: $length bytes (path=${inputFile.location()})")
         }
         val blob = ByteArray(length.toInt())
         inputFile.newStream().use { `in` ->
@@ -66,8 +64,7 @@ object DucklakePuffinDeleteReader {
             while (read < blob.size) {
                 val n = `in`.read(blob, read, blob.size - read)
                 if (n < 0) {
-                    throw IOException("Unexpected EOF reading puffin delete file at offset " + read
-                            + " of " + blob.size + " (path=" + inputFile.location() + ")")
+                    throw IOException("Unexpected EOF reading puffin delete file at offset $read of ${blob.size} (path=${inputFile.location()})")
                 }
                 read += n
             }
@@ -81,7 +78,7 @@ object DucklakePuffinDeleteReader {
     @Throws(IOException::class)
     fun decodeBlob(blob: ByteArray): Set<Long> {
         if (blob.size < MIN_BLOB_SIZE) {
-            throw IOException("Puffin delete blob too small: " + blob.size + " bytes (minimum " + MIN_BLOB_SIZE + ")")
+            throw IOException("Puffin delete blob too small: ${blob.size} bytes (minimum $MIN_BLOB_SIZE)")
         }
 
         val buf = ByteBuffer.wrap(blob)
@@ -92,19 +89,19 @@ object DucklakePuffinDeleteReader {
         // vectorSize counts magic + bitmap_count + bitmaps (everything between vector_size and CRC).
         val expectedCheckedEnd = checksummedStart.toLong() + vectorSize
         if (expectedCheckedEnd != blob.size - 4L) {
-            throw IOException("Puffin blob vector_size " + vectorSize + " inconsistent with file length " + blob.size)
+            throw IOException("Puffin blob vector_size $vectorSize inconsistent with file length ${blob.size}")
         }
 
         val magic = ByteArray(4)
         buf.get(magic)
-        if (!Arrays.equals(magic, DELETION_VECTOR_MAGIC)) {
+        if (!magic.contentEquals(DELETION_VECTOR_MAGIC)) {
             throw IOException("Puffin blob magic mismatch — not a DuckLake deletion vector file")
         }
 
         buf.order(ByteOrder.LITTLE_ENDIAN)
         val bitmapCount = buf.getLong()
         if (bitmapCount < 0 || bitmapCount > Int.MAX_VALUE) {
-            throw IOException("Implausible bitmap_count in puffin blob: " + bitmapCount)
+            throw IOException("Implausible bitmap_count in puffin blob: $bitmapCount")
         }
         // bitmap_count is consistency-checked against vector_size, but vector_size can itself be
         // a small consistent-but-short value, so cross-check against the bytes actually remaining:
@@ -112,11 +109,10 @@ object DucklakePuffinDeleteReader {
         // an over-large count would walk off the end below.
         val bytesForBitmaps = expectedCheckedEnd - buf.position()
         if (bitmapCount > bytesForBitmaps / 4L) {
-            throw IOException("Implausible bitmap_count " + bitmapCount + " for " + bytesForBitmaps
-                    + " remaining puffin-blob bytes")
+            throw IOException("Implausible bitmap_count $bitmapCount for $bytesForBitmaps remaining puffin-blob bytes")
         }
 
-        val positions: MutableSet<Long> = HashSet()
+        val positions = hashSetOf<Long>()
         var b: Long = 0
         // Per-bitmap reads (getInt, RoaringBitmap.deserialize, buffer reposition) can throw
         // unchecked BufferUnderflowException / IndexOutOfBoundsException / IllegalArgumentException
@@ -139,7 +135,7 @@ object DucklakePuffinDeleteReader {
                     bitmap.deserialize(buf)
                 }
                 catch (e: IOException) {
-                    throw IOException("Failed to deserialize Roaring bitmap at offset " + rbStart + " in puffin blob", e)
+                    throw IOException("Failed to deserialize Roaring bitmap at offset $rbStart in puffin blob", e)
                 }
                 buf.position(rbStart + bitmap.serializedSizeInBytes())
                 for (low in bitmap) {
@@ -149,14 +145,12 @@ object DucklakePuffinDeleteReader {
             }
         }
         catch (e: RuntimeException) {
-            throw IOException("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count="
-                    + bitmapCount + ", blob size=" + blob.size + ")", e)
+            throw IOException("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob size=${blob.size})", e)
         }
 
         val checksummedEnd = buf.position()
         if (checksummedEnd.toLong() != expectedCheckedEnd) {
-            throw IOException("Puffin blob bitmaps consumed " + (checksummedEnd - checksummedStart)
-                    + " bytes; vector_size declared " + vectorSize)
+            throw IOException("Puffin blob bitmaps consumed ${checksummedEnd - checksummedStart} bytes; vector_size declared $vectorSize")
         }
 
         buf.order(ByteOrder.BIG_ENDIAN)

@@ -42,7 +42,7 @@ class DucklakeWriteTransaction(
 ) {
     private val newSnapshotId: Long = currentSnapshotId + 1
     private var schemaVersionTableId: Long = -1
-    private val changes: MutableList<WriteChange> = ArrayList()
+    private val changes: MutableList<WriteChange> = mutableListOf()
 
     /**
      * Returns the connection-scoped [DSLContext] for building jOOQ statements that

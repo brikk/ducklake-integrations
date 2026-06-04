@@ -44,32 +44,21 @@ public class DucklakeParquetSchemaBuilder private constructor() {
                 allColumns: List<DucklakeColumn>,
                 sourceMessageType: MessageType): MessageType {
             // Build lookup: parentColumnId -> childName -> DucklakeColumn
-            val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = HashMap()
-            for (column in allColumns) {
-                column.parentColumn.ifPresent { parentId ->
-                    childrenByParent
-                            .computeIfAbsent(parentId) { HashMap() }
-                            .put(column.columnName, column)
-                }
-            }
+            val childrenByParent: Map<Long, Map<String, DucklakeColumn>> =
+                    allColumns
+                            .filter { it.parentColumn.isPresent }
+                            .groupBy({ it.parentColumn.get() }, { it })
+                            .mapValues { (_, cols) -> cols.associateBy { it.columnName } }
 
             // Build top-level name -> columnId map
-            val topLevelColumnIds: MutableMap<String, Long> = HashMap()
-            for (handle in topLevelColumns) {
-                topLevelColumnIds.put(handle.columnName, handle.columnId)
-            }
+            val topLevelColumnIds: Map<String, Long> =
+                    topLevelColumns.associate { it.columnName to it.columnId }
 
             // Rebuild each field with field_id
-            val annotatedFields: MutableList<Type> = ArrayList()
-            for (field in sourceMessageType.fields) {
+            val annotatedFields = sourceMessageType.fields.map { field ->
                 val columnId = topLevelColumnIds[field.name]
-                if (columnId != null) {
-                    annotatedFields.add(annotateType(field, columnId, childrenByParent))
-                }
-                else {
-                    // No column ID found — keep original (shouldn't happen for well-formed schemas)
-                    annotatedFields.add(field)
-                }
+                // No column ID found — keep original (shouldn't happen for well-formed schemas)
+                columnId?.let { annotateType(field, it, childrenByParent) } ?: field
             }
 
             return MessageType(sourceMessageType.name, annotatedFields)
@@ -81,7 +70,7 @@ public class DucklakeParquetSchemaBuilder private constructor() {
         public fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 sourceMessageType: MessageType): MessageType {
-            return buildMessageType(topLevelColumns, listOf(), sourceMessageType)
+            return buildMessageType(topLevelColumns, emptyList(), sourceMessageType)
         }
 
         private fun annotateType(
@@ -113,18 +102,16 @@ public class DucklakeParquetSchemaBuilder private constructor() {
                 source: GroupType,
                 columnId: Long,
                 childrenByParent: Map<Long, Map<String, DucklakeColumn>>): GroupType {
-            val children = childrenByParent.getOrDefault(columnId, mapOf())
+            val children = childrenByParent[columnId].orEmpty()
 
-            val annotatedChildren: MutableList<Type> = ArrayList()
-            for (child in source.fields) {
+            val annotatedChildren = source.fields.map { child ->
                 val childColumn = children[child.name]
                 if (childColumn != null) {
-                    annotatedChildren.add(annotateType(child, childColumn.columnId, childrenByParent))
-                }
-                else {
+                    annotateType(child, childColumn.columnId, childrenByParent)
+                } else {
                     // Structural fields (list/element, key_value/key/value) may not have direct column IDs.
                     // For these, recurse into their children looking for mapped columns.
-                    annotatedChildren.add(annotateStructuralField(child, columnId, childrenByParent))
+                    annotateStructuralField(child, columnId, childrenByParent)
                 }
             }
 
@@ -152,16 +139,14 @@ public class DucklakeParquetSchemaBuilder private constructor() {
             }
 
             val group = field.asGroupType()
-            val children = childrenByParent.getOrDefault(parentColumnId, mapOf())
+            val children = childrenByParent[parentColumnId].orEmpty()
 
-            val annotatedChildren: MutableList<Type> = ArrayList()
-            for (child in group.fields) {
+            val annotatedChildren = group.fields.map { child ->
                 val childColumn = children[child.name]
                 if (childColumn != null) {
-                    annotatedChildren.add(annotateType(child, childColumn.columnId, childrenByParent))
-                }
-                else {
-                    annotatedChildren.add(annotateStructuralField(child, parentColumnId, childrenByParent))
+                    annotateType(child, childColumn.columnId, childrenByParent)
+                } else {
+                    annotateStructuralField(child, parentColumnId, childrenByParent)
                 }
             }
 

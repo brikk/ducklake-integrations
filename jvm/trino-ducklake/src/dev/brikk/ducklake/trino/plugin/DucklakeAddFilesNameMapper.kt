@@ -47,8 +47,6 @@ import org.apache.parquet.schema.LogicalTypeAnnotation.TimestampLogicalTypeAnnot
 import org.apache.parquet.schema.LogicalTypeAnnotation.UUIDLogicalTypeAnnotation
 import org.apache.parquet.schema.MessageType
 import org.apache.parquet.schema.PrimitiveType
-import java.util.HashMap
-import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.Optional
 
@@ -85,7 +83,7 @@ internal class DucklakeAddFilesNameMapper(
     // Used to reorder columns when feeding the existing DucklakeStatsExtractor — its
     // contract is "column N of the columns list maps to row-group column N of the file".
     private val topLevelMatches: MutableList<TopLevelMatch> = ArrayList()
-    private val partitionValues: MutableMap<Int, Any?> = LinkedHashMap()
+    private val partitionValues: MutableMap<Int, Any?> = linkedMapOf()
     // One LeafStatsTarget per *mapped* parquet leaf — i.e., leaves that have a
     // corresponding DuckLake catalog column. Skipped leaves (ignore_extra_columns
     // children, hive-partition-wins overlap) still advance leafCounter so the
@@ -124,33 +122,31 @@ internal class DucklakeAddFilesNameMapper(
 
     fun map(parquetSchema: MessageType, allColumns: List<DucklakeColumn>, topLevelColumns: List<DucklakeColumn>): Result {
         // Build parent → name → child lookup
-        val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = HashMap()
+        val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = hashMapOf()
         for (column in allColumns) {
             column.parentColumn.ifPresent { parentId ->
                 childrenByParent
-                        .computeIfAbsent(parentId) { _ -> HashMap() }
+                        .computeIfAbsent(parentId) { _ -> hashMapOf() }
                         .put(column.columnName.lowercase(Locale.ROOT), column)
             }
         }
 
-        val topByName: MutableMap<String, DucklakeColumn> = HashMap()
-        for (column in topLevelColumns) {
-            topByName.put(column.columnName.lowercase(Locale.ROOT), column)
-        }
-        val hivePartitionKeyLower: MutableMap<String, Long?> = HashMap()
+        val topByName: Map<String, DucklakeColumn> =
+                topLevelColumns.associateBy { it.columnName.lowercase(Locale.ROOT) }
+        val hivePartitionKeyLower: MutableMap<String, Long?> = hashMapOf()
         for (key in hivePartitionValues.keys) {
             hivePartitionKeyLower.put(key.lowercase(Locale.ROOT), null)
         }
 
         val parquetFields: List<org.apache.parquet.schema.Type> = parquetSchema.getFields()
-        val tableColumnsMatched: MutableMap<String, Int> = HashMap()
+        val tableColumnsMatched: MutableMap<String, Int> = hashMapOf()
 
         for (i in 0 until parquetFields.size) {
             val parquetField = parquetFields.get(i)
             val parquetName = parquetField.getName()
             val parquetNameLower = parquetName.lowercase(Locale.ROOT)
 
-            val match: DucklakeColumn? = topByName.get(parquetNameLower)
+            val match: DucklakeColumn? = topByName[parquetNameLower]
             if (match == null) {
                 if (ignoreExtraColumns) {
                     // Walk past the skipped column's parquet leaves so subsequent
@@ -158,10 +154,9 @@ internal class DucklakeAddFilesNameMapper(
                     leafCounter[0] += countParquetLeaves(parquetField)
                     continue
                 }
-                throw DucklakeAddFilesException(String.format(
-                        "Column \"%s\" exists in file \"%s\" but was not found in table \"%s\". "
-                                + "Set ignore_extra_columns => true to add the file anyway",
-                        parquetName, fileName, tableName))
+                throw DucklakeAddFilesException(
+                        "Column \"$parquetName\" exists in file \"$fileName\" but was not found in table \"$tableName\". " +
+                                "Set ignore_extra_columns => true to add the file anyway")
             }
             // If the matched column is also named in the hive path, the path value takes
             // precedence (upstream behavior — a file under part=10/foo.parquet wins over
@@ -177,7 +172,7 @@ internal class DucklakeAddFilesNameMapper(
             val entry = mapField(parquetField, parquetName, match, targetType, childrenByParent)
             resultEntries.add(entry)
             topLevelMatches.add(TopLevelMatch(i, match.columnId, parquetName, targetType))
-            tableColumnsMatched.put(parquetNameLower, i)
+            tableColumnsMatched[parquetNameLower] = i
         }
 
         // Handle table columns not present in the parquet schema: either hive partition
@@ -199,7 +194,7 @@ internal class DucklakeAddFilesNameMapper(
                         }
                     }
                 }
-                val stringValue = hivePartitionValues.get(pathKey)
+                val stringValue = hivePartitionValues[pathKey]
                 val targetType: Type = typeConverter.toTrinoType(column.columnType)
                 if (isNestedType(targetType)) {
                     throw DucklakeAddFilesException(String.format(
@@ -208,7 +203,7 @@ internal class DucklakeAddFilesNameMapper(
                 }
                 resultEntries.add(DucklakeNameMapEntry(
                         column.columnName, column.columnId, true, listOf<DucklakeNameMapEntry>()))
-                partitionValues.put(toIntFieldIndex(column.columnId), stringValue)
+                partitionValues[toIntFieldIndex(column.columnId)] = stringValue
                 continue
             }
             if (!allowMissing) {
@@ -220,7 +215,7 @@ internal class DucklakeAddFilesNameMapper(
         }
 
         // Convert the (Integer fieldIndex → String) partition map to immutable.
-        val partitionValuesOut: MutableMap<Int, String> = LinkedHashMap()
+        val partitionValuesOut: MutableMap<Int, String> = linkedMapOf()
         for (entry in partitionValues.entries) {
             partitionValuesOut.put(entry.key, entry.value as String)
         }
@@ -284,11 +279,11 @@ internal class DucklakeAddFilesNameMapper(
             rowType: RowType,
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
-        val children: Map<String, DucklakeColumn> = childrenByParent.getOrDefault(target.columnId, mapOf())
+        val children: Map<String, DucklakeColumn> = childrenByParent[target.columnId] ?: emptyMap()
         val childEntries: MutableList<DucklakeNameMapEntry> = ArrayList()
         for (field in group.getFields()) {
             val fieldName = field.getName()
-            val childTarget: DucklakeColumn? = children.get(fieldName.lowercase(Locale.ROOT))
+            val childTarget: DucklakeColumn? = children[fieldName.lowercase(Locale.ROOT)]
             if (childTarget == null) {
                 if (ignoreExtraColumns) {
                     // Advance past the skipped struct child's parquet leaves.
@@ -338,7 +333,7 @@ internal class DucklakeAddFilesNameMapper(
                     "Column \"%s\" in file \"%s\" maps to ARRAY but table side has %d list-element columns",
                     parquetName, fileName, children.size))
         }
-        val elementTarget: DucklakeColumn = children.values.iterator().next()
+        val elementTarget: DucklakeColumn = children.values.first()
         val childEntry = mapField(elementParquetType, "element", elementTarget,
                 arrayType.getElementType(), childrenByParent)
         return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf(childEntry))
@@ -374,8 +369,8 @@ internal class DucklakeAddFilesNameMapper(
                     parquetName, fileName))
         }
         val children: Map<String, DucklakeColumn> = childrenByParent.getOrDefault(target.columnId, mapOf())
-        val keyTarget: DucklakeColumn? = children.get("key")
-        val valueTarget: DucklakeColumn? = children.get("value")
+        val keyTarget: DucklakeColumn? = children["key"]
+        val valueTarget: DucklakeColumn? = children["value"]
         if (keyTarget == null || valueTarget == null) {
             throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" maps to MAP but table side is missing key/value child columns",
@@ -497,7 +492,7 @@ internal class DucklakeAddFilesNameMapper(
 
         private fun toIntFieldIndex(columnId: Long): Int {
             if (columnId > Integer.MAX_VALUE) {
-                throw DucklakeAddFilesException("DuckLake column_id exceeds Integer range: " + columnId)
+                throw DucklakeAddFilesException("DuckLake column_id exceeds Integer range: $columnId")
             }
             return columnId.toInt()
         }

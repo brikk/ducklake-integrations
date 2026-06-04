@@ -106,7 +106,7 @@ public open class DucklakeMergeSink(
         while (position < deletePage.getPositionCount()) {
             val rowId = BIGINT.getLong(rowIdBlock, position)
             val dataFileId = resolveDataFileId(rowId)
-            deletesByDataFile.computeIfAbsent(dataFileId) { _ -> ArrayList() }.add(rowId)
+            deletesByDataFile.getOrPut(dataFileId) { mutableListOf() }.add(rowId)
             position++
         }
     }
@@ -140,7 +140,7 @@ public open class DucklakeMergeSink(
                 fragments.add(Slices.wrappedBuffer(*deleteFragmentCodec.toJsonBytes(fragment)))
             }
             catch (e: IOException) {
-                throw UncheckedIOException("Failed to write delete file for data file " + dataFileId, e)
+                throw UncheckedIOException("Failed to write delete file for data file $dataFileId", e)
             }
         }
 

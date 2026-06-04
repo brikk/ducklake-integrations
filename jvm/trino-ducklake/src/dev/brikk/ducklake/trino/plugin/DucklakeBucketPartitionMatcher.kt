@@ -52,7 +52,7 @@ object DucklakeBucketPartitionMatcher {
             // Only discrete predicates (equality / IN) give us useful pruning for bucket.
             val values = domain.values
             return values.valuesProcessor.transform(
-                    Function<Ranges, Boolean> { ranges ->
+                    { ranges ->
                         // Single-point ranges (a <= x AND x <= a) are effectively equality —
                         // hash the singleton and match. Anything wider can span any bucket,
                         // so we can't prune.
@@ -72,7 +72,7 @@ object DucklakeBucketPartitionMatcher {
                         }
                         matched
                     },
-                    Function<DiscreteValues, Boolean> { discreteValues ->
+                    { discreteValues ->
                         if (!discreteValues.isInclusive) {
                             // Exclusion set (x != v / NOT IN (...)): getValues() lists the
                             // values to EXCLUDE. The file may hold any non-excluded value,
@@ -82,17 +82,12 @@ object DucklakeBucketPartitionMatcher {
                             true
                         }
                         else {
-                            var matched = false
-                            for (value in discreteValues.values) {
-                                if (hashesToBucket(columnType, value, arity, targetBucket)) {
-                                    matched = true
-                                    break
-                                }
+                            discreteValues.values.any { value ->
+                                hashesToBucket(columnType, value, arity, targetBucket)
                             }
-                            matched
                         }
                     },
-                    Function<AllOrNone, Boolean> { _ -> true })
+                    { _ -> true })
         }
         catch (_: RuntimeException) {
             return true // parse / hash failure — don't prune to avoid false negatives

@@ -243,10 +243,10 @@ class DucklakeMetadata(
         if (sortKeys.isEmpty()) {
             return ConnectorTableProperties()
         }
-        val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = java.util.HashMap()
+        val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = HashMap()
         for (column in catalog.getTableColumns(handle.tableId, handle.snapshotId)) {
             columnHandlesByLowercaseName.put(
-                    column.columnName.lowercase(java.util.Locale.ROOT),
+                    column.columnName.lowercase(Locale.ROOT),
                     DucklakeColumnHandle(
                             column.columnId,
                             column.columnName,
@@ -575,7 +575,7 @@ class DucklakeMetadata(
         val columns: ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> = ImmutableMap.builder()
 
         val tables: List<SchemaTableName> = prefix.getTable()
-                .map { _ -> java.util.List.of(prefix.toSchemaTableName()) }
+                .map { listOf(prefix.toSchemaTableName()) }
                 .orElseGet { listTables(session, prefix.getSchema()) }
 
         for (tableName in tables) {
@@ -794,7 +794,7 @@ class DucklakeMetadata(
         val snapshotId: Long = catalog.currentSnapshotId
         val table: Optional<DucklakeTable> = catalog.getTable(tableName.getSchemaName(), tableName.getTableName(), snapshotId)
         if (table.isEmpty) {
-            throw TrinoException(NOT_SUPPORTED, "Table was not created: " + tableName)
+            throw TrinoException(NOT_SUPPORTED, "Table was not created: $tableName")
         }
 
         val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.get().tableId, snapshotId)
@@ -896,7 +896,7 @@ class DucklakeMetadata(
         val table: Optional<DucklakeTable> = catalog.getTable(schemaName, tableName, snapshotId)
 
         if (schema.isEmpty || table.isEmpty) {
-            throw TrinoException(NOT_SUPPORTED, "Cannot resolve data path for " + schemaName + "." + tableName)
+            throw TrinoException(NOT_SUPPORTED, "Cannot resolve data path for $schemaName.$tableName")
         }
 
         return pathResolver!!.resolveTableDataPath(schema.get(), table.get())
@@ -1139,7 +1139,7 @@ class DucklakeMetadata(
         }
 
         if (catalog.getTable(target.getSchemaName(), target.getTableName(), snapshotId).isPresent || catalog.getView(target.getSchemaName(), target.getTableName(), snapshotId).isPresent) {
-            throw TrinoException(ALREADY_EXISTS, "Relation already exists: " + target)
+            throw TrinoException(ALREADY_EXISTS, "Relation already exists: $target")
         }
 
         translateCatalogExceptions(Runnable { catalog.renameView(source.getSchemaName(), source.getTableName(), target.getSchemaName(), target.getTableName()) })
@@ -1280,7 +1280,7 @@ class DucklakeMetadata(
                 return (version.getVersion() as Number).toLong()
             }
 
-            throw TrinoException(NOT_SUPPORTED, "Unsupported type for table version: " + versionType.getDisplayName())
+            throw TrinoException(NOT_SUPPORTED, "Unsupported type for table version: ${versionType.getDisplayName()}")
         }
 
         @JvmStatic
@@ -1312,7 +1312,7 @@ class DucklakeMetadata(
                 return Instant.ofEpochMilli(epochMillis)
             }
 
-            throw TrinoException(NOT_SUPPORTED, "Unsupported type for temporal table version: " + versionType.getDisplayName())
+            throw TrinoException(NOT_SUPPORTED, "Unsupported type for temporal table version: ${versionType.getDisplayName()}")
         }
 
         private fun toDoubleRange(type: Type, stats: DucklakeColumnStats): Optional<DoubleRange>

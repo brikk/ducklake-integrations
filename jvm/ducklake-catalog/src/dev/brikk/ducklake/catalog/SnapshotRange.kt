@@ -34,7 +34,6 @@ import org.jooq.impl.DSL.name
  */
 internal object SnapshotRange
 {
-    @JvmStatic
     fun activeAt(table: Table<*>, snapshotId: Long): Condition
     {
         val begin: Field<Long>? = table.field(name("begin_snapshot"), Long::class.javaObjectType)
@@ -44,7 +43,6 @@ internal object SnapshotRange
         return activeAt(begin!!, end!!, snapshotId)
     }
 
-    @JvmStatic
     fun activeAt(beginSnapshot: Field<Long>, endSnapshot: Field<Long>, snapshotId: Long): Condition
     {
         return beginSnapshot.le(snapshotId)

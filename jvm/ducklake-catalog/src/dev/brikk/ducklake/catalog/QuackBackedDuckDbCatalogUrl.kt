@@ -38,17 +38,12 @@ import java.util.LinkedHashMap
  * any catalog/schema prefix.
  */
 internal class QuackBackedDuckDbCatalogUrl private constructor(
-        host: String,
-        port: Int,
-        metadataCatalog: String,
-        token: String,
-        dataPath: String,
+        private val host: String,
+        private val port: Int,
+        private val metadataCatalog: String,
+        private val token: String,
+        private val dataPath: String,
 ) {
-    private val host: String = host
-    private val port: Int = port
-    private val metadataCatalog: String = metadataCatalog
-    private val token: String = token
-    private val dataPath: String = dataPath
 
     fun host(): String = host
 
@@ -118,9 +113,7 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
          */
         @JvmStatic
         fun parse(url: String, token: String?, dataPath: String?): QuackBackedDuckDbCatalogUrl {
-            if (!matches(url)) {
-                throw IllegalArgumentException("not a Quack-backed DuckDB catalog URL: $url")
-            }
+            require(matches(url)) { "not a Quack-backed DuckDB catalog URL: $url" }
             // Strip the JDBC prefix to leave a parseable scheme://authority?query URI.
             val uriPart = url.substring("jdbc:duckdb:".length)
             val uri: URI = try {
@@ -131,64 +124,50 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
             }
             val host = uri.host
             val port = uri.port
-            if (host == null || host.isEmpty()) {
-                throw IllegalArgumentException("Quack URL missing host: $url")
-            }
-            if (port <= 0) {
-                throw IllegalArgumentException("Quack URL missing port: $url")
-            }
+            require(!host.isNullOrEmpty()) { "Quack URL missing host: $url" }
+            require(port > 0) { "Quack URL missing port: $url" }
             val params = parseQuery(uri.rawQuery)
             val metadataCatalog = params.getOrDefault("metadata_catalog", DEFAULT_METADATA_CATALOG)
             validateIdentifier(metadataCatalog, "metadata_catalog")
-            if (token == null || token.length < 4) {
-                throw IllegalArgumentException(
-                        "Quack auth token must be at least 4 characters (Quack server-side requirement)")
+            require(token != null && token.length >= 4) {
+                "Quack auth token must be at least 4 characters (Quack server-side requirement)"
             }
-            if (dataPath == null || dataPath.isEmpty()) {
-                throw IllegalArgumentException(
-                        "data path is required for Quack-backed DuckLake catalogs (set ducklake.data-path)")
+            require(!dataPath.isNullOrEmpty()) {
+                "data path is required for Quack-backed DuckLake catalogs (set ducklake.data-path)"
             }
             return QuackBackedDuckDbCatalogUrl(host, port, metadataCatalog, token, dataPath)
         }
 
         private fun parseQuery(rawQuery: String?): Map<String, String> {
-            val result = LinkedHashMap<String, String>()
-            if (rawQuery == null || rawQuery.isEmpty()) {
-                return result
+            if (rawQuery.isNullOrEmpty()) {
+                return emptyMap()
             }
-            for (pair in rawQuery.split("&")) {
-                val eq = pair.indexOf('=')
-                val key = if (eq < 0) pair else pair.substring(0, eq)
-                val value = if (eq < 0) "" else pair.substring(eq + 1)
-                result[urlDecode(key)] = urlDecode(value)
-            }
-            return result
-        }
-
-        private fun urlDecode(s: String): String {
-            return URLDecoder.decode(s, StandardCharsets.UTF_8)
-        }
-
-        private fun validateIdentifier(value: String, fieldName: String) {
-            if (value.isEmpty()) {
-                throw IllegalArgumentException("$fieldName must not be empty")
-            }
-            // Conservative — the value is interpolated unquoted into the ATTACH and
-            // USE statements, so anything that would let an attacker break out of
-            // the identifier slot must be rejected. Standard SQL identifier chars
-            // only.
-            for (i in 0 until value.length) {
-                val c = value[i]
-                val ok = (c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') || c == '_'
-                if (!ok) {
-                    throw IllegalArgumentException(
-                            "$fieldName must match [A-Za-z0-9_]+; got: $value")
+            return buildMap {
+                for (pair in rawQuery.split("&")) {
+                    val eq = pair.indexOf('=')
+                    val key = if (eq < 0) pair else pair.substring(0, eq)
+                    val value = if (eq < 0) "" else pair.substring(eq + 1)
+                    put(urlDecode(key), urlDecode(value))
                 }
             }
         }
 
-        private fun escapeSqlString(value: String): String {
-            return value.replace("'", "''")
+        private fun urlDecode(s: String): String =
+            URLDecoder.decode(s, StandardCharsets.UTF_8)
+
+        private fun validateIdentifier(value: String, fieldName: String) {
+            require(value.isNotEmpty()) { "$fieldName must not be empty" }
+            // Conservative — the value is interpolated unquoted into the ATTACH and
+            // USE statements, so anything that would let an attacker break out of
+            // the identifier slot must be rejected. Standard SQL identifier chars
+            // only.
+            val ok = value.all { c ->
+                c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_'
+            }
+            require(ok) { "$fieldName must match [A-Za-z0-9_]+; got: $value" }
         }
+
+        private fun escapeSqlString(value: String): String =
+            value.replace("'", "''")
     }
 }

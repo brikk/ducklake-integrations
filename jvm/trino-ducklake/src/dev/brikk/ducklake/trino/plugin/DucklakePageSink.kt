@@ -47,19 +47,15 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
 
 public class DucklakePageSink(
-        handle: DucklakeWritableTableHandle,
-        fileSystem: TrinoFileSystem,
-        fragmentCodec: JsonCodec<DucklakeWriteFragment>,
+        private val handle: DucklakeWritableTableHandle,
+        private val fileSystem: TrinoFileSystem,
+        private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
         parquetWriterConfig: ParquetWriterConfig,
         duckdbTargetWriteBytes: Long,
-        trinoVersion: String,
+        private val trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
 ) : ConnectorPageSink {
-    private val handle: DucklakeWritableTableHandle = handle
-    private val fileSystem: TrinoFileSystem = fileSystem
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = fragmentCodec
     private val writerOptions: ParquetWriterOptions
-    private val trinoVersion: String = trinoVersion
     private val targetMaxFileSize: Long
     private val fileFormat: String = handle.fileFormat
 
@@ -96,12 +92,8 @@ public class DucklakePageSink(
             parquetWriterConfig.getBlockSize().toBytes()
         }
 
-        this.columnTypes = handle.columns.stream()
-                .map(DucklakeColumnHandle::columnType)
-                .collect(toImmutableList())
-        this.columnNames = handle.columns.stream()
-                .map(DucklakeColumnHandle::columnName)
-                .collect(toImmutableList())
+        this.columnTypes = handle.columns.map(DucklakeColumnHandle::columnType)
+        this.columnNames = handle.columns.map(DucklakeColumnHandle::columnName)
         this.unsignedRangeChecker = DucklakeUnsignedRangeChecker.build(
                 handle.columns, handle.allCatalogColumns)
 
@@ -192,7 +184,7 @@ public class DucklakePageSink(
         // null rather than eagerly opening a fresh writer. Eager re-open would emit a zero-row
         // data file (header+footer object + a recordCount=0 catalog row) whenever a rollover
         // lands on the final page and no further write arrives.
-        var writer = if (writers.isEmpty()) null else writers.first()
+        var writer = writers.firstOrNull()
         if (writer == null) {
             writer = openNewWriter(mapOf())
             if (writers.isEmpty()) {
@@ -319,12 +311,12 @@ public class DucklakePageSink(
         if (FORMAT_DUCKDB.equals(fileFormat, ignoreCase = true)) {
             return openDuckDbWriter(partitionValues)
         }
-        throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: " + fileFormat)
+        throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
     }
 
     @Throws(IOException::class)
     private fun openParquetWriter(partitionValues: Map<Int, String?>):ParquetFileWriter {
-        val fileName = "ducklake-" + UUID.randomUUID() + ".parquet"
+        val fileName = "ducklake-${UUID.randomUUID()}.parquet"
         val relativePath = buildRelativePath(partitionValues, fileName)
 
         val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
@@ -349,7 +341,7 @@ public class DucklakePageSink(
 
     @Throws(IOException::class)
     private fun openDuckDbWriter(partitionValues: Map<Int, String?>):DucklakeFileWriter {
-        val fileName = "ducklake-" + UUID.randomUUID() + ".db"
+        val fileName = "ducklake-${UUID.randomUUID()}.db"
         val relativePath = buildRelativePath(partitionValues, fileName)
 
         val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)

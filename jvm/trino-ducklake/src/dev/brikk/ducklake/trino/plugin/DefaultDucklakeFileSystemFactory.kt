@@ -18,8 +18,9 @@ import io.trino.filesystem.TrinoFileSystem
 import io.trino.filesystem.TrinoFileSystemFactory
 import io.trino.spi.security.ConnectorIdentity
 
-class DefaultDucklakeFileSystemFactory @Inject constructor(fileSystemFactory: TrinoFileSystemFactory) : DucklakeFileSystemFactory {
-    private val fileSystemFactory: TrinoFileSystemFactory = fileSystemFactory
+class DefaultDucklakeFileSystemFactory @Inject constructor(
+    private val fileSystemFactory: TrinoFileSystemFactory,
+) : DucklakeFileSystemFactory {
 
     override fun create(identity: ConnectorIdentity): TrinoFileSystem {
         return fileSystemFactory.create(identity)

@@ -15,7 +15,6 @@ package dev.brikk.ducklake.trino.plugin
 
 import java.sql.SQLException
 import java.sql.Statement
-import java.util.ArrayList
 
 /**
  * Renders a [DuckDbTuning] as the SET statements DuckDB expects, plus the
@@ -26,15 +25,14 @@ import java.util.ArrayList
 class DuckDbTuningSql private constructor() {
     companion object {
         fun statements(tuning: DuckDbTuning): List<String> {
-            val out: MutableList<String> = ArrayList()
+            val out = mutableListOf<String>()
             // Mandatory: connection reuse + sane retry posture for httpfs paths.
             out.add("SET http_keep_alive = true")
             out.add("SET http_retries = 5")
-            out.add("SET enable_object_cache = " + tuning.enableObjectCache)
+            out.add("SET enable_object_cache = ${tuning.enableObjectCache}")
             tuning.memoryLimit.ifPresent { v -> out.add("SET memory_limit = '$v'") }
             tuning.threads.ifPresent { v -> out.add("SET threads = $v") }
-            tuning.tempDirectory.ifPresent { v -> out.add(
-                    "SET temp_directory = '" + v.replace("'", "''") + "'") }
+            tuning.tempDirectory.ifPresent { v -> out.add("SET temp_directory = '${v.replace("'", "''")}'") }
             tuning.tempDirectoryMaxSize.ifPresent { v -> out.add("SET max_temp_directory_size = '$v'") }
             return out
         }
