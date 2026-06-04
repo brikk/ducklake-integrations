@@ -73,18 +73,13 @@ import java.util.OptionalLong
  * </ul>
  */
 public class DucklakeAddFilesProcedure @Inject constructor(
-        catalog: DucklakeCatalog,
-        fileSystemFactory: DucklakeFileSystemFactory,
-        typeConverter: DucklakeTypeConverter,
-        pathResolver: DucklakePathResolver,
-        fileFormatDataSourceStats: FileFormatDataSourceStats,
+        private val catalog: DucklakeCatalog,
+        private val fileSystemFactory: DucklakeFileSystemFactory,
+        private val typeConverter: DucklakeTypeConverter,
+        private val pathResolver: DucklakePathResolver,
+        private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
-    private val catalog: DucklakeCatalog = catalog
-    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
-    private val typeConverter: DucklakeTypeConverter = typeConverter
-    private val pathResolver: DucklakePathResolver = pathResolver
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun get(): Procedure {

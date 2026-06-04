@@ -30,12 +30,10 @@ import java.util.OptionalInt
  */
 public open class DucklakePagePartitioner(
         pageIndexerFactory: PageIndexerFactory,
-        partitionSpec: DucklakePartitionSpec,
+        private val partitionSpec: DucklakePartitionSpec,
         allColumns: List<DucklakeColumnHandle>,
-        encoding: DucklakeTemporalPartitionEncoding) {
-    private val partitionSpec: DucklakePartitionSpec = partitionSpec
+        private val encoding: DucklakeTemporalPartitionEncoding) {
     private val allColumns: List<DucklakeColumnHandle> = allColumns.toList()
-    private val encoding: DucklakeTemporalPartitionEncoding = encoding
     private val pageIndexer: PageIndexer
     private val partitionColumnMappings: List<PartitionColumnMapping>
 
@@ -53,7 +51,7 @@ public open class DucklakePagePartitioner(
                 }
             }
             if (sourceColumnIndex < 0) {
-                throw IllegalArgumentException("Partition field references unknown column ID: " + field.columnId)
+                throw IllegalArgumentException("Partition field references unknown column ID: ${field.columnId}")
             }
 
             // For the page indexer, the partition column type is:
@@ -66,9 +64,7 @@ public open class DucklakePagePartitioner(
         this.partitionColumnMappings = mappings
 
         // Create page indexer for the partition column types
-        val partitionTypes: List<Type> = partitionColumnMappings.stream()
-                .map(PartitionColumnMapping::indexerType)
-                .toList()
+        val partitionTypes: List<Type> = partitionColumnMappings.map { it.indexerType }
         this.pageIndexer = pageIndexerFactory.createPageIndexer(partitionTypes)
     }
 
@@ -113,7 +109,7 @@ public open class DucklakePagePartitioner(
                 return mapping.sourceColumn.columnName
             }
         }
-        throw IllegalArgumentException("Unknown partition key index: " + partitionKeyIndex)
+        throw IllegalArgumentException("Unknown partition key index: $partitionKeyIndex")
     }
 
     public open fun getPartitionId(): Long {

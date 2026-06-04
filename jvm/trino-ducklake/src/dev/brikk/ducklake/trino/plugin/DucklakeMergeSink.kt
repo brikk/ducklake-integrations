@@ -53,27 +53,18 @@ import java.util.concurrent.CompletableFuture.completedFuture
  * and delegates inserts to the standard DucklakePageSink.
  */
 public open class DucklakeMergeSink(
-        mergeHandle: DucklakeMergeTableHandle,
-        fileSystem: TrinoFileSystem,
-        deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
-        writerOptions: ParquetWriterOptions,
-        parquetReaderOptions: ParquetReaderOptions,
-        fileFormatDataSourceStats: FileFormatDataSourceStats,
-        trinoVersion: String,
-        insertSink: ConnectorPageSink)
+        private val mergeHandle: DucklakeMergeTableHandle,
+        private val fileSystem: TrinoFileSystem,
+        private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
+        private val writerOptions: ParquetWriterOptions,
+        private val parquetReaderOptions: ParquetReaderOptions,
+        private val fileFormatDataSourceStats: FileFormatDataSourceStats,
+        private val trinoVersion: String,
+        // Insert sink for handling UPDATE inserts
+        private val insertSink: ConnectorPageSink)
     : ConnectorMergeSink
 {
-    private val mergeHandle: DucklakeMergeTableHandle = mergeHandle
-    private val fileSystem: TrinoFileSystem = fileSystem
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
-    private val writerOptions: ParquetWriterOptions = writerOptions
-    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderOptions
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
-    private val trinoVersion: String = trinoVersion
-    private val dataColumnCount: Int
-
-    // Insert sink for handling UPDATE inserts
-    private val insertSink: ConnectorPageSink = insertSink
+    private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
 
     // Accumulated delete row IDs grouped by data file ID
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = HashMap()
@@ -84,7 +75,6 @@ public open class DucklakeMergeSink(
     private val rangeByRowIdStart: NavigableMap<Long, DataFileRange> = TreeMap()
 
     init {
-        this.dataColumnCount = this.mergeHandle.insertHandle.columns.size
         for (range in mergeHandle.dataFileRanges) {
             rangeByRowIdStart.put(range.rowIdStart, range)
         }
