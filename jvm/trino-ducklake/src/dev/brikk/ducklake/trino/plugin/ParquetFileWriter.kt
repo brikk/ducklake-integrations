@@ -32,24 +32,17 @@ import java.util.OptionalLong
  * directly to the destination via {@link TrinoOutputFile} (no local staging).
  */
 class ParquetFileWriter(
-        parquetWriter: ParquetWriter,
-        outputStream: OutputStream,
-        relativePath: String,
-        partitionValues: Map<Int, String?>,
-        partitionId: OptionalLong,
-        columns: List<DucklakeColumnHandle>,
-        allCatalogColumns: List<DucklakeColumn>)
+    private val parquetWriter: ParquetWriter,
+    private val outputStream: OutputStream,
+    private val relativePath: String,
+    partitionValues: Map<Int, String?>,
+    private val partitionId: OptionalLong,
+    columns: List<DucklakeColumnHandle>,
+    allCatalogColumns: List<DucklakeColumn>)
         : DucklakeFileWriter {
-    private val parquetWriter: ParquetWriter = parquetWriter
-    private val outputStream: OutputStream = outputStream
-    private val relativePath: String = relativePath
     private val partitionValues: MutableMap<Int, String?> = HashMap(partitionValues)
-    private val partitionId: OptionalLong = partitionId
-    private val leafStatsTargets: List<LeafStatsTarget>
-
-    init {
-        this.leafStatsTargets = DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns)
-    }
+    private val leafStatsTargets: List<LeafStatsTarget> =
+        DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns)
 
     @Throws(IOException::class)
     override fun write(page: Page) {

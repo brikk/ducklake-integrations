@@ -95,7 +95,7 @@ import java.util.function.Function
  * PageSourceProvider for Ducklake connector.
  * Leverages Trino's ParquetPageSource for all Parquet reading logic.
  */
-public class DucklakePageSourceProvider @Inject constructor(
+class DucklakePageSourceProvider @Inject constructor(
         private val fileSystemFactory: TrinoFileSystemFactory,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val parquetReaderOptions: ParquetReaderOptions,
@@ -129,12 +129,12 @@ public class DucklakePageSourceProvider @Inject constructor(
         val ducklakeSplit = split as DucklakeSplit
 
         // Combine file statistics domain with dynamic filter for effective predicate
-        val dynamicFilterPredicate: TupleDomain<DucklakeColumnHandle> = dynamicFilter.getCurrentPredicate()
+        val dynamicFilterPredicate: TupleDomain<DucklakeColumnHandle> = dynamicFilter.currentPredicate
                 .transformKeys(DucklakeColumnHandle::class.java::cast)
         val effectivePredicate: TupleDomain<DucklakeColumnHandle> = ducklakeSplit.fileStatisticsDomain
                 .intersect(dynamicFilterPredicate)
 
-        if (effectivePredicate.isNone()) {
+        if (effectivePredicate.isNone) {
             return EmptyPageSource()
         }
 
@@ -270,7 +270,7 @@ public class DucklakePageSourceProvider @Inject constructor(
             DucklakeMetadataTableType.FILES -> buildFilesRows(metadataSplit)
             DucklakeMetadataTableType.SNAPSHOTS -> buildSnapshotRows(catalog.listSnapshots())
             DucklakeMetadataTableType.CURRENT_SNAPSHOT -> catalog.getSnapshot(metadataSplit.snapshotId)
-                    .map { snapshot -> buildSnapshotRows(java.util.List.of(snapshot)) }
+                    .map { snapshot -> buildSnapshotRows(listOf(snapshot)) }
                     .orElse(emptyList())
             DucklakeMetadataTableType.SNAPSHOT_CHANGES -> buildSnapshotChangeRows(catalog.listSnapshotChanges())
         }
@@ -382,9 +382,9 @@ public class DucklakePageSourceProvider @Inject constructor(
                     parquetReaderOptions,
                     Optional.empty(),
                     Optional.empty())
-            val fileMetadata: FileMetadata = parquetMetadata.getFileMetaData()
-            val fileSchema: MessageType = fileMetadata.getSchema()
-            val dataSourceId: ParquetDataSourceId = dataSource.getId()
+            val fileMetadata: FileMetadata = parquetMetadata.fileMetaData
+            val fileSchema: MessageType = fileMetadata.schema
+            val dataSourceId: ParquetDataSourceId = dataSource.id
             val descriptorsByPath: Map<List<String>, ColumnDescriptor> = getDescriptors(fileSchema, fileSchema)
             // B3b: when the split carries active position deletes, disable in-reader predicate
             // pushdown (row-group pruning + page-level skipping). RowIdInjectingPageSource and
@@ -442,11 +442,11 @@ public class DucklakePageSourceProvider @Inject constructor(
 
             // Build field_id → ColumnIO index for field_id-based column matching (schema evolution: renames)
             val fieldIdToColumnIO: MutableMap<Int, ColumnIO> = HashMap()
-            for (field in fileSchema.getFields()) {
-                if (field.getId() != null) {
-                    val childIO: ColumnIO? = messageColumnIO.getChild(field.getName())
+            for (field in fileSchema.fields) {
+                if (field.id != null) {
+                    val childIO: ColumnIO? = messageColumnIO.getChild(field.name)
                     if (childIO != null) {
-                        fieldIdToColumnIO[field.getId().intValue()] = childIO
+                        fieldIdToColumnIO[field.id.intValue()] = childIO
                     }
                 }
             }
@@ -483,7 +483,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                 val field: Optional<Field> = DucklakeParquetTypeUtils.constructField(
                         column.columnType,
                         columnIO)
-                if (field.isEmpty()) {
+                if (field.isEmpty) {
                     // Could not construct field — return nulls (or partition constant if available)
                     transforms.constantValue(buildMissingColumnBlock(column, split))
                     continue
@@ -498,7 +498,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
             // Create ParquetReader with only the columns present in the file
             val parquetReader = ParquetReader(
-                    Optional.ofNullable(fileMetadata.getCreatedBy()),
+                    Optional.ofNullable(fileMetadata.createdBy),
                     presentColumns,
                     false, // appendRowNumberColumn
                     rowGroups,
@@ -507,7 +507,7 @@ public class DucklakePageSourceProvider @Inject constructor(
                     memoryContext,
                     parquetReaderOptions,
                     { exception -> handleParquetException(dataSourceId, exception) },
-                    if (parquetTupleDomain.isAll()) Optional.empty() else Optional.of(parquetPredicate),
+                    if (parquetTupleDomain.isAll) Optional.empty() else Optional.of(parquetPredicate),
                     Optional.empty(), // bloomFilterStore
                     Optional.empty()) // rowFilter
 
@@ -613,7 +613,7 @@ public class DucklakePageSourceProvider @Inject constructor(
         // reads reproducible across deployment environments). See
         // dev-docs/archive/REPORT-datetime-tz-handling.md.
         val duckDbTimeZone: Optional<String> = Optional.ofNullable(
-                TrinoTimeZoneNormaliser.normalise(session.getTimeZoneKey().getId()))
+                TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id))
 
         // B3b: drop pushed complex expressions when the split has active deletes — same
         // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
@@ -664,12 +664,12 @@ public class DucklakePageSourceProvider @Inject constructor(
         }
         // httpfs against a non-s3 target degrades to materialize — the local path is
         // already directly attachable, no need for a remote-streaming protocol.
-        val localPath: java.nio.file.Path = duckDbReadCache.materialize(
+        val localPath: Path = duckDbReadCache.materialize(
                 fileSystem, dataFileLocation, split.fileSizeBytes)
         return DuckDbAttachTarget.LocalPath(localPath)
     }
 
-    public companion object {
+    companion object {
         private val log: Logger = Logger.get(DucklakePageSourceProvider::class.java)
 
         private fun buildSnapshotRows(snapshots: List<DucklakeSnapshot>): List<Map<String, Any?>>
@@ -677,11 +677,11 @@ public class DucklakePageSourceProvider @Inject constructor(
             val rows: MutableList<Map<String, Any?>> = ArrayList(snapshots.size)
             for (snapshot in snapshots) {
                 val row: MutableMap<String, Any?> = LinkedHashMap()
-                row.put("snapshot_id", snapshot.snapshotId)
-                row.put("snapshot_time", snapshot.snapshotTime)
-                row.put("schema_version", snapshot.schemaVersion)
-                row.put("next_catalog_id", snapshot.nextCatalogId)
-                row.put("next_file_id", snapshot.nextFileId)
+                row["snapshot_id"] = snapshot.snapshotId
+                row["snapshot_time"] = snapshot.snapshotTime
+                row["schema_version"] = snapshot.schemaVersion
+                row["next_catalog_id"] = snapshot.nextCatalogId
+                row["next_file_id"] = snapshot.nextFileId
                 rows.add(row)
             }
             return rows
@@ -692,11 +692,11 @@ public class DucklakePageSourceProvider @Inject constructor(
             val rows: MutableList<Map<String, Any?>> = ArrayList(changes.size)
             for (change in changes) {
                 val row: MutableMap<String, Any?> = LinkedHashMap()
-                row.put("snapshot_id", change.snapshotId)
-                row.put("changes_made", change.changesMade.orElse(null))
-                row.put("author", change.author.orElse(null))
-                row.put("commit_message", change.commitMessage.orElse(null))
-                row.put("commit_extra_info", change.commitExtraInfo.orElse(null))
+                row["snapshot_id"] = change.snapshotId
+                row["changes_made"] = change.changesMade.orElse(null)
+                row["author"] = change.author.orElse(null)
+                row["commit_message"] = change.commitMessage.orElse(null)
+                row["commit_extra_info"] = change.commitExtraInfo.orElse(null)
                 rows.add(row)
             }
             return rows
@@ -705,9 +705,9 @@ public class DucklakePageSourceProvider @Inject constructor(
         private fun projectMetadataRow(row: Map<String, Any?>, columns: List<DucklakeColumnHandle>, types: List<Type>): List<Any?>
         {
             val projected: MutableList<Any?> = ArrayList(columns.size)
-            for (index in 0 until columns.size) {
-                val value: Any? = row.get(columns.get(index).columnName)
-                projected.add(toNativeMetadataValue(value, types.get(index)))
+            for (index in columns.indices) {
+                val value: Any? = row[columns[index].columnName]
+                projected.add(toNativeMetadataValue(value, types[index]))
             }
             return projected
         }
@@ -717,11 +717,11 @@ public class DucklakePageSourceProvider @Inject constructor(
             if (value == null) {
                 return null
             }
-            if (type.equals(TIMESTAMP_TZ_MILLIS)) {
+            if (type == TIMESTAMP_TZ_MILLIS) {
                 val instant: Instant = value as Instant
                 return io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone(instant.toEpochMilli(), UTC_KEY)
             }
-            if (type.equals(BIGINT) || type.equals(INTEGER)) {
+            if (type == BIGINT || type == INTEGER) {
                 return value
             }
             return Slices.utf8Slice(value.toString())
@@ -731,10 +731,10 @@ public class DucklakePageSourceProvider @Inject constructor(
                 descriptorsByPath: Map<List<String>, ColumnDescriptor>,
                 effectivePredicate: TupleDomain<DucklakeColumnHandle>): TupleDomain<ColumnDescriptor>
         {
-            if (effectivePredicate.isNone()) {
+            if (effectivePredicate.isNone) {
                 return TupleDomain.none()
             }
-            if (effectivePredicate.isAll()) {
+            if (effectivePredicate.isAll) {
                 return TupleDomain.all()
             }
 
@@ -742,12 +742,12 @@ public class DucklakePageSourceProvider @Inject constructor(
             val topLevelDescriptors: Map<String, ColumnDescriptor> = descriptorsByPath.entries.stream()
                     .filter { entry -> entry.key.size == 1 }
                     .collect(toImmutableMap(
-                            { entry -> entry.key.get(0).lowercase(Locale.ENGLISH) },
+                            { entry -> entry.key[0].lowercase(Locale.ENGLISH) },
                             { entry -> entry.value },
                             { first, _ -> first }))
 
             val domains: Optional<Map<DucklakeColumnHandle, Domain>> = effectivePredicate.getDomains()
-            if (domains.isEmpty()) {
+            if (domains.isEmpty) {
                 return TupleDomain.all()
             }
 
@@ -793,17 +793,17 @@ public class DucklakePageSourceProvider @Inject constructor(
         private fun toLocation(path: String): Location
         {
             val location: Location = Location.of(path)
-            if (location.scheme().isPresent()) {
+            if (location.scheme().isPresent) {
                 return location
             }
             return Location.of(Path.of(path).toUri().toString())
         }
 
         private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
-            if (exception is TrinoException) exception
-            else TrinoException(
+            exception as? TrinoException
+                ?: TrinoException(
                     NOT_SUPPORTED,
-                    "Error reading Parquet file: " + dataSourceId,
+                    "Error reading Parquet file: $dataSourceId",
                     exception)
 
         /**
@@ -814,7 +814,7 @@ public class DucklakePageSourceProvider @Inject constructor(
          */
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
-            val partitionValue: String? = split.partitionValuesByColumnId.get(column.columnId)
+            val partitionValue: String? = split.partitionValuesByColumnId[column.columnId]
             if (partitionValue == null) {
                 return column.columnType.createNullBlock()
             }
@@ -844,7 +844,7 @@ public class DucklakePageSourceProvider @Inject constructor(
 
         override fun apply(page: SourcePage): SourcePage
         {
-            val positionCount: Int = page.getPositionCount()
+            val positionCount: Int = page.positionCount
             val retainedPositions = IntArray(positionCount)
             var retainedCount = 0
 
@@ -882,19 +882,19 @@ public class DucklakePageSourceProvider @Inject constructor(
     {
         private var nextRowOffset: Long = 0
 
-        override fun getCompletedBytes(): Long = delegate.getCompletedBytes()
+        override fun getCompletedBytes(): Long = delegate.completedBytes
 
-        override fun getCompletedPositions(): OptionalLong = delegate.getCompletedPositions()
+        override fun getCompletedPositions(): OptionalLong = delegate.completedPositions
 
-        override fun getReadTimeNanos(): Long = delegate.getReadTimeNanos()
+        override fun getReadTimeNanos(): Long = delegate.readTimeNanos
 
-        override fun isFinished(): Boolean = delegate.isFinished()
+        override fun isFinished(): Boolean = delegate.isFinished
 
         override fun getNextSourcePage(): SourcePage?
         {
-            val sourcePage: SourcePage = delegate.getNextSourcePage() ?: return null
+            val sourcePage: SourcePage = delegate.nextSourcePage ?: return null
 
-            val positionCount: Int = sourcePage.getPositionCount()
+            val positionCount: Int = sourcePage.positionCount
 
             // Build the row ID block
             val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
@@ -922,9 +922,9 @@ public class DucklakePageSourceProvider @Inject constructor(
             return SourcePage.create(Page(positionCount, *(blocks as Array<Block>)))
         }
 
-        override fun getMemoryUsage(): Long = delegate.getMemoryUsage()
+        override fun getMemoryUsage(): Long = delegate.memoryUsage
 
-        override fun getMetrics(): io.trino.spi.metrics.Metrics = delegate.getMetrics()
+        override fun getMetrics(): io.trino.spi.metrics.Metrics = delegate.metrics
 
         override fun isBlocked(): java.util.concurrent.CompletableFuture<*> = delegate.isBlocked()
 

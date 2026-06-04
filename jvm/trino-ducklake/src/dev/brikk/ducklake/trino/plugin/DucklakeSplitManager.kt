@@ -22,7 +22,6 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeInlinedDataInfo
 import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
-import dev.brikk.ducklake.catalog.DucklakePartitionField
 import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSchema
@@ -203,15 +202,15 @@ class DucklakeSplitManager @Inject constructor(
             return dataFiles
         }
 
-        if (constraint == null || constraint.getSummary().isAll()) {
+        if (constraint == null || constraint.summary.isAll) {
             return dataFiles
         }
 
-        if (constraint.getSummary().isNone()) {
+        if (constraint.summary.isNone) {
             return listOf()
         }
 
-        val domains: Optional<Map<ColumnHandle, Domain>> = constraint.getSummary().getDomains()
+        val domains: Optional<Map<ColumnHandle, Domain>> = constraint.summary.getDomains()
         if (domains.isEmpty || domains.get().isEmpty()) {
             return dataFiles
         }
@@ -229,7 +228,7 @@ class DucklakeSplitManager @Inject constructor(
             val columnHandle: DucklakeColumnHandle = key
 
             val domain: Domain = entry.value
-            if (domain.isNone()) {
+            if (domain.isNone) {
                 return listOf()
             }
 
@@ -270,11 +269,11 @@ class DucklakeSplitManager @Inject constructor(
             return TupleDomain.all()
         }
 
-        val summary: TupleDomain<ColumnHandle> = constraint.getSummary()
-        if (summary.isAll()) {
+        val summary: TupleDomain<ColumnHandle> = constraint.summary
+        if (summary.isAll) {
             return TupleDomain.all()
         }
-        if (summary.isNone()) {
+        if (summary.isNone) {
             return TupleDomain.none()
         }
 
@@ -299,22 +298,22 @@ class DucklakeSplitManager @Inject constructor(
     }
 
     private fun extractPredicateBounds(domain: Domain): Optional<PredicateBounds> {
-        if (domain.isOnlyNull() || domain.getValues().isAll()) {
+        if (domain.isOnlyNull || domain.values.isAll) {
             return Optional.empty()
         }
 
-        return domain.getValues().getValuesProcessor().transform<Optional<PredicateBounds>>(
+        return domain.values.valuesProcessor.transform(
                 { ranges ->
-                    if (ranges.getRangeCount() == 0) {
+                    if (ranges.rangeCount == 0) {
                         return@transform Optional.empty<PredicateBounds>()
                     }
 
-                    val span: Range = ranges.getSpan()
-                    val minValue: String? = span.getLowValue()
-                            .map { value -> normalizePredicateValue(domain.getType(), value) }
+                    val span: Range = ranges.span
+                    val minValue: String? = span.lowValue
+                            .map { value -> normalizePredicateValue(domain.type, value) }
                             .orElse(null)
-                    val maxValue: String? = span.getHighValue()
-                            .map { value -> normalizePredicateValue(domain.getType(), value) }
+                    val maxValue: String? = span.highValue
+                            .map { value -> normalizePredicateValue(domain.type, value) }
                             .orElse(null)
 
                     if (minValue == null && maxValue == null) {
@@ -322,23 +321,23 @@ class DucklakeSplitManager @Inject constructor(
                     }
                     Optional.of(PredicateBounds(minValue, maxValue))
                 },
-                { discreteValues -> extractDiscreteValueBounds(domain.getType(), discreteValues) },
+                { discreteValues -> extractDiscreteValueBounds(domain.type, discreteValues) },
                 { allOrNone -> Optional.empty<PredicateBounds>() })
     }
 
     private fun extractDiscreteValueBounds(type: Type, discreteValues: io.trino.spi.predicate.DiscreteValues): Optional<PredicateBounds> {
-        if (discreteValues.getValuesCount() == 0) {
+        if (discreteValues.valuesCount == 0) {
             return Optional.empty()
         }
 
         var minValue: String? = null
         var maxValue: String? = null
-        for (value in discreteValues.getValues()) {
+        for (value in discreteValues.values) {
             val normalized: String = normalizePredicateValue(type, value)
-            if (minValue == null || normalized.compareTo(minValue) < 0) {
+            if (minValue == null || normalized < minValue) {
                 minValue = normalized
             }
-            if (maxValue == null || normalized.compareTo(maxValue) > 0) {
+            if (maxValue == null || normalized > maxValue) {
                 maxValue = normalized
             }
         }
@@ -349,7 +348,7 @@ class DucklakeSplitManager @Inject constructor(
         if (value is io.airlift.slice.Slice) {
             return value.toStringUtf8()
         }
-        if (type.equals(DATE) && value is Long) {
+        if (type == DATE && value is Long) {
             return LocalDate.ofEpochDay(value).toString()
         }
         return value.toString()
@@ -359,10 +358,10 @@ class DucklakeSplitManager @Inject constructor(
             dataFiles: List<DucklakeDataFile>,
             tableHandle: DucklakeTableHandle): List<DucklakeDataFile> {
         val enforced: TupleDomain<DucklakeColumnHandle> = tableHandle.enforcedPredicate
-        if (enforced.isAll()) {
+        if (enforced.isAll) {
             return dataFiles
         }
-        if (enforced.isNone()) {
+        if (enforced.isNone) {
             return listOf()
         }
         if (dataFiles.isEmpty()) {
@@ -406,17 +405,14 @@ class DucklakeSplitManager @Inject constructor(
         for (entry in enforced.getDomains().orElse(mapOf<DucklakeColumnHandle, Domain>()).entries) {
             val column: DucklakeColumnHandle = entry.key
             val domain: Domain = entry.value
-            val mappings: List<PartitionKeyMapping>? = columnToPartKeys[column.columnId]
-            if (mappings == null) {
-                continue
-            }
+            val mappings: MutableList<PartitionKeyMapping> = columnToPartKeys[column.columnId] ?: continue
 
             candidateFileIds.removeIf { fileId ->
                 val filePartitionId: Long? = partitionIdByFileId[fileId]
                 if (filePartitionId != null && !specPartitionIds.contains(filePartitionId)) {
                     return@removeIf false // foreign/retired spec — can't map key indices, don't prune
                 }
-                val values: List<DucklakeFilePartitionValue> = filePartValues.getOrDefault(fileId, listOf<DucklakeFilePartitionValue>())
+                val values: List<DucklakeFilePartitionValue> = filePartValues.getOrDefault(fileId, listOf())
                 // A file is pruned if ANY partition transform definitively excludes it
                 for (mapping in mappings) {
                     val partEntry: Optional<DucklakeFilePartitionValue> = values.stream()
@@ -425,11 +421,9 @@ class DucklakeSplitManager @Inject constructor(
                     if (partEntry.isEmpty) {
                         continue
                     }
-                    val partValue: String? = partEntry.get().partitionValue
-                    if (partValue == null) {
-                        // Null partition value — can only match IS NULL predicates, don't prune
+                    val partValue: String = partEntry.get().partitionValue
+                        ?: // Null partition value — can only match IS NULL predicates, don't prune
                         continue
-                    }
                     if (!partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)) {
                         return@removeIf true // this transform excludes the file
                     }
@@ -523,7 +517,7 @@ class DucklakeSplitManager @Inject constructor(
                 partitionValuesByFile)
 
         val fieldIdToParquetSourceName: Map<Long, String> = primary.mappingId
-                .map { mid -> nameMapsByMappingId.getOrDefault(mid, mapOf<Long, String>()) }
+                .map { mid -> nameMapsByMappingId.getOrDefault(mid, mapOf()) }
                 .orElse(mapOf())
 
         @Suppress("UNCHECKED_CAST")
@@ -611,13 +605,13 @@ class DucklakeSplitManager @Inject constructor(
             if (filePartitionId.isPresent && filePartitionId.get() != spec.partitionId) {
                 return mapOf()
             }
-            val values: List<DucklakeFilePartitionValue> = partitionValuesByFile.getOrDefault(dataFileId, listOf<DucklakeFilePartitionValue>())
+            val values: List<DucklakeFilePartitionValue> = partitionValuesByFile.getOrDefault(dataFileId, listOf())
             if (values.isEmpty()) {
                 return mapOf()
             }
             val byKeyIndex: MutableMap<Int, String?> = HashMap()
             for (v in values) {
-                byKeyIndex.put(v.partitionKeyIndex, v.partitionValue)
+                byKeyIndex[v.partitionKeyIndex] = v.partitionValue
             }
             val out: MutableMap<Long, String> = HashMap()
             for (field in spec.fields) {
@@ -626,7 +620,7 @@ class DucklakeSplitManager @Inject constructor(
                 }
                 val value: String? = byKeyIndex[field.partitionKeyIndex]
                 if (value != null) {
-                    out.put(field.columnId, value)
+                    out[field.columnId] = value
                 }
             }
             return out

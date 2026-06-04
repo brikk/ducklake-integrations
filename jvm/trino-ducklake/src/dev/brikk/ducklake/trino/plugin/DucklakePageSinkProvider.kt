@@ -37,26 +37,21 @@ import io.trino.spi.connector.ConnectorTransactionHandle
 import java.util.Optional
 
 class DucklakePageSinkProvider @Inject constructor(
-        fileSystemFactory: DucklakeFileSystemFactory,
-        fragmentCodec: JsonCodec<DucklakeWriteFragment>,
-        deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
-        parquetWriterConfig: ParquetWriterConfig,
-        parquetReaderConfig: ParquetReaderConfig,
-        fileFormatDataSourceStats: FileFormatDataSourceStats,
-        ducklakeConfig: DucklakeConfig,
-        nodeVersion: NodeVersion,
-        pageIndexerFactory: PageIndexerFactory)
+    private val fileSystemFactory: DucklakeFileSystemFactory,
+    private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
+    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
+    private val parquetWriterConfig: ParquetWriterConfig,
+    parquetReaderConfig: ParquetReaderConfig,
+    private val fileFormatDataSourceStats: FileFormatDataSourceStats,
+    ducklakeConfig: DucklakeConfig,
+    nodeVersion: NodeVersion,
+    private val pageIndexerFactory: PageIndexerFactory
+)
         : ConnectorPageSinkProvider {
-    private val fileSystemFactory: DucklakeFileSystemFactory = fileSystemFactory
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = fragmentCodec
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
-    private val parquetWriterConfig: ParquetWriterConfig = parquetWriterConfig
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
-    private val fileFormatDataSourceStats: FileFormatDataSourceStats = fileFormatDataSourceStats
     private val duckdbTargetWriteBytes: Long = ducklakeConfig
             .getDuckdbTargetWriteBytes().toBytes()
     private val trinoVersion: String = nodeVersion.toString()
-    private val pageIndexerFactory: PageIndexerFactory = pageIndexerFactory
 
     override fun createPageSink(
             transactionHandle: ConnectorTransactionHandle,

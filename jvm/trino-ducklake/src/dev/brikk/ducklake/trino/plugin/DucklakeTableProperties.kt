@@ -31,13 +31,13 @@ import java.util.Optional
 import java.util.OptionalInt
 import java.util.regex.Pattern
 
-public open class DucklakeTableProperties @Inject constructor() {
-    public val tableProperties: List<PropertyMetadata<*>>
+open class DucklakeTableProperties @Inject constructor() {
+    val tableProperties: List<PropertyMetadata<*>>
 
     init {
         @Suppress("UNCHECKED_CAST")
         tableProperties = ImmutableList.of(
-                PropertyMetadata<List<*>>(
+                PropertyMetadata(
                         PARTITIONED_BY_PROPERTY,
                         "Partition columns with optional transforms, e.g. ARRAY['region', 'year(event_date)']",
                         ArrayType(VARCHAR),
@@ -61,10 +61,10 @@ public open class DucklakeTableProperties @Inject constructor() {
                         false))
     }
 
-    public companion object {
-        public const val PARTITIONED_BY_PROPERTY: String = "partitioned_by"
-        public const val DATA_FILE_FORMAT_PROPERTY: String = "data_file_format"
-        public const val LOCATION_PROPERTY: String = "location"
+    companion object {
+        const val PARTITIONED_BY_PROPERTY: String = "partitioned_by"
+        const val DATA_FILE_FORMAT_PROPERTY: String = "data_file_format"
+        const val LOCATION_PROPERTY: String = "location"
 
         // year(col) / month(col) / day(col) / hour(col). Case-insensitive to match
         // BUCKET_PATTERN (SQL function names are conventionally case-insensitive, and
@@ -96,7 +96,7 @@ public open class DucklakeTableProperties @Inject constructor() {
          * returns null.
          */
         @JvmStatic
-        public fun getDataFileFormat(tableProperties: Map<String, Any?>): String? {
+        fun getDataFileFormat(tableProperties: Map<String, Any?>): String? {
             return tableProperties[DATA_FILE_FORMAT_PROPERTY] as String?
         }
 
@@ -114,14 +114,14 @@ public open class DucklakeTableProperties @Inject constructor() {
          * [validateLocation].
          */
         @JvmStatic
-        public fun getLocation(tableProperties: Map<String, Any?>): Optional<TableLocationSpec> {
+        fun getLocation(tableProperties: Map<String, Any?>): Optional<TableLocationSpec> {
             val raw = tableProperties[LOCATION_PROPERTY] as String?
-            if (raw == null || raw.isBlank()) {
+            if (raw.isNullOrBlank()) {
                 return Optional.empty()
             }
             val trimmed = raw.trim()
             val isAbsolute = URI_SCHEME_PATTERN.matcher(trimmed).find()
-            val normalized = if (trimmed.endsWith("/")) trimmed else trimmed + "/"
+            val normalized = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
             return Optional.of(TableLocationSpec(normalized, !isAbsolute))
         }
 
@@ -145,7 +145,7 @@ public open class DucklakeTableProperties @Inject constructor() {
 
         @JvmStatic
         @Suppress("UNCHECKED_CAST")
-        public fun getPartitionFields(tableProperties: Map<String, Any?>): List<PartitionFieldSpec> {
+        fun getPartitionFields(tableProperties: Map<String, Any?>): List<PartitionFieldSpec> {
             val partitionBy = tableProperties[PARTITIONED_BY_PROPERTY] as List<String>?
             if (partitionBy.isNullOrEmpty()) {
                 return emptyList()

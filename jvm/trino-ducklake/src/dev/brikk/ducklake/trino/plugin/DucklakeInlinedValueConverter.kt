@@ -53,7 +53,7 @@ import java.time.format.DateTimeParseException
  * Converts JDBC values from SQLite inlined data tables to Trino-native values
  * compatible with InMemoryRecordSet.
  */
-public object DucklakeInlinedValueConverter {
+object DucklakeInlinedValueConverter {
 
     /**
      * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
@@ -67,16 +67,16 @@ public object DucklakeInlinedValueConverter {
         if (trinoType is ArrayType) {
             return convertArray(jdbcValue, trinoType)
         }
-        if (trinoType.equals(BOOLEAN)) {
+        if (trinoType == BOOLEAN) {
             return toBoolean(jdbcValue)
         }
-        if (trinoType.equals(TINYINT) || trinoType.equals(SMALLINT) || trinoType.equals(INTEGER) || trinoType.equals(BIGINT)) {
+        if (trinoType == TINYINT || trinoType == SMALLINT || trinoType == INTEGER || trinoType == BIGINT) {
             return toLong(jdbcValue)
         }
         if (trinoType is RealType) {
             return toFloat(jdbcValue).toBits().toLong()
         }
-        if (trinoType.equals(DOUBLE)) {
+        if (trinoType == DOUBLE) {
             return toDouble(jdbcValue)
         }
         if (trinoType is DateType) {
@@ -111,11 +111,12 @@ public object DucklakeInlinedValueConverter {
     }
 
     private fun convertArray(jdbcValue: Any, arrayType: ArrayType): Block {
-        val elementType = arrayType.getElementType()
+        val elementType = arrayType.elementType
         if (elementType is ArrayType || elementType is MapType || elementType is RowType) {
             throw UnsupportedOperationException(
                     "Inlined data reads for nested list/struct/map element types are not yet supported " +
-                            "(see dev-docs/COMPARE-pg_ducklake.md B2); element type: " + elementType.getDisplayName())
+                            "(see dev-docs/COMPARE-pg_ducklake.md B2); element type: " + elementType.displayName
+            )
         }
 
         val elements = extractArrayElements(jdbcValue)
@@ -175,18 +176,18 @@ public object DucklakeInlinedValueConverter {
             if (i >= len) {
                 break
             }
-            if (inner.get(i) == '\'') {
+            if (inner[i] == '\'') {
                 val sb = StringBuilder()
                 i++
                 while (i < len) {
-                    val cc = inner.get(i)
+                    val cc = inner[i]
                     if (cc == '\\' && i + 1 < len) {
-                        sb.append(inner.get(i + 1))
+                        sb.append(inner[i + 1])
                         i += 2
                         continue
                     }
                     if (cc == '\'') {
-                        if (i + 1 < len && inner.get(i + 1) == '\'') {
+                        if (i + 1 < len && inner[i + 1] == '\'') {
                             sb.append('\'')
                             i += 2
                             continue
@@ -201,7 +202,7 @@ public object DucklakeInlinedValueConverter {
             }
             else {
                 val start = i
-                while (i < len && inner.get(i) != ',') {
+                while (i < len && inner[i] != ',') {
                     i++
                 }
                 val token = inner.substring(start, i).trim()
@@ -218,7 +219,7 @@ public object DucklakeInlinedValueConverter {
             while (i < len && inner[i].isWhitespace()) {
                 i++
             }
-            if (i < len && inner.get(i) == ',') {
+            if (i < len && inner[i] == ',') {
                 i++
             }
         }
@@ -246,11 +247,11 @@ public object DucklakeInlinedValueConverter {
             if (c == '\\') {
                 // DuckDB never emits a bare backslash — 0x5C is always escaped as \x5C — so we
                 // require a complete \xNN here. Anything else is malformed input.
-                if (i + 3 >= len || text.get(i + 1) != 'x') {
+                if (i + 3 >= len || text[i + 1] != 'x') {
                     throw IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: $text")
                 }
-                val hi = hexDigit(text.get(i + 2))
-                val lo = hexDigit(text.get(i + 3))
+                val hi = hexDigit(text[i + 2])
+                val lo = hexDigit(text[i + 3])
                 if (hi < 0 || lo < 0) {
                     throw IllegalArgumentException("Invalid hex digits in \\xNN escape: $text")
                 }
@@ -271,13 +272,13 @@ public object DucklakeInlinedValueConverter {
     }
 
     private fun hexDigit(c: Char): Int {
-        if (c >= '0' && c <= '9') {
+        if (c in '0'..'9') {
             return c - '0'
         }
-        if (c >= 'a' && c <= 'f') {
+        if (c in 'a'..'f') {
             return 10 + (c - 'a')
         }
-        if (c >= 'A' && c <= 'F') {
+        if (c in 'A'..'F') {
             return 10 + (c - 'A')
         }
         return -1
@@ -353,12 +354,12 @@ public object DucklakeInlinedValueConverter {
         else {
             val timestamp = parseLocalDateTimeValue(value)
             val epochSecond = timestamp.toEpochSecond(ZoneOffset.UTC)
-            val nanosOfSecond = timestamp.getNano()
+            val nanosOfSecond = timestamp.nano
             epochMicros = epochSecond * 1_000_000 + nanosOfSecond / 1_000
             picosOfMicro = (nanosOfSecond % 1_000) * 1_000
         }
 
-        if (timestampType.isShort()) {
+        if (timestampType.isShort) {
             return epochMicros
         }
         return LongTimestamp(epochMicros, picosOfMicro)
@@ -374,7 +375,7 @@ public object DucklakeInlinedValueConverter {
         else {
             val timestampWithZone = parseOffsetDateTimeValue(value)
             val epochSecond = timestampWithZone.toEpochSecond()
-            val nanosOfSecond = timestampWithZone.getNano()
+            val nanosOfSecond = timestampWithZone.nano
             epochMicros = epochSecond * 1_000_000 + nanosOfSecond / 1_000
             picosOfMicro = (nanosOfSecond % 1_000) * 1_000
         }
@@ -383,7 +384,7 @@ public object DucklakeInlinedValueConverter {
         val microsOfMilli = Math.floorMod(epochMicros, 1_000).toInt()
         val picosOfMilli = microsOfMilli * 1_000_000 + picosOfMicro
 
-        if (timestampWithTimeZoneType.isShort()) {
+        if (timestampWithTimeZoneType.isShort) {
             return packDateTimeWithZone(epochMillis, UTC_KEY)
         }
         return LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, UTC_KEY)
@@ -406,7 +407,7 @@ public object DucklakeInlinedValueConverter {
                         .toLocalDateTime()
             }
             catch (_: DateTimeParseException) {
-                throw IllegalArgumentException("Invalid timestamp value: " + value, e)
+                throw IllegalArgumentException("Invalid timestamp value: $value", e)
             }
         }
     }
@@ -426,7 +427,7 @@ public object DucklakeInlinedValueConverter {
                 return LocalDateTime.parse(normalized).atOffset(ZoneOffset.UTC)
             }
             catch (_: DateTimeParseException) {
-                throw IllegalArgumentException("Invalid timestamp with time zone value: " + value, e)
+                throw IllegalArgumentException("Invalid timestamp with time zone value: $value", e)
             }
         }
     }
@@ -434,7 +435,7 @@ public object DucklakeInlinedValueConverter {
     private fun normalizeTimestampText(value: String): String {
         var normalized = value.trim().replace(' ', 'T')
         if (normalized.matches(Regex(".*[+-][0-9]{2}$"))) {
-            normalized = normalized + ":00"
+            "$normalized:00"
         }
         if (normalized.matches(Regex(".*[+-][0-9]{4}$"))) {
             normalized = normalized.substring(0, normalized.length - 5) +
@@ -457,9 +458,9 @@ public object DucklakeInlinedValueConverter {
         // scale mismatch throws loudly instead of silently HALF_UP-rounding into a value that
         // would diverge from a Parquet read. Correctly-stored DuckDB inlined decimals already
         // carry the column scale, so this is a no-op on the normal path.
-        decimal = decimal.setScale(decimalType.getScale(), java.math.RoundingMode.UNNECESSARY)
+        decimal = decimal.setScale(decimalType.scale, java.math.RoundingMode.UNNECESSARY)
 
-        if (decimalType.isShort()) {
+        if (decimalType.isShort) {
             return decimal.unscaledValue().longValueExact()
         }
         return Int128.valueOf(decimal.unscaledValue())

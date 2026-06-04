@@ -19,7 +19,6 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import dev.brikk.ducklake.catalog.SnapshotRange.activeAt
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN
-import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS
@@ -818,7 +817,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .from(tab)
                 .where(beginSnapshot.le(snapshotId))
                 .fetch()
-            val grouped: MutableMap<Long, java.util.HashSet<Long>> = HashMap()
+            val grouped: MutableMap<Long, HashSet<Long>> = HashMap()
             for (rec in result) {
                 val fid = rec.get(fileId)
                 val rid = rec.get(rowId)
@@ -955,7 +954,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val endSnapshot: Field<Long>,
     ) {
         fun activeAt(snapshotId: Long): Condition {
-            return SnapshotRange.activeAt(beginSnapshot, endSnapshot, snapshotId)
+            return activeAt(beginSnapshot, endSnapshot, snapshotId)
         }
 
         companion object {
@@ -2084,14 +2083,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             if (stats.minValue.isPresent) {
                 val v = stats.minValue.get()
                 val current = minValue
-                if (current == null || v.compareTo(current) < 0) {
+                if (current == null || v < current) {
                     minValue = v
                 }
             }
             if (stats.maxValue.isPresent) {
                 val v = stats.maxValue.get()
                 val current = maxValue
-                if (current == null || v.compareTo(current) > 0) {
+                if (current == null || v > current) {
                     maxValue = v
                 }
             }

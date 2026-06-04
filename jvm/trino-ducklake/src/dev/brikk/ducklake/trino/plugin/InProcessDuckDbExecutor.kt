@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentHashMap
  * abstraction was introduced. Behaviour-preserving: nothing about query
  * execution changes vs the pre-refactor code.
  */
-public class InProcessDuckDbExecutor
+class InProcessDuckDbExecutor
 internal constructor(private val tuning: DuckDbTuning, private val parityExtensionPath: String) : DucklakeDuckDbExecutor {
 
     /**
@@ -112,23 +112,19 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
         override fun arrowReader(): ArrowReader = arrowReader!!
 
         override fun memoryUsage(): Long =
-            if (allocator == null) 0 else allocator.getAllocatedMemory()
+            allocator?.allocatedMemory ?: 0
 
         @Throws(IOException::class)
         override fun close() {
             var suppressed: Throwable? = null
             try {
-                if (arrowReader != null) {
-                    arrowReader.close()
-                }
+                arrowReader?.close()
             }
             catch (t: Throwable) {
                 suppressed = t
             }
             try {
-                if (resultSet != null) {
-                    resultSet.close()
-                }
+                resultSet?.close()
             }
             catch (t: Throwable) {
                 if (suppressed == null) {
@@ -136,9 +132,7 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
                 }
             }
             try {
-                if (statement != null) {
-                    statement.close()
-                }
+                statement?.close()
             }
             catch (t: Throwable) {
                 if (suppressed == null) {
@@ -162,9 +156,7 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
                 }
             }
             try {
-                if (allocator != null) {
-                    allocator.close()
-                }
+                allocator?.close()
             }
             catch (t: Throwable) {
                 if (suppressed == null) {
@@ -177,7 +169,7 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
         }
     }
 
-    public companion object {
+    companion object {
         private val log: Logger = Logger.get(InProcessDuckDbExecutor::class.java)
 
         private const val ARROW_BATCH_SIZE: Long = 1024

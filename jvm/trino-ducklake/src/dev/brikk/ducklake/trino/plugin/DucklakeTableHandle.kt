@@ -65,6 +65,6 @@ data class DucklakeTableHandle @JsonCreator constructor(
     }
 
     override fun toString(): String {
-        return schemaName + "." + tableName + "@" + snapshotId
+        return "$schemaName.$tableName@$snapshotId"
     }
 }

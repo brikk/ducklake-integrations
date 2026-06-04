@@ -39,8 +39,8 @@ import io.trino.spi.type.SmallintType
  * is unsigned (the overwhelmingly common case). When unsigned columns are present, only
  * those channels are scanned — other channels are untouched.
  */
-public class DucklakeUnsignedRangeChecker private constructor(private val checks: List<Check>) {
-    public fun isNoOp(): Boolean {
+class DucklakeUnsignedRangeChecker private constructor(private val checks: List<Check>) {
+    fun isNoOp(): Boolean {
         return checks.isEmpty()
     }
 
@@ -50,7 +50,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
      * writer has consumed the page, the offending value has already been encoded and a
      * throw would leave a half-written row group behind.
      */
-    public fun validate(page: Page) {
+    fun validate(page: Page) {
         if (checks.isEmpty()) {
             return
         }
@@ -77,7 +77,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
             ducklakeType: String,
             private val max: Long) : Check(channel, column, ducklakeType) {
         override fun validate(block: Block) {
-            val positions = block.getPositionCount()
+            val positions = block.positionCount
             var i = 0
             while (i < positions) {
                 if (block.isNull(i)) {
@@ -85,8 +85,8 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     continue
                 }
                 val value: Short = SmallintType.SMALLINT.getShort(block, i)
-                if (value < 0 || value > max) {
-                    throw overflow(value, java.lang.Long.toString(max))
+                if (value !in 0..max) {
+                    throw overflow(value, max.toString())
                 }
                 i++
             }
@@ -99,7 +99,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
             ducklakeType: String,
             private val max: Long) : Check(channel, column, ducklakeType) {
         override fun validate(block: Block) {
-            val positions = block.getPositionCount()
+            val positions = block.positionCount
             var i = 0
             while (i < positions) {
                 if (block.isNull(i)) {
@@ -107,8 +107,8 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     continue
                 }
                 val value: Int = IntegerType.INTEGER.getInt(block, i)
-                if (value < 0 || value > max) {
-                    throw overflow(value, java.lang.Long.toString(max))
+                if (value !in 0..max) {
+                    throw overflow(value, max.toString())
                 }
                 i++
             }
@@ -121,7 +121,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
             ducklakeType: String,
             private val max: Long) : Check(channel, column, ducklakeType) {
         override fun validate(block: Block) {
-            val positions = block.getPositionCount()
+            val positions = block.positionCount
             var i = 0
             while (i < positions) {
                 if (block.isNull(i)) {
@@ -129,8 +129,8 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     continue
                 }
                 val value: Long = io.trino.spi.type.BigintType.BIGINT.getLong(block, i)
-                if (value < 0 || value > max) {
-                    throw overflow(value, java.lang.Long.toString(max))
+                if (value !in 0..max) {
+                    throw overflow(value, max.toString())
                 }
                 i++
             }
@@ -141,7 +141,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
         private val type: DecimalType = column.columnType as DecimalType
 
         override fun validate(block: Block) {
-            val positions = block.getPositionCount()
+            val positions = block.positionCount
             var i = 0
             while (i < positions) {
                 if (block.isNull(i)) {
@@ -149,14 +149,14 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     continue
                 }
                 val value: Int128 = type.getObject(block, i) as Int128
-                if (value.getHigh() != 0L) {
+                if (value.high != 0L) {
                     throw overflow(value.toBigInteger(), MAX_LITERAL)
                 }
                 i++
             }
         }
 
-        public companion object {
+        companion object {
             // 2^64 - 1. Int128 range for a valid uint64 is: high == 0, any low. Values with
             // high != 0 are either negative (high = -1, i.e. signed interpretation < 0) or
             // exceed 2^64 - 1 (high >= 1). Checking high is a single long compare regardless
@@ -165,7 +165,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
         }
     }
 
-    public companion object {
+    companion object {
         private val NO_OP: DucklakeUnsignedRangeChecker = DucklakeUnsignedRangeChecker(emptyList())
 
         private const val UINT8_MAX: Long = (1L shl 8) - 1
@@ -183,14 +183,14 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
          *                              `DucklakeWritableTableHandle.allCatalogColumns()`
          */
         @JvmStatic
-        public fun build(
+        fun build(
                 columns: List<DucklakeColumnHandle>,
                 catalogColumnTypeById: Map<Long, String>): DucklakeUnsignedRangeChecker {
             val builder: ImmutableList.Builder<Check> = ImmutableList.builder()
             var channel = 0
             while (channel < columns.size) {
-                val column: DucklakeColumnHandle = columns.get(channel)
-                val ducklakeType: String? = catalogColumnTypeById.get(column.columnId)
+                val column: DucklakeColumnHandle = columns[channel]
+                val ducklakeType: String? = catalogColumnTypeById[column.columnId]
                 if (ducklakeType == null) {
                     channel++
                     continue
@@ -206,7 +206,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
         }
 
         @JvmStatic
-        public fun build(
+        fun build(
                 columns: List<DucklakeColumnHandle>,
                 allCatalogColumns: List<DucklakeColumn>): DucklakeUnsignedRangeChecker {
             return build(columns, allCatalogColumns.stream()
@@ -225,7 +225,7 @@ public class DucklakeUnsignedRangeChecker private constructor(private val checks
                     // uint64 read maps to DECIMAL(20, 0); anything else means the table schema
                     // was mutated out from under us and we should skip rather than throw —
                     // this is defensive and shouldn't trigger in practice.
-                    if (column.columnType is DecimalType && !(column.columnType as DecimalType).isShort()) {
+                    if (column.columnType is DecimalType && !(column.columnType as DecimalType).isShort) {
                         Uint64Check(channel, column)
                     }
                     else {

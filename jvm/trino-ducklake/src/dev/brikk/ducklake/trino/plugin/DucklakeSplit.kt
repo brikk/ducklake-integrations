@@ -29,7 +29,7 @@ import java.util.Optional
  * Each split corresponds to a Parquet data file.
  */
 @JvmRecord
-public data class DucklakeSplit @JsonCreator constructor(
+data class DucklakeSplit @JsonCreator constructor(
         @get:JvmName("dataFilePath")
         @param:JsonProperty("dataFilePath") val dataFilePath: String,
         @get:JvmName("deleteFilePaths")
@@ -87,7 +87,7 @@ public data class DucklakeSplit @JsonCreator constructor(
     // Convenience constructor without footer-size hints / partition values — used by
     // tests that don't exercise those paths. Production code in DucklakeSplitManager
     // always uses the canonical constructor.
-    public constructor(
+    constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
             rowIdStart: Long,
@@ -99,7 +99,7 @@ public data class DucklakeSplit @JsonCreator constructor(
 
     // Eight-arg legacy constructor (no partition values) — kept for existing call sites
     // that don't carry partition-value data yet.
-    public constructor(
+    constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
             rowIdStart: Long,
@@ -113,7 +113,7 @@ public data class DucklakeSplit @JsonCreator constructor(
 
     // Ten-arg constructor used during the partition-value-projection introduction —
     // kept for callers that don't yet supply per-file source-name overrides.
-    public constructor(
+    constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
             rowIdStart: Long,
@@ -127,7 +127,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), emptyMap(), emptySet(), Optional.empty())
 
     // Eleven-arg constructor — kept for callers that don't carry inlined-delete row positions.
-    public constructor(
+    constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
             rowIdStart: Long,
@@ -142,7 +142,7 @@ public data class DucklakeSplit @JsonCreator constructor(
             : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), fieldIdToParquetSourceName.toMap(), emptySet(), Optional.empty())
 
     // Twelve-arg constructor — kept for callers that don't yet supply an affinity key.
-    public constructor(
+    constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
             rowIdStart: Long,
@@ -161,7 +161,7 @@ public data class DucklakeSplit @JsonCreator constructor(
      * Backward-compatible accessor for the single delete file path.
      * Returns the first delete file path if present.
      */
-    public fun deleteFilePath(): Optional<String> {
+    fun deleteFilePath(): Optional<String> {
         return if (deleteFilePaths.isEmpty()) Optional.empty() else Optional.of(deleteFilePaths.first())
     }
 
@@ -190,17 +190,17 @@ public data class DucklakeSplit @JsonCreator constructor(
         // fileSizeBytes, footerSize), so no extra SIZE_OF_LONG additions are needed for them.
         return (INSTANCE_SIZE
                 + estimatedSizeOf(dataFilePath)
-                + deleteFilePaths.stream().mapToLong { s -> SizeOf.estimatedSizeOf(s) }.sum()
+                + deleteFilePaths.stream().mapToLong { s -> estimatedSizeOf(s) }.sum()
                 + estimatedSizeOf(fileFormat)
                 + fileStatisticsDomain.getRetainedSizeInBytes { handle: DucklakeColumnHandle -> handle.getRetainedSizeInBytes() }
                 + deleteFooterSizesRetained
                 + partitionValuesRetained
                 + sourceNameRetained
                 + inlinedDeletesRetained
-                + sizeOf(affinityKey) { s -> SizeOf.estimatedSizeOf(s) })
+                + sizeOf(affinityKey) { s -> estimatedSizeOf(s) })
     }
 
-    public companion object {
+    companion object {
         private val INSTANCE_SIZE: Int = instanceSize(DucklakeSplit::class.java)
     }
 }

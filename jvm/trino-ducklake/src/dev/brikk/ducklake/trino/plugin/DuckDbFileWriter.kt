@@ -56,7 +56,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.sql.SQLException
-import java.sql.Statement
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -87,19 +86,15 @@ import java.util.OptionalLong
 internal class DuckDbFileWriter
 @Throws(IOException::class)
 constructor(
-        fileSystem: TrinoFileSystem,
-        remoteLocation: Location,
-        relativePath: String,
-        partitionValues: Map<Int, String?>,
-        partitionId: OptionalLong,
-        columns: List<DucklakeColumnHandle>,
-        localTempDir: Path,
+    private val fileSystem: TrinoFileSystem,
+    private val remoteLocation: Location,
+    private val relativePath: String,
+    partitionValues: Map<Int, String?>,
+    private val partitionId: OptionalLong,
+    columns: List<DucklakeColumnHandle>,
+    localTempDir: Path,
 ) : DucklakeFileWriter {
-    private val fileSystem: TrinoFileSystem = fileSystem
-    private val remoteLocation: Location = remoteLocation
-    private val relativePath: String = relativePath
     private val partitionValues: Map<Int, String?> = partitionValues.toMap()
-    private val partitionId: OptionalLong = partitionId
     private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.map(DucklakeColumnHandle::columnType)
     private val localTempFile: Path
@@ -161,7 +156,7 @@ constructor(
 
     @Throws(IOException::class)
     override fun write(page: Page) {
-        val positionCount = page.getPositionCount()
+        val positionCount = page.positionCount
         try {
             for (position in 0 until positionCount) {
                 appender.beginRow()
@@ -188,76 +183,76 @@ constructor(
             appender.appendNull()
             return
         }
-        if (type.equals(BOOLEAN)) {
+        if (type == BOOLEAN) {
             appender.append(BOOLEAN.getBoolean(block, position))
             return
         }
-        if (type.equals(TINYINT)) {
+        if (type == TINYINT) {
             appender.append(TINYINT.getByte(block, position).toByte())
             return
         }
-        if (type.equals(SMALLINT)) {
+        if (type == SMALLINT) {
             appender.append(SMALLINT.getShort(block, position).toShort())
             return
         }
-        if (type.equals(INTEGER)) {
+        if (type == INTEGER) {
             appender.append(INTEGER.getInt(block, position))
             return
         }
-        if (type.equals(BIGINT)) {
+        if (type == BIGINT) {
             appender.append(BIGINT.getLong(block, position))
             return
         }
-        if (type.equals(REAL)) {
+        if (type == REAL) {
             appender.append(intBitsToFloat(REAL.getInt(block, position)))
             return
         }
-        if (type.equals(DOUBLE)) {
+        if (type == DOUBLE) {
             appender.append(DOUBLE.getDouble(block, position))
             return
         }
-        if (type.equals(DATE)) {
+        if (type == DATE) {
             // Trino DATE is days since 1970-01-01
             val days = DATE.getInt(block, position)
             appender.append(LocalDate.ofEpochDay(days.toLong()))
             return
         }
-        if (type.equals(VARBINARY)) {
-            val bytes: ByteArray = VARBINARY.getSlice(block, position).getBytes()
+        if (type == VARBINARY) {
+            val bytes: ByteArray = VARBINARY.getSlice(block, position).bytes
             appender.append(bytes)
             return
         }
-        if (type.equals(UUID)) {
+        if (type == UUID) {
             appender.append(trinoUuidToJavaUuid(UUID.getSlice(block, position)))
             return
         }
         if (type is DecimalType) {
             val value: BigDecimal
-            if (type.isShort()) {
+            if (type.isShort) {
                 val unscaled = type.getLong(block, position)
-                value = BigDecimal.valueOf(unscaled, type.getScale())
+                value = BigDecimal.valueOf(unscaled, type.scale)
             }
             else {
                 val unscaled = type.getObject(block, position) as Int128
-                value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.getScale())
+                value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.scale)
             }
             appender.append(value)
             return
         }
         if (type is TimestampType) {
-            if (type.isShort()) {
+            if (type.isShort) {
                 val micros = type.getLong(block, position)
                 appender.append(microsToLocalDateTime(micros))
                 return
             }
             val ts = type.getObject(block, position) as LongTimestamp
-            appender.append(microsToLocalDateTime(ts.getEpochMicros())
-                    .plusNanos((ts.getPicosOfMicro() / 1_000).toLong()))
+            appender.append(microsToLocalDateTime(ts.epochMicros)
+                    .plusNanos((ts.picosOfMicro / 1_000).toLong()))
             return
         }
         if (type is TimestampWithTimeZoneType) {
             val instant: Instant
-            if (type.isShort()) {
+            if (type.isShort) {
                 val packed = type.getLong(block, position)
                 instant = Instant.ofEpochMilli(unpackMillisUtc(packed))
             }
@@ -268,8 +263,8 @@ constructor(
                 // ZONE silently loses its micros. Mirrors the Arrow writer's populateTimestampTzVector
                 // and the sibling TIMESTAMP long path above.
                 val ts = type.getObject(block, position) as LongTimestampWithTimeZone
-                instant = Instant.ofEpochMilli(ts.getEpochMillis())
-                        .plusNanos((ts.getPicosOfMilli() / 1_000).toLong())
+                instant = Instant.ofEpochMilli(ts.epochMillis)
+                        .plusNanos((ts.picosOfMilli / 1_000).toLong())
             }
             appender.append(OffsetDateTime.ofInstant(instant, ZoneOffset.UTC))
             return
@@ -375,7 +370,7 @@ constructor(
                 var minMaxCursor = 0
                 for (i in columns.indices) {
                     valueCounts[i] = rs.getLong(colIdx++)
-                    if (minMaxCursor < minMaxColumns.size && minMaxColumns.get(minMaxCursor) == i) {
+                    if (minMaxCursor < minMaxColumns.size && minMaxColumns[minMaxCursor] == i) {
                         minValues[i] = rs.getObject(colIdx++)
                         maxValues[i] = rs.getObject(colIdx++)
                         minMaxCursor++
@@ -456,41 +451,41 @@ constructor(
         private const val ATTACHED_TABLE: String = "t"
 
         private fun toDuckDbSqlType(type: Type): String {
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 return "BOOLEAN"
             }
-            if (type.equals(TINYINT)) {
+            if (type == TINYINT) {
                 return "TINYINT"
             }
-            if (type.equals(SMALLINT)) {
+            if (type == SMALLINT) {
                 return "SMALLINT"
             }
-            if (type.equals(INTEGER)) {
+            if (type == INTEGER) {
                 return "INTEGER"
             }
-            if (type.equals(BIGINT)) {
+            if (type == BIGINT) {
                 return "BIGINT"
             }
-            if (type.equals(REAL)) {
+            if (type == REAL) {
                 return "REAL"
             }
-            if (type.equals(DOUBLE)) {
+            if (type == DOUBLE) {
                 return "DOUBLE"
             }
-            if (type.equals(DATE)) {
+            if (type == DATE) {
                 return "DATE"
             }
-            if (type.equals(VARBINARY)) {
+            if (type == VARBINARY) {
                 return "BLOB"
             }
-            if (type.equals(UUID)) {
+            if (type == UUID) {
                 return "UUID"
             }
             if (type is DecimalType) {
-                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.getPrecision(), type.getScale())
+                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
             }
             if (type is TimestampType) {
-                return when (type.getPrecision()) {
+                return when (type.precision) {
                     0 -> "TIMESTAMP_S"
                     3 -> "TIMESTAMP_MS"
                     6 -> "TIMESTAMP"
@@ -504,7 +499,7 @@ constructor(
             if (type is VarcharType) {
                 return "VARCHAR"
             }
-            throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: " + type)
+            throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
         }
 
         private fun microsToLocalDateTime(epochMicros: Long): LocalDateTime {
@@ -514,11 +509,8 @@ constructor(
         }
 
         private fun supportsMinMax(type: Type): Boolean {
-            if (type.equals(VARBINARY) || type.equals(UUID)) {
-                return false
-            }
+            return !(type.equals(VARBINARY) || type.equals(UUID))
             // Nested types are already rejected at write time.
-            return true
         }
 
         /**
@@ -530,25 +522,25 @@ constructor(
             if (value == null) {
                 return Optional.empty()
             }
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 return Optional.of(if (value as Boolean) "true" else "false")
             }
-            if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
+            if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
                 return Optional.of((value as Number).toLong().toString())
             }
-            if (type.equals(REAL)) {
+            if (type == REAL) {
                 val f = (value as Number).toFloat()
                 return if (java.lang.Float.isNaN(f)) Optional.empty() else Optional.of(java.lang.String.valueOf(f))
             }
-            if (type.equals(DOUBLE)) {
+            if (type == DOUBLE) {
                 val d = (value as Number).toDouble()
                 return if (java.lang.Double.isNaN(d)) Optional.empty() else Optional.of(java.lang.String.valueOf(d))
             }
             if (type is DecimalType) {
-                val bd: BigDecimal = if (value is BigDecimal) value else BigDecimal(value.toString())
+                val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
                 return Optional.of(bd.toPlainString())
             }
-            if (type.equals(DATE)) {
+            if (type == DATE) {
                 if (value is java.sql.Date) {
                     return Optional.of(value.toLocalDate().toString())
                 }

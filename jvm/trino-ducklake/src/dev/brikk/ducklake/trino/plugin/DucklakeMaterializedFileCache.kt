@@ -50,7 +50,7 @@ import java.util.concurrent.ConcurrentMap
  * eviction story.
  */
 @Singleton
-public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
+class DucklakeMaterializedFileCache(private val cacheDir: Path) {
     private val keyLocks: ConcurrentMap<String, Any> = ConcurrentHashMap()
 
     init {
@@ -62,7 +62,7 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
         }
     }
 
-    public constructor() : this(defaultCacheDir())
+    constructor() : this(defaultCacheDir())
 
     /**
      * Return a local filesystem path for the given remote DuckDB file, downloading it
@@ -79,7 +79,7 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
      */
     fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
         val key = cacheKey(remotePath, fileSize)
-        val local = cacheDir.resolve(key + ".db")
+        val local = cacheDir.resolve("$key.db")
         if (isReady(local, fileSize)) {
             return local
         }
@@ -90,7 +90,7 @@ public class DucklakeMaterializedFileCache(private val cacheDir: Path) {
                 local
             }
             else {
-                val partial = cacheDir.resolve(key + ".partial")
+                val partial = cacheDir.resolve("$key.partial")
                 Files.deleteIfExists(partial)
                 val downloaded = downloadTo(fileSystem, remotePath, partial)
                 if (downloaded != fileSize) {

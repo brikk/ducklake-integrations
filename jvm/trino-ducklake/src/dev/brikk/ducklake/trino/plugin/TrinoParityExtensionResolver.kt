@@ -63,8 +63,8 @@ import java.util.concurrent.atomic.AtomicReference
  * `ducklake.duckdb.parity-extension-path` explicitly to a path the
  * Quack server can resolve.
  */
-public class TrinoParityExtensionResolver private constructor() {
-    public companion object {
+class TrinoParityExtensionResolver private constructor() {
+    companion object {
         private val log: Logger = Logger.get(TrinoParityExtensionResolver::class.java)
 
         private const val RESOURCE_DIR: String = "dev/brikk/ducklake/trino/plugin/duckdb-extensions"
@@ -112,7 +112,7 @@ public class TrinoParityExtensionResolver private constructor() {
          * cached — different platforms have different paths.
          */
         @JvmStatic
-        public fun resolveBundledExtensionPathFor(platform: String): Optional<String> {
+        fun resolveBundledExtensionPathFor(platform: String): Optional<String> {
             return synchronized(RESOLVE_LOCK) {
                 val resourcePath = "$RESOURCE_DIR/$platform/$RESOURCE_FILE"
                 val url = TrinoParityExtensionResolver::class.java.classLoader.getResource(resourcePath)
@@ -233,7 +233,7 @@ public class TrinoParityExtensionResolver private constructor() {
                 "aarch64", "arm64" -> archPart = "arm64"
                 else -> return Optional.empty()
             }
-            return Optional.of(osPart + "-" + archPart)
+            return Optional.of("$osPart-$archPart")
         }
     }
 }

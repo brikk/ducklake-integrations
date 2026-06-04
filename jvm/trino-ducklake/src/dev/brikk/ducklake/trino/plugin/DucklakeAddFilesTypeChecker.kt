@@ -48,7 +48,7 @@ import io.trino.spi.type.VarcharType
  * [io.trino.parquet.ParquetTypeUtils] machinery, and the target side
  * comes from the DuckLake catalog's stored column type.
  */
-public class DucklakeAddFilesTypeChecker private constructor() {
+class DucklakeAddFilesTypeChecker private constructor() {
     companion object {
         /**
          * @throws DucklakeAddFilesException when source is not assignable to target.
@@ -110,7 +110,7 @@ public class DucklakeAddFilesTypeChecker private constructor() {
         private fun isSignedIntCompatible(target: Type, source: Type): Boolean {
             val targetWidth = signedIntWidth(target)
             val sourceWidth = signedIntWidth(source)
-            return sourceWidth > 0 && sourceWidth <= targetWidth
+            return sourceWidth in 1..targetWidth
         }
 
         private fun signedIntWidth(type: Type): Int = when (type) {

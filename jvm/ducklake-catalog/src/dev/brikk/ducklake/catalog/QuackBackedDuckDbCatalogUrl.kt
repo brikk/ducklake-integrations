@@ -17,7 +17,6 @@ import java.net.URI
 import java.net.URISyntaxException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
-import java.util.LinkedHashMap
 
 /**
  * Parses the synthetic `jdbc:duckdb:quack://host:port[?metadata_catalog=name]`

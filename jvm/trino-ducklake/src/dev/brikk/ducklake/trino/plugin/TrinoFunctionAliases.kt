@@ -15,7 +15,6 @@ package dev.brikk.ducklake.trino.plugin
 
 import java.sql.Connection
 import java.sql.SQLException
-import java.sql.Statement
 
 /**
  * Loader for the {@code trino_parity} DuckDB extension, which registers all the

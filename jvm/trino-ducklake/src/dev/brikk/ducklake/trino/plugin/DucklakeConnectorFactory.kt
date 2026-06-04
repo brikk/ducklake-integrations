@@ -43,7 +43,7 @@ open class DucklakeConnectorFactory
         val classLoader = DucklakeConnectorFactory::class.java.classLoader
         ThreadContextClassLoader(classLoader).use { _ ->
             val app = Bootstrap(
-                    "io.trino.bootstrap.catalog." + catalogName,
+                "io.trino.bootstrap.catalog.$catalogName",
                     MBeanModule(),
                     ConnectorObjectNameGeneratorModule("io.trino.plugin.ducklake", "trino.plugin.ducklake"),
                     JsonModule(),
@@ -51,7 +51,7 @@ open class DucklakeConnectorFactory
                     MBeanServerModule(),
                     FileSystemModule(catalogName, context, false), // no metadata cache initially
                     ConnectorContextModule(catalogName, context),
-                    Module { binder -> binder.bind(ClassLoader::class.java).toInstance(classLoader) })
+                { binder -> binder.bind(ClassLoader::class.java).toInstance(classLoader) })
 
             val injector = app
                     .doNotInitializeLogging()

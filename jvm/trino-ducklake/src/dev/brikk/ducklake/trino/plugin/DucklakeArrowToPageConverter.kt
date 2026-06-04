@@ -64,7 +64,6 @@ import org.apache.arrow.vector.VarBinaryVector
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.ArrowType
-import java.lang.String.format
 
 /**
  * Materializes one {@link VectorSchemaRoot} batch from DuckDB's Arrow export stream
@@ -78,9 +77,9 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
     private val columnTypes: List<Type> = columnTypes.toList()
 
     fun convert(root: VectorSchemaRoot): Page {
-        val rowCount = root.getRowCount()
+        val rowCount = root.rowCount
         val columnCount = columnTypes.size
-        if (root.getFieldVectors().size != columnCount) {
+        if (root.fieldVectors.size != columnCount) {
             throw TrinoException(
                     NOT_SUPPORTED,
                     "DuckDB Arrow batch has ${root.fieldVectors.size} columns but $columnCount projected")
@@ -96,7 +95,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
 
         private fun convertColumn(type: Type, vector: FieldVector, rowCount: Int): Block {
             val builder: BlockBuilder = type.createBlockBuilder(null, rowCount)
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 val v = vector as BitVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -107,7 +106,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(TINYINT)) {
+            else if (type == TINYINT) {
                 val v = vector as TinyIntVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -118,7 +117,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(SMALLINT)) {
+            else if (type == SMALLINT) {
                 val v = vector as SmallIntVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -129,7 +128,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(INTEGER)) {
+            else if (type == INTEGER) {
                 val v = vector as IntVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -140,7 +139,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(BIGINT)) {
+            else if (type == BIGINT) {
                 val v = vector as BigIntVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -151,7 +150,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(REAL)) {
+            else if (type == REAL) {
                 val v = vector as Float4Vector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -162,7 +161,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(DOUBLE)) {
+            else if (type == DOUBLE) {
                 val v = vector as Float8Vector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -173,7 +172,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(DATE)) {
+            else if (type == DATE) {
                 val v = vector as DateDayVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -184,7 +183,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type.equals(VARBINARY)) {
+            else if (type == VARBINARY) {
                 val v = vector as VarBinaryVector
                 for (i in 0 until rowCount) {
                     if (v.isNull(i)) {
@@ -215,7 +214,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             else if (type is TimestampWithTimeZoneType) {
                 writeTimestampTzColumn(type, vector, builder, rowCount)
             }
-            else if (type.equals(UuidType.UUID)) {
+            else if (type == UuidType.UUID) {
                 // DuckDB exports UUID columns as Utf8 (the printed hex form), not
                 // FixedSizeBinary(16) — verified empirically against the in-process
                 // DuckDB JDBC driver. Parse the string and convert to Trino's
@@ -246,7 +245,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     continue
                 }
                 val value = vector.getObject(i)
-                if (decimalType.isShort()) {
+                if (decimalType.isShort) {
                     decimalType.writeLong(builder, value.unscaledValue().longValueExact())
                 }
                 else {
@@ -308,7 +307,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
         }
 
         private fun writeTimestampMicrosWithRemainder(type: TimestampType, builder: BlockBuilder, micros: Long, picosOfMicro: Int) {
-            if (type.isShort()) {
+            if (type.isShort) {
                 type.writeLong(builder, micros)
             }
             else {
@@ -388,7 +387,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                 java.util.concurrent.ConcurrentHashMap()
 
         private fun resolveTimeZoneKey(vector: FieldVector): TimeZoneKey {
-            val arrowType = vector.getField().getType()
+            val arrowType = vector.field.type
             if (arrowType !is ArrowType.Timestamp) {
                 return UTC_KEY
             }
@@ -419,7 +418,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
         }
 
         private fun writeTimestampTz(type: TimestampWithTimeZoneType, builder: BlockBuilder, epochMillis: Long, picosOfMilli: Int, zone: TimeZoneKey) {
-            if (type.isShort()) {
+            if (type.isShort) {
                 type.writeLong(builder, packDateTimeWithZone(epochMillis, zone))
             }
             else {

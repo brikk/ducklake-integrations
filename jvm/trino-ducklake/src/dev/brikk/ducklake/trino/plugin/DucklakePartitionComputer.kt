@@ -50,7 +50,7 @@ import java.util.OptionalInt
  * Supports CALENDAR / EPOCH encoding for temporal transforms and Iceberg-compatible
  * Murmur3 hashing for `bucket(N)` transforms.
  */
-public object DucklakePartitionComputer {
+object DucklakePartitionComputer {
     /**
      * Compute the partition value string for a given row position.
      *
@@ -59,7 +59,7 @@ public object DucklakePartitionComputer {
     /**
      * Convenience overload for IDENTITY / temporal transforms (no arity needed).
      */
-    public fun computePartitionValue(
+    fun computePartitionValue(
             columnType: Type,
             block: Block,
             position: Int,
@@ -67,7 +67,7 @@ public object DucklakePartitionComputer {
             encoding: DucklakeTemporalPartitionEncoding): String? =
             computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding)
 
-    public fun computePartitionValue(
+    fun computePartitionValue(
             columnType: Type,
             block: Block,
             position: Int,
@@ -86,7 +86,7 @@ public object DucklakePartitionComputer {
             if (arity.isEmpty) {
                 throw IllegalArgumentException("BUCKET transform requires an arity")
             }
-            return Integer.toString(computeBucket(columnType, block, position, arity.getAsInt()))
+            return computeBucket(columnType, block, position, arity.getAsInt()).toString()
         }
 
         return computeTemporalValue(columnType, block, position, transform, encoding)
@@ -97,25 +97,25 @@ public object DucklakePartitionComputer {
             val days = DATE.getInt(block, position)
             return LocalDate.ofEpochDay(days.toLong()).toString()
         }
-        if (type.equals(BOOLEAN)) {
+        if (type == BOOLEAN) {
             return BOOLEAN.getBoolean(block, position).toString()
         }
-        if (type.equals(TINYINT)) {
+        if (type == TINYINT) {
             return TINYINT.getLong(block, position).toString()
         }
-        if (type.equals(SMALLINT)) {
+        if (type == SMALLINT) {
             return SMALLINT.getLong(block, position).toString()
         }
-        if (type.equals(INTEGER)) {
+        if (type == INTEGER) {
             return INTEGER.getInt(block, position).toString()
         }
-        if (type.equals(BIGINT)) {
+        if (type == BIGINT) {
             return BIGINT.getLong(block, position).toString()
         }
-        if (type.equals(REAL)) {
+        if (type == REAL) {
             return REAL.getFloat(block, position).toString()
         }
-        if (type.equals(DOUBLE)) {
+        if (type == DOUBLE) {
             return DOUBLE.getDouble(block, position).toString()
         }
         // VARCHAR and other string-like types
@@ -142,7 +142,7 @@ public object DucklakePartitionComputer {
             return LocalDate.ofEpochDay(days.toLong()).atStartOfDay()
         }
         if (columnType is TimestampType) {
-            if (columnType.isShort()) {
+            if (columnType.isShort) {
                 val epochMicros = columnType.getLong(block, position)
                 val epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND)
                 val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND).toInt()) * 1000
@@ -150,24 +150,24 @@ public object DucklakePartitionComputer {
             }
             // Long timestamp (precision > 6)
             val longTs: LongTimestamp = columnType.getObject(block, position) as LongTimestamp
-            val epochMicros = longTs.getEpochMicros()
+            val epochMicros = longTs.epochMicros
             val epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND)
-            val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND) * 1000 + longTs.getPicosOfMicro() / 1000).toInt()
+            val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND) * 1000 + longTs.picosOfMicro / 1000).toInt()
             return LocalDateTime.ofEpochSecond(epochSeconds, nanoAdjustment, ZoneOffset.UTC)
         }
         if (columnType is TimestampWithTimeZoneType) {
-            if (columnType.isShort()) {
+            if (columnType.isShort) {
                 val packedValue = columnType.getLong(block, position)
                 val epochMillis = unpackMillisUtc(packedValue)
                 return Instant.ofEpochMilli(epochMillis).atOffset(ZoneOffset.UTC).toLocalDateTime()
             }
             val longTz: LongTimestampWithTimeZone =
                     columnType.getObject(block, position) as LongTimestampWithTimeZone
-            return Instant.ofEpochMilli(longTz.getEpochMillis())
+            return Instant.ofEpochMilli(longTz.epochMillis)
                     .atOffset(ZoneOffset.UTC)
                     .toLocalDateTime()
         }
-        throw IllegalArgumentException("Temporal partition not supported for type: " + columnType)
+        throw IllegalArgumentException("Temporal partition not supported for type: $columnType")
     }
 
     /**
@@ -175,11 +175,11 @@ public object DucklakePartitionComputer {
      */
     private fun computeCalendarValue(dateTime: LocalDateTime, transform: DucklakePartitionTransform): String {
         return when (transform) {
-            DucklakePartitionTransform.YEAR -> dateTime.getYear().toString()
-            DucklakePartitionTransform.MONTH -> dateTime.getMonthValue().toString()
-            DucklakePartitionTransform.DAY -> dateTime.getDayOfMonth().toString()
-            DucklakePartitionTransform.HOUR -> dateTime.getHour().toString()
-            DucklakePartitionTransform.IDENTITY, DucklakePartitionTransform.BUCKET -> throw IllegalArgumentException(transform.toString() + " is not a temporal transform")
+            DucklakePartitionTransform.YEAR -> dateTime.year.toString()
+            DucklakePartitionTransform.MONTH -> dateTime.monthValue.toString()
+            DucklakePartitionTransform.DAY -> dateTime.dayOfMonth.toString()
+            DucklakePartitionTransform.HOUR -> dateTime.hour.toString()
+            DucklakePartitionTransform.IDENTITY, DucklakePartitionTransform.BUCKET -> throw IllegalArgumentException("$transform is not a temporal transform")
         }
     }
 
@@ -193,8 +193,8 @@ public object DucklakePartitionComputer {
             dateTime: LocalDateTime,
             transform: DucklakePartitionTransform): String {
         return when (transform) {
-            DucklakePartitionTransform.YEAR -> (dateTime.getYear() - 1970).toString()
-            DucklakePartitionTransform.MONTH -> ((dateTime.getYear() - 1970) * 12 + (dateTime.getMonthValue() - 1)).toString()
+            DucklakePartitionTransform.YEAR -> (dateTime.year - 1970).toString()
+            DucklakePartitionTransform.MONTH -> ((dateTime.year - 1970) * 12 + (dateTime.monthValue - 1)).toString()
             DucklakePartitionTransform.DAY -> {
                 if (columnType is DateType) {
                     DATE.getInt(block, position).toString()
@@ -205,9 +205,9 @@ public object DucklakePartitionComputer {
             }
             DucklakePartitionTransform.HOUR -> {
                 val epochDay = dateTime.toLocalDate().toEpochDay()
-                (epochDay * 24 + dateTime.getHour()).toString()
+                (epochDay * 24 + dateTime.hour).toString()
             }
-            DucklakePartitionTransform.IDENTITY, DucklakePartitionTransform.BUCKET -> throw IllegalArgumentException(transform.toString() + " is not a temporal transform")
+            DucklakePartitionTransform.IDENTITY, DucklakePartitionTransform.BUCKET -> throw IllegalArgumentException("$transform is not a temporal transform")
         }
     }
 
@@ -220,46 +220,46 @@ public object DucklakePartitionComputer {
      * Caller should reject these at table-property validation time; this is a defensive
      * runtime guard.
      */
-    public fun computeBucket(type: Type, block: Block, position: Int, arity: Int): Int {
+    fun computeBucket(type: Type, block: Block, position: Int, arity: Int): Int {
         val hash = murmur3Hash(type, block, position)
         return (hash and Integer.MAX_VALUE) % arity
     }
 
     private fun murmur3Hash(type: Type, block: Block, position: Int): Int {
-        if (type.equals(TINYINT)) {
+        if (type == TINYINT) {
             return murmur3_32_fixed().hashLong(TINYINT.getLong(block, position)).asInt()
         }
-        if (type.equals(SMALLINT)) {
+        if (type == SMALLINT) {
             return murmur3_32_fixed().hashLong(SMALLINT.getLong(block, position)).asInt()
         }
-        if (type.equals(INTEGER)) {
+        if (type == INTEGER) {
             return murmur3_32_fixed().hashLong(INTEGER.getInt(block, position).toLong()).asInt()
         }
-        if (type.equals(BIGINT)) {
+        if (type == BIGINT) {
             return murmur3_32_fixed().hashLong(BIGINT.getLong(block, position)).asInt()
         }
-        if (type.equals(DATE)) {
+        if (type == DATE) {
             return murmur3_32_fixed().hashLong(DATE.getInt(block, position).toLong()).asInt()
         }
         if (type is TimestampType) {
             val epochMicros: Long
-            if (type.isShort()) {
+            if (type.isShort) {
                 epochMicros = type.getLong(block, position)
             }
             else {
-                epochMicros = (type.getObject(block, position) as LongTimestamp).getEpochMicros()
+                epochMicros = (type.getObject(block, position) as LongTimestamp).epochMicros
             }
             return murmur3_32_fixed().hashLong(epochMicros).asInt()
         }
         if (type is TimestampWithTimeZoneType) {
             val epochMicros: Long
-            if (type.isShort()) {
+            if (type.isShort) {
                 epochMicros = unpackMillisUtc(type.getLong(block, position)) * 1_000L
             }
             else {
                 val tz: LongTimestampWithTimeZone =
                         type.getObject(block, position) as LongTimestampWithTimeZone
-                epochMicros = tz.getEpochMillis() * 1_000L + tz.getPicosOfMilli() / 1_000_000L
+                epochMicros = tz.epochMillis * 1_000L + tz.picosOfMilli / 1_000_000L
             }
             return murmur3_32_fixed().hashLong(epochMicros).asInt()
         }
@@ -277,9 +277,9 @@ public object DucklakePartitionComputer {
             val slice: Slice = UuidType.UUID.getSlice(block, position)
             return murmur3_32_fixed().hashBytes(slice.byteArray(), slice.byteArrayOffset(), slice.length()).asInt()
         }
-        if (type.equals(REAL) || type.equals(DOUBLE) || type.equals(BOOLEAN)) {
-            throw IllegalArgumentException("bucket(N) is not defined for type " + type + " (Iceberg spec)")
+        if (type == REAL || type == DOUBLE || type == BOOLEAN) {
+            throw IllegalArgumentException("bucket(N) is not defined for type $type (Iceberg spec)")
         }
-        throw IllegalArgumentException("bucket(N) does not yet support type: " + type)
+        throw IllegalArgumentException("bucket(N) does not yet support type: $type")
     }
 }

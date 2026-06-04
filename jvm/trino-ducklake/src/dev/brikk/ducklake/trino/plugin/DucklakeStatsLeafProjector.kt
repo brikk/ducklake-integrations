@@ -59,8 +59,7 @@ object DucklakeStatsLeafProjector {
         for (column in allCatalogColumns) {
             column.parentColumn.ifPresent { parentId ->
                 childrenByParent
-                        .computeIfAbsent(parentId) { _ -> HashMap() }
-                        .put(column.columnName, column)
+                        .computeIfAbsent(parentId) { _ -> HashMap() }[column.columnName] = column
             }
         }
         return childrenByParent
@@ -78,11 +77,9 @@ object DucklakeStatsLeafProjector {
                 val childName = field.name.orElseThrow {
                     IllegalArgumentException("Anonymous row fields are not supported (parent field_id=$fieldId)")
                 }
-                val child = children[childName]
-                if (child == null) {
-                    throw IllegalStateException(
-                            "Catalog tree missing ROW child '$childName' for parent field_id=$fieldId")
-                }
+                val child = children[childName] ?: throw IllegalStateException(
+                    "Catalog tree missing ROW child '$childName' for parent field_id=$fieldId"
+                )
                 collect(child.columnId, field.type, childrenByParent, out, runningIndex)
             }
             return

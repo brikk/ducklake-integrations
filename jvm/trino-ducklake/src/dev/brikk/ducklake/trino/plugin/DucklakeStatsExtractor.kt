@@ -54,8 +54,8 @@ import java.util.Optional
  * [LeafStatsTarget] list in the same order parquet writes leaves into
  * `RowGroup.columns`.
  */
-public object DucklakeStatsExtractor {
-    public fun extractStats(
+object DucklakeStatsExtractor {
+    fun extractStats(
             fileMetaData: FileMetaData,
             leafTargets: List<LeafStatsTarget>): List<DucklakeFileColumnStats> {
         val result: ImmutableList.Builder<DucklakeFileColumnStats> = ImmutableList.builder()
@@ -77,17 +77,17 @@ public object DucklakeStatsExtractor {
                 if (parquetColumnIndex >= rowGroup.getColumns().size) {
                     continue
                 }
-                val columnMeta = rowGroup.getColumns().get(parquetColumnIndex).getMeta_data()
+                val columnMeta = rowGroup.getColumns()[parquetColumnIndex].getMeta_data()
                 totalCompressedSize += columnMeta.getTotal_compressed_size()
 
                 var groupNullCount: Long = 0
-                if (columnMeta.isSetStatistics()) {
+                if (columnMeta.isSetStatistics) {
                     val stats = columnMeta.getStatistics()
-                    if (stats.isSetNull_count()) {
+                    if (stats.isSetNull_count) {
                         groupNullCount = stats.getNull_count()
                     }
 
-                    if (stats.isSetMin_value() && stats.isSetMax_value()) {
+                    if (stats.isSetMin_value && stats.isSetMax_value) {
                         hasStats = true
                         val groupMin = convertStatValue(stats.getMin_value(), type, columnMeta.getType())
                         val groupMax = convertStatValue(stats.getMax_value(), type, columnMeta.getType())
@@ -132,7 +132,7 @@ public object DucklakeStatsExtractor {
     }
 
     internal fun convertStatValue(value: ByteArray?, type: Type, physicalType: org.apache.parquet.format.Type?): Optional<String> {
-        if (value == null || value.size == 0) {
+        if (value == null || value.isEmpty()) {
             return Optional.empty()
         }
 
@@ -187,7 +187,7 @@ public object DucklakeStatsExtractor {
             if (type is DecimalType) {
                 val decimalType: DecimalType = type
                 val unscaled = decodeDecimalUnscaled(value, physicalType)
-                val decimal = BigDecimal(unscaled, decimalType.getScale())
+                val decimal = BigDecimal(unscaled, decimalType.scale)
                 return Optional.of(decimal.toPlainString())
             }
 

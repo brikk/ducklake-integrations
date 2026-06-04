@@ -21,7 +21,6 @@ import io.trino.spi.StandardErrorCode.INVALID_SESSION_PROPERTY
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import java.time.Instant
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.OptionalLong
 

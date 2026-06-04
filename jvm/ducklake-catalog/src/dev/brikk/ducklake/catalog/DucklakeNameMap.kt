@@ -35,7 +35,7 @@ data class DucklakeNameMap(
             @JsonProperty("entries") entries: List<DucklakeNameMapEntry>?,
         ): DucklakeNameMap {
             return DucklakeNameMap(
-                if (entries == null) emptyList() else entries.toList(),
+                entries?.toList() ?: emptyList(),
             )
         }
     }

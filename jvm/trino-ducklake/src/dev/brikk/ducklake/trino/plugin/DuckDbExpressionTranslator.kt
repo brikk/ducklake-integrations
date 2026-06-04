@@ -269,7 +269,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (index >= args.size) {
                     return@ArgTypeGate false
                 }
-                val t: Type = args[index].getType()
+                val t: Type = args[index].type
                 for (cls in allowed) {
                     if (cls.isInstance(t)) {
                         return@ArgTypeGate true
@@ -289,7 +289,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (index >= args.size) {
                     return@ArgTypeGate false
                 }
-                val t: Type = args[index].getType()
+                val t: Type = args[index].type
                 if (t is DateType || t is TimestampType) {
                     return@ArgTypeGate true
                 }
@@ -337,14 +337,14 @@ class DuckDbExpressionTranslator private constructor() {
 
         private fun isTautologyTrue(expression: ConnectorExpression): Boolean =
                 expression is Constant &&
-                    expression.getType() is BooleanType &&
-                    expression.getValue() == true
+                    expression.type is BooleanType &&
+                    expression.value == true
 
         private fun conjuncts(expression: ConnectorExpression): List<ConnectorExpression> {
             if (expression is Call &&
-                    expression.getFunctionName().equals(StandardFunctions.AND_FUNCTION_NAME)) {
+                    expression.functionName.equals(StandardFunctions.AND_FUNCTION_NAME)) {
                 val out: MutableList<ConnectorExpression> = mutableListOf()
-                for (child in expression.getArguments()) {
+                for (child in expression.arguments) {
                     out.addAll(conjuncts(child))
                 }
                 return out
@@ -387,7 +387,7 @@ class DuckDbExpressionTranslator private constructor() {
         }
 
         private fun translateVariable(variable: Variable, assignments: Map<String, ColumnHandle>): String? {
-            val column = assignments[variable.getName()]
+            val column = assignments[variable.name]
             if (column !is DucklakeColumnHandle) {
                 return null
             }
@@ -399,8 +399,8 @@ class DuckDbExpressionTranslator private constructor() {
         }
 
         private fun translateConstant(constant: Constant): String? {
-            val value: Any? = constant.getValue()
-            val type: Type = constant.getType()
+            val value: Any? = constant.value
+            val type: Type = constant.type
             if (value == null) {
                 return "NULL"
             }
@@ -419,7 +419,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (d.isNaN() || d.isInfinite()) {
                     return null
                 }
-                return java.lang.Double.toString(d)
+                return d.toString()
             }
             if (type is VarcharType) {
                 // VARCHAR is stack-represented as a Slice.
@@ -437,34 +437,34 @@ class DuckDbExpressionTranslator private constructor() {
                 // leading '+' (e.g. "+10000-01-01"), neither of which DuckDB's DATE literal parser
                 // accepts — pushing such a fragment would fail the whole query rather than the
                 // conjunct cleanly. Leave out-of-range constants unpushed for Trino-side eval.
-                if (date.year < 1 || date.year > 9999) {
+                if (date.year !in 1..9999) {
                     return null
                 }
-                return "DATE '" + date + "'"
+                return "DATE '$date'"
             }
             return null
         }
 
         private fun translateCall(call: Call, assignments: Map<String, ColumnHandle>, session: ConnectorSession?): String? {
-            val name: FunctionName = call.getFunctionName()
-            val args: List<ConnectorExpression> = call.getArguments()
+            val name: FunctionName = call.functionName
+            val args: List<ConnectorExpression> = call.arguments
 
             // Standard operators: emit infix / prefix SQL.
-            if (name.equals(StandardFunctions.AND_FUNCTION_NAME)) {
+            if (name == StandardFunctions.AND_FUNCTION_NAME) {
                 return joinBinary(args, " AND ", assignments, session)
             }
-            if (name.equals(StandardFunctions.OR_FUNCTION_NAME)) {
+            if (name == StandardFunctions.OR_FUNCTION_NAME) {
                 return joinBinary(args, " OR ", assignments, session)
             }
-            if (name.equals(StandardFunctions.NOT_FUNCTION_NAME) && args.size == 1) {
+            if (name == StandardFunctions.NOT_FUNCTION_NAME && args.size == 1) {
                 val inner = translateOrNull(args[0], assignments, session)
                 return if (inner == null) null else "(NOT $inner)"
             }
-            if (name.equals(StandardFunctions.IS_NULL_FUNCTION_NAME) && args.size == 1) {
+            if (name == StandardFunctions.IS_NULL_FUNCTION_NAME && args.size == 1) {
                 val inner = translateOrNull(args[0], assignments, session)
                 return if (inner == null) null else "($inner IS NULL)"
             }
-            if (name.equals(StandardFunctions.LIKE_FUNCTION_NAME) && args.size == 2) {
+            if (name == StandardFunctions.LIKE_FUNCTION_NAME && args.size == 2) {
                 return translateLike(args[0], args[1], assignments, session)
             }
             val operator = comparisonOperator(name)
@@ -483,9 +483,9 @@ class DuckDbExpressionTranslator private constructor() {
                 if (left == null || right == null) {
                     return null
                 }
-                return "(" + left + " " + arithmetic + " " + right + ")"
+                return "($left $arithmetic $right)"
             }
-            if (name.equals(StandardFunctions.IDENTICAL_OPERATOR_FUNCTION_NAME) && args.size == 2) {
+            if (name == StandardFunctions.IDENTICAL_OPERATOR_FUNCTION_NAME && args.size == 2) {
                 // SQL "IS NOT DISTINCT FROM" — NULL-safe equality. DuckDB supports the
                 // grammar directly. Useful for predicates over nullable columns.
                 val left = translateOrNull(args[0], assignments, session)
@@ -493,25 +493,22 @@ class DuckDbExpressionTranslator private constructor() {
                 if (left == null || right == null) {
                     return null
                 }
-                return "(" + left + " IS NOT DISTINCT FROM " + right + ")"
+                return "($left IS NOT DISTINCT FROM $right)"
             }
-            if (name.equals(StandardFunctions.COALESCE_FUNCTION_NAME) && !args.isEmpty()) {
+            if (name == StandardFunctions.COALESCE_FUNCTION_NAME && !args.isEmpty()) {
                 // Variadic — both engines align: returns first non-NULL, or NULL if all NULL.
                 val sql = StringBuilder("coalesce(")
                 for (i in args.indices) {
                     if (i > 0) {
                         sql.append(", ")
                     }
-                    val arg = translateOrNull(args[i], assignments, session)
-                    if (arg == null) {
-                        return null
-                    }
+                    val arg = translateOrNull(args[i], assignments, session) ?: return null
                     sql.append(arg)
                 }
                 sql.append(')')
                 return sql.toString()
             }
-            if (name.equals(StandardFunctions.NULLIF_FUNCTION_NAME) && args.size == 2) {
+            if (name == StandardFunctions.NULLIF_FUNCTION_NAME && args.size == 2) {
                 val left = translateOrNull(args[0], assignments, session)
                 val right = translateOrNull(args[1], assignments, session)
                 if (left == null || right == null) {
@@ -519,15 +516,15 @@ class DuckDbExpressionTranslator private constructor() {
                 }
                 return "nullif($left, $right)"
             }
-            if (name.equals(StandardFunctions.NEGATE_FUNCTION_NAME) && args.size == 1) {
+            if (name == StandardFunctions.NEGATE_FUNCTION_NAME && args.size == 1) {
                 // Arithmetic unary minus. Trino encodes `-x` as $negate.
                 val inner = translateOrNull(args[0], assignments, session)
                 return if (inner == null) null else "(-$inner)"
             }
-            if (name.equals(StandardFunctions.CAST_FUNCTION_NAME) && args.size == 1) {
+            if (name == StandardFunctions.CAST_FUNCTION_NAME && args.size == 1) {
                 return translateCast(call, args[0], "CAST", assignments, session)
             }
-            if (name.equals(StandardFunctions.TRY_CAST_FUNCTION_NAME) && args.size == 1) {
+            if (name == StandardFunctions.TRY_CAST_FUNCTION_NAME && args.size == 1) {
                 return translateCast(call, args[0], "TRY_CAST", assignments, session)
             }
 
@@ -538,24 +535,24 @@ class DuckDbExpressionTranslator private constructor() {
             // Trino-aligned semantics without a macro. Gated on VARCHAR return type to
             // avoid Trino's array overload (`concat(array, array)`), which has different
             // NULL semantics and a different operator shape in DuckDB.
-            if (name.getCatalogSchema().isEmpty() &&
-                    "concat" == name.getName() &&
+            if (name.catalogSchema.isEmpty &&
+                    "concat" == name.name &&
                     args.size >= 2 &&
-                    call.getType() is VarcharType) {
+                    call.type is VarcharType) {
                 return translateStringConcat(args, assignments, session)
             }
 
             // Trino built-in functions: catalogSchema empty (per StandardFunctions.FunctionName usage).
             // Only push if (name, arity) is in our brain, AND the optional argument-type
             // gate (TYPE_GATES) accepts the actual call's argument types.
-            if (name.getCatalogSchema().isEmpty()) {
-                val key = NameArity(name.getName(), args.size)
+            if (name.catalogSchema.isEmpty) {
+                val key = NameArity(name.name, args.size)
                 if (PUSHABLE_FUNCTIONS.contains(key)) {
                     val gate = TYPE_GATES[key]
                     if (gate != null && !gate.accepts(args, session)) {
                         return null
                     }
-                    return translateMacroCall(name.getName(), args, assignments, session)
+                    return translateMacroCall(name.name, args, assignments, session)
                 }
             }
             return null
@@ -570,10 +567,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (i > 0) {
                     out.append(" || ")
                 }
-                val inner = translateOrNull(args[i], assignments, session)
-                if (inner == null) {
-                    return null
-                }
+                val inner = translateOrNull(args[i], assignments, session) ?: return null
                 out.append(inner)
             }
             out.append(')')
@@ -600,10 +594,7 @@ class DuckDbExpressionTranslator private constructor() {
             if (patternArg !is Constant) {
                 return null
             }
-            val patternValue: Any? = patternArg.getValue()
-            if (patternValue == null) {
-                return null
-            }
+            val patternValue: Any = patternArg.value ?: return null
             val extracted = LikePatternAccessor.extract(patternValue) ?: return null
             val translatedValue = translateOrNull(value, assignments, session) ?: return null
             val out = StringBuilder("(")
@@ -632,7 +623,7 @@ class DuckDbExpressionTranslator private constructor() {
                 castKeyword: String,
                 assignments: Map<String, ColumnHandle>,
                 session: ConnectorSession?): String? {
-            val targetType = duckdbTypeName(call.getType()) ?: return null
+            val targetType = duckdbTypeName(call.type) ?: return null
             val inner = translateOrNull(operand, assignments, session)
             return if (inner == null) null else "$castKeyword($inner AS $targetType)"
         }
@@ -656,12 +647,12 @@ class DuckDbExpressionTranslator private constructor() {
         }
 
         private fun comparisonOperator(name: FunctionName): String? {
-            if (name.equals(StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME)) return "="
-            if (name.equals(StandardFunctions.NOT_EQUAL_OPERATOR_FUNCTION_NAME)) return "<>"
-            if (name.equals(StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME)) return "<"
-            if (name.equals(StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME)) return "<="
-            if (name.equals(StandardFunctions.GREATER_THAN_OPERATOR_FUNCTION_NAME)) return ">"
-            if (name.equals(StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME)) return ">="
+            if (name == StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME) return "="
+            if (name == StandardFunctions.NOT_EQUAL_OPERATOR_FUNCTION_NAME) return "<>"
+            if (name == StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME) return "<"
+            if (name == StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME) return "<="
+            if (name == StandardFunctions.GREATER_THAN_OPERATOR_FUNCTION_NAME) return ">"
+            if (name == StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME) return ">="
             return null
         }
 
@@ -673,9 +664,9 @@ class DuckDbExpressionTranslator private constructor() {
             // Constant of those types reaches translateConstant() it returns null, so
             // the whole arithmetic translation fails cleanly and stays unpushed. No
             // type-aware gating needed for the three operators below.
-            if (name.equals(StandardFunctions.ADD_FUNCTION_NAME)) return "+"
-            if (name.equals(StandardFunctions.SUBTRACT_FUNCTION_NAME)) return "-"
-            if (name.equals(StandardFunctions.MULTIPLY_FUNCTION_NAME)) return "*"
+            if (name == StandardFunctions.ADD_FUNCTION_NAME) return "+"
+            if (name == StandardFunctions.SUBTRACT_FUNCTION_NAME) return "-"
+            if (name == StandardFunctions.MULTIPLY_FUNCTION_NAME) return "*"
             // B2: $divide and $modulo are INTENTIONALLY not pushed. Two independent
             // divergences make a bare-operator push silently wrong on the .db read path
             // (TestDucklakeArithmeticPushdownParity exercises both):
@@ -714,10 +705,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (i > 0) {
                     sql.append(", ")
                 }
-                val arg = translateOrNull(args[i], assignments, session)
-                if (arg == null) {
-                    return null
-                }
+                val arg = translateOrNull(args[i], assignments, session) ?: return null
                 sql.append(arg)
             }
             sql.append(')')
@@ -737,10 +725,7 @@ class DuckDbExpressionTranslator private constructor() {
                 if (i > 0) {
                     out.append(separator)
                 }
-                val inner = translateOrNull(args[i], assignments, session)
-                if (inner == null) {
-                    return null
-                }
+                val inner = translateOrNull(args[i], assignments, session) ?: return null
                 out.append(inner)
             }
             out.append(')')
@@ -786,10 +771,7 @@ class DuckDbExpressionTranslator private constructor() {
                 return null
             }
             try {
-                val pattern = methods.getPattern.invoke(likePattern) as String?
-                if (pattern == null) {
-                    return null
-                }
+                val pattern = methods.getPattern.invoke(likePattern) as String? ?: return null
                 val escapeOpt = methods.getEscape.invoke(likePattern)
                 var escape: Char? = null
                 if (escapeOpt is Optional<*> && escapeOpt.isPresent) {

@@ -49,11 +49,11 @@ class DucklakeDuckDbExecutorFactory @Inject constructor(private val config: Duck
             DucklakeExecutionEngine.QUACK -> {
                 val host = config.getQuackHost()
                 val token = config.getQuackToken()
-                if (host == null || host.isBlank()) {
+                if (host.isNullOrBlank()) {
                     throw TrinoException(CONFIGURATION_INVALID,
                             "ducklake.execution-engine=quack requires ducklake.quack.host")
                 }
-                if (token == null || token.isBlank()) {
+                if (token.isNullOrBlank()) {
                     throw TrinoException(CONFIGURATION_INVALID,
                             "ducklake.execution-engine=quack requires ducklake.quack.token")
                 }

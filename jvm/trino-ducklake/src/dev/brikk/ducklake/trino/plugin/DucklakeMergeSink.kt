@@ -52,7 +52,7 @@ import java.util.concurrent.CompletableFuture.completedFuture
  * Collects deleted row IDs grouped by data file, writes Parquet delete files,
  * and delegates inserts to the standard DucklakePageSink.
  */
-public open class DucklakeMergeSink(
+open class DucklakeMergeSink(
         private val mergeHandle: DucklakeMergeTableHandle,
         private val fileSystem: TrinoFileSystem,
         private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
@@ -76,24 +76,24 @@ public open class DucklakeMergeSink(
 
     init {
         for (range in mergeHandle.dataFileRanges) {
-            rangeByRowIdStart.put(range.rowIdStart, range)
+            rangeByRowIdStart[range.rowIdStart] = range
         }
     }
 
     override fun storeMergedRows(page: Page) {
         val mergePage: MergePage = MergePage.createDeleteAndInsertPages(page, dataColumnCount)
 
-        mergePage.getDeletionsPage().ifPresent { p -> this.processDeletes(p) }
-        mergePage.getInsertionsPage().ifPresent { insertPage -> insertSink.appendPage(insertPage) }
+        mergePage.deletionsPage.ifPresent { p -> this.processDeletes(p) }
+        mergePage.insertionsPage.ifPresent { insertPage -> insertSink.appendPage(insertPage) }
     }
 
     private fun processDeletes(deletePage: Page) {
         // Delete page has data columns followed by row ID column (last column)
-        val rowIdChannel = deletePage.getChannelCount() - 1
+        val rowIdChannel = deletePage.channelCount - 1
         val rowIdBlock: Block = deletePage.getBlock(rowIdChannel)
 
         var position = 0
-        while (position < deletePage.getPositionCount()) {
+        while (position < deletePage.positionCount) {
             val rowId = BIGINT.getLong(rowIdBlock, position)
             val dataFileId = resolveDataFileId(rowId)
             deletesByDataFile.getOrPut(dataFileId) { mutableListOf() }.add(rowId)
@@ -110,7 +110,7 @@ public open class DucklakeMergeSink(
         if (entry != null && entry.value.containsRowId(rowId)) {
             return entry.value.dataFileId
         }
-        throw IllegalStateException("No data file found for row ID: " + rowId)
+        throw IllegalStateException("No data file found for row ID: $rowId")
     }
 
     override fun finish(): CompletableFuture<Collection<Slice>> {
@@ -196,8 +196,8 @@ public open class DucklakeMergeSink(
 
         val parquetWriter = ParquetWriter(
                 outputStream,
-                schemaConverter.getMessageType(),
-                schemaConverter.getPrimitiveTypes(),
+                schemaConverter.messageType,
+                schemaConverter.primitiveTypes,
                 writerOptions,
                 CompressionCodec.ZSTD,
                 trinoVersion,
@@ -214,10 +214,10 @@ public open class DucklakeMergeSink(
                 BIGINT.writeLong(blockBuilder, position)
             }
             val block: Block = blockBuilder.build()
-            parquetWriter.write(Page(block.getPositionCount(), block))
+            parquetWriter.write(Page(block.positionCount, block))
             parquetWriter.close()
             fileMetaData = parquetWriter.getFileMetaData()
-            fileSize = parquetWriter.getEstimatedWrittenBytes()
+            fileSize = parquetWriter.estimatedWrittenBytes
         }
         catch (t: Throwable) {
             try { parquetWriter.close() } catch (_: Exception) {}
@@ -262,7 +262,7 @@ public open class DucklakeMergeSink(
         // cleaned up by DuckLake's maintenance procedures
     }
 
-    public companion object {
+    companion object {
         private val log: Logger = Logger.get(DucklakeMergeSink::class.java)
     }
 }

@@ -15,12 +15,8 @@ package dev.brikk.ducklake.trino.plugin
 
 import io.airlift.slice.Slice
 import io.trino.spi.block.ValueBlock
-import io.trino.spi.predicate.AllOrNone
-import io.trino.spi.predicate.DiscreteValues
 import io.trino.spi.predicate.Domain
-import io.trino.spi.predicate.Ranges
 import io.trino.spi.type.Type
-import java.util.function.Function
 
 /**
  * Pruning for files partitioned by Iceberg-compatible {@code bucket(N)} transforms.

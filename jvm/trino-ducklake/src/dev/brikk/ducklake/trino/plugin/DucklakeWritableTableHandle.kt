@@ -48,6 +48,6 @@ data class DucklakeWritableTableHandle @JsonCreator constructor(
 {
     override fun toString(): String
     {
-        return schemaName + "." + tableName + "#" + tableId
+        return "$schemaName.$tableName#$tableId"
     }
 }

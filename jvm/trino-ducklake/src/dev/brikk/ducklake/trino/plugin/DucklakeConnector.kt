@@ -34,20 +34,15 @@ import io.trino.spi.transaction.IsolationLevel.checkConnectorSupports
  * Main connector implementation for Ducklake.
  * Manages lifecycle and provides access to metadata and split management.
  */
-public class DucklakeConnector @Inject constructor(
-        lifeCycleManager: LifeCycleManager,
-        transactionManager: DucklakeTransactionManager,
-        splitManager: ConnectorSplitManager,
-        pageSourceProviderFactory: ConnectorPageSourceProviderFactory,
-        pageSinkProvider: ConnectorPageSinkProvider,
-        ducklakeSessionProperties: DucklakeSessionProperties,
-        ducklakeTableProperties: DucklakeTableProperties,
-        procedures: Set<Procedure>) : Connector {
-    private val lifeCycleManager: LifeCycleManager = lifeCycleManager
-    private val transactionManager: DucklakeTransactionManager = transactionManager
-    private val splitManager: ConnectorSplitManager = splitManager
-    private val pageSourceProviderFactory: ConnectorPageSourceProviderFactory = pageSourceProviderFactory
-    private val pageSinkProvider: ConnectorPageSinkProvider = pageSinkProvider
+class DucklakeConnector @Inject constructor(
+    private val lifeCycleManager: LifeCycleManager,
+    private val transactionManager: DucklakeTransactionManager,
+    private val splitManager: ConnectorSplitManager,
+    private val pageSourceProviderFactory: ConnectorPageSourceProviderFactory,
+    private val pageSinkProvider: ConnectorPageSinkProvider,
+    ducklakeSessionProperties: DucklakeSessionProperties,
+    ducklakeTableProperties: DucklakeTableProperties,
+    procedures: Set<Procedure>) : Connector {
     private val sessionProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeSessionProperties.getSessionProperties())
     private val tableProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeTableProperties.tableProperties)
     private val procedures: Set<Procedure> = procedures.toSet()

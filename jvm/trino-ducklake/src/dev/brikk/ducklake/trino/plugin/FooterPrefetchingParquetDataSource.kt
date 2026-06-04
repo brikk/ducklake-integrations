@@ -38,7 +38,7 @@ import java.io.IOException
  * tail is dropped and further `readTail` calls delegate directly. Non-tail reads
  * (`readFully`, `planRead`) always delegate.
  */
-public class FooterPrefetchingParquetDataSource private constructor(
+class FooterPrefetchingParquetDataSource private constructor(
         private val delegate: ParquetDataSource,
         prefetchedTail: Slice) : ParquetDataSource {
     private var prefetchedTail: Slice? = prefetchedTail
@@ -93,7 +93,7 @@ public class FooterPrefetchingParquetDataSource private constructor(
 
         @JvmStatic
         @Throws(IOException::class)
-        public fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long, maxFooterReadSize: Long): ParquetDataSource {
+        fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long, maxFooterReadSize: Long): ParquetDataSource {
             if (footerSizeHint <= 0) {
                 return delegate
             }
@@ -128,7 +128,7 @@ public class FooterPrefetchingParquetDataSource private constructor(
          * delegate as it would for a too-small hint.
          */
         @JvmStatic
-        public fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource =
+        fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource =
             FooterPrefetchingParquetDataSource(delegate, prefetchedTail)
     }
 }

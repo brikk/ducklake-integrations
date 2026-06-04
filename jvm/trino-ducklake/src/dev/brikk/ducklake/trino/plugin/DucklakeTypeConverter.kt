@@ -41,8 +41,6 @@ import io.trino.spi.type.TypeSignature
 import io.trino.spi.type.UuidType
 import io.trino.spi.type.VarbinaryType
 import io.trino.spi.type.VarcharType
-import java.lang.String.format
-import java.util.ArrayList
 import java.util.Locale
 import java.util.Optional
 import java.util.regex.Pattern
@@ -51,12 +49,12 @@ import java.util.regex.Pattern
  * Converts Ducklake type strings to Trino types.
  * Handles all Ducklake primitive, nested, and special types.
  */
-public open class DucklakeTypeConverter @Inject constructor(private val typeManager: TypeManager) {
+open class DucklakeTypeConverter @Inject constructor(private val typeManager: TypeManager) {
 
     /**
      * Convert Ducklake type string to Trino Type
      */
-    public open fun toTrinoType(ducklakeType: String): Type {
+    open fun toTrinoType(ducklakeType: String): Type {
         val normalizedType: String = ducklakeType.trim().lowercase(Locale.ROOT)
 
         if (normalizedType.startsWith("list<") && normalizedType.endsWith(">")) {
@@ -86,8 +84,8 @@ public open class DucklakeTypeConverter @Inject constructor(private val typeMana
             if (parts.size != 2) {
                 throw TrinoException(NOT_SUPPORTED, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
             }
-            val keySignature: TypeSignature = toTrinoType(parts[0].trim()).getTypeSignature()
-            val valueSignature: TypeSignature = toTrinoType(parts[1].trim()).getTypeSignature()
+            val keySignature: TypeSignature = toTrinoType(parts[0].trim()).typeSignature
+            val valueSignature: TypeSignature = toTrinoType(parts[1].trim()).typeSignature
             return typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                     TypeParameter.typeParameter(keySignature),
                     TypeParameter.typeParameter(valueSignature)))
@@ -171,36 +169,36 @@ public open class DucklakeTypeConverter @Inject constructor(private val typeMana
     /**
      * Convert Trino type to Ducklake type string (for write operations)
      */
-    public open fun toDucklakeType(trinoType: Type): String {
-        if (trinoType.equals(BooleanType.BOOLEAN)) {
+    open fun toDucklakeType(trinoType: Type): String {
+        if (trinoType == BooleanType.BOOLEAN) {
             return "boolean"
         }
-        if (trinoType.equals(TinyintType.TINYINT)) {
+        if (trinoType == TinyintType.TINYINT) {
             return "int8"
         }
-        if (trinoType.equals(SmallintType.SMALLINT)) {
+        if (trinoType == SmallintType.SMALLINT) {
             return "int16"
         }
-        if (trinoType.equals(IntegerType.INTEGER)) {
+        if (trinoType == IntegerType.INTEGER) {
             return "int32"
         }
-        if (trinoType.equals(BigintType.BIGINT)) {
+        if (trinoType == BigintType.BIGINT) {
             return "int64"
         }
-        if (trinoType.equals(RealType.REAL)) {
+        if (trinoType == RealType.REAL) {
             return "float32"
         }
-        if (trinoType.equals(DoubleType.DOUBLE)) {
+        if (trinoType == DoubleType.DOUBLE) {
             return "float64"
         }
         if (trinoType is DecimalType) {
-            return "decimal(${trinoType.getPrecision()},${trinoType.getScale()})"
+            return "decimal(${trinoType.precision},${trinoType.scale})"
         }
-        if (trinoType.equals(DateType.DATE)) {
+        if (trinoType == DateType.DATE) {
             return "date"
         }
         if (trinoType is TimestampType) {
-            return when (trinoType.getPrecision()) {
+            return when (trinoType.precision) {
                 0 -> "timestamp_s"
                 3 -> "timestamp_ms"
                 6 -> "timestamp"
@@ -209,7 +207,7 @@ public open class DucklakeTypeConverter @Inject constructor(private val typeMana
                 // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
                 // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
                 else -> throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported timestamp precision ${trinoType.getPrecision()} for DuckLake write; supported precisions are 0, 3, 6, 9")
+                        "Unsupported timestamp precision ${trinoType.precision} for DuckLake write; supported precisions are 0, 3, 6, 9")
             }
         }
         if (trinoType is TimestampWithTimeZoneType) {
@@ -218,26 +216,26 @@ public open class DucklakeTypeConverter @Inject constructor(private val typeMana
         // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather
         // than silently coercing to micros (which would read back as TIME(6) / a changed precision).
         if (trinoType is TimeType) {
-            if (trinoType.getPrecision() != 6) {
+            if (trinoType.precision != 6) {
                 throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported time precision ${trinoType.getPrecision()} for DuckLake write; only precision 6 (microseconds) is supported")
+                        "Unsupported time precision ${trinoType.precision} for DuckLake write; only precision 6 (microseconds) is supported")
             }
             return "time"
         }
         if (trinoType is TimeWithTimeZoneType) {
-            if (trinoType.getPrecision() != 6) {
+            if (trinoType.precision != 6) {
                 throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported time with time zone precision ${trinoType.getPrecision()} for DuckLake write; only precision 6 (microseconds) is supported")
+                        "Unsupported time with time zone precision ${trinoType.precision} for DuckLake write; only precision 6 (microseconds) is supported")
             }
             return "timetz"
         }
-        if (trinoType.equals(VarcharType.VARCHAR) || trinoType is VarcharType) {
+        if (trinoType == VarcharType.VARCHAR || trinoType is VarcharType) {
             return "varchar"
         }
-        if (trinoType.equals(VarbinaryType.VARBINARY)) {
+        if (trinoType == VarbinaryType.VARBINARY) {
             return "blob"
         }
-        if (trinoType.equals(UuidType.UUID)) {
+        if (trinoType == UuidType.UUID) {
             return "uuid"
         }
 
@@ -256,7 +254,7 @@ public open class DucklakeTypeConverter @Inject constructor(private val typeMana
         throw TrinoException(NOT_SUPPORTED, "Unsupported Trino type: $trinoType")
     }
 
-    public companion object {
+    companion object {
         private val DECIMAL_PATTERN: Pattern = Pattern.compile("decimal\\((\\d+),\\s*(\\d+)\\)")
 
         // Extracts the inner type arguments from a parameterized type string (e.g. the content between the outermost angle brackets)

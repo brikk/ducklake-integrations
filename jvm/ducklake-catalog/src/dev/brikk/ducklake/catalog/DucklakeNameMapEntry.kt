@@ -50,7 +50,8 @@ data class DucklakeNameMapEntry(
                     sourceName,
                     targetFieldId,
                     isPartition,
-                    if (children == null) emptyList() else children.toList())
+                children?.toList() ?: emptyList()
+            )
         }
     }
 

@@ -28,7 +28,7 @@ import java.util.OptionalLong
 /**
  * Configuration for Ducklake connector.
  */
-public class DucklakeConfig {
+class DucklakeConfig {
     private var catalogDatabaseUrl: String? = null
     private var catalogDatabaseUser: String? = null
     private var catalogDatabasePassword: String? = null
@@ -193,7 +193,7 @@ public class DucklakeConfig {
 
     @AssertTrue(message = "Only one of ducklake.default-snapshot-id or ducklake.default-snapshot-timestamp may be set")
     fun isSnapshotDefaultsValid(): Boolean {
-        return defaultSnapshotId.isEmpty() || defaultSnapshotTimestamp.isEmpty()
+        return defaultSnapshotId.isEmpty || defaultSnapshotTimestamp.isEmpty
     }
 
     @NotNull
@@ -350,7 +350,7 @@ public class DucklakeConfig {
         }
         // A null/blank token is reported by isQuackEngineConfigComplete; don't double-report.
         val token = quackToken
-        return token == null || token.isBlank() || token.length >= 4
+        return token.isNullOrBlank() || token.length >= 4
     }
 
     fun toCatalogConfig(): DucklakeCatalogConfig {
@@ -370,7 +370,7 @@ public class DucklakeConfig {
     @ConfigDescription("Filesystem path to the trino_parity.duckdb_extension binary (https://github.com/brikk/duckdb-trino-parity-extension). When set, executors LOAD this extension on every DuckDB attach instead of parsing the in-tree trino-function-aliases.sql resource — faster per-split setup, and the only source of truth for the trino_<name> macros + trino_meta() catalog. If unset, falls back to the in-tree SQL replay (current default). The path is passed to DuckDB's LOAD '<path>'; allow_unsigned_extensions is enabled before LOAD.")
     fun setDuckdbParityExtensionPath(duckdbParityExtensionPath: String?): DucklakeConfig {
         this.duckdbParityExtensionPath = Optional.ofNullable<String>(duckdbParityExtensionPath)
-                .map<String> { s -> s.trim() }
+                .map { s -> s.trim() }
                 .filter { s -> s.isNotEmpty() }
         return this
     }

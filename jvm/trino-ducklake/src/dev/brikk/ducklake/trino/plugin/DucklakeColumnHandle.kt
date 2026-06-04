@@ -44,7 +44,7 @@ data class DucklakeColumnHandle @JsonCreator constructor(
 
     override fun toString(): String
     {
-        return columnName + ":" + columnType
+        return "$columnName:$columnType"
     }
 
     fun getRetainedSizeInBytes(): Long

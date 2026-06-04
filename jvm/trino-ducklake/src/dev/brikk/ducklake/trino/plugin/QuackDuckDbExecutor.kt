@@ -84,7 +84,7 @@ internal class QuackDuckDbExecutor(
         var resultSet: DuckDBResultSet? = null
         var allocator: BufferAllocator? = null
         var arrowReader: ArrowReader? = null
-        var serverAlias: String? = null
+        var serverAlias: String?
         try {
             serverAlias = serverAttachAlias(request.target())
             connection.createStatement().use { init ->
@@ -183,7 +183,7 @@ internal class QuackDuckDbExecutor(
 
         override fun arrowReader(): ArrowReader = arrowReader
 
-        override fun memoryUsage(): Long = allocator.getAllocatedMemory()
+        override fun memoryUsage(): Long = allocator.allocatedMemory
 
         @Throws(IOException::class)
         override fun close() {
@@ -317,7 +317,7 @@ internal class QuackDuckDbExecutor(
          * WARN per normalised zone, proceed without setting.
          */
         private fun applyServerSideTimeZone(stmt: Statement, zone: java.util.Optional<String>) {
-            if (zone.isEmpty()) {
+            if (zone.isEmpty) {
                 return
             }
             val z = zone.get()

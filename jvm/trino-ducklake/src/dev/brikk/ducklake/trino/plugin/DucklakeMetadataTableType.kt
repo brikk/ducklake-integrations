@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import java.util.Locale
-import java.util.Objects.requireNonNull
 import java.util.Optional
 
 enum class DucklakeMetadataTableType(private val suffix: String) {

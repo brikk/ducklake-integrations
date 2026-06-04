@@ -46,7 +46,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
 
-public class DucklakePageSink(
+class DucklakePageSink(
         private val handle: DucklakeWritableTableHandle,
         private val fileSystem: TrinoFileSystem,
         private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
@@ -55,7 +55,12 @@ public class DucklakePageSink(
         private val trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
 ) : ConnectorPageSink {
-    private val writerOptions: ParquetWriterOptions
+    private val writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder()
+            .setMaxBlockSize(parquetWriterConfig.blockSize)
+            .setMaxPageSize(parquetWriterConfig.pageSize)
+            .setMaxPageValueCount(parquetWriterConfig.pageValueCount)
+            .setBatchSize(parquetWriterConfig.batchSize)
+            .build()
     private val targetMaxFileSize: Long
     private val fileFormat: String = handle.fileFormat
 
@@ -75,12 +80,6 @@ public class DucklakePageSink(
     private val writtenFilePaths: MutableList<Location> = ArrayList()
 
     init {
-        this.writerOptions = ParquetWriterOptions.builder()
-                .setMaxBlockSize(parquetWriterConfig.getBlockSize())
-                .setMaxPageSize(parquetWriterConfig.getPageSize())
-                .setMaxPageValueCount(parquetWriterConfig.getPageValueCount())
-                .setBatchSize(parquetWriterConfig.getBatchSize())
-                .build()
 
         // Per-format rollover threshold. Parquet's block size targets compressed
         // on-disk row-group size; DuckDB's target is logical input bytes (we can't
@@ -89,7 +88,7 @@ public class DucklakePageSink(
             duckdbTargetWriteBytes
         }
         else {
-            parquetWriterConfig.getBlockSize().toBytes()
+            parquetWriterConfig.blockSize.toBytes()
         }
 
         this.columnTypes = handle.columns.map(DucklakeColumnHandle::columnType)
@@ -104,11 +103,12 @@ public class DucklakePageSink(
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
             val schemaConverter = ParquetSchemaConverter(
                     columnTypes, columnNames, false, false)
-            this.primitiveTypes = schemaConverter.getPrimitiveTypes()
+            this.primitiveTypes = schemaConverter.primitiveTypes
             this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                     handle.columns,
                     handle.allCatalogColumns,
-                    schemaConverter.getMessageType())
+                    schemaConverter.messageType
+            )
         }
         else {
             this.primitiveTypes = null
@@ -116,7 +116,7 @@ public class DucklakePageSink(
         }
 
         // Set up partitioner if table is partitioned
-        if (handle.partitionSpec.isPresent()) {
+        if (handle.partitionSpec.isPresent) {
             this.partitioner = DucklakePagePartitioner(
                     requireNonNull(pageIndexerFactory, "pageIndexerFactory is null")!!,
                     handle.partitionSpec.get(),
@@ -152,7 +152,7 @@ public class DucklakePageSink(
     }
 
     override fun appendPage(page: Page): CompletableFuture<*> {
-        if (page.getPositionCount() == 0) {
+        if (page.positionCount == 0) {
             return ConnectorPageSink.NOT_BLOCKED
         }
 
@@ -191,7 +191,7 @@ public class DucklakePageSink(
                 writers.add(writer)
             }
             else {
-                writers.set(0, writer)
+                writers[0] = writer
             }
         }
         writer.write(page)
@@ -206,7 +206,7 @@ public class DucklakePageSink(
         val partitioner = this.partitioner!!
         val writerIndexes = partitioner.partitionPage(page)
         val maxIndex = partitioner.getMaxIndex()
-        val positionCount = page.getPositionCount()
+        val positionCount = page.positionCount
 
         // Ensure writers list is big enough
         while (writers.size <= maxIndex) {
@@ -238,12 +238,12 @@ public class DucklakePageSink(
             val posArray = positionsByWriter[writerIndex] ?: continue
 
             // Get or create writer for this partition
-            var writer = writers.get(writerIndex)
+            var writer = writers[writerIndex]
             if (writer == null) {
                 // Compute partition values from the first row in this partition
                 val partitionValues = partitioner.getPartitionValues(page, posArray[0])
                 writer = openNewWriter(partitionValues)
-                writers.set(writerIndex, writer)
+                writers[writerIndex] = writer
             }
 
             // Extract sub-page for this partition
@@ -263,7 +263,7 @@ public class DucklakePageSink(
     override fun finish(): CompletableFuture<Collection<Slice>> {
         try {
             for (i in writers.indices) {
-                if (writers.get(i) != null) {
+                if (writers[i] != null) {
                     closeWriter(i)
                 }
             }
@@ -388,9 +388,9 @@ public class DucklakePageSink(
 
     @Throws(IOException::class)
     private fun closeWriter(index: Int) {
-        val writer = writers.get(index) ?: return
+        val writer = writers[index] ?: return
         completedFragments.add(writer.finishAndBuildFragment())
-        writers.set(index, null)
+        writers[index] = null
     }
 
     companion object {

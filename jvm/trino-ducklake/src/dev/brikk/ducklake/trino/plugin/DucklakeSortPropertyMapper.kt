@@ -43,8 +43,8 @@ import java.util.Locale
  * parser we treat foreign-dialect expressions as opaque and emit no sort
  * property at all rather than misinterpret quoting/identifier rules.
  */
-public class DucklakeSortPropertyMapper private constructor() {
-    public companion object {
+class DucklakeSortPropertyMapper private constructor() {
+    companion object {
         private const val DUCKDB_DIALECT = "duckdb"
 
         /**
@@ -54,7 +54,7 @@ public class DucklakeSortPropertyMapper private constructor() {
          * keyed by lowercased column name. Used to
          * resolve simple column-reference expressions.
          */
-        public fun toLocalProperties(
+        fun toLocalProperties(
                 sortKeys: List<DucklakeSortKey>,
                 columnHandlesByLowercaseName: Map<String, out ColumnHandle>): List<LocalProperty<ColumnHandle>> {
             if (sortKeys.isEmpty()) {
@@ -81,11 +81,9 @@ public class DucklakeSortPropertyMapper private constructor() {
                 }
                 val columnName = parseColumnReference(key.expression) ?: break
                 val handle = columnHandlesByLowercaseName[columnName.lowercase(Locale.ROOT)]
-                if (handle == null) {
-                    // Expression names a column we don't see at this snapshot (likely renamed
+                    ?: // Expression names a column we don't see at this snapshot (likely renamed
                     // / dropped after the sort spec was written). Stop here.
                     break
-                }
                 properties.add(SortingProperty(handle, toSortOrder(key.direction, key.nullOrder)))
                 expectedIndex++
             }
@@ -128,7 +126,7 @@ public class DucklakeSortPropertyMapper private constructor() {
                     out.append(c)
                     i++
                 }
-                return if (out.length == 0) null else out.toString()
+                return if (out.isEmpty()) null else out.toString()
             }
             // Unquoted: standard SQL identifier — letter or underscore followed by
             // letters / digits / underscores. Anything else (parens, dots, operators) means
@@ -146,10 +144,10 @@ public class DucklakeSortPropertyMapper private constructor() {
         }
 
         private fun isIdentifierStart(c: Char): Boolean =
-            c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            c == '_' || (c in 'A'..'Z') || (c in 'a'..'z')
 
         private fun isIdentifierPart(c: Char): Boolean =
-            isIdentifierStart(c) || (c >= '0' && c <= '9')
+            isIdentifierStart(c) || (c in '0'..'9')
 
         internal fun toSortOrder(direction: DucklakeSortDirection, nullOrder: DucklakeNullOrder): SortOrder =
             when (direction) {

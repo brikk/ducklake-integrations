@@ -29,8 +29,8 @@ import org.apache.parquet.schema.Types
  * Trino's standard [io.trino.parquet.writer.ParquetSchemaConverter] does not set field IDs,
  * so we rebuild the schema with IDs after conversion.
  */
-public class DucklakeParquetSchemaBuilder private constructor() {
-    public companion object {
+class DucklakeParquetSchemaBuilder private constructor() {
+    companion object {
         /**
          * Rebuilds the given MessageType with field_id annotations from DuckLake column metadata.
          *
@@ -39,7 +39,7 @@ public class DucklakeParquetSchemaBuilder private constructor() {
          * @param sourceMessageType the MessageType from ParquetSchemaConverter (without field IDs)
          * @return a new MessageType with field_id set on each field
          */
-        public fun buildMessageType(
+        fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 allColumns: List<DucklakeColumn>,
                 sourceMessageType: MessageType): MessageType {
@@ -67,7 +67,7 @@ public class DucklakeParquetSchemaBuilder private constructor() {
         /**
          * Overload for simple schemas without nested columns.
          */
-        public fun buildMessageType(
+        fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 sourceMessageType: MessageType): MessageType {
             return buildMessageType(topLevelColumns, emptyList(), sourceMessageType)

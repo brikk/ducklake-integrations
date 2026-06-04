@@ -28,7 +28,7 @@ import java.util.OptionalInt
  * Partitions pages by computing DuckLake partition values and routing rows to writer indexes.
  * Uses Trino's [PageIndexerFactory] for efficient partition-to-index mapping.
  */
-public open class DucklakePagePartitioner(
+open class DucklakePagePartitioner(
         pageIndexerFactory: PageIndexerFactory,
         private val partitionSpec: DucklakePartitionSpec,
         allColumns: List<DucklakeColumnHandle>,
@@ -72,19 +72,19 @@ public open class DucklakePagePartitioner(
      * Partition a page into writer indexes. Returns an array where element[i] is the writer index
      * for row position i.
      */
-    public open fun partitionPage(page: Page): IntArray {
+    open fun partitionPage(page: Page): IntArray {
         val partitionPage = buildPartitionPage(page)
         return pageIndexer.indexPage(partitionPage)
     }
 
-    public open fun getMaxIndex(): Int {
+    open fun getMaxIndex(): Int {
         return pageIndexer.maxIndex
     }
 
     /**
      * Compute partition values for a given row position. Returns a map of partitionKeyIndex -> value string.
      */
-    public open fun getPartitionValues(page: Page, position: Int): Map<Int, String?> {
+    open fun getPartitionValues(page: Page, position: Int): Map<Int, String?> {
         val values: MutableMap<Int, String?> = HashMap()
         for (mapping in partitionColumnMappings) {
             val sourceBlock = page.getBlock(mapping.sourceColumnIndex)
@@ -95,7 +95,7 @@ public open class DucklakePagePartitioner(
                     mapping.field.transform,
                     mapping.field.arity,
                     encoding)
-            values.put(mapping.field.partitionKeyIndex, value)
+            values[mapping.field.partitionKeyIndex] = value
         }
         return values
     }
@@ -103,7 +103,7 @@ public open class DucklakePagePartitioner(
     /**
      * Get the column name for a partition field (used for directory naming).
      */
-    public open fun getPartitionColumnName(partitionKeyIndex: Int): String {
+    open fun getPartitionColumnName(partitionKeyIndex: Int): String {
         for (mapping in partitionColumnMappings) {
             if (mapping.field.partitionKeyIndex == partitionKeyIndex) {
                 return mapping.sourceColumn.columnName
@@ -112,7 +112,7 @@ public open class DucklakePagePartitioner(
         throw IllegalArgumentException("Unknown partition key index: $partitionKeyIndex")
     }
 
-    public open fun getPartitionId(): Long {
+    open fun getPartitionId(): Long {
         return partitionSpec.partitionId
     }
 

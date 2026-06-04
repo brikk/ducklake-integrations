@@ -157,7 +157,7 @@ object DucklakePuffinDeleteReader {
         val storedCrc = Integer.toUnsignedLong(buf.getInt())
         val crc = CRC32()
         crc.update(blob, checksummedStart, checksummedEnd - checksummedStart)
-        val computedCrc = crc.getValue()
+        val computedCrc = crc.value
         if (computedCrc != storedCrc) {
             throw IOException("Puffin blob CRC mismatch: stored=" + java.lang.Long.toHexString(storedCrc)
                     + " computed=" + java.lang.Long.toHexString(computedCrc))

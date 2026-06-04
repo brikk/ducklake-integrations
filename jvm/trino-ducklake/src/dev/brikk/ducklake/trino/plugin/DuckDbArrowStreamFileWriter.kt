@@ -88,7 +88,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.sql.SQLException
-import java.sql.Statement
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -127,18 +126,14 @@ import java.util.concurrent.atomic.AtomicReference
 class DuckDbArrowStreamFileWriter
 @Throws(IOException::class)
 constructor(
-        fileSystem: TrinoFileSystem,
-        remoteLocation: Location,
-        relativePath: String,
-        partitionValues: Map<Int, String?>,
-        partitionId: OptionalLong,
-        columns: List<DucklakeColumnHandle>,
-        localTempDir: Path) : DucklakeFileWriter {
-    private val fileSystem: TrinoFileSystem = fileSystem
-    private val remoteLocation: Location = remoteLocation
-    private val relativePath: String = relativePath
+    private val fileSystem: TrinoFileSystem,
+    private val remoteLocation: Location,
+    private val relativePath: String,
+    partitionValues: Map<Int, String?>,
+    private val partitionId: OptionalLong,
+    columns: List<DucklakeColumnHandle>,
+    localTempDir: Path) : DucklakeFileWriter {
     private val partitionValues: Map<Int, String?> = HashMap(partitionValues)
-    private val partitionId: OptionalLong = partitionId
     private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.map { it.columnType }
     private val localTempFile: Path
@@ -246,7 +241,7 @@ constructor(
 
     @Throws(IOException::class)
     override fun write(page: Page) {
-        if (page.getPositionCount() == 0) {
+        if (page.positionCount == 0) {
             return
         }
         val err: Throwable? = consumerError.get()
@@ -261,7 +256,7 @@ constructor(
             Thread.currentThread().interrupt()
             throw IOException("Interrupted while feeding page to Arrow-stream writer", e)
         }
-        rowCount += page.getPositionCount()
+        rowCount += page.positionCount
         writtenBytes += page.getSizeInBytes()
     }
 
@@ -348,10 +343,10 @@ constructor(
         val sql = StringBuilder("SELECT COUNT(*)")
         val minMaxColumns = mutableListOf<Int>()
         for (i in columns.indices) {
-            val col: DucklakeColumnHandle = columns.get(i)
+            val col: DucklakeColumnHandle = columns[i]
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             sql.append(", COUNT(").append(name).append(")")
-            if (!(col.columnType.equals(VARBINARY) || col.columnType.equals(UuidType.UUID))) {
+            if (!(col.columnType == VARBINARY || col.columnType == UuidType.UUID)) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
                 minMaxColumns.add(i)
             }
@@ -372,7 +367,7 @@ constructor(
                 var minMaxCursor = 0
                 for (i in columns.indices) {
                     valueCounts[i] = rs.getLong(colIdx++)
-                    if (minMaxCursor < minMaxColumns.size && minMaxColumns.get(minMaxCursor) == i) {
+                    if (minMaxCursor < minMaxColumns.size && minMaxColumns[minMaxCursor] == i) {
                         minValues[i] = rs.getObject(colIdx++)
                         maxValues[i] = rs.getObject(colIdx++)
                         minMaxCursor++
@@ -383,7 +378,7 @@ constructor(
 
         val result = ArrayList<DucklakeFileColumnStats>(columns.size)
         for (i in columns.indices) {
-            val col: DucklakeColumnHandle = columns.get(i)
+            val col: DucklakeColumnHandle = columns[i]
             val valueCount: Long = valueCounts[i]
             val nullCount = maxOf(0L, totalCount - valueCount)
             val min: Optional<String> = formatStatValue(col.columnType, minValues[i])
@@ -511,10 +506,10 @@ constructor(
     @Throws(IOException::class)
     private fun populateRoot(page: Page) {
         val root: VectorSchemaRoot = reader.getVectorSchemaRoot()
-        val rowCount: Int = page.getPositionCount()
-        val vectors: List<FieldVector> = root.getFieldVectors()
+        val rowCount: Int = page.positionCount
+        val vectors: List<FieldVector> = root.fieldVectors
         for (channel in columnTypes.indices) {
-            val vector: FieldVector = vectors.get(channel)
+            val vector: FieldVector = vectors[channel]
             // Do NOT call vector.reset() here. reset() zeros the existing buffer's
             // memory in place. The previous batch's exported Arrow C-data still
             // holds pointers to those buffers via Apache Arrow Java's retain/release
@@ -527,8 +522,8 @@ constructor(
             // buffers — so the old buffers stay readable for DuckDB until DuckDB
             // releases. Covered by
             // TestDucklakeDuckDbArrowStreamWriter.testArrowStreamPreservesAllDistinctValuesFromConnectorSource.
-            populateVector(vector, columnTypes.get(channel), page.getBlock(channel), rowCount)
-            vector.setValueCount(rowCount)
+            populateVector(vector, columnTypes[channel], page.getBlock(channel), rowCount)
+            vector.valueCount = rowCount
         }
         root.setRowCount(rowCount)
     }
@@ -545,38 +540,38 @@ constructor(
         private val END_OF_STREAM: Page = Page(0)
 
         private fun toDuckDbSqlType(type: Type): String {
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 return "BOOLEAN"
             }
-            if (type.equals(TINYINT)) {
+            if (type == TINYINT) {
                 return "TINYINT"
             }
-            if (type.equals(SMALLINT)) {
+            if (type == SMALLINT) {
                 return "SMALLINT"
             }
-            if (type.equals(INTEGER)) {
+            if (type == INTEGER) {
                 return "INTEGER"
             }
-            if (type.equals(BIGINT)) {
+            if (type == BIGINT) {
                 return "BIGINT"
             }
-            if (type.equals(REAL)) {
+            if (type == REAL) {
                 return "REAL"
             }
-            if (type.equals(DOUBLE)) {
+            if (type == DOUBLE) {
                 return "DOUBLE"
             }
-            if (type.equals(DATE)) {
+            if (type == DATE) {
                 return "DATE"
             }
-            if (type.equals(VARBINARY)) {
+            if (type == VARBINARY) {
                 return "BLOB"
             }
             if (type is DecimalType) {
-                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.getPrecision(), type.getScale())
+                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
             }
             if (type is TimestampType) {
-                return when (type.getPrecision()) {
+                return when (type.precision) {
                     0 -> "TIMESTAMP_S"
                     3 -> "TIMESTAMP_MS"
                     6 -> "TIMESTAMP"
@@ -590,7 +585,7 @@ constructor(
             if (type is VarcharType) {
                 return "VARCHAR"
             }
-            if (type.equals(UuidType.UUID)) {
+            if (type == UuidType.UUID) {
                 return "UUID"
             }
             throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
@@ -602,38 +597,38 @@ constructor(
         }
 
         private fun toArrowType(type: Type): ArrowType {
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 return ArrowType.Bool.INSTANCE
             }
-            if (type.equals(TINYINT)) {
+            if (type == TINYINT) {
                 return ArrowType.Int(8, true)
             }
-            if (type.equals(SMALLINT)) {
+            if (type == SMALLINT) {
                 return ArrowType.Int(16, true)
             }
-            if (type.equals(INTEGER)) {
+            if (type == INTEGER) {
                 return ArrowType.Int(32, true)
             }
-            if (type.equals(BIGINT)) {
+            if (type == BIGINT) {
                 return ArrowType.Int(64, true)
             }
-            if (type.equals(REAL)) {
+            if (type == REAL) {
                 return ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)
             }
-            if (type.equals(DOUBLE)) {
+            if (type == DOUBLE) {
                 return ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)
             }
-            if (type.equals(DATE)) {
+            if (type == DATE) {
                 return ArrowType.Date(DateUnit.DAY)
             }
-            if (type.equals(VARBINARY)) {
+            if (type == VARBINARY) {
                 return ArrowType.Binary()
             }
             if (type is DecimalType) {
-                return ArrowType.Decimal(type.getPrecision(), type.getScale(), 128)
+                return ArrowType.Decimal(type.precision, type.scale, 128)
             }
             if (type is TimestampType) {
-                val unit: TimeUnit = when (type.getPrecision()) {
+                val unit: TimeUnit = when (type.precision) {
                     0 -> TimeUnit.SECOND
                     3 -> TimeUnit.MILLISECOND
                     6 -> TimeUnit.MICROSECOND
@@ -644,13 +639,13 @@ constructor(
             }
             if (type is TimestampWithTimeZoneType) {
                 // Trino TIMESTAMPTZ short-precision is millisecond-packed; long uses LongTimestampWithTimeZone (millis + picosOfMilli)
-                val unit: TimeUnit = if (type.isShort()) TimeUnit.MILLISECOND else TimeUnit.NANOSECOND
+                val unit: TimeUnit = if (type.isShort) TimeUnit.MILLISECOND else TimeUnit.NANOSECOND
                 return ArrowType.Timestamp(unit, "UTC")
             }
             if (type is VarcharType) {
                 return ArrowType.Utf8()
             }
-            if (type.equals(UuidType.UUID)) {
+            if (type == UuidType.UUID) {
                 // DuckDB's Arrow integration represents UUID columns as Utf8 (the printed
                 // hex form: 'aabbccdd-eeff-0011-2233-445566778899'), not FixedSizeBinary(16)
                 // as the spec might suggest. DuckDB casts the string back to UUID on its
@@ -659,32 +654,32 @@ constructor(
                 // shape of DuckDB's Arrow exchange for UUID.
                 return ArrowType.Utf8()
             }
-            throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: " + type)
+            throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
         }
 
         private fun formatStatValue(type: Type, value: Any?): Optional<String> {
             if (value == null) {
                 return Optional.empty()
             }
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 return Optional.of(if ((value as Boolean)) "true" else "false")
             }
-            if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
+            if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
                 return Optional.of((value as Number).toLong().toString())
             }
-            if (type.equals(REAL)) {
+            if (type == REAL) {
                 val f: Float = (value as Number).toFloat()
                 return if (java.lang.Float.isNaN(f)) Optional.empty() else Optional.of(f.toString())
             }
-            if (type.equals(DOUBLE)) {
+            if (type == DOUBLE) {
                 val d: Double = (value as Number).toDouble()
                 return if (java.lang.Double.isNaN(d)) Optional.empty() else Optional.of(d.toString())
             }
             if (type is DecimalType) {
-                val bd: BigDecimal = if (value is BigDecimal) value else BigDecimal(value.toString())
+                val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
                 return Optional.of(bd.toPlainString())
             }
-            if (type.equals(DATE)) {
+            if (type == DATE) {
                 if (value is java.sql.Date) {
                     return Optional.of(value.toLocalDate().toString())
                 }
@@ -728,7 +723,7 @@ constructor(
         }
 
         private fun populateVector(vector: FieldVector, type: Type, block: Block, rowCount: Int) {
-            if (type.equals(BOOLEAN)) {
+            if (type == BOOLEAN) {
                 val v = vector as BitVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -740,7 +735,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(TINYINT)) {
+            else if (type == TINYINT) {
                 val v = vector as TinyIntVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -752,7 +747,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(SMALLINT)) {
+            else if (type == SMALLINT) {
                 val v = vector as SmallIntVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -764,7 +759,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(INTEGER)) {
+            else if (type == INTEGER) {
                 val v = vector as IntVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -776,7 +771,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(BIGINT)) {
+            else if (type == BIGINT) {
                 val v = vector as BigIntVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -788,7 +783,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(REAL)) {
+            else if (type == REAL) {
                 val v = vector as Float4Vector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -800,7 +795,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(DOUBLE)) {
+            else if (type == DOUBLE) {
                 val v = vector as Float8Vector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -812,7 +807,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(DATE)) {
+            else if (type == DATE) {
                 val v = vector as DateDayVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -824,7 +819,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(VARBINARY)) {
+            else if (type == VARBINARY) {
                 val v = vector as VarBinaryVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -832,7 +827,7 @@ constructor(
                         v.setNull(i)
                     }
                     else {
-                        v.setSafe(i, VARBINARY.getSlice(block, i).getBytes())
+                        v.setSafe(i, VARBINARY.getSlice(block, i).bytes)
                     }
                 }
             }
@@ -845,12 +840,12 @@ constructor(
                         continue
                     }
                     val value: BigDecimal
-                    if (type.isShort()) {
-                        value = BigDecimal.valueOf(type.getLong(block, i), type.getScale())
+                    if (type.isShort) {
+                        value = BigDecimal.valueOf(type.getLong(block, i), type.scale)
                     }
                     else {
                         val unscaled: Int128 = type.getObject(block, i) as Int128
-                        value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.getScale())
+                        value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.scale)
                     }
                     v.setSafe(i, value)
                 }
@@ -874,7 +869,7 @@ constructor(
                     }
                 }
             }
-            else if (type.equals(UuidType.UUID)) {
+            else if (type == UuidType.UUID) {
                 // See toArrowType: UUID rides as Utf8 over the Arrow exchange.
                 val v = vector as VarCharVector
                 v.allocateNew(rowCount)
@@ -883,18 +878,18 @@ constructor(
                         v.setNull(i)
                     }
                     else {
-                        val uuid: java.util.UUID = UuidType.trinoUuidToJavaUuid(UuidType.UUID.getSlice(block, i))
+                        val uuid: UUID = UuidType.trinoUuidToJavaUuid(UuidType.UUID.getSlice(block, i))
                         v.setSafe(i, uuid.toString().toByteArray(StandardCharsets.UTF_8))
                     }
                 }
             }
             else {
-                throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: " + type)
+                throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
             }
         }
 
         private fun populateTimestampVector(vector: FieldVector, type: TimestampType, block: Block, rowCount: Int) {
-            if (type.getPrecision() == 0) {
+            if (type.precision == 0) {
                 val v = vector as TimeStampSecVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -906,7 +901,7 @@ constructor(
                     v.setSafe(i, floorDiv(micros, 1_000_000L))
                 }
             }
-            else if (type.getPrecision() == 3) {
+            else if (type.precision == 3) {
                 val v = vector as TimeStampMilliVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -918,7 +913,7 @@ constructor(
                     v.setSafe(i, floorDiv(micros, 1_000L))
                 }
             }
-            else if (type.getPrecision() == 6) {
+            else if (type.precision == 6) {
                 val v = vector as TimeStampMicroVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -929,7 +924,7 @@ constructor(
                     v.setSafe(i, type.getLong(block, i))
                 }
             }
-            else if (type.getPrecision() == 9) {
+            else if (type.precision == 9) {
                 val v = vector as TimeStampNanoVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -937,26 +932,26 @@ constructor(
                         v.setNull(i)
                         continue
                     }
-                    if (type.isShort()) {
+                    if (type.isShort) {
                         val micros: Long = type.getLong(block, i)
                         v.setSafe(i, Math.multiplyExact(micros, 1_000L))
                     }
                     else {
                         val ts: LongTimestamp = type.getObject(block, i) as LongTimestamp
-                        val nanos: Long = Math.multiplyExact(ts.getEpochMicros(), 1_000L) +
-                                ts.getPicosOfMicro() / 1_000
+                        val nanos: Long = Math.multiplyExact(ts.epochMicros, 1_000L) +
+                                ts.picosOfMicro / 1_000
                         v.setSafe(i, nanos)
                     }
                 }
             }
             else {
                 throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported TIMESTAMP precision in Arrow-stream writer: ${type.getPrecision()}")
+                        "Unsupported TIMESTAMP precision in Arrow-stream writer: ${type.precision}")
             }
         }
 
         private fun populateTimestampTzVector(vector: FieldVector, type: TimestampWithTimeZoneType, block: Block, rowCount: Int) {
-            if (type.isShort()) {
+            if (type.isShort) {
                 val v = vector as TimeStampMilliTZVector
                 v.allocateNew(rowCount)
                 for (i in 0 until rowCount) {
@@ -977,8 +972,8 @@ constructor(
                     continue
                 }
                 val ts: LongTimestampWithTimeZone = type.getObject(block, i) as LongTimestampWithTimeZone
-                val nanos: Long = Math.multiplyExact(ts.getEpochMillis(), 1_000_000L) +
-                        ts.getPicosOfMilli() / 1_000
+                val nanos: Long = Math.multiplyExact(ts.epochMillis, 1_000_000L) +
+                        ts.picosOfMilli / 1_000
                 v.setSafe(i, nanos)
             }
         }

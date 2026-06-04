@@ -20,20 +20,14 @@ import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 
 open class DucklakeMetadataFactory @Inject constructor(
-        catalog: DucklakeCatalog,
-        typeConverter: DucklakeTypeConverter,
-        snapshotResolver: DucklakeSnapshotResolver,
-        fragmentCodec: JsonCodec<DucklakeWriteFragment>,
-        deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
-        pathResolver: DucklakePathResolver,
-        config: DucklakeConfig)
+    private val catalog: DucklakeCatalog,
+    private val typeConverter: DucklakeTypeConverter,
+    private val snapshotResolver: DucklakeSnapshotResolver,
+    private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
+    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
+    private val pathResolver: DucklakePathResolver,
+    config: DucklakeConfig)
 {
-    private val catalog: DucklakeCatalog = catalog
-    private val typeConverter: DucklakeTypeConverter = typeConverter
-    private val snapshotResolver: DucklakeSnapshotResolver = snapshotResolver
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment> = fragmentCodec
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment> = deleteFragmentCodec
-    private val pathResolver: DucklakePathResolver = pathResolver
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
 
     open fun create(): DucklakeMetadata

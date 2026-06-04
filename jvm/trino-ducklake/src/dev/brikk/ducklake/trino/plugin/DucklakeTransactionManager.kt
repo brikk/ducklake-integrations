@@ -21,43 +21,36 @@ import java.util.concurrent.ConcurrentHashMap
  * Manages transactions for the Ducklake connector.
  * Each transaction maintains its own metadata instance.
  */
-open class DucklakeTransactionManager @Inject constructor(metadataFactory: DucklakeMetadataFactory)
+open class DucklakeTransactionManager @Inject constructor(private val metadataFactory: DucklakeMetadataFactory)
 {
-    private val metadataFactory: DucklakeMetadataFactory = metadataFactory
     private val transactions: MutableMap<DucklakeTransactionHandle, DucklakeMetadata> = ConcurrentHashMap()
 
     open fun begin(transaction: DucklakeTransactionHandle)
     {
         val metadata = metadataFactory.create()
-        transactions.put(transaction, metadata)
+        transactions[transaction] = metadata
     }
 
     open fun getMetadata(transaction: io.trino.spi.connector.ConnectorTransactionHandle): DucklakeMetadata
     {
         @Suppress("UNCHECKED_CAST")
         val metadata = (transactions as Map<Any, DucklakeMetadata>)[transaction]
-        if (metadata == null) {
-            throw IllegalArgumentException("Unknown transaction: " + transaction)
-        }
+            ?: throw IllegalArgumentException("Unknown transaction: $transaction")
         return metadata
     }
 
     open fun commit(transaction: DucklakeTransactionHandle)
     {
-        val metadata = transactions.remove(transaction)
-        if (metadata == null) {
-            throw IllegalArgumentException("Unknown transaction: " + transaction)
-        }
+        val metadata =
+            transactions.remove(transaction) ?: throw IllegalArgumentException("Unknown transaction: $transaction")
         // For read-only transactions, nothing to commit
         // Write transactions will be implemented later
     }
 
     open fun rollback(transaction: DucklakeTransactionHandle)
     {
-        val metadata = transactions.remove(transaction)
-        if (metadata == null) {
-            throw IllegalArgumentException("Unknown transaction: " + transaction)
-        }
+        val metadata =
+            transactions.remove(transaction) ?: throw IllegalArgumentException("Unknown transaction: $transaction")
         // For read-only transactions, nothing to rollback
         // Write transactions will be implemented later
     }

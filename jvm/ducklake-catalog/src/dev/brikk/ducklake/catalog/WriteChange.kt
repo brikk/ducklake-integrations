@@ -39,7 +39,7 @@ sealed interface WriteChange {
     @JvmRecord
     data class CreatedSchema(val schemaName: String) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_schema:${WriteChange.writeQuotedValue(schemaName)}"
+            "created_schema:${writeQuotedValue(schemaName)}"
     }
 
     /**
@@ -66,7 +66,7 @@ sealed interface WriteChange {
         val tableName: String,
     ) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_table:${WriteChange.writeQuotedValue(schemaName)}.${WriteChange.writeQuotedValue(tableName)}"
+            "created_table:${writeQuotedValue(schemaName)}.${writeQuotedValue(tableName)}"
     }
 
     @JvmRecord
@@ -166,7 +166,7 @@ sealed interface WriteChange {
         val viewName: String,
     ) : WriteChange {
         override fun toChangesMadeEntry(): String =
-            "created_view:${WriteChange.writeQuotedValue(schemaName)}.${WriteChange.writeQuotedValue(viewName)}"
+            "created_view:${writeQuotedValue(schemaName)}.${writeQuotedValue(viewName)}"
     }
 
     @JvmRecord

@@ -19,8 +19,7 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import java.util.Objects.requireNonNull
 
-class DucklakeCatalogProvider @Inject constructor(config: DucklakeConfig) : Provider<DucklakeCatalog> {
-    private val config: DucklakeConfig = config
+class DucklakeCatalogProvider @Inject constructor(private val config: DucklakeConfig) : Provider<DucklakeCatalog> {
 
     override fun get(): DucklakeCatalog {
         requireNonNull(config.getCatalogDatabaseUrl(), "ducklake.catalog.database-url is null")

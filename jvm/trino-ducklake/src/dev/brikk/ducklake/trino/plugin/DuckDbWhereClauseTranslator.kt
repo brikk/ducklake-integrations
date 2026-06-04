@@ -54,7 +54,7 @@ import java.util.Optional
  * (TIMESTAMPTZ, VARBINARY, UUID, nested) are intentionally skipped here even when
  * supported on the read path; they fall back to Trino-side filtering.
  */
-public object DuckDbWhereClauseTranslator {
+object DuckDbWhereClauseTranslator {
     private val TIMESTAMP_MICROS: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS", Locale.ROOT)
 
@@ -63,11 +63,11 @@ public object DuckDbWhereClauseTranslator {
      * [Optional.empty] when the domain is "all" (no predicate to push) or when
      * nothing is translatable.
      */
-    public fun toWhereClause(predicate: TupleDomain<DucklakeColumnHandle>): Optional<String> {
-        if (predicate.isAll()) {
+    fun toWhereClause(predicate: TupleDomain<DucklakeColumnHandle>): Optional<String> {
+        if (predicate.isAll) {
             return Optional.empty()
         }
-        if (predicate.isNone()) {
+        if (predicate.isNone) {
             return Optional.of("FALSE")
         }
         val domainsOpt: Optional<Map<DucklakeColumnHandle, Domain>> = predicate.getDomains()
@@ -85,23 +85,23 @@ public object DuckDbWhereClauseTranslator {
         val name = quoteIdentifier(column.columnName)
         val type: Type = column.columnType
 
-        if (domain.isAll()) {
+        if (domain.isAll) {
             return Optional.empty()
         }
-        if (domain.isNone()) {
+        if (domain.isNone) {
             return Optional.of("FALSE")
         }
 
-        val values: ValueSet = domain.getValues()
-        val nullAllowed = domain.isNullAllowed()
+        val values: ValueSet = domain.values
+        val nullAllowed = domain.isNullAllowed
 
-        if (values.isNone()) {
+        if (values.isNone) {
             // Only NULL or nothing.
-            return Optional.of(if (nullAllowed) name + " IS NULL" else "FALSE")
+            return Optional.of(if (nullAllowed) "$name IS NULL" else "FALSE")
         }
-        if (values.isAll()) {
+        if (values.isAll) {
             // Any non-null value is fine; honor null disposition.
-            return Optional.of(if (nullAllowed) "TRUE" else name + " IS NOT NULL")
+            return Optional.of(if (nullAllowed) "TRUE" else "$name IS NOT NULL")
         }
 
         val valuesTerm = translateValues(name, type, values)
@@ -115,8 +115,8 @@ public object DuckDbWhereClauseTranslator {
     }
 
     private fun translateValues(name: String, type: Type, values: ValueSet): Optional<String> {
-        if (values.isDiscreteSet()) {
-            val discrete: List<Any> = values.getDiscreteSet()
+        if (values.isDiscreteSet) {
+            val discrete: List<Any> = values.discreteSet
             val literals: MutableList<String> = ArrayList(discrete.size)
             for (v in discrete) {
                 val lit = formatLiteral(type, v)
@@ -133,7 +133,7 @@ public object DuckDbWhereClauseTranslator {
 
         // Range-based value sets — sortedRangeSet exposes ordered ranges.
         try {
-            val ranges: List<Range> = values.getRanges().getOrderedRanges()
+            val ranges: List<Range> = values.ranges.orderedRanges
             val terms: MutableList<String> = ArrayList(ranges.size)
             for (r in ranges) {
                 val rangeTerm = formatRange(name, type, r)
@@ -156,84 +156,84 @@ public object DuckDbWhereClauseTranslator {
     }
 
     private fun formatRange(name: String, type: Type, r: Range): Optional<String> {
-        if (r.isSingleValue()) {
+        if (r.isSingleValue) {
             val lit = formatLiteral(type, r.getSingleValue())
-            return lit.map { l -> name + " = " + l }
+            return lit.map { l -> "$name = $l" }
         }
 
         val sb = StringBuilder()
-        if (!r.isLowUnbounded()) {
-            val lit = formatLiteral(type, r.getLowBoundedValue())
+        if (!r.isLowUnbounded) {
+            val lit = formatLiteral(type, r.lowBoundedValue)
             if (lit.isEmpty) {
                 return Optional.empty()
             }
-            sb.append(name).append(if (r.isLowInclusive()) " >= " else " > ").append(lit.get())
+            sb.append(name).append(if (r.isLowInclusive) " >= " else " > ").append(lit.get())
         }
-        if (!r.isHighUnbounded()) {
-            if (sb.length > 0) {
+        if (!r.isHighUnbounded) {
+            if (sb.isNotEmpty()) {
                 sb.append(" AND ")
             }
-            val lit = formatLiteral(type, r.getHighBoundedValue())
+            val lit = formatLiteral(type, r.highBoundedValue)
             if (lit.isEmpty) {
                 return Optional.empty()
             }
-            sb.append(name).append(if (r.isHighInclusive()) " <= " else " < ").append(lit.get())
+            sb.append(name).append(if (r.isHighInclusive) " <= " else " < ").append(lit.get())
         }
-        if (sb.length == 0) {
+        if (sb.isEmpty()) {
             return Optional.empty()
         }
-        return Optional.of("(" + sb + ")")
+        return Optional.of("($sb)")
     }
 
     private fun formatLiteral(type: Type, value: Any?): Optional<String> {
         if (value == null) {
             return Optional.empty()
         }
-        if (type.equals(BOOLEAN)) {
+        if (type == BOOLEAN) {
             return Optional.of(if ((value as Boolean)) "TRUE" else "FALSE")
         }
-        if (type.equals(TINYINT) || type.equals(SMALLINT) || type.equals(INTEGER) || type.equals(BIGINT)) {
+        if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
             // Trino stores all integer-family values as long.
             return Optional.of((value as Long).toString())
         }
-        if (type.equals(REAL)) {
+        if (type == REAL) {
             // Trino REAL is encoded as the float bits in a long.
             val f = java.lang.Float.intBitsToFloat((value as Long).toInt())
             if (java.lang.Float.isFinite(f)) {
-                return Optional.of(java.lang.Float.toString(f))
+                return Optional.of(f.toString())
             }
             return Optional.empty()
         }
-        if (type.equals(DOUBLE)) {
+        if (type == DOUBLE) {
             val d = value as Double
             if (java.lang.Double.isFinite(d)) {
-                return Optional.of(java.lang.Double.toString(d))
+                return Optional.of(d.toString())
             }
             return Optional.empty()
         }
         if (type is DecimalType) {
             val decimalType: DecimalType = type
             val bd: BigDecimal
-            if (decimalType.isShort()) {
-                bd = BigDecimal.valueOf(value as Long, decimalType.getScale())
+            if (decimalType.isShort) {
+                bd = BigDecimal.valueOf(value as Long, decimalType.scale)
             }
             else {
                 val i128 = value as Int128
-                bd = BigDecimal(BigInteger(i128.toBigEndianBytes()), decimalType.getScale())
+                bd = BigDecimal(BigInteger(i128.toBigEndianBytes()), decimalType.scale)
             }
             return Optional.of(bd.toPlainString())
         }
-        if (type.equals(DATE)) {
+        if (type == DATE) {
             val days = value as Long
             val date = LocalDate.ofEpochDay(days)
             // DuckDB's DATE literal parser rejects the signed/extended forms LocalDate emits for
             // years <1 (BC, '-') or >9999 ('+'); leave such values unpushed so Trino evaluates them.
-            if (date.year < 1 || date.year > 9999) {
+            if (date.year !in 1..9999) {
                 return Optional.empty()
             }
-            return Optional.of("DATE '" + date + "'")
+            return Optional.of("DATE '$date'")
         }
-        if (type is TimestampType && type.isShort()) {
+        if (type is TimestampType && type.isShort) {
             val micros = value as Long
             val epochSeconds = floorDiv(micros, 1_000_000L)
             val nanoOfSecond = (floorMod(micros, 1_000_000L) * 1_000L).toInt()
@@ -241,7 +241,7 @@ public object DuckDbWhereClauseTranslator {
             // TIMESTAMP_MICROS uses the year-of-era pattern `yyyy`, which silently renders a BC
             // year as a positive year (wrong instant, no era marker) and emits a leading '+' past
             // 9999. Leave out-of-range temporal literals unpushed rather than mis-compare.
-            if (ldt.year < 1 || ldt.year > 9999) {
+            if (ldt.year !in 1..9999) {
                 return Optional.empty()
             }
             return Optional.of("TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'")
@@ -256,7 +256,7 @@ public object DuckDbWhereClauseTranslator {
     private fun quoteIdentifier(name: String): String =
         '"' + name.replace("\"", "\"\"") + '"'
 
-    public fun formatLiteralOrThrow(type: Type, value: Any?): String =
+    fun formatLiteralOrThrow(type: Type, value: Any?): String =
         formatLiteral(type, value)
                 .orElseThrow { IllegalArgumentException("Cannot format $type value as DuckDB literal") }
 }

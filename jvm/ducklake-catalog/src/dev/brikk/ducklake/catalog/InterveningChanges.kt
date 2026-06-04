@@ -143,7 +143,7 @@ class InterveningChanges {
          */
         fun parse(changesMade: String?): InterveningChanges {
             val result = InterveningChanges()
-            if (changesMade == null || changesMade.isEmpty()) {
+            if (changesMade.isNullOrEmpty()) {
                 return result
             }
             val cur = Cursor(changesMade)
@@ -188,14 +188,12 @@ class InterveningChanges {
                 "created_table" -> {
                     val e = parseCatalogEntry(value)
                     result.createdTablesByName
-                        .getOrPut(e.schema) { HashMap() }
-                        .put(e.name, "table")
+                        .getOrPut(e.schema) { HashMap() }[e.name] = "table"
                 }
                 "created_view" -> {
                     val e = parseCatalogEntry(value)
                     result.createdTablesByName
-                        .getOrPut(e.schema) { HashMap() }
-                        .put(e.name, "view")
+                        .getOrPut(e.schema) { HashMap() }[e.name] = "view"
                 }
                 "created_schema" -> result.createdSchemas.add(parseQuotedValueOnly(value))
                 "dropped_schema" -> result.droppedSchemas.add(parseUnsignedLong(value))

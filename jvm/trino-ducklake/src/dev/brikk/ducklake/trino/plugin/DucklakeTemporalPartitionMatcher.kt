@@ -26,9 +26,9 @@ import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.Type
 import java.time.LocalDate
 
-public object DucklakeTemporalPartitionMatcher {
+object DucklakeTemporalPartitionMatcher {
     @JvmStatic
-    public fun partitionValueMatchesDomain(
+    fun partitionValueMatchesDomain(
             columnType: Type,
             partitionValue: String,
             domain: Domain,
@@ -36,10 +36,10 @@ public object DucklakeTemporalPartitionMatcher {
             configuredEncoding: DucklakeTemporalPartitionEncoding,
             readLeniency: Boolean): Boolean {
         try {
-            if (domain.isNone()) {
+            if (domain.isNone) {
                 return false
             }
-            if (domain.getValues().isAll()) {
+            if (domain.values.isAll) {
                 return true
             }
 
@@ -71,9 +71,9 @@ public object DucklakeTemporalPartitionMatcher {
             return false
         }
 
-        return domain.getValues().getValuesProcessor().transform(
+        return domain.values.valuesProcessor.transform(
                 { ranges ->
-                    for (range in ranges.getOrderedRanges()) {
+                    for (range in ranges.orderedRanges) {
                         if (temporalRangeContainsTransformedValue(columnType, range, transformedValue, transform, encoding)) {
                             return@transform true
                         }
@@ -81,7 +81,7 @@ public object DucklakeTemporalPartitionMatcher {
                     false
                 },
                 { discreteValues ->
-                    for (value in discreteValues.getValues()) {
+                    for (value in discreteValues.values) {
                         val transformed = applyTemporalTransform(columnType, value, transform, encoding)
                         if (transformed == transformedValue) {
                             return@transform true
@@ -98,10 +98,10 @@ public object DucklakeTemporalPartitionMatcher {
             transformedValue: Long,
             transform: DucklakePartitionTransform,
             encoding: DucklakeTemporalPartitionEncoding): Boolean {
-        val lowTransformed: Long = range.getLowValue()
+        val lowTransformed: Long = range.lowValue
                 .map { v -> applyTemporalTransform(columnType, v, transform, encoding) }
                 .orElse(Long.MIN_VALUE)
-        var highTransformed: Long = range.getHighValue()
+        var highTransformed: Long = range.highValue
                 .map { v -> applyTemporalTransform(columnType, v, transform, encoding) }
                 .orElse(Long.MAX_VALUE)
 
@@ -116,9 +116,9 @@ public object DucklakeTemporalPartitionMatcher {
         // value wraps and [low, high] range pruning would silently drop matching files.
         // Skip pruning in those cases — reading extra files is correct; dropping them is not.
         if (nonMonotonicCalendar &&
-                (range.getLowValue().isEmpty
-                        || range.getHighValue().isEmpty
-                        || !inSameCalendarParentPeriod(columnType, range.getLowValue().get(), range.getHighValue().get(), transform))) {
+                (range.lowValue.isEmpty
+                        || range.highValue.isEmpty
+                        || !inSameCalendarParentPeriod(columnType, range.lowValue.get(), range.highValue.get(), transform))) {
             return true
         }
 
@@ -128,8 +128,9 @@ public object DucklakeTemporalPartitionMatcher {
         // (e.g. `< TIMESTAMP '2026-03-08 00:00:00'` with DAY transform), no data in that
         // partition can satisfy the predicate, so we must adjust the effective bound.
         if (columnType != io.trino.spi.type.DateType.DATE &&
-                range.getHighValue().isPresent && !range.isHighInclusive()) {
-            val epochMicros = extractEpochMicros(columnType, range.getHighValue().get())
+                range.highValue.isPresent && !range.isHighInclusive
+        ) {
+            val epochMicros = extractEpochMicros(columnType, range.highValue.get())
             if (isAtTransformBoundary(epochMicros, transform)) {
                 highTransformed--
             }
@@ -142,7 +143,7 @@ public object DucklakeTemporalPartitionMatcher {
             return true
         }
 
-        return transformedValue >= lowTransformed && transformedValue <= highTransformed
+        return transformedValue in lowTransformed..highTransformed
     }
 
     /**
@@ -155,9 +156,9 @@ public object DucklakeTemporalPartitionMatcher {
         val high = TemporalValue.from(columnType, highValue)
         return when (transform) {
             DucklakePartitionTransform.HOUR -> low.epochDay == high.epochDay
-            DucklakePartitionTransform.DAY -> low.date.getYear() == high.date.getYear()
-                    && low.date.getMonthValue() == high.date.getMonthValue()
-            DucklakePartitionTransform.MONTH -> low.date.getYear() == high.date.getYear()
+            DucklakePartitionTransform.DAY -> low.date.year == high.date.year
+                    && low.date.monthValue == high.date.monthValue
+            DucklakePartitionTransform.MONTH -> low.date.year == high.date.year
             else -> true
         }
     }
@@ -172,7 +173,7 @@ public object DucklakeTemporalPartitionMatcher {
                 }
                 else {
                     val date = LocalDate.ofEpochDay(epochMicros / 86_400_000_000L)
-                    date.getDayOfMonth() == 1
+                    date.dayOfMonth == 1
                 }
             }
             DucklakePartitionTransform.YEAR -> {
@@ -181,7 +182,7 @@ public object DucklakeTemporalPartitionMatcher {
                 }
                 else {
                     val date = LocalDate.ofEpochDay(epochMicros / 86_400_000_000L)
-                    date.getMonthValue() == 1 && date.getDayOfMonth() == 1
+                    date.monthValue == 1 && date.dayOfMonth == 1
                 }
             }
             else -> false
@@ -202,8 +203,8 @@ public object DucklakeTemporalPartitionMatcher {
         }
 
         return when (transform) {
-            DucklakePartitionTransform.YEAR -> temporalValue.date.getYear() - 1970L
-            DucklakePartitionTransform.MONTH -> (temporalValue.date.getYear() - 1970L) * 12L + (temporalValue.date.getMonthValue() - 1L)
+            DucklakePartitionTransform.YEAR -> temporalValue.date.year - 1970L
+            DucklakePartitionTransform.MONTH -> (temporalValue.date.year - 1970L) * 12L + (temporalValue.date.monthValue - 1L)
             DucklakePartitionTransform.DAY -> temporalValue.epochDay
             DucklakePartitionTransform.HOUR -> temporalValue.epochHour
             else -> throw IllegalArgumentException("Unsupported transform for epoch encoding: $transform")
@@ -217,18 +218,18 @@ public object DucklakeTemporalPartitionMatcher {
 
         return when (transform) {
             DucklakePartitionTransform.YEAR -> true
-            DucklakePartitionTransform.MONTH -> transformedValue >= 1 && transformedValue <= 12
-            DucklakePartitionTransform.DAY -> transformedValue >= 1 && transformedValue <= 31
-            DucklakePartitionTransform.HOUR -> transformedValue >= 0 && transformedValue <= 23
+            DucklakePartitionTransform.MONTH -> transformedValue in 1..12
+            DucklakePartitionTransform.DAY -> transformedValue in 1..31
+            DucklakePartitionTransform.HOUR -> transformedValue in 0..23
             else -> false
         }
     }
 
     @JvmRecord
     private data class TemporalValue(val date: LocalDate, val epochDay: Long, val epochHour: Long, val hourOfDay: Int) {
-        public companion object {
+        companion object {
             @JvmStatic
-            internal fun from(columnType: Type, value: Any): TemporalValue {
+            fun from(columnType: Type, value: Any): TemporalValue {
                 if (columnType == io.trino.spi.type.DateType.DATE) {
                     val epochDay = (value as Number).toLong()
                     val date = LocalDate.ofEpochDay(epochDay)
@@ -248,19 +249,19 @@ public object DucklakeTemporalPartitionMatcher {
 
     private fun extractEpochMicros(columnType: Type, value: Any): Long {
         if (columnType is TimestampType) {
-            if (columnType.isShort()) {
+            if (columnType.isShort) {
                 return value as Long
             }
-            return (value as LongTimestamp).getEpochMicros()
+            return (value as LongTimestamp).epochMicros
         }
 
         if (columnType is TimestampWithTimeZoneType) {
-            if (columnType.isShort()) {
+            if (columnType.isShort) {
                 return unpackMillisUtc(value as Long) * 1_000L
             }
 
             val longTimestamp = value as LongTimestampWithTimeZone
-            return longTimestamp.getEpochMillis() * 1_000L + longTimestamp.getPicosOfMilli() / 1_000_000
+            return longTimestamp.epochMillis * 1_000L + longTimestamp.picosOfMilli / 1_000_000
         }
 
         if (value is Number) {

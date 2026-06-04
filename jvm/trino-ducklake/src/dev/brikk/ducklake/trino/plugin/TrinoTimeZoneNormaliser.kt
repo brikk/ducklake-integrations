@@ -67,12 +67,12 @@ object TrinoTimeZoneNormaliser {
             val mins = (trinoZoneId[4].code - '0'.code) * 10 + (trinoZoneId[5].code - '0'.code)
             if (mins == 0) {
                 val invertedSign = if (trinoZoneId[0] == '+') '-' else '+'
-                return "Etc/GMT" + invertedSign + hours
+                return "Etc/GMT$invertedSign$hours"
             }
         }
         return trinoZoneId
     }
 
     @JvmStatic
-    private fun isAsciiDigit(c: Char): Boolean = c >= '0' && c <= '9'
+    private fun isAsciiDigit(c: Char): Boolean = c in '0'..'9'
 }

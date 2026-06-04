@@ -48,7 +48,7 @@ import java.util.Optional
  * column added after the file was written) is not supported on the duckdb
  * path yet.
  */
-public class DuckDbFilePageSource(
+class DuckDbFilePageSource(
         private val executor: DucklakeDuckDbExecutor,
         attachTarget: DuckDbAttachTarget,
         columns: List<DucklakeColumnHandle>,

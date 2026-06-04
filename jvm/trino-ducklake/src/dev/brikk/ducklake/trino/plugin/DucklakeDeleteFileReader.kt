@@ -49,7 +49,6 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
 import org.joda.time.DateTimeZone.UTC
 import java.io.IOException
 import java.nio.file.Path
-import java.util.HashSet
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -97,9 +96,9 @@ object DucklakeDeleteFileReader {
                     parquetReaderOptions,
                     Optional.empty(),
                     Optional.empty())
-            val fileMetadata = parquetMetadata.getFileMetaData()
-            val dataSourceId: ParquetDataSourceId = dataSource.getId()
-            val fileSchema: MessageType = fileMetadata.getSchema()
+            val fileMetadata = parquetMetadata.fileMetaData
+            val dataSourceId: ParquetDataSourceId = dataSource.id
+            val fileSchema: MessageType = fileMetadata.schema
             val messageColumnIO = getColumnIO(fileSchema, fileSchema)
 
             val deleteFileColumn = getDeleteFileColumn(fileSchema, messageColumnIO)
@@ -120,7 +119,7 @@ object DucklakeDeleteFileReader {
 
             val capturedDataSourceId = dataSourceId
             val parquetReader = ParquetReader(
-                    Optional.ofNullable(fileMetadata.getCreatedBy()),
+                    Optional.ofNullable(fileMetadata.createdBy),
                     ImmutableList.of(Column(deleteFileColumn.columnName, deleteFileColumn.field)),
                     false,
                     rowGroups,
@@ -135,12 +134,12 @@ object DucklakeDeleteFileReader {
 
             val deletedRows = mutableSetOf<Long>()
             val pageSource: ConnectorPageSource = ParquetPageSource(parquetReader)
-            try {
-                while (!pageSource.isFinished()) {
-                    val page = pageSource.getNextSourcePage() ?: continue
+            pageSource.use { pageSource ->
+                while (!pageSource.isFinished) {
+                    val page = pageSource.nextSourcePage ?: continue
                     val block = page.getBlock(0)
                     var position = 0
-                    while (position < block.getPositionCount()) {
+                    while (position < block.positionCount) {
                         if (block.isNull(position)) {
                             position++
                             continue
@@ -150,9 +149,6 @@ object DucklakeDeleteFileReader {
                     }
                 }
             }
-            finally {
-                pageSource.close()
-            }
             return deletedRows
         }
         catch (e: IOException) {
@@ -161,7 +157,7 @@ object DucklakeDeleteFileReader {
                     dataSource.close()
                 }
                 catch (ex: IOException) {
-                    if (!e.equals(ex)) {
+                    if (e != ex) {
                         e.addSuppressed(ex)
                     }
                 }
@@ -184,16 +180,16 @@ object DucklakeDeleteFileReader {
     }
 
     private fun getDeleteFileColumn(fileSchema: MessageType, messageColumnIO: MessageColumnIO): DeleteFileColumn {
-        for (field in fileSchema.getFields()) {
-            if (!field.isPrimitive()) {
+        for (field in fileSchema.fields) {
+            if (!field.isPrimitive) {
                 continue
             }
-            val columnIO: ColumnIO = messageColumnIO.getChild(field.getName())
+            val columnIO: ColumnIO = messageColumnIO.getChild(field.name)
             if (columnIO !is PrimitiveColumnIO) {
                 continue
             }
 
-            val primitiveTypeName: PrimitiveTypeName = columnIO.getPrimitive()
+            val primitiveTypeName: PrimitiveTypeName = columnIO.primitive
             val columnType: Type? = when (primitiveTypeName) {
                 PrimitiveTypeName.INT64 -> BIGINT
                 PrimitiveTypeName.INT32 -> INTEGER
@@ -203,7 +199,7 @@ object DucklakeDeleteFileReader {
             if (columnType != null) {
                 val fieldDefinition: Field = DucklakeParquetTypeUtils.constructField(columnType, columnIO)
                         .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for delete file column: ${field.name}") }
-                return DeleteFileColumn(field.getName(), columnType, fieldDefinition)
+                return DeleteFileColumn(field.name, columnType, fieldDefinition)
             }
         }
 
@@ -217,14 +213,11 @@ object DucklakeDeleteFileReader {
     }
 
     private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
-        if (exception is TrinoException) {
-            exception
-        } else {
-            TrinoException(
-                    NOT_SUPPORTED,
-                    "Error reading Parquet file: $dataSourceId",
-                    exception)
-        }
+        exception as? TrinoException
+            ?: TrinoException(
+                NOT_SUPPORTED,
+                "Error reading Parquet file: $dataSourceId",
+                exception)
 
     private fun toLocation(path: String): Location {
         val location = Location.of(path)

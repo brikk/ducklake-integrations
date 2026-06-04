@@ -97,9 +97,9 @@ interface DucklakeDuckDbExecutor {
         private val projectedColumns: List<DucklakeColumnHandle> = projectedColumns
         private val pushedPredicate: TupleDomain<DucklakeColumnHandle> = pushedPredicate
         private val pushedExpressions: List<String> =
-                if (pushedExpressions == null) emptyList() else pushedExpressions.toList()
+            pushedExpressions?.toList() ?: emptyList()
         private val duckDbTimeZone: Optional<String> =
-                if (duckDbTimeZone == null) Optional.empty() else duckDbTimeZone
+            duckDbTimeZone ?: Optional.empty()
 
         constructor(
                 target: DuckDbAttachTarget,

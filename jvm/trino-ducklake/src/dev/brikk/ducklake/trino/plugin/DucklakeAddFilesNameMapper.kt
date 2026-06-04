@@ -126,8 +126,8 @@ internal class DucklakeAddFilesNameMapper(
         for (column in allColumns) {
             column.parentColumn.ifPresent { parentId ->
                 childrenByParent
-                        .computeIfAbsent(parentId) { _ -> hashMapOf() }
-                        .put(column.columnName.lowercase(Locale.ROOT), column)
+                        .computeIfAbsent(parentId) { _ -> hashMapOf() }[column.columnName.lowercase(Locale.ROOT)] =
+                    column
             }
         }
 
@@ -135,15 +135,15 @@ internal class DucklakeAddFilesNameMapper(
                 topLevelColumns.associateBy { it.columnName.lowercase(Locale.ROOT) }
         val hivePartitionKeyLower: MutableMap<String, Long?> = hashMapOf()
         for (key in hivePartitionValues.keys) {
-            hivePartitionKeyLower.put(key.lowercase(Locale.ROOT), null)
+            hivePartitionKeyLower[key.lowercase(Locale.ROOT)] = null
         }
 
-        val parquetFields: List<org.apache.parquet.schema.Type> = parquetSchema.getFields()
+        val parquetFields: List<org.apache.parquet.schema.Type> = parquetSchema.fields
         val tableColumnsMatched: MutableMap<String, Int> = hashMapOf()
 
-        for (i in 0 until parquetFields.size) {
-            val parquetField = parquetFields.get(i)
-            val parquetName = parquetField.getName()
+        for (i in parquetFields.indices) {
+            val parquetField = parquetFields[i]
+            val parquetName = parquetField.name
             val parquetNameLower = parquetName.lowercase(Locale.ROOT)
 
             val match: DucklakeColumn? = topByName[parquetNameLower]
@@ -199,10 +199,10 @@ internal class DucklakeAddFilesNameMapper(
                 if (isNestedType(targetType)) {
                     throw DucklakeAddFilesException(String.format(
                             "Type \"%s\" is not supported for hive partitioning (column \"%s\")",
-                            targetType.getDisplayName(), column.columnName))
+                            targetType.displayName, column.columnName))
                 }
                 resultEntries.add(DucklakeNameMapEntry(
-                        column.columnName, column.columnId, true, listOf<DucklakeNameMapEntry>()))
+                        column.columnName, column.columnId, true, listOf()))
                 partitionValues[toIntFieldIndex(column.columnId)] = stringValue
                 continue
             }
@@ -217,7 +217,7 @@ internal class DucklakeAddFilesNameMapper(
         // Convert the (Integer fieldIndex → String) partition map to immutable.
         val partitionValuesOut: MutableMap<Int, String> = linkedMapOf()
         for (entry in partitionValues.entries) {
-            partitionValuesOut.put(entry.key, entry.value as String)
+            partitionValuesOut[entry.key] = entry.value as String
         }
 
         return Result(
@@ -235,11 +235,12 @@ internal class DucklakeAddFilesNameMapper(
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
         // Leaf primitive: type-check, no children.
-        if (parquetField.isPrimitive()) {
+        if (parquetField.isPrimitive) {
             if (targetType is RowType || targetType is ArrayType || targetType is MapType) {
                 throw DucklakeAddFilesException(String.format(
                         "Column \"%s\" in file \"%s\" is primitive but table column has nested type %s",
-                        parquetName, fileName, targetType.getDisplayName()))
+                        parquetName, fileName, targetType.displayName
+                ))
             }
             val source: Type = parquetPrimitiveToTrino(parquetField.asPrimitiveType(), parquetName)
             DucklakeAddFilesTypeChecker.checkCompatible(targetType, source, parquetName, fileName, tableName)
@@ -253,7 +254,7 @@ internal class DucklakeAddFilesNameMapper(
             // nesting.
             leafStatsTargets.add(LeafStatsTarget(target.columnId, targetType, leafCounter[0]))
             leafCounter[0]++
-            return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf<DucklakeNameMapEntry>())
+            return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf())
         }
 
         // Group/nested: recurse based on target type kind.
@@ -264,7 +265,8 @@ internal class DucklakeAddFilesNameMapper(
             is MapType -> mapMap(group, parquetName, target, targetType, childrenByParent)
             else -> throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" in file \"%s\" is a group but table column has primitive type %s",
-                    parquetName, fileName, targetType.getDisplayName()))
+                    parquetName, fileName, targetType.displayName
+            ))
         }
     }
 
@@ -277,8 +279,8 @@ internal class DucklakeAddFilesNameMapper(
     ): DucklakeNameMapEntry {
         val children: Map<String, DucklakeColumn> = childrenByParent[target.columnId] ?: emptyMap()
         val childEntries: MutableList<DucklakeNameMapEntry> = ArrayList()
-        for (field in group.getFields()) {
-            val fieldName = field.getName()
+        for (field in group.fields) {
+            val fieldName = field.name
             val childTarget: DucklakeColumn? = children[fieldName.lowercase(Locale.ROOT)]
             if (childTarget == null) {
                 if (ignoreExtraColumns) {
@@ -291,14 +293,15 @@ internal class DucklakeAddFilesNameMapper(
                                 + "Set ignore_extra_columns => true to add the file anyway",
                         parquetName, fieldName, fileName, tableName))
             }
-            val childTrinoType: Type? = findRowFieldType(rowType, childTarget.columnName)
-            if (childTrinoType == null) {
-                // Catalog and Trino-side row type out of sync — shouldn't happen for a
+            val childTrinoType: Type = findRowFieldType(rowType, childTarget.columnName)
+                ?: // Catalog and Trino-side row type out of sync — shouldn't happen for a
                 // freshly converted type. Defensive throw.
-                throw DucklakeAddFilesException(String.format(
+                throw DucklakeAddFilesException(
+                    String.format(
                         "Internal: struct field \"%s.%s\" not found in target row type for table \"%s\"",
-                        parquetName, fieldName, tableName))
-            }
+                        parquetName, fieldName, tableName
+                    )
+                )
             childEntries.add(mapField(field, fieldName, childTarget, childTrinoType, childrenByParent))
         }
         return DucklakeNameMapEntry(parquetName, target.columnId, false, childEntries)
@@ -312,14 +315,15 @@ internal class DucklakeAddFilesNameMapper(
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
         // Parquet LIST: one repeated child group ("list") containing one element field.
-        if (group.getFieldCount() != 1) {
+        if (group.fieldCount != 1) {
             throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" in file \"%s\" has unexpected LIST shape (expected one child group, found %d)",
-                    parquetName, fileName, group.getFieldCount()))
+                    parquetName, fileName, group.fieldCount
+            ))
         }
         val middle: org.apache.parquet.schema.Type = group.getType(0)
         var elementParquetType: org.apache.parquet.schema.Type = middle
-        if (!middle.isPrimitive() && middle.asGroupType().getFieldCount() == 1) {
+        if (!middle.isPrimitive && middle.asGroupType().fieldCount == 1) {
             elementParquetType = middle.asGroupType().getType(0)
         }
         // Catalog has a single synthetic child for list element.
@@ -331,7 +335,7 @@ internal class DucklakeAddFilesNameMapper(
         }
         val elementTarget: DucklakeColumn = children.values.first()
         val childEntry = mapField(elementParquetType, "element", elementTarget,
-                arrayType.getElementType(), childrenByParent)
+                arrayType.elementType, childrenByParent)
         return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf(childEntry))
     }
 
@@ -343,23 +347,24 @@ internal class DucklakeAddFilesNameMapper(
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
         // Parquet MAP: one repeated child group ("key_value") with two fields key, value.
-        if (group.getFieldCount() != 1) {
+        if (group.fieldCount != 1) {
             throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" in file \"%s\" has unexpected MAP shape (expected one child group, found %d)",
-                    parquetName, fileName, group.getFieldCount()))
+                    parquetName, fileName, group.fieldCount
+            ))
         }
         // Guard the key_value child shape before asGroupType(): a MAP whose single child is a
         // primitive (a malformed/foreign 2-level encoding) would otherwise throw a raw parquet
         // ClassCastException that escapes the caller's DucklakeAddFilesException catch and
         // surfaces as an internal error instead of a clean INVALID_PROCEDURE_ARGUMENT. Mirrors
         // the !isPrimitive() guard mapList() already applies to its middle group.
-        if (group.getType(0).isPrimitive()) {
+        if (group.getType(0).isPrimitive) {
             throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" in file \"%s\" has unexpected MAP shape (key_value child must be a group)",
                     parquetName, fileName))
         }
         val kvGroup: GroupType = group.getType(0).asGroupType()
-        if (kvGroup.getFieldCount() != 2) {
+        if (kvGroup.fieldCount != 2) {
             throw DucklakeAddFilesException(String.format(
                     "Column \"%s\" in file \"%s\" has unexpected MAP shape (key_value group must have 2 fields)",
                     parquetName, fileName))
@@ -373,9 +378,9 @@ internal class DucklakeAddFilesNameMapper(
                     parquetName))
         }
         val keyEntry = mapField(kvGroup.getType(0), "key", keyTarget,
-                mapType.getKeyType(), childrenByParent)
+                mapType.keyType, childrenByParent)
         val valueEntry = mapField(kvGroup.getType(1), "value", valueTarget,
-                mapType.getValueType(), childrenByParent)
+                mapType.valueType, childrenByParent)
         return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf(keyEntry, valueEntry))
     }
 
@@ -385,7 +390,7 @@ internal class DucklakeAddFilesNameMapper(
      * "Failed to map column..." messages at the call site.
      */
     private fun parquetPrimitiveToTrino(type: PrimitiveType, parquetName: String): Type {
-        val annotation: LogicalTypeAnnotation? = type.getLogicalTypeAnnotation()
+        val annotation: LogicalTypeAnnotation? = type.logicalTypeAnnotation
         if (annotation != null) {
             val result: Optional<Type> = annotation.accept(object : LogicalTypeAnnotationVisitor<Type> {
                 override fun visit(a: StringLogicalTypeAnnotation): Optional<Type> {
@@ -393,12 +398,12 @@ internal class DucklakeAddFilesNameMapper(
                 }
 
                 override fun visit(a: DecimalLogicalTypeAnnotation): Optional<Type> {
-                    return Optional.of(DecimalType.createDecimalType(a.getPrecision(), a.getScale()))
+                    return Optional.of(DecimalType.createDecimalType(a.precision, a.scale))
                 }
 
                 override fun visit(a: IntLogicalTypeAnnotation): Optional<Type> {
-                    if (a.isSigned()) {
-                        return Optional.of(when (a.getBitWidth()) {
+                    if (a.isSigned) {
+                        return Optional.of(when (a.bitWidth) {
                             8 -> TinyintType.TINYINT
                             16 -> SmallintType.SMALLINT
                             32 -> IntegerType.INTEGER
@@ -406,7 +411,7 @@ internal class DucklakeAddFilesNameMapper(
                         })
                     }
                     // unsigned widens upstream — pin to next-larger signed type for safety
-                    return Optional.of(when (a.getBitWidth()) {
+                    return Optional.of(when (a.bitWidth) {
                         8 -> SmallintType.SMALLINT
                         16 -> IntegerType.INTEGER
                         32 -> BigintType.BIGINT
@@ -419,15 +424,15 @@ internal class DucklakeAddFilesNameMapper(
                 }
 
                 override fun visit(a: TimestampLogicalTypeAnnotation): Optional<Type> {
-                    val precision = timeUnitPrecision(a.getUnit())
-                    if (a.isAdjustedToUTC()) {
+                    val precision = timeUnitPrecision(a.unit)
+                    if (a.isAdjustedToUTC) {
                         return Optional.of(TimestampWithTimeZoneType.createTimestampWithTimeZoneType(precision))
                     }
                     return Optional.of(TimestampType.createTimestampType(precision))
                 }
 
                 override fun visit(a: TimeLogicalTypeAnnotation): Optional<Type> {
-                    val precision = timeUnitPrecision(a.getUnit())
+                    val precision = timeUnitPrecision(a.unit)
                     return Optional.of(io.trino.spi.type.TimeType.createTimeType(precision))
                 }
 
@@ -435,11 +440,11 @@ internal class DucklakeAddFilesNameMapper(
                     return Optional.of(UuidType.UUID)
                 }
             })
-            if (result.isPresent()) {
+            if (result.isPresent) {
                 return result.get()
             }
         }
-        when (type.getPrimitiveTypeName()) {
+        when (type.primitiveTypeName) {
             PrimitiveType.PrimitiveTypeName.BOOLEAN -> return BooleanType.BOOLEAN
             PrimitiveType.PrimitiveTypeName.INT32 -> return IntegerType.INTEGER
             PrimitiveType.PrimitiveTypeName.INT64 -> return BigintType.BIGINT
@@ -452,7 +457,7 @@ internal class DucklakeAddFilesNameMapper(
         }
         throw DucklakeAddFilesException(String.format(
                 "Unrecognized parquet primitive type %s for column \"%s\" in file \"%s\"",
-                type.getPrimitiveTypeName(), parquetName, fileName))
+                type.primitiveTypeName, parquetName, fileName))
     }
 
     companion object {
@@ -463,20 +468,20 @@ internal class DucklakeAddFilesNameMapper(
          * columns so subsequent stats targets stay aligned with the row group.
          */
         private fun countParquetLeaves(field: org.apache.parquet.schema.Type): Int {
-            if (field.isPrimitive()) {
+            if (field.isPrimitive) {
                 return 1
             }
             var total = 0
-            for (child in field.asGroupType().getFields()) {
+            for (child in field.asGroupType().fields) {
                 total += countParquetLeaves(child)
             }
             return total
         }
 
         private fun findRowFieldType(rowType: RowType, fieldName: String): Type? {
-            for (field in rowType.getFields()) {
-                if (field.getName().isPresent() && field.getName().get().equals(fieldName, ignoreCase = true)) {
-                    return field.getType()
+            for (field in rowType.fields) {
+                if (field.name.isPresent && field.name.get().equals(fieldName, ignoreCase = true)) {
+                    return field.type
                 }
             }
             return null

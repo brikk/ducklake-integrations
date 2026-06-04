@@ -19,7 +19,6 @@ import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
-import dev.brikk.ducklake.catalog.DucklakePartitionField
 import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSchema
@@ -53,7 +52,6 @@ import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.HashSet
 import java.util.LinkedHashMap
-import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -72,7 +70,7 @@ import java.util.OptionalLong
  *       specs (year / month / etc.) are out of scope for v1.</li>
  * </ul>
  */
-public class DucklakeAddFilesProcedure @Inject constructor(
+class DucklakeAddFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
         private val fileSystemFactory: DucklakeFileSystemFactory,
         private val typeConverter: DucklakeTypeConverter,
@@ -97,7 +95,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                 true)
 
     @Suppress("unused") // invoked via MethodHandle
-    public fun addFiles(
+    fun addFiles(
             session: ConnectorSession,
             schemaName: String?,
             tableName: String?,
@@ -106,24 +104,24 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             ignoreExtraColumns: Boolean,
             hivePartitioning: Boolean,
     ) {
-        if (schemaName == null || schemaName.isEmpty()) {
+        if (schemaName.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "schema_name is required")
         }
-        if (tableName == null || tableName.isEmpty()) {
+        if (tableName.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "table_name is required")
         }
-        if (fileList == null || fileList.isEmpty()) {
+        if (fileList.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
         }
 
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
         val schema: Optional<DucklakeSchema> = catalog.getSchema(schemaName, snapshotId)
-        if (schema.isEmpty()) {
+        if (schema.isEmpty) {
             throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
         }
         val table: Optional<DucklakeTable> = catalog.getTable(schemaName, tableName, snapshotId)
-        if (table.isEmpty()) {
+        if (table.isEmpty) {
             throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
         }
         val tableInfo = table.get()
@@ -142,7 +140,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         else
             Optional.of(partitionSpecs.last())
 
-        if (activePartitionSpec.isPresent() && hivePartitioning) {
+        if (activePartitionSpec.isPresent && hivePartitioning) {
             for (field in activePartitionSpec.get().fields) {
                 if (field.transform != DucklakePartitionTransform.IDENTITY) {
                     throw TrinoException(NOT_SUPPORTED, String.format(
@@ -248,7 +246,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     parquetReaderOptions,
                     Optional.empty(),
                     Optional.empty())
-            val fileMetadata: FileMetadata = parquetMetadata.getFileMetaData()
+            val fileMetadata: FileMetadata = parquetMetadata.fileMetaData
 
             val mapper = DucklakeAddFilesNameMapper(
                     typeConverter,
@@ -259,7 +257,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     "$schemaName.$tableName")
             val result: DucklakeAddFilesNameMapper.Result
             try {
-                result = mapper.map(fileMetadata.getSchema(), allColumns, topLevelColumns)
+                result = mapper.map(fileMetadata.schema, allColumns, topLevelColumns)
             }
             catch (e: DucklakeAddFilesException) {
                 throw TrinoException(INVALID_PROCEDURE_ARGUMENT, e.message)
@@ -321,7 +319,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
         if (byFieldId.isEmpty()) {
             return mapOf()
         }
-        if (activePartitionSpec.isEmpty()) {
+        if (activePartitionSpec.isEmpty) {
             // Path looks partitioned but table isn't — upstream silently ignores;
             // mirror that to avoid breaking already-deployed warehouses where folks
             // happen to lay parquet under key=value/ without a partition spec.
@@ -430,7 +428,7 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                     val key = segment.substring(0, eq)
                     val value = segment.substring(eq + 1)
                     if (!key.isEmpty()) {
-                        out.put(key, value)
+                        out[key] = value
                     }
                 }
             }
@@ -472,21 +470,21 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             val thrift = org.apache.parquet.format.FileMetaData()
             var numRows: Long = 0
             val rowGroups: MutableList<org.apache.parquet.format.RowGroup> = ArrayList()
-            for (block in metadata.getBlocks()) {
+            for (block in metadata.blocks) {
                 val rg = org.apache.parquet.format.RowGroup()
                 rg.setNum_rows(block.rowCount())
                 val chunks: MutableList<org.apache.parquet.format.ColumnChunk> = ArrayList()
                 for (column in block.columns()) {
                     val chunk = org.apache.parquet.format.ColumnChunk()
                     val meta = org.apache.parquet.format.ColumnMetaData()
-                    meta.setNum_values(column.getValueCount())
-                    meta.setTotal_compressed_size(column.getTotalSize())
-                    val nativeStats: org.apache.parquet.column.statistics.Statistics<*>? = column.getStatistics()
+                    meta.setNum_values(column.valueCount)
+                    meta.setTotal_compressed_size(column.totalSize)
+                    val nativeStats: org.apache.parquet.column.statistics.Statistics<*>? = column.statistics
                     if (nativeStats != null) {
                         val statistics = org.apache.parquet.format.Statistics()
-                        if (!nativeStats.isEmpty()) {
-                            val minBytes = nativeStats.getMinBytes()
-                            val maxBytes = nativeStats.getMaxBytes()
+                        if (!nativeStats.isEmpty) {
+                            val minBytes = nativeStats.minBytes
+                            val maxBytes = nativeStats.maxBytes
                             if (minBytes != null) {
                                 statistics.setMin_value(minBytes)
                             }
@@ -494,8 +492,8 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                                 statistics.setMax_value(maxBytes)
                             }
                         }
-                        if (nativeStats.getNumNulls() >= 0) {
-                            statistics.setNull_count(nativeStats.getNumNulls())
+                        if (nativeStats.numNulls >= 0) {
+                            statistics.setNull_count(nativeStats.numNulls)
                         }
                         meta.setStatistics(statistics)
                     }

@@ -48,8 +48,7 @@ import java.util.stream.Collectors
  * `Record.into(Class)` mapping picks the columns up by name into the
  * caller's generated record type without further coercion hints.
  */
-internal class QuackWrappedMetadataQuery(metadataCatalogName: String) : MetadataQuery {
-    private val metadataCatalogName: String = metadataCatalogName
+internal class QuackWrappedMetadataQuery(private val metadataCatalogName: String) : MetadataQuery {
 
     override fun <R : Record> fetchOne(dsl: DSLContext, query: ResultQuery<R>): R? {
         val wrapped = wrap(dsl.renderInlined(query))
