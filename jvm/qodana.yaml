@@ -1,0 +1,54 @@
+# Qodana configuration — one-time deep "idiomatic Kotlin" inspection sweep.
+# Community JVM linter runs IntelliJ inspections, including the Kotlin idiom rules
+# that the LLM passes and detekt do NOT cover (e.g. "Replace size check with
+# isNullOrEmpty", "Replace 'put'/'get' with indexing operator []", redundant
+# qualifier, etc.).
+#
+# Run (token is read from the QODANA_TOKEN env var; community local scans work
+# without one — token only enables Qodana Cloud upload):
+#   cd jvm && qodana scan
+#
+# Results land in jvm/.qodana/ (gitignored) — qodana.sarif.json + an HTML report.
+version: "1.0"
+
+# Community JVM linter (free). Pin a tag if you want reproducibility.
+linter: jetbrains/qodana-jvm-community:latest
+
+# This project requires JDK 25 (catalog/trino/doris compile with a 25 toolchain; trino builds
+# against Trino 481, which ships JDK-25 bytecode). Qodana runs its own container whose bundled
+# JBR/auto-download list tops out at JDK 21, so a bare projectJDK: "25" fails ("Invalid Gradle
+# JDK configuration"). The fix is a *vendor-qualified* name — projectJDK: "temurin-25" — which
+# Qodana resolves via the foojay/Disco download path (it has Temurin 25) instead of the bundled
+# JBR list, giving the Gradle daemon AND the project/module SDKs a real JDK 25. (Per a JetBrains
+# support answer for the same "Cannot find a Java installation matching {languageVersion=25}".)
+projectJDK: "temurin-25"
+
+# Recommended profile = broad set of IntelliJ inspections incl. Kotlin style/idioms.
+# Swap to qodana.starter for a lighter/faster first pass.
+profile:
+  name: qodana.recommended
+
+# Don't analyze code we don't own / don't ship as source.
+exclude:
+  - name: All
+    paths:
+      - "**/generated/**"        # jOOQ codegen — stays Java, not ours
+      - "**/*.java.old"          # retired Java->Kotlin port oracles
+      - "**/build/**"            # gradle build output
+      - ".ai/**"                 # planning docs
+      - ".claude/**"             # tooling/config
+      - "build-logic/**"         # Gradle convention plugins — build infra, not product code
+      - "**/*.gradle.kts"        # build/settings scripts (build.gradle.kts, settings.gradle.kts, …)
+      - "**/*.gradle"            # legacy-style Gradle scripts / init scripts
+      - "*.gradle.kts"
+      - "doris-ducklake/**"      # Java FE plugin — not the Kotlin idiom target
+      - "jooq-custom-naming/**"  # build-time jOOQ naming helper
+      - "**/*.java"              # never auto-fix Java sources
+  # Inspections we deliberately do NOT auto-fix (held for human review): dead-code deletion,
+  # duplicate-code refactors, possible-bug detectors, and the niche multi-dollar-string rewrite.
+  # Disabling them here scopes `--apply-fixes` to the approved idiom set (buckets A + B + ctor-fold).
+  - name: UnusedSymbol
+  - name: DuplicatedCode
+  - name: UnusedExpression
+  - name: KotlinConstantConditions
+  - name: CanConvertToMultiDollarString
