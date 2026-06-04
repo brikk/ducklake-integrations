@@ -434,12 +434,10 @@ class DucklakeMetadata(
         return stats.build()
     }
 
-    private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean
-    {
-        // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
-        // that lists it), so no second per-table hasInlinedRows round trip is needed here.
-        return catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
-    }
+    private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean =
+            // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
+            // that lists it), so no second per-table hasInlinedRows round trip is needed here.
+            catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
 
     private fun getFallbackRecordCount(table: DucklakeTableHandle): OptionalLong
     {
@@ -822,11 +820,9 @@ class DucklakeMetadata(
         // apply here because the table is fresh — there are no prior data files.
         // (See N1 in TODO-duckdb-lake-format.md.)
         val tablePropertyFormat: String? = DucklakeTableProperties.getDataFileFormat(tableMetadata.getProperties())
-        val fileFormat: String = if (tablePropertyFormat != null)
-            tablePropertyFormat
-        else
-            DucklakeSessionProperties.getDataFileFormat(session)
-                    .orElse(DucklakeSessionProperties.FORMAT_PARQUET)
+        val fileFormat: String = tablePropertyFormat
+                ?: DucklakeSessionProperties.getDataFileFormat(session)
+                        .orElse(DucklakeSessionProperties.FORMAT_PARQUET)
 
         return DucklakeWritableTableHandle(
                 tableName.getSchemaName(),
@@ -904,15 +900,11 @@ class DucklakeMetadata(
 
     // ==================== DELETE / MERGE ====================
 
-    override fun getRowChangeParadigm(session: ConnectorSession, tableHandle: ConnectorTableHandle): RowChangeParadigm
-    {
-        return RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW
-    }
+    override fun getRowChangeParadigm(session: ConnectorSession, tableHandle: ConnectorTableHandle): RowChangeParadigm =
+            RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW
 
-    override fun getMergeRowIdColumnHandle(session: ConnectorSession, tableHandle: ConnectorTableHandle): ColumnHandle
-    {
-        return DucklakeColumnHandle.rowIdColumnHandle()
-    }
+    override fun getMergeRowIdColumnHandle(session: ConnectorSession, tableHandle: ConnectorTableHandle): ColumnHandle =
+            DucklakeColumnHandle.rowIdColumnHandle()
 
     override fun beginMerge(
             session: ConnectorSession,
@@ -1471,9 +1463,8 @@ class DucklakeMetadata(
             return handles.buildOrThrow()
         }
 
-        private fun getMetadataColumns(metadataTableType: DucklakeMetadataTableType): List<ColumnMetadata>
-        {
-            return when (metadataTableType) {
+        private fun getMetadataColumns(metadataTableType: DucklakeMetadataTableType): List<ColumnMetadata> =
+            when (metadataTableType) {
                 DucklakeMetadataTableType.FILES -> ImmutableList.of(
                         column("data_file_id", BIGINT, false),
                         column("path", VARCHAR, false),
@@ -1492,26 +1483,21 @@ class DucklakeMetadata(
                         column("commit_message", VARCHAR, true),
                         column("commit_extra_info", VARCHAR, true))
             }
-        }
 
-        private fun snapshotColumns(): List<ColumnMetadata>
-        {
-            return ImmutableList.of(
-                    column("snapshot_id", BIGINT, false),
-                    column("snapshot_time", TIMESTAMP_TZ_MILLIS, false),
-                    column("schema_version", BIGINT, false),
-                    column("next_catalog_id", BIGINT, false),
-                    column("next_file_id", BIGINT, false))
-        }
+        private fun snapshotColumns(): List<ColumnMetadata> =
+                ImmutableList.of(
+                        column("snapshot_id", BIGINT, false),
+                        column("snapshot_time", TIMESTAMP_TZ_MILLIS, false),
+                        column("schema_version", BIGINT, false),
+                        column("next_catalog_id", BIGINT, false),
+                        column("next_file_id", BIGINT, false))
 
-        private fun column(name: String, type: Type, nullable: Boolean): ColumnMetadata
-        {
-            return ColumnMetadata.builder()
-                    .setName(name)
-                    .setType(type)
-                    .setNullable(nullable)
-                    .build()
-        }
+        private fun column(name: String, type: Type, nullable: Boolean): ColumnMetadata =
+                ColumnMetadata.builder()
+                        .setName(name)
+                        .setType(type)
+                        .setNullable(nullable)
+                        .build()
 
         /**
          * Translate catalog-layer TransactionConflictException to Trino's

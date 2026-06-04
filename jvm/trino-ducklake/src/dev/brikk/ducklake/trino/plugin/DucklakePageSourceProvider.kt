@@ -778,21 +778,17 @@ public class DucklakePageSourceProvider @Inject constructor(
          * fix in {@code .ai/kotlin-port/BEFORE-RESUME.md}).
          */
         @JvmStatic
-        fun splitHasActiveDeletes(split: DucklakeSplit): Boolean
-        {
-            return split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
-        }
+        fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
+            split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
 
-        private fun isPuffinPath(path: String): Boolean
-        {
+        private fun isPuffinPath(path: String): Boolean =
             // DuckLake's delete-file path always ends with .puffin when format='puffin'
             // (see vendor/ducklake/src/storage/ducklake_delete.cpp:161 — the writer hardcodes
             // "ducklake-<uuid>-delete.puffin"). Catalog format='puffin' has already been
             // permitted by DucklakeSplitManager.validateDeleteFileFormats by the time we get
             // here; dispatching on extension keeps the split schema stable and matches the
             // pattern Trino's Iceberg connector uses for puffin DV files.
-            return path.regionMatches(path.length - ".puffin".length, ".puffin", 0, ".puffin".length, ignoreCase = true)
-        }
+            path.regionMatches(path.length - ".puffin".length, ".puffin", 0, ".puffin".length, ignoreCase = true)
 
         private fun toLocation(path: String): Location
         {
@@ -803,16 +799,12 @@ public class DucklakePageSourceProvider @Inject constructor(
             return Location.of(Path.of(path).toUri().toString())
         }
 
-        private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException
-        {
-            if (exception is TrinoException) {
-                return exception
-            }
-            return TrinoException(
+        private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
+            if (exception is TrinoException) exception
+            else TrinoException(
                     NOT_SUPPORTED,
                     "Error reading Parquet file: " + dataSourceId,
                     exception)
-        }
 
         /**
          * Build the constant block emitted by {@link io.trino.plugin.hive.TransformConnectorPageSource}
@@ -890,25 +882,13 @@ public class DucklakePageSourceProvider @Inject constructor(
     {
         private var nextRowOffset: Long = 0
 
-        override fun getCompletedBytes(): Long
-        {
-            return delegate.getCompletedBytes()
-        }
+        override fun getCompletedBytes(): Long = delegate.getCompletedBytes()
 
-        override fun getCompletedPositions(): OptionalLong
-        {
-            return delegate.getCompletedPositions()
-        }
+        override fun getCompletedPositions(): OptionalLong = delegate.getCompletedPositions()
 
-        override fun getReadTimeNanos(): Long
-        {
-            return delegate.getReadTimeNanos()
-        }
+        override fun getReadTimeNanos(): Long = delegate.getReadTimeNanos()
 
-        override fun isFinished(): Boolean
-        {
-            return delegate.isFinished()
-        }
+        override fun isFinished(): Boolean = delegate.isFinished()
 
         override fun getNextSourcePage(): SourcePage?
         {
@@ -942,25 +922,13 @@ public class DucklakePageSourceProvider @Inject constructor(
             return SourcePage.create(Page(positionCount, *(blocks as Array<Block>)))
         }
 
-        override fun getMemoryUsage(): Long
-        {
-            return delegate.getMemoryUsage()
-        }
+        override fun getMemoryUsage(): Long = delegate.getMemoryUsage()
 
-        override fun getMetrics(): io.trino.spi.metrics.Metrics
-        {
-            return delegate.getMetrics()
-        }
+        override fun getMetrics(): io.trino.spi.metrics.Metrics = delegate.getMetrics()
 
-        override fun isBlocked(): java.util.concurrent.CompletableFuture<*>
-        {
-            return delegate.isBlocked()
-        }
+        override fun isBlocked(): java.util.concurrent.CompletableFuture<*> = delegate.isBlocked()
 
         @Throws(IOException::class)
-        override fun close()
-        {
-            delegate.close()
-        }
+        override fun close() = delegate.close()
     }
 }

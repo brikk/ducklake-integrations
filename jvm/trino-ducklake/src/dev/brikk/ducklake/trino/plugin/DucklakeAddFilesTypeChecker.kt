@@ -113,20 +113,12 @@ public class DucklakeAddFilesTypeChecker private constructor() {
             return sourceWidth > 0 && sourceWidth <= targetWidth
         }
 
-        private fun signedIntWidth(type: Type): Int {
-            if (type is TinyintType) {
-                return 1
-            }
-            if (type is SmallintType) {
-                return 2
-            }
-            if (type is IntegerType) {
-                return 4
-            }
-            if (type is BigintType) {
-                return 8
-            }
-            return 0
+        private fun signedIntWidth(type: Type): Int = when (type) {
+            is TinyintType -> 1
+            is SmallintType -> 2
+            is IntegerType -> 4
+            is BigintType -> 8
+            else -> 0
         }
 
         private fun describe(type: Type): String {

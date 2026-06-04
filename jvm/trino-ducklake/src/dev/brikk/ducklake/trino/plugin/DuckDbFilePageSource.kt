@@ -80,13 +80,9 @@ public class DuckDbFilePageSource(
         return 0L
     }
 
-    override fun getReadTimeNanos(): Long {
-        return readTimeNanos
-    }
+    override fun getReadTimeNanos(): Long = readTimeNanos
 
-    override fun isFinished(): Boolean {
-        return finished
-    }
+    override fun isFinished(): Boolean = finished
 
     override fun getNextSourcePage(): SourcePage? {
         if (finished) return null
@@ -131,11 +127,9 @@ public class DuckDbFilePageSource(
         }
     }
 
-    private fun describeAttachTarget(): String {
-        return when (val target = request.target()) {
-            is DuckDbAttachTarget.LocalPath -> target.path.toString()
-            is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
-        }
+    private fun describeAttachTarget(): String = when (val target = request.target()) {
+        is DuckDbAttachTarget.LocalPath -> target.path.toString()
+        is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
     }
 
     override fun getMemoryUsage(): Long = executionContext?.memoryUsage() ?: 0L

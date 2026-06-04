@@ -123,10 +123,8 @@ class InterveningChanges {
         return nestedMap.keys.toList().toSet()
     }
 
-    internal fun createdEntryKind(schemaName: String, entryName: String): String? {
-        val nestedMap = createdTablesByName[schemaName] ?: return null
-        return nestedMap[entryName]
-    }
+    internal fun createdEntryKind(schemaName: String, entryName: String): String? =
+        createdTablesByName[schemaName]?.get(entryName)
 
     private class Cursor(val input: String) {
         var pos: Int = 0

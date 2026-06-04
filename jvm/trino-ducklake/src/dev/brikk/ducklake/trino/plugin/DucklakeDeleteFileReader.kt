@@ -210,25 +210,21 @@ object DucklakeDeleteFileReader {
         throw TrinoException(NOT_SUPPORTED, "Delete file must contain at least one INT32/INT64 primitive column")
     }
 
-    private fun readDeleteValue(type: Type, block: Block, position: Int): Long {
-        if (type.equals(BIGINT)) {
-            return BIGINT.getLong(block, position)
-        }
-        if (type.equals(INTEGER)) {
-            return INTEGER.getInt(block, position).toLong()
-        }
-        throw IllegalArgumentException("Unsupported delete file value type: $type")
+    private fun readDeleteValue(type: Type, block: Block, position: Int): Long = when {
+        type == BIGINT -> BIGINT.getLong(block, position)
+        type == INTEGER -> INTEGER.getInt(block, position).toLong()
+        else -> throw IllegalArgumentException("Unsupported delete file value type: $type")
     }
 
-    private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException {
+    private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
         if (exception is TrinoException) {
-            return exception
+            exception
+        } else {
+            TrinoException(
+                    NOT_SUPPORTED,
+                    "Error reading Parquet file: $dataSourceId",
+                    exception)
         }
-        return TrinoException(
-                NOT_SUPPORTED,
-                "Error reading Parquet file: $dataSourceId",
-                exception)
-    }
 
     private fun toLocation(path: String): Location {
         val location = Location.of(path)

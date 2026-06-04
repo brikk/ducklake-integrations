@@ -281,9 +281,7 @@ constructor(
         throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
     }
 
-    override fun getApproximateWrittenBytes(): Long {
-        return writtenBytes
-    }
+    override fun getApproximateWrittenBytes(): Long = writtenBytes
 
     @Throws(IOException::class)
     override fun finishAndBuildFragment(): DucklakeWriteFragment {

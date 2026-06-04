@@ -258,18 +258,14 @@ internal class DucklakeAddFilesNameMapper(
 
         // Group/nested: recurse based on target type kind.
         val group: GroupType = parquetField.asGroupType()
-        if (targetType is RowType) {
-            return mapStruct(group, parquetName, target, targetType, childrenByParent)
+        return when (targetType) {
+            is RowType -> mapStruct(group, parquetName, target, targetType, childrenByParent)
+            is ArrayType -> mapList(group, parquetName, target, targetType, childrenByParent)
+            is MapType -> mapMap(group, parquetName, target, targetType, childrenByParent)
+            else -> throw DucklakeAddFilesException(String.format(
+                    "Column \"%s\" in file \"%s\" is a group but table column has primitive type %s",
+                    parquetName, fileName, targetType.getDisplayName()))
         }
-        if (targetType is ArrayType) {
-            return mapList(group, parquetName, target, targetType, childrenByParent)
-        }
-        if (targetType is MapType) {
-            return mapMap(group, parquetName, target, targetType, childrenByParent)
-        }
-        throw DucklakeAddFilesException(String.format(
-                "Column \"%s\" in file \"%s\" is a group but table column has primitive type %s",
-                parquetName, fileName, targetType.getDisplayName()))
     }
 
     private fun mapStruct(
@@ -486,9 +482,8 @@ internal class DucklakeAddFilesNameMapper(
             return null
         }
 
-        private fun isNestedType(type: Type): Boolean {
-            return type is RowType || type is ArrayType || type is MapType
-        }
+        private fun isNestedType(type: Type): Boolean =
+            type is RowType || type is ArrayType || type is MapType
 
         private fun toIntFieldIndex(columnId: Long): Int {
             if (columnId > Integer.MAX_VALUE) {

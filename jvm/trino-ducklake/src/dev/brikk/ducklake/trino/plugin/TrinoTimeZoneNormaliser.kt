@@ -74,7 +74,5 @@ object TrinoTimeZoneNormaliser {
     }
 
     @JvmStatic
-    private fun isAsciiDigit(c: Char): Boolean {
-        return c >= '0' && c <= '9'
-    }
+    private fun isAsciiDigit(c: Char): Boolean = c >= '0' && c <= '9'
 }

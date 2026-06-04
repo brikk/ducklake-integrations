@@ -141,13 +141,11 @@ internal class QuackDuckDbExecutor(
         }
     }
 
-    private fun buildServerSideAttachSql(target: DuckDbAttachTarget, serverAlias: String): String {
-        return when (target) {
-            is DuckDbAttachTarget.LocalPath ->
-                "ATTACH IF NOT EXISTS '${target.path.toAbsolutePath().toString().replace("'", "''")}' AS $serverAlias (READ_ONLY)"
-            is DuckDbAttachTarget.HttpfsS3 ->
-                "ATTACH IF NOT EXISTS '${target.s3Url.replace("'", "''")}' AS $serverAlias (READ_ONLY)"
-        }
+    private fun buildServerSideAttachSql(target: DuckDbAttachTarget, serverAlias: String): String = when (target) {
+        is DuckDbAttachTarget.LocalPath ->
+            "ATTACH IF NOT EXISTS '${target.path.toAbsolutePath().toString().replace("'", "''")}' AS $serverAlias (READ_ONLY)"
+        is DuckDbAttachTarget.HttpfsS3 ->
+            "ATTACH IF NOT EXISTS '${target.s3Url.replace("'", "''")}' AS $serverAlias (READ_ONLY)"
     }
 
     /**
@@ -159,23 +157,20 @@ internal class QuackDuckDbExecutor(
      * sequence so the server can resolve the {@code s3://} URL itself. Each
      * statement is run via the wrapper.
      */
-    private fun serverInitStatementsFor(target: DuckDbAttachTarget): List<String> {
-        return when (target) {
-            is DuckDbAttachTarget.LocalPath -> emptyList()
-            is DuckDbAttachTarget.HttpfsS3 -> listOf(
-                    "INSTALL httpfs",
-                    "LOAD httpfs",
-                    // CREATE OR REPLACE — the secret is server-instance-scoped and
-                    // shared across concurrent clients on this Quack server. Same
-                    // credentials from any client (same Trino catalog) → safe race.
-                    target.s3Config.renderCreateSecretSql())
-        }
+    private fun serverInitStatementsFor(target: DuckDbAttachTarget): List<String> = when (target) {
+        is DuckDbAttachTarget.LocalPath -> emptyList()
+        is DuckDbAttachTarget.HttpfsS3 -> listOf(
+                "INSTALL httpfs",
+                "LOAD httpfs",
+                // CREATE OR REPLACE — the secret is server-instance-scoped and
+                // shared across concurrent clients on this Quack server. Same
+                // credentials from any client (same Trino catalog) → safe race.
+                target.s3Config.renderCreateSecretSql())
     }
 
-    private fun buildInnerSelectSql(request: ExecutionRequest, serverAlias: String): String {
-        return DuckDbSelectSqlBuilder.buildSelectSql(
+    private fun buildInnerSelectSql(request: ExecutionRequest, serverAlias: String): String =
+        DuckDbSelectSqlBuilder.buildSelectSql(
                 "$serverAlias.main.$ATTACHED_TABLE", request)
-    }
 
     private class QuackExecutionContext(
             private val connection: DuckDBConnection,
@@ -186,13 +181,9 @@ internal class QuackDuckDbExecutor(
             private val attachDescription: String,
     ) : ExecutionContext {
 
-        override fun arrowReader(): ArrowReader {
-            return arrowReader
-        }
+        override fun arrowReader(): ArrowReader = arrowReader
 
-        override fun memoryUsage(): Long {
-            return allocator.getAllocatedMemory()
-        }
+        override fun memoryUsage(): Long = allocator.getAllocatedMemory()
 
         @Throws(IOException::class)
         override fun close() {
@@ -280,9 +271,8 @@ internal class QuackDuckDbExecutor(
          * this Quack server; the second is the SQL the server runs against its own
          * default {@code Connection}.
          */
-        private fun wrapAsSelect(innerSql: String): String {
-            return "SELECT * FROM system.main.quack_query_by_name('$ENGINE_CATALOG', '${escapeLiteral(innerSql)}')"
-        }
+        private fun wrapAsSelect(innerSql: String): String =
+            "SELECT * FROM system.main.quack_query_by_name('$ENGINE_CATALOG', '${escapeLiteral(innerSql)}')"
 
         /**
          * Derive a stable server-side ATTACH alias from the {@code .db} path so
@@ -306,16 +296,12 @@ internal class QuackDuckDbExecutor(
             }
         }
 
-        private fun describeAttachTarget(target: DuckDbAttachTarget): String {
-            return when (target) {
-                is DuckDbAttachTarget.LocalPath -> target.path.toString()
-                is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
-            }
+        private fun describeAttachTarget(target: DuckDbAttachTarget): String = when (target) {
+            is DuckDbAttachTarget.LocalPath -> target.path.toString()
+            is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
         }
 
-        private fun escapeLiteral(value: String): String {
-            return value.replace("'", "''")
-        }
+        private fun escapeLiteral(value: String): String = value.replace("'", "''")
 
         private val TIMEZONE_FAILURE_WARNED = ConcurrentHashMap<String, Boolean>()
 
@@ -350,9 +336,7 @@ internal class QuackDuckDbExecutor(
             }
         }
 
-        private fun firstLineOrFull(message: String): String {
-            return message.lineSequence().firstOrNull() ?: message
-        }
+        private fun firstLineOrFull(message: String): String = message.lineSequence().firstOrNull() ?: message
 
         private fun closeQuietly(vararg resources: AutoCloseable?) {
             for (r in resources) {

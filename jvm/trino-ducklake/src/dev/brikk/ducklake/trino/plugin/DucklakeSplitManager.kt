@@ -579,9 +579,8 @@ class DucklakeSplitManager @Inject constructor(
             }
         }
 
-        private fun parsePartitionValue(type: Type, value: String): Any {
-            return DucklakePartitionValueParser.parseIdentity(type, value)
-        }
+        private fun parsePartitionValue(type: Type, value: String): Any =
+            DucklakePartitionValueParser.parseIdentity(type, value)
 
         /**
          * Build the per-file {@code columnId -> partitionValue} map for IDENTITY-transform

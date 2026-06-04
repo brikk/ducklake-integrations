@@ -98,9 +98,7 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
         const val UNDERLYING_JDBC_URL: String = "jdbc:duckdb:"
 
         @JvmStatic
-        fun matches(url: String?): Boolean {
-            return url != null && url.startsWith(SYNTHETIC_URL_PREFIX)
-        }
+        fun matches(url: String?): Boolean = url != null && url.startsWith(SYNTHETIC_URL_PREFIX)
 
         /**
          * Parses `jdbc:duckdb:quack://host:port[?metadata_catalog=name]` plus

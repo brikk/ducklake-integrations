@@ -82,8 +82,8 @@ public class DucklakeAddFilesProcedure @Inject constructor(
 ) : Provider<Procedure> {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
-    override fun get(): Procedure {
-        return Procedure(
+    override fun get(): Procedure =
+        Procedure(
                 "system",
                 "add_files",
                 ImmutableList.of(
@@ -95,7 +95,6 @@ public class DucklakeAddFilesProcedure @Inject constructor(
                         Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false)),
                 ADD_FILES.bindTo(this),
                 true)
-    }
 
     @Suppress("unused") // invoked via MethodHandle
     public fun addFiles(
@@ -361,9 +360,8 @@ public class DucklakeAddFilesProcedure @Inject constructor(
             }
         }
 
-        private fun aggregateRecordCount(thriftMetadata: org.apache.parquet.format.FileMetaData): Long {
-            return thriftMetadata.getNum_rows()
-        }
+        private fun aggregateRecordCount(thriftMetadata: org.apache.parquet.format.FileMetaData): Long =
+            thriftMetadata.getNum_rows()
 
         // Post-script size: 4-byte LE FileMetaData length + 4-byte magic. Mirrors Trino's
         // MetadataReader.POST_SCRIPT_SIZE.

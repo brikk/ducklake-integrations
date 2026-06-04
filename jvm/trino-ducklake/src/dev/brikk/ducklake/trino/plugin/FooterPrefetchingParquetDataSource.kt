@@ -43,21 +43,13 @@ public class FooterPrefetchingParquetDataSource private constructor(
         prefetchedTail: Slice) : ParquetDataSource {
     private var prefetchedTail: Slice? = prefetchedTail
 
-    override fun getId(): ParquetDataSourceId {
-        return delegate.id
-    }
+    override fun getId(): ParquetDataSourceId = delegate.id
 
-    override fun getReadBytes(): Long {
-        return delegate.readBytes
-    }
+    override fun getReadBytes(): Long = delegate.readBytes
 
-    override fun getReadTimeNanos(): Long {
-        return delegate.readTimeNanos
-    }
+    override fun getReadTimeNanos(): Long = delegate.readTimeNanos
 
-    override fun getEstimatedSize(): Long {
-        return delegate.estimatedSize
-    }
+    override fun getEstimatedSize(): Long = delegate.estimatedSize
 
     @Throws(IOException::class)
     override fun readTail(length: Int): Slice {
@@ -82,17 +74,11 @@ public class FooterPrefetchingParquetDataSource private constructor(
     }
 
     @Throws(IOException::class)
-    override fun readFully(position: Long, length: Int): Slice {
-        return delegate.readFully(position, length)
-    }
+    override fun readFully(position: Long, length: Int): Slice = delegate.readFully(position, length)
 
-    override fun <K> planRead(diskRanges: ListMultimap<K, DiskRange>, memoryContext: AggregatedMemoryContext): Map<K, ChunkedInputStream> {
-        return delegate.planRead(diskRanges, memoryContext)
-    }
+    override fun <K> planRead(diskRanges: ListMultimap<K, DiskRange>, memoryContext: AggregatedMemoryContext): Map<K, ChunkedInputStream> = delegate.planRead(diskRanges, memoryContext)
 
-    override fun getMetrics(): Metrics {
-        return delegate.metrics
-    }
+    override fun getMetrics(): Metrics = delegate.metrics
 
     @Throws(IOException::class)
     override fun close() {
@@ -142,8 +128,7 @@ public class FooterPrefetchingParquetDataSource private constructor(
          * delegate as it would for a too-small hint.
          */
         @JvmStatic
-        public fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource {
-            return FooterPrefetchingParquetDataSource(delegate, prefetchedTail)
-        }
+        public fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource =
+            FooterPrefetchingParquetDataSource(delegate, prefetchedTail)
     }
 }

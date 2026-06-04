@@ -145,16 +145,14 @@ public class DucklakeSortPropertyMapper private constructor() {
             return trimmed
         }
 
-        private fun isIdentifierStart(c: Char): Boolean {
-            return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-        }
+        private fun isIdentifierStart(c: Char): Boolean =
+            c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 
-        private fun isIdentifierPart(c: Char): Boolean {
-            return isIdentifierStart(c) || (c >= '0' && c <= '9')
-        }
+        private fun isIdentifierPart(c: Char): Boolean =
+            isIdentifierStart(c) || (c >= '0' && c <= '9')
 
-        internal fun toSortOrder(direction: DucklakeSortDirection, nullOrder: DucklakeNullOrder): SortOrder {
-            return when (direction) {
+        internal fun toSortOrder(direction: DucklakeSortDirection, nullOrder: DucklakeNullOrder): SortOrder =
+            when (direction) {
                 DucklakeSortDirection.ASC -> when (nullOrder) {
                     DucklakeNullOrder.NULLS_FIRST -> SortOrder.ASC_NULLS_FIRST
                     DucklakeNullOrder.NULLS_LAST -> SortOrder.ASC_NULLS_LAST
@@ -164,6 +162,5 @@ public class DucklakeSortPropertyMapper private constructor() {
                     DucklakeNullOrder.NULLS_LAST -> SortOrder.DESC_NULLS_LAST
                 }
             }
-        }
     }
 }

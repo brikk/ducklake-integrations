@@ -177,9 +177,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
      */
     // Visibility note: package-private in Java; widened to public (rather than
     // `internal`) to preserve JVM call-compatibility with same-package callers.
-    fun forConnection(connection: Connection): DSLContext {
-        return DSL.using(connection, dialect, jooqSettings)
-    }
+    fun forConnection(connection: Connection): DSLContext =
+        DSL.using(connection, dialect, jooqSettings)
 
     override val currentSnapshotId: Long
         get() {
@@ -2131,9 +2130,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    private fun parseStatValue(columnType: String, value: String?): Comparable<*>? {
-        return DucklakeStatTypes.parseStat(columnType, value)
-    }
+    private fun parseStatValue(columnType: String, value: String?): Comparable<*>? =
+        DucklakeStatTypes.parseStat(columnType, value)
 
     private fun isWithinBounds(
         lowerBound: Comparable<*>?,
@@ -2182,17 +2180,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         // without reflection. Same-package callers (Java + Kotlin) use the unqualified
         // form `JdbcDucklakeCatalog.newCatalogUuid()`.
         @JvmStatic
-        fun newCatalogUuid(): String {
-            return V7_UUIDS.generate().toString()
-        }
+        fun newCatalogUuid(): String =
+            V7_UUIDS.generate().toString()
 
-        private fun typedMin(a: String, b: String, columnType: String): String {
-            return DucklakeStatTypes.min(a, b, columnType)
-        }
+        private fun typedMin(a: String, b: String, columnType: String): String =
+            DucklakeStatTypes.min(a, b, columnType)
 
-        private fun typedMax(a: String, b: String, columnType: String): String {
-            return DucklakeStatTypes.max(a, b, columnType)
-        }
+        private fun typedMax(a: String, b: String, columnType: String): String =
+            DucklakeStatTypes.max(a, b, columnType)
 
         private fun hasActiveView(tx: DucklakeWriteTransaction, schemaId: Long, viewName: String): Boolean {
             val view = DUCKLAKE_VIEW.`as`("view")
@@ -2362,9 +2357,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         // constraint), so accessor methods return Long. The JDBC implementation historically used
         // ResultSet.getLong() which returns 0 on SQL NULL; preserve that fallback to keep fidelity
         // with records that don't populate optional columns (e.g. file_order).
-        private fun orZero(value: Long?): Long {
-            return value ?: 0L
-        }
+        private fun orZero(value: Long?): Long =
+            value ?: 0L
 
         private fun loadExistingColumnStatsColumnIds(
             tx: DucklakeWriteTransaction,

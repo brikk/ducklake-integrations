@@ -718,9 +718,7 @@ constructor(
         }
 
         private fun closeQuietly(c: AutoCloseable?) {
-            if (c == null) {
-                return
-            }
+            c ?: return
             try {
                 c.close()
             }

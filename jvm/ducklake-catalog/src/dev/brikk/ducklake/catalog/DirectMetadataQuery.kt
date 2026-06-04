@@ -25,27 +25,16 @@ import org.jooq.ResultQuery
  */
 internal class DirectMetadataQuery : MetadataQuery
 {
-    override fun <R : Record> fetchOne(dsl: DSLContext, query: ResultQuery<R>): R?
-    {
-        return query.fetchOne()
-    }
+    override fun <R : Record> fetchOne(dsl: DSLContext, query: ResultQuery<R>): R? = query.fetchOne()
 
-    override fun <R : Record> fetch(dsl: DSLContext, query: ResultQuery<R>): List<R>
-    {
-        return query.fetch()
-    }
+    override fun <R : Record> fetch(dsl: DSLContext, query: ResultQuery<R>): List<R> = query.fetch()
 
-    override fun <T> fetch(dsl: DSLContext, query: ResultQuery<*>, mapper: RecordMapper<in Record, T>): List<T>
-    {
+    override fun <T> fetch(dsl: DSLContext, query: ResultQuery<*>, mapper: RecordMapper<in Record, T>): List<T> =
         // ResultQuery<?> doesn't carry a usable R for the typed fetch(RecordMapper)
         // overload, but jOOQ's runtime mapper invocation only needs Record — so
         // we route through DSLContext.fetch(ResultQuery) (which returns
         // Result<Record>) and apply the mapper there.
-        return dsl.fetch(query).map(mapper)
-    }
+        dsl.fetch(query).map(mapper)
 
-    override fun execute(dsl: DSLContext, mutation: Query): Int
-    {
-        return mutation.execute()
-    }
+    override fun execute(dsl: DSLContext, mutation: Query): Int = mutation.execute()
 }

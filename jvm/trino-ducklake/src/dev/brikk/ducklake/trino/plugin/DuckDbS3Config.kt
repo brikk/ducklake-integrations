@@ -75,10 +75,7 @@ data class DuckDbS3Config(
         }
 
         private fun trimmed(value: String?): Optional<String> {
-            if (value == null) {
-                return Optional.empty()
-            }
-            val t = value.trim()
+            val t = (value ?: return Optional.empty()).trim()
             return if (t.isEmpty()) Optional.empty() else Optional.of(t)
         }
 

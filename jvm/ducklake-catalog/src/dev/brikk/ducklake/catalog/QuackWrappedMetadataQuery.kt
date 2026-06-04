@@ -96,13 +96,12 @@ internal class QuackWrappedMetadataQuery(metadataCatalogName: String) : Metadata
         return if (value is Number) value.toInt() else 0
     }
 
-    private fun wrap(innerSql: String): String {
-        return ("CALL system.main.quack_query_by_name("
+    private fun wrap(innerSql: String): String =
+        ("CALL system.main.quack_query_by_name("
                 + sqlLiteral(metadataCatalogName)
                 + ", "
                 + sqlLiteral(innerSql)
                 + ")")
-    }
 
     companion object {
         private fun aliasColumnsPositionally(innerSql: String, columnCount: Int): String {
@@ -116,8 +115,7 @@ internal class QuackWrappedMetadataQuery(metadataCatalogName: String) : Metadata
             return "SELECT * FROM ($innerSql) AS _q($aliases)"
         }
 
-        private fun sqlLiteral(value: String): String {
-            return "'" + value.replace("'", "''") + "'"
-        }
+        private fun sqlLiteral(value: String): String =
+            "'" + value.replace("'", "''") + "'"
     }
 }

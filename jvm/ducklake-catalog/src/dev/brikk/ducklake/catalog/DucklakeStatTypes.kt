@@ -106,24 +106,20 @@ object DucklakeStatTypes {
     }
 
     @JvmStatic
-    fun min(a: String, b: String, canonicalType: String?): String {
-        return if (compare(a, b, canonicalType) <= 0) a else b
-    }
+    fun min(a: String, b: String, canonicalType: String?): String =
+        if (compare(a, b, canonicalType) <= 0) a else b
 
     @JvmStatic
-    fun max(a: String, b: String, canonicalType: String?): String {
-        return if (compare(a, b, canonicalType) >= 0) a else b
-    }
+    fun max(a: String, b: String, canonicalType: String?): String =
+        if (compare(a, b, canonicalType) >= 0) a else b
 
     @JvmStatic
-    fun min(a: String, b: String, numeric: Boolean): String {
-        return if (compare(a, b, numeric) <= 0) a else b
-    }
+    fun min(a: String, b: String, numeric: Boolean): String =
+        if (compare(a, b, numeric) <= 0) a else b
 
     @JvmStatic
-    fun max(a: String, b: String, numeric: Boolean): String {
-        return if (compare(a, b, numeric) >= 0) a else b
-    }
+    fun max(a: String, b: String, numeric: Boolean): String =
+        if (compare(a, b, numeric) >= 0) a else b
 
     private fun parseBoolean(value: String): Boolean {
         if (value.equals("true", ignoreCase = true) || value == "1") {

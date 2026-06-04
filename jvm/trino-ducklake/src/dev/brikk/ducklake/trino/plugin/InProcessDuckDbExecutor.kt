@@ -109,13 +109,10 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
             private val allocator: BufferAllocator?,
             private val arrowReader: ArrowReader?,
             private val attachDescription: String) : DucklakeDuckDbExecutor.ExecutionContext {
-        override fun arrowReader(): ArrowReader {
-            return arrowReader!!
-        }
+        override fun arrowReader(): ArrowReader = arrowReader!!
 
-        override fun memoryUsage(): Long {
-            return if (allocator == null) 0 else allocator.getAllocatedMemory()
-        }
+        override fun memoryUsage(): Long =
+            if (allocator == null) 0 else allocator.getAllocatedMemory()
 
         @Throws(IOException::class)
         override fun close() {
@@ -210,17 +207,15 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
             }
         }
 
-        private fun buildSelectSql(request: DucklakeDuckDbExecutor.ExecutionRequest): String {
-            return DuckDbSelectSqlBuilder.buildSelectSql(
+        private fun buildSelectSql(request: DucklakeDuckDbExecutor.ExecutionRequest): String =
+            DuckDbSelectSqlBuilder.buildSelectSql(
                     "$ATTACHED_DB.main.$ATTACHED_TABLE", request)
-        }
 
-        private fun describeAttachTarget(target: DuckDbAttachTarget): String {
-            return when (target) {
+        private fun describeAttachTarget(target: DuckDbAttachTarget): String =
+            when (target) {
                 is DuckDbAttachTarget.LocalPath -> target.path.toString()
                 is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
             }
-        }
 
         private fun closeQuietly(vararg resources: AutoCloseable?) {
             for (r in resources) {

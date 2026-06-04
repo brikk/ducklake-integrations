@@ -328,13 +328,11 @@ public object DucklakeInlinedValueConverter {
     // (notably inside inlined `list<double>`/`list<real>` text), but Java's parsers expect
     // `Infinity`/`-Infinity`/`NaN`. Map them so a non-finite list element round-trips instead
     // of throwing NumberFormatException.
-    private fun normalizeNonFiniteToken(text: String): String {
-        return when (text.lowercase()) {
-            "inf", "+inf", "infinity", "+infinity" -> "Infinity"
-            "-inf", "-infinity" -> "-Infinity"
-            "nan", "-nan" -> "NaN"
-            else -> text
-        }
+    private fun normalizeNonFiniteToken(text: String): String = when (text.lowercase()) {
+        "inf", "+inf", "infinity", "+infinity" -> "Infinity"
+        "-inf", "-infinity" -> "-Infinity"
+        "nan", "-nan" -> "NaN"
+        else -> text
     }
 
     private fun toEpochDays(value: Any): Long {

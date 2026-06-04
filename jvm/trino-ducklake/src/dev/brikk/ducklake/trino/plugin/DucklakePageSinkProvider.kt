@@ -63,18 +63,16 @@ class DucklakePageSinkProvider @Inject constructor(
             session: ConnectorSession,
             outputTableHandle: ConnectorOutputTableHandle,
             tableCredentials: Optional<ConnectorTableCredentials>,
-            pageSinkId: ConnectorPageSinkId): ConnectorPageSink {
-        return createPageSink(outputTableHandle as DucklakeWritableTableHandle, session)
-    }
+            pageSinkId: ConnectorPageSinkId): ConnectorPageSink =
+            createPageSink(outputTableHandle as DucklakeWritableTableHandle, session)
 
     override fun createPageSink(
             transactionHandle: ConnectorTransactionHandle,
             session: ConnectorSession,
             insertTableHandle: ConnectorInsertTableHandle,
             tableCredentials: Optional<ConnectorTableCredentials>,
-            pageSinkId: ConnectorPageSinkId): ConnectorPageSink {
-        return createPageSink(insertTableHandle as DucklakeWritableTableHandle, session)
-    }
+            pageSinkId: ConnectorPageSinkId): ConnectorPageSink =
+            createPageSink(insertTableHandle as DucklakeWritableTableHandle, session)
 
     override fun createMergeSink(
             transactionHandle: ConnectorTransactionHandle,
@@ -104,14 +102,13 @@ class DucklakePageSinkProvider @Inject constructor(
                 insertSink)
     }
 
-    private fun createPageSink(handle: DucklakeWritableTableHandle, session: ConnectorSession): DucklakePageSink {
-        return DucklakePageSink(
-                handle,
-                fileSystemFactory.create(session),
-                fragmentCodec,
-                parquetWriterConfig,
-                duckdbTargetWriteBytes,
-                trinoVersion,
-                pageIndexerFactory)
-    }
+    private fun createPageSink(handle: DucklakeWritableTableHandle, session: ConnectorSession): DucklakePageSink =
+            DucklakePageSink(
+                    handle,
+                    fileSystemFactory.create(session),
+                    fragmentCodec,
+                    parquetWriterConfig,
+                    duckdbTargetWriteBytes,
+                    trinoVersion,
+                    pageIndexerFactory)
 }

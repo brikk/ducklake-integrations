@@ -81,9 +81,7 @@ public open class DucklakeSessionProperties @Inject constructor() {
                         false))
     }
 
-    public open fun getSessionProperties(): List<PropertyMetadata<*>> {
-        return sessionProperties
-    }
+    public open fun getSessionProperties(): List<PropertyMetadata<*>> = sessionProperties
 
     public companion object {
         public const val READ_SNAPSHOT_ID: String = "read_snapshot_id"
@@ -124,10 +122,10 @@ public open class DucklakeSessionProperties @Inject constructor() {
         public const val PUSHDOWN_TIMESTAMP_WITH_TIMEZONE: String = "pushdown_timestamp_with_timezone"
 
         @JvmStatic
-        public fun getReadSnapshotId(session: ConnectorSession): OptionalLong {
-            val snapshotId = session.getProperty(READ_SNAPSHOT_ID, Long::class.javaObjectType)
-            return if (snapshotId == null) OptionalLong.empty() else OptionalLong.of(snapshotId)
-        }
+        public fun getReadSnapshotId(session: ConnectorSession): OptionalLong =
+            session.getProperty(READ_SNAPSHOT_ID, Long::class.javaObjectType)
+                ?.let { OptionalLong.of(it) }
+                ?: OptionalLong.empty()
 
         @JvmStatic
         public fun getReadSnapshotTimestamp(session: ConnectorSession): Optional<Instant> {
@@ -169,9 +167,8 @@ public open class DucklakeSessionProperties @Inject constructor() {
         }
 
         @JvmStatic
-        public fun getDuckDbWriterMode(session: ConnectorSession): String {
-            return session.getProperty(DUCKDB_WRITER_MODE, String::class.java)
-        }
+        public fun getDuckDbWriterMode(session: ConnectorSession): String =
+            session.getProperty(DUCKDB_WRITER_MODE, String::class.java)
 
         @JvmStatic
         private fun validateDuckDbWriterMode(value: String) {
@@ -183,9 +180,8 @@ public open class DucklakeSessionProperties @Inject constructor() {
         }
 
         @JvmStatic
-        public fun getDuckDbReadMode(session: ConnectorSession): String {
-            return session.getProperty(DUCKDB_READ_MODE, String::class.java)
-        }
+        public fun getDuckDbReadMode(session: ConnectorSession): String =
+            session.getProperty(DUCKDB_READ_MODE, String::class.java)
 
         /**
          * @return `true` iff the session has opted into Tier C pushdown

@@ -120,9 +120,7 @@ interface DucklakeDuckDbExecutor {
         fun pushedExpressions(): List<String> = pushedExpressions
         fun duckDbTimeZone(): Optional<String> = duckDbTimeZone
 
-        fun isEmptyProjection(): Boolean {
-            return projectedColumns.isEmpty()
-        }
+        fun isEmptyProjection(): Boolean = projectedColumns.isEmpty()
 
         override fun equals(other: Any?): Boolean {
             if (this === other) return true

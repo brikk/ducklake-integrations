@@ -253,12 +253,10 @@ public object DuckDbWhereClauseTranslator {
         return Optional.empty()
     }
 
-    private fun quoteIdentifier(name: String): String {
-        return '"' + name.replace("\"", "\"\"") + '"'
-    }
+    private fun quoteIdentifier(name: String): String =
+        '"' + name.replace("\"", "\"\"") + '"'
 
-    public fun formatLiteralOrThrow(type: Type, value: Any?): String {
-        return formatLiteral(type, value)
+    public fun formatLiteralOrThrow(type: Type, value: Any?): String =
+        formatLiteral(type, value)
                 .orElseThrow { IllegalArgumentException("Cannot format $type value as DuckDB literal") }
-    }
 }

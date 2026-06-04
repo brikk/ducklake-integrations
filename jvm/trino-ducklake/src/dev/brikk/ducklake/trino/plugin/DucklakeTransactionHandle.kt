@@ -29,10 +29,7 @@ open class DucklakeTransactionHandle @JsonCreator constructor(@param:JsonPropert
     constructor() : this(UUID.randomUUID())
 
     @JsonProperty
-    fun getUuid(): UUID
-    {
-        return uuid
-    }
+    fun getUuid(): UUID = uuid
 
     override fun equals(o: Any?): Boolean
     {
@@ -46,13 +43,7 @@ open class DucklakeTransactionHandle @JsonCreator constructor(@param:JsonPropert
         return uuid == that.uuid
     }
 
-    override fun hashCode(): Int
-    {
-        return uuid.hashCode()
-    }
+    override fun hashCode(): Int = uuid.hashCode()
 
-    override fun toString(): String
-    {
-        return uuid.toString()
-    }
+    override fun toString(): String = uuid.toString()
 }

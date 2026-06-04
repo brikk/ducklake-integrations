@@ -28,10 +28,7 @@ data class DucklakeMergeTableHandle @JsonCreator constructor(
         @param:JsonProperty("dataFileRanges") val dataFileRanges: List<DataFileRange>)
         : ConnectorMergeTableHandle
 {
-    override fun getTableHandle(): ConnectorTableHandle
-    {
-        return tableHandle
-    }
+    override fun getTableHandle(): ConnectorTableHandle = tableHandle
 
     @JvmRecord
     data class DataFileRange @JsonCreator constructor(
@@ -44,9 +41,6 @@ data class DucklakeMergeTableHandle @JsonCreator constructor(
             @get:JvmName("existingDeleteFilePaths")
             @param:JsonProperty("existingDeleteFilePaths") val existingDeleteFilePaths: List<String>)
     {
-        fun containsRowId(rowId: Long): Boolean
-        {
-            return rowId >= rowIdStart && rowId < rowIdStart + recordCount
-        }
+        fun containsRowId(rowId: Long): Boolean = rowId >= rowIdStart && rowId < rowIdStart + recordCount
     }
 }

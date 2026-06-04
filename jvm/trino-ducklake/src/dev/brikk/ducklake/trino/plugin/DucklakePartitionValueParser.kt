@@ -44,34 +44,18 @@ object DucklakePartitionValueParser
 {
     fun parseIdentity(type: Type, value: String): Any
     {
-        if (type.equals(VARCHAR) || type is VarcharType) {
-            return Slices.utf8Slice(value)
+        return when {
+            type.equals(VARCHAR) || type is VarcharType -> Slices.utf8Slice(value)
+            type.equals(BIGINT) -> java.lang.Long.parseLong(value)
+            type.equals(INTEGER) -> Integer.parseInt(value).toLong()
+            type.equals(SMALLINT) -> java.lang.Short.parseShort(value).toLong()
+            type.equals(TINYINT) -> java.lang.Byte.parseByte(value).toLong()
+            type.equals(DOUBLE) -> java.lang.Double.parseDouble(value)
+            type.equals(REAL) -> java.lang.Float.floatToIntBits(java.lang.Float.parseFloat(value)).toLong()
+            type.equals(DATE) -> LocalDate.parse(value).toEpochDay()
+            type.equals(BOOLEAN) -> parseBoolean(value)
+            else -> throw IllegalArgumentException("Unsupported partition value type: " + type)
         }
-        if (type.equals(BIGINT)) {
-            return java.lang.Long.parseLong(value)
-        }
-        if (type.equals(INTEGER)) {
-            return Integer.parseInt(value).toLong()
-        }
-        if (type.equals(SMALLINT)) {
-            return java.lang.Short.parseShort(value).toLong()
-        }
-        if (type.equals(TINYINT)) {
-            return java.lang.Byte.parseByte(value).toLong()
-        }
-        if (type.equals(DOUBLE)) {
-            return java.lang.Double.parseDouble(value)
-        }
-        if (type.equals(REAL)) {
-            return java.lang.Float.floatToIntBits(java.lang.Float.parseFloat(value)).toLong()
-        }
-        if (type.equals(DATE)) {
-            return LocalDate.parse(value).toEpochDay()
-        }
-        if (type.equals(BOOLEAN)) {
-            return parseBoolean(value)
-        }
-        throw IllegalArgumentException("Unsupported partition value type: " + type)
     }
 
     // Boolean.parseBoolean silently maps everything that isn't "true" to false, so an
@@ -82,12 +66,10 @@ object DucklakePartitionValueParser
     // catch(RuntimeException) blocks fall back safely (don't-prune / NULL) instead of
     // silently producing the wrong value.
     private fun parseBoolean(value: String): Boolean {
-        if (value.equals("true", ignoreCase = true) || value == "1") {
-            return true
+        return when {
+            value.equals("true", ignoreCase = true) || value == "1" -> true
+            value.equals("false", ignoreCase = true) || value == "0" -> false
+            else -> throw IllegalArgumentException("Invalid boolean partition value: " + value)
         }
-        if (value.equals("false", ignoreCase = true) || value == "0") {
-            return false
-        }
-        throw IllegalArgumentException("Invalid boolean partition value: " + value)
     }
 }

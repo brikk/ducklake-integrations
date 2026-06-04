@@ -64,9 +64,8 @@ public object DucklakePartitionComputer {
             block: Block,
             position: Int,
             transform: DucklakePartitionTransform,
-            encoding: DucklakeTemporalPartitionEncoding): String? {
-        return computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding)
-    }
+            encoding: DucklakeTemporalPartitionEncoding): String? =
+            computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding)
 
     public fun computePartitionValue(
             columnType: Type,

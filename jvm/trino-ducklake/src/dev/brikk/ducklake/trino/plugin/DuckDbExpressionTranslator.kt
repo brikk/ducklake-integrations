@@ -314,9 +314,8 @@ class DuckDbExpressionTranslator private constructor() {
          */
         fun translateConjuncts(
                 expression: ConnectorExpression,
-                assignments: Map<String, ColumnHandle>): List<String> {
-            return translateConjuncts(expression, assignments, null)
-        }
+                assignments: Map<String, ColumnHandle>): List<String> =
+                translateConjuncts(expression, assignments, null)
 
         fun translateConjuncts(
                 expression: ConnectorExpression,
@@ -336,11 +335,10 @@ class DuckDbExpressionTranslator private constructor() {
             return out.toList()
         }
 
-        private fun isTautologyTrue(expression: ConnectorExpression): Boolean {
-            return expression is Constant &&
+        private fun isTautologyTrue(expression: ConnectorExpression): Boolean =
+                expression is Constant &&
                     expression.getType() is BooleanType &&
                     expression.getValue() == true
-        }
 
         private fun conjuncts(expression: ConnectorExpression): List<ConnectorExpression> {
             if (expression is Call &&
@@ -360,9 +358,8 @@ class DuckDbExpressionTranslator private constructor() {
          */
         fun translate(
                 expression: ConnectorExpression,
-                assignments: Map<String, ColumnHandle>): Optional<String> {
-            return translate(expression, assignments, null)
-        }
+                assignments: Map<String, ColumnHandle>): Optional<String> =
+                translate(expression, assignments, null)
 
         fun translate(
                 expression: ConnectorExpression,
