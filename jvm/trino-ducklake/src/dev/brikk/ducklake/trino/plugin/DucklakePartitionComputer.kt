@@ -24,6 +24,8 @@ import io.trino.spi.type.DateType
 import io.trino.spi.type.DateType.DATE
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.LongTimestamp
+import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.RealType.REAL
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimestampType
@@ -141,29 +143,27 @@ public object DucklakePartitionComputer {
             return LocalDate.ofEpochDay(days.toLong()).atStartOfDay()
         }
         if (columnType is TimestampType) {
-            val timestampType: TimestampType = columnType
-            if (timestampType.isShort()) {
-                val epochMicros = timestampType.getLong(block, position)
+            if (columnType.isShort()) {
+                val epochMicros = columnType.getLong(block, position)
                 val epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND)
                 val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND).toInt()) * 1000
                 return LocalDateTime.ofEpochSecond(epochSeconds, nanoAdjustment, ZoneOffset.UTC)
             }
             // Long timestamp (precision > 6)
-            val longTs: io.trino.spi.type.LongTimestamp = timestampType.getObject(block, position) as io.trino.spi.type.LongTimestamp
+            val longTs: LongTimestamp = columnType.getObject(block, position) as LongTimestamp
             val epochMicros = longTs.getEpochMicros()
             val epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND)
             val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND) * 1000 + longTs.getPicosOfMicro() / 1000).toInt()
             return LocalDateTime.ofEpochSecond(epochSeconds, nanoAdjustment, ZoneOffset.UTC)
         }
         if (columnType is TimestampWithTimeZoneType) {
-            val tzType: TimestampWithTimeZoneType = columnType
-            if (tzType.isShort()) {
-                val packedValue = tzType.getLong(block, position)
+            if (columnType.isShort()) {
+                val packedValue = columnType.getLong(block, position)
                 val epochMillis = unpackMillisUtc(packedValue)
                 return Instant.ofEpochMilli(epochMillis).atOffset(ZoneOffset.UTC).toLocalDateTime()
             }
-            val longTz: io.trino.spi.type.LongTimestampWithTimeZone =
-                    tzType.getObject(block, position) as io.trino.spi.type.LongTimestampWithTimeZone
+            val longTz: LongTimestampWithTimeZone =
+                    columnType.getObject(block, position) as LongTimestampWithTimeZone
             return Instant.ofEpochMilli(longTz.getEpochMillis())
                     .atOffset(ZoneOffset.UTC)
                     .toLocalDateTime()
@@ -243,25 +243,23 @@ public object DucklakePartitionComputer {
             return murmur3_32_fixed().hashLong(DATE.getInt(block, position).toLong()).asInt()
         }
         if (type is TimestampType) {
-            val timestampType: TimestampType = type
             val epochMicros: Long
-            if (timestampType.isShort()) {
-                epochMicros = timestampType.getLong(block, position)
+            if (type.isShort()) {
+                epochMicros = type.getLong(block, position)
             }
             else {
-                epochMicros = (timestampType.getObject(block, position) as io.trino.spi.type.LongTimestamp).getEpochMicros()
+                epochMicros = (type.getObject(block, position) as LongTimestamp).getEpochMicros()
             }
             return murmur3_32_fixed().hashLong(epochMicros).asInt()
         }
         if (type is TimestampWithTimeZoneType) {
-            val tzType: TimestampWithTimeZoneType = type
             val epochMicros: Long
-            if (tzType.isShort()) {
-                epochMicros = unpackMillisUtc(tzType.getLong(block, position)) * 1_000L
+            if (type.isShort()) {
+                epochMicros = unpackMillisUtc(type.getLong(block, position)) * 1_000L
             }
             else {
-                val tz: io.trino.spi.type.LongTimestampWithTimeZone =
-                        tzType.getObject(block, position) as io.trino.spi.type.LongTimestampWithTimeZone
+                val tz: LongTimestampWithTimeZone =
+                        type.getObject(block, position) as LongTimestampWithTimeZone
                 epochMicros = tz.getEpochMillis() * 1_000L + tz.getPicosOfMilli() / 1_000_000L
             }
             return murmur3_32_fixed().hashLong(epochMicros).asInt()

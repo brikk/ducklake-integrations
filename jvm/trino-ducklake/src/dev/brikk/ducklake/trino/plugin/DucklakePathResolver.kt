@@ -20,11 +20,10 @@ import dev.brikk.ducklake.catalog.DucklakeTable
 
 import java.util.Optional
 
-open class DucklakePathResolver(catalog: DucklakeCatalog, configuredDataPath: String?)
+open class DucklakePathResolver(
+        private val catalog: DucklakeCatalog,
+        private val configuredDataPath: String?)
 {
-    private val catalog: DucklakeCatalog = catalog
-    private val configuredDataPath: String? = configuredDataPath
-
     @Inject
     constructor(catalog: DucklakeCatalog, config: DucklakeConfig)
             : this(catalog, config.getDataPath())
@@ -66,9 +65,9 @@ open class DucklakePathResolver(catalog: DucklakeCatalog, configuredDataPath: St
         private fun joinPaths(parent: String, child: String): String
         {
             if (parent.endsWith("/")) {
-                return parent + child
+                return "$parent$child"
             }
-            return parent + "/" + child
+            return "$parent/$child"
         }
     }
 }

@@ -46,11 +46,8 @@ enum class DucklakeSortDirection {
     ;
 
     companion object {
-        @JvmStatic
         fun fromCatalog(value: String?): DucklakeSortDirection {
-            if (value == null) {
-                throw IllegalArgumentException("sort_direction is null")
-            }
+            value ?: throw IllegalArgumentException("sort_direction is null")
             return when (value.trim().uppercase(Locale.ROOT)) {
                 "ASC" -> ASC
                 "DESC" -> DESC
@@ -70,11 +67,8 @@ enum class DucklakeNullOrder {
     ;
 
     companion object {
-        @JvmStatic
         fun fromCatalog(value: String?): DucklakeNullOrder {
-            if (value == null) {
-                throw IllegalArgumentException("null_order is null")
-            }
+            value ?: throw IllegalArgumentException("null_order is null")
             return when (value.trim().uppercase(Locale.ROOT)) {
                 "NULLS_FIRST" -> NULLS_FIRST
                 "NULLS_LAST" -> NULLS_LAST

@@ -11,6 +11,32 @@ so the failures can be re-issued correctly in a follow-up pass.
 | ducklake-catalog | 33 | 110 | 0 / 0 / 0 |
 | trino-ducklake | 77 | 862 | 0 / 0 / 0 |
 
+## ✅ Resolution (2026-06-04) — all 6 re-issued and landed
+
+All six misfires are now fixed; baseline unchanged (catalog 33/110, trino 77/862, 0/0/0).
+
+- **Already corrected in the `more idiomatic updates` commit** (the data-class recipe was
+  re-applied with `val` on the ctor param, exactly as the systemic lesson below prescribes):
+  `DucklakePagePartitioner` (fold + `.map{}` + templates), `DucklakeAddFilesProcedure` (L83 fold —
+  all five params now `private val`), `DucklakeMergeSink` (L66 fold — all eight params now
+  `private val`).
+- **Fixed in this follow-up pass:**
+  - `SortTypes.kt` (ex-`DucklakeSortDirection`) — dropped the two surviving `@JvmStatic` on the
+    enum `fromCatalog` companions (verified no Java caller: doris doesn't reference the sort enums,
+    the only callers are Kotlin companion access in `JdbcDucklakeCatalog.kt:605-606`) and applied
+    the elvis null-check idiom.
+  - `DucklakePathResolver.kt` — folded `catalog`/`configuredDataPath` into the primary ctor as
+    `private val`; string templates in `joinPaths`. The malformed L43 `...`-placeholder finding was
+    **discarded** as recommended.
+  - `DucklakePartitionComputer.kt` — the re-issue: removed the four redundant smart-cast aliases
+    (`timestampType`/`tzType` in `extractLocalDateTime` and `murmur3Hash`) and used the smart-cast
+    `columnType`/`type` directly; added `import io.trino.spi.type.LongTimestamp` +
+    `LongTimestampWithTimeZone` and switched the inline FQNs to the short names. (Two pre-existing
+    `.toInt()` "redundant conversion" warnings on the long-timestamp branch are unrelated and left
+    untouched — behavior-sensitive, out of scope.)
+
+The detailed per-unit diagnoses below are kept as the historical record of what went wrong.
+
 ## At a glance
 
 | Unit | Outcome | Category at fault | Net repo change |
