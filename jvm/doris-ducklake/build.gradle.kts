@@ -1,18 +1,23 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
-    `java-library`
+    id("buildlogic.kotlin.library")
 }
 
 version = "0.0.1"
 
-// Doris FE pins to JDK 17. Compile with the project-wide JDK 25 toolchain (one toolchain across
-// all modules) but emit JDK 17 bytecode/ABI so the plugin classes load under FE's JVM. Same
-// approach as :ducklake-catalog.
+// Doris FE pins to JDK 17, so emit JDK 17 bytecode/ABI — but compile with the project-wide
+// JDK 25 toolchain (from buildlogic.kotlin.common). Now that this module is Kotlin, the Kotlin
+// compiler emits 17 too (jvmTarget below), so there is NO per-module JDK-17 toolchain anymore —
+// the whole tree builds on one toolchain (25). Same approach as :ducklake-catalog.
 java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
-    }
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
 }
 
 // mavenLocal is required ONLY for this module: the Doris fe-connector-api / spi
@@ -26,17 +31,6 @@ repositories {
         filter { includeGroup("org.apache.doris") }
     }
     mavenCentral()
-}
-
-sourceSets {
-    main {
-        java.setSrcDirs(listOf("src"))
-        resources.setSrcDirs(listOf("resources"))
-    }
-    test {
-        java.setSrcDirs(listOf("test/src"))
-        resources.setSrcDirs(listOf("test/resources"))
-    }
 }
 
 val dorisVersion = "1.2-SNAPSHOT"
@@ -55,13 +49,8 @@ dependencies {
     // Bundled in the plugin zip; FE classloader has no Postgres driver of its own.
     runtimeOnly(libs.postgres.jdbc)
 
-    testImplementation(platform(libs.junit.bom))
-    testImplementation(libs.junit.jupiter.api)
-    testRuntimeOnly(libs.junit.jupiter.engine)
-    testRuntimeOnly(libs.junit.platform.launcher)
-    testImplementation(libs.assertj.core)
-
     // SPI types are compileOnly above; tests instantiate the plugin so they need them too.
+    // (junit/assertj/kotlin-test come from buildlogic.kotlin.common.)
     testImplementation("org.apache.doris:fe-connector-api:$dorisVersion")
     testImplementation("org.apache.doris:fe-connector-spi:$dorisVersion")
     // Parity test serializes TFileRangeDesc with TSerializer, so thrift classes
@@ -78,10 +67,6 @@ dependencies {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
-}
-
-tasks.test {
-    useJUnitPlatform()
 }
 
 // Plugin zip mirroring fe-connector-iceberg/src/main/assembly/plugin-zip.xml.
