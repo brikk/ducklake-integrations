@@ -225,7 +225,6 @@ object DucklakeTemporalPartitionMatcher {
         }
     }
 
-    @JvmRecord
     private data class TemporalValue(val date: LocalDate, val epochDay: Long, val epochHour: Long, val hourOfDay: Int) {
         companion object {
             @JvmStatic

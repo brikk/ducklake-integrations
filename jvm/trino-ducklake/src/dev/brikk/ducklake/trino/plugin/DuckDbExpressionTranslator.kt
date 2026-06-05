@@ -746,7 +746,6 @@ class DuckDbExpressionTranslator private constructor() {
         fun accepts(args: List<ConnectorExpression>, session: ConnectorSession?): Boolean
     }
 
-    @JvmRecord
     data class NameArity(val name: String, val arity: Int)
 
     /**
@@ -802,10 +801,8 @@ class DuckDbExpressionTranslator private constructor() {
             }
         }
 
-        @JvmRecord
         private data class MethodPair(val getPattern: java.lang.reflect.Method?, val getEscape: java.lang.reflect.Method?)
 
-        @JvmRecord
         data class Extracted(val pattern: String, val escape: Char?)
     }
 }

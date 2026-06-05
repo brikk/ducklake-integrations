@@ -227,6 +227,5 @@ object DucklakeDeleteFileReader {
         return Location.of(Path.of(path).toUri().toString())
     }
 
-    @JvmRecord
     private data class DeleteFileColumn(val columnName: String, val columnType: Type, val field: Field)
 }

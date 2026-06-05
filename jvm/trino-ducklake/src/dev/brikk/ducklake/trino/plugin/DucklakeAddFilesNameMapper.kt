@@ -99,7 +99,6 @@ internal class DucklakeAddFilesNameMapper(
      * parquet column index so {@code parquetColumnIndex} on later targets
      * stays aligned with {@code RowGroup.columns}.
      */
-    @JvmRecord
     data class Result(
             val nameMap: DucklakeNameMap,
             val topLevelMatches: List<TopLevelMatch>,
@@ -112,7 +111,6 @@ internal class DucklakeAddFilesNameMapper(
      * is the column's position in the parquet root schema (in file order), used to
      * align the existing stats extractor's positional column lookup.
      */
-    @JvmRecord
     data class TopLevelMatch(
             val parquetIndex: Int,
             val fieldId: Long,
