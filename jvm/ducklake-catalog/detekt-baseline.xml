@@ -1,0 +1,43 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:InterveningChanges.kt:InterveningChanges.Companion$private fun applyEntry</ID>
+    <ID>CyclomaticComplexMethod:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun applyInsertFragments</ID>
+    <ID>LargeClass:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog : DucklakeCatalog</ID>
+    <ID>LongMethod:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$override fun getDataFiles: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>LongMethod:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun applyInsertFragments</ID>
+    <ID>LongMethod:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun attemptWriteTransaction</ID>
+    <ID>LongMethod:JdbcDucklakeCatalogTestDataGenerator.kt:JdbcDucklakeCatalogTestDataGenerator$@JvmStatic @Throws(Exception::class) fun generateIsolatedCatalog: IsolatedCatalog</ID>
+    <ID>MayBeConstant:ConcurrentWriterHarness.kt:ConcurrentWriterHarness$@JvmField val LOSER_THREAD_NAME: String = "concurrent-writer-harness-loser"</ID>
+    <ID>NestedBlockDepth:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun attemptWriteTransaction</ID>
+    <ID>NestedBlockDepth:QuackJdbcProbeTest.kt:QuackJdbcProbeTest$@Test fun quackRoundTripBetweenTwoEmbeddedConnections</ID>
+    <ID>SwallowedException:DucklakeStatTypes.kt:DucklakeStatTypes$e: RuntimeException</ID>
+    <ID>SwallowedException:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: RuntimeException</ID>
+    <ID>ThrowsCount:ConcurrentWriterHarness.kt:ConcurrentWriterHarness$@JvmStatic @JvmOverloads @Throws(InterruptedException::class) fun runWinnerWhileLoserParked: Result</ID>
+    <ID>ThrowsCount:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun attemptWriteTransaction</ID>
+    <ID>ThrowsCount:WriteTransactionRetry.kt:WriteTransactionRetry$@JvmStatic fun retryOnConflict</ID>
+    <ID>TooGenericExceptionCaught:DucklakeStatTypes.kt:DucklakeStatTypes$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: RuntimeException</ID>
+    <ID>TooGenericExceptionThrown:ConcurrentWriterHarness.kt:ConcurrentWriterHarness$throw RuntimeException(e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakeWriteTransaction.kt:DucklakeWriteTransaction$throw RuntimeException("Schema not found: $schemaName")</ID>
+    <ID>TooGenericExceptionThrown:DucklakeWriteTransaction.kt:DucklakeWriteTransaction$throw RuntimeException("Table not found: $tableName")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("Cannot drop schema $schemaName: schema is not empty")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("Column not found: $columnId")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("Failed to $operationDescription", e)</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("Partition column not found: ${field.columnName}")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("Relation already exists: $targetSchemaName.$targetViewName")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("View not found: $viewId")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$throw RuntimeException("View not found: schema_id=$schemaId, view_name=$viewName")</ID>
+    <ID>TooGenericExceptionThrown:JdbcDucklakeCatalogTestDataGenerator.kt:JdbcDucklakeCatalogTestDataGenerator$throw RuntimeException("Failed to delete $path", e)</ID>
+    <ID>TooGenericExceptionThrown:TestingDucklakeLocalDuckDbCatalogFixture.kt:TestingDucklakeLocalDuckDbCatalogFixture$throw RuntimeException("Failed to create local-DuckDB catalog root dir", ex)</ID>
+    <ID>TooGenericExceptionThrown:WriteTransactionRetry.kt:WriteTransactionRetry$throw RuntimeException( "Interrupted while waiting to retry $operationDescription", ie, )</ID>
+    <ID>TooManyFunctions:CatalogQueries.kt:CatalogQueries$Companion</ID>
+    <ID>TooManyFunctions:ConflictMatrix.kt:ConflictMatrix</ID>
+    <ID>TooManyFunctions:DucklakeCatalog.kt:DucklakeCatalog</ID>
+    <ID>TooManyFunctions:DucklakeWriteTransaction.kt:DucklakeWriteTransaction</ID>
+    <ID>TooManyFunctions:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog : DucklakeCatalog</ID>
+    <ID>TooManyFunctions:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$Companion</ID>
+  </CurrentIssues>
+</SmellBaseline>

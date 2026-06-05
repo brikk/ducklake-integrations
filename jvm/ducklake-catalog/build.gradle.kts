@@ -10,9 +10,19 @@ plugins {
     id("buildlogic.kotlin.library")
     alias(libs.plugins.jooq)
     `java-test-fixtures`
+    alias(libs.plugins.detekt)
 }
 
 version = "0.0.1"
+
+// Idiomatic-Kotlin quality gate (detekt 2.0; jvmTarget read from Kotlin compilerOptions).
+// Custom src/test layout; generated jOOQ sources are Java so detekt ignores them.
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    baseline = file("detekt-baseline.xml")
+    source.setFrom("src", "test", "testFixtures")
+}
 
 // JDK 17 ABI so this library is consumable by the Doris fe-connector plugin,
 // whose FE is pinned to JDK 17. Toolchain remains 25 (set in buildlogic.kotlin.common);

@@ -16,6 +16,7 @@ hikari = "7.0.2"
 containers = "2.0.5"
 jooq = "3.19.22"
 roaring-bitmap = "1.3.0"
+detekt = "2.0.0-alpha.3"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -78,3 +79,4 @@ kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref 
 kotlin-plugin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 terpal-sql = { id = "io.exoquery.terpal-plugin", version.ref = "terpal-sql-plugin" }
 jooq = { id = "org.jooq.jooq-codegen-gradle", version.ref = "jooq" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }

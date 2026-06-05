@@ -1,0 +1,221 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ComplexCondition:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$name.catalogSchema.isEmpty &amp;&amp; "concat" == name.name &amp;&amp; args.size &gt;= 2 &amp;&amp; call.type is VarcharType</ID>
+    <ID>ComplexCondition:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$type is BigintType || type is IntegerType || type is SmallintType || type is TinyintType</ID>
+    <ID>ComplexCondition:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT</ID>
+    <ID>ComplexCondition:DuckDbWriterSupport.kt:DuckDbWriterSupport$type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT</ID>
+    <ID>ComplexCondition:DucklakeAddFilesTypeChecker.kt:DucklakeAddFilesTypeChecker.Companion$target is TinyintType || target is SmallintType || target is IntegerType || target is BigintType</ID>
+    <ID>ComplexCondition:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$trinoType == TINYINT || trinoType == SMALLINT || trinoType == INTEGER || trinoType == BIGINT</ID>
+    <ID>ComplexCondition:DucklakeMetadata.kt:DucklakeMetadata.Companion$type == BIGINT || type == INTEGER || type == SMALLINT || type == TINYINT</ID>
+    <ID>ComplexCondition:DucklakeMetadata.kt:DucklakeMetadata.Companion$type == DATE || type == TIMESTAMP_MILLIS || type == TIMESTAMP_MICROS || type == TIMESTAMP_TZ_MILLIS || type == TIMESTAMP_TZ_MICROS</ID>
+    <ID>ComplexCondition:DucklakeMetadata.kt:DucklakeMetadata.Companion$versionType === SMALLINT || versionType === TINYINT || versionType === INTEGER || versionType === BIGINT</ID>
+    <ID>ComplexCondition:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$nonMonotonicCalendar &amp;&amp; (range.lowValue.isEmpty || range.highValue.isEmpty || !inSameCalendarParentPeriod(columnType, range.lowValue.get(), range.highValue.get(), transform))</ID>
+    <ID>ComplexCondition:TrinoTimeZoneNormaliser.kt:TrinoTimeZoneNormaliser$trinoZoneId.length == 6 &amp;&amp; (trinoZoneId[0] == '+' || trinoZoneId[0] == '-') &amp;&amp; trinoZoneId[3] == ':' &amp;&amp; isAsciiDigit(trinoZoneId[1]) &amp;&amp; isAsciiDigit(trinoZoneId[2]) &amp;&amp; isAsciiDigit(trinoZoneId[4]) &amp;&amp; isAsciiDigit(trinoZoneId[5])</ID>
+    <ID>CyclomaticComplexMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateTimestampVector</ID>
+    <ID>CyclomaticComplexMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateVector</ID>
+    <ID>CyclomaticComplexMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun toArrowType: ArrowType</ID>
+    <ID>CyclomaticComplexMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
+    <ID>CyclomaticComplexMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
+    <ID>CyclomaticComplexMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun appendValue</ID>
+    <ID>CyclomaticComplexMethod:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun toDuckDbSqlType: String</ID>
+    <ID>CyclomaticComplexMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
+    <ID>CyclomaticComplexMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
+    <ID>CyclomaticComplexMethod:DucklakeAddFilesTypeChecker.kt:DucklakeAddFilesTypeChecker.Companion$private fun isCompatible: Boolean</ID>
+    <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun convertColumn: Block</ID>
+    <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampColumn</ID>
+    <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampTzColumn</ID>
+    <ID>CyclomaticComplexMethod:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$fun convertJdbcValue: Any?</ID>
+    <ID>CyclomaticComplexMethod:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$private fun parseDucklakeListText: Array&lt;Any?&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
+    <ID>CyclomaticComplexMethod:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$private fun createParquetPageSource: ConnectorPageSource</ID>
+    <ID>CyclomaticComplexMethod:DucklakePartitionComputer.kt:DucklakePartitionComputer$private fun murmur3Hash: Int</ID>
+    <ID>CyclomaticComplexMethod:DucklakeSortPropertyMapper.kt:DucklakeSortPropertyMapper.Companion$internal fun parseColumnReference: String?</ID>
+    <ID>CyclomaticComplexMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneDataFiles: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$fun extractStats: List&lt;DucklakeFileColumnStats&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
+    <ID>CyclomaticComplexMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
+    <ID>CyclomaticComplexMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
+    <ID>ForbiddenComment:DucklakeTypeConverter.kt:DucklakeTypeConverter$// TODO: Add validation to ensure values don't exceed signed range</ID>
+    <ID>LargeClass:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator</ID>
+    <ID>LargeClass:DucklakeMetadata.kt:DucklakeMetadata : ConnectorMetadata</ID>
+    <ID>LargeClass:TestDuckDbExpressionTranslator.kt:TestDuckDbExpressionTranslator</ID>
+    <ID>LargeClass:TestDucklakePartitionPruning.kt:TestDucklakePartitionPruning</ID>
+    <ID>LongMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateTimestampVector</ID>
+    <ID>LongMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateVector</ID>
+    <ID>LongMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
+    <ID>LongMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun appendValue</ID>
+    <ID>LongMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
+    <ID>LongMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
+    <ID>LongMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$private fun buildFragment: dev.brikk.ducklake.catalog.DucklakeWriteFragment</ID>
+    <ID>LongMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun convertColumn: Block</ID>
+    <ID>LongMethod:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator$@JvmStatic @Throws(Exception::class) internal fun generateTestCatalog</ID>
+    <ID>LongMethod:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
+    <ID>LongMethod:DucklakeMergeSink.kt:DucklakeMergeSink$@Throws(IOException::class) private fun writeDeleteFile: DucklakeDeleteFragment</ID>
+    <ID>LongMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun applyFilter: Optional&lt;ConstraintApplicationResult&lt;ConnectorTableHandle&gt;&gt;</ID>
+    <ID>LongMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
+    <ID>LongMethod:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$private fun createParquetPageSource: ConnectorPageSource</ID>
+    <ID>LongMethod:DucklakeParquetTypeUtils.kt:DucklakeParquetTypeUtils$fun constructField: Optional&lt;Field&gt;</ID>
+    <ID>LongMethod:DucklakePuffinDeleteReader.kt:DucklakePuffinDeleteReader$@Throws(IOException::class) fun decodeBlob: Set&lt;Long&gt;</ID>
+    <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$override fun getSplits: ConnectorSplitSource</ID>
+    <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>LongMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
+    <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
+    <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
+    <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
+    <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect</ID>
+    <ID>LongMethod:TestDucklakeCrossEngineTypeAudit.kt:TestDucklakeCrossEngineTypeAudit$@Test @Throws(Exception::class) fun testDuckdbInlineAlterThenInlineMatchesTrino</ID>
+    <ID>LongMethod:TestDucklakeDuckDbExecutorBackends.kt:TestDucklakeDuckDbExecutorBackends$@Test @Throws(Exception::class) fun sessionTimeZonePropagatesToBothBackends</ID>
+    <ID>LongMethod:TestTrinoFunctionAliases.kt:TestTrinoFunctionAliases.Companion$@JvmStatic fun semanticCases: List&lt;SemanticCase&gt;</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeBucketPartitionMatcher.kt:DucklakeBucketPartitionMatcher$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$while</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeMetadata.kt:DucklakeMetadata$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeSortPropertyMapper.kt:DucklakeSortPropertyMapper.Companion$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeSplitManager.kt:DucklakeSplitManager$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeSplitManager.kt:DucklakeSplitManager.Companion$for</ID>
+    <ID>LoopWithTooManyJumpStatements:TestDucklakeCatalog.kt:TestDucklakeCatalog$while</ID>
+    <ID>LoopWithTooManyJumpStatements:TestDucklakeCatalogSnapshotPinningIntegration.kt:TestDucklakeCatalogSnapshotPinningIntegration.Companion$while</ID>
+    <ID>MaxLineLength:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure.Companion$val isParquetMagic = b4 == 'P'.code.toByte() &amp;&amp; b5 == 'A'.code.toByte() &amp;&amp; b6 == 'R'.code.toByte() &amp;&amp; (b7 == '1'.code.toByte() || b7 == 'E'.code.toByte())</ID>
+    <ID>MaxLineLength:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator$"ALTER TABLE ducklake_db.test_schema.timestamp_partitioned_table SET PARTITIONED BY (year(inserted_at), month(inserted_at), day(inserted_at))"</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Approximate logical input bytes appended before the DuckDB-format writer rolls to a new .db file. On-disk size will be smaller depending on data compressibility — typically 3-5×.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Deprecated. DuckLake 1.0 settled on calendar; epoch path retained for compatibility with pre-resolution catalogs. Values: calendar (default, spec-conformant) or epoch.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Deprecated. If true, temporal partition pruning keeps files unless both calendar and epoch interpretations exclude them. Only relevant when reading mixed-encoding catalogs from before the DuckLake 1.0 calendar-only resolution.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Filesystem path to the trino_parity.duckdb_extension binary (https://github.com/brikk/duckdb-trino-parity-extension). When set, executors LOAD this extension on every DuckDB attach instead of parsing the in-tree trino-function-aliases.sql resource — faster per-split setup, and the only source of truth for the trino_&lt;name&gt; macros + trino_meta() catalog. If unset, falls back to the in-tree SQL replay (current default). The path is passed to DuckDB's LOAD '&lt;path&gt;'; allow_unsigned_extensions is enabled before LOAD.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Hostname of the Quack-serving DuckDB instance used when ducklake.execution-engine=quack. Required for the quack engine; ignored otherwise.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Size threshold for the 'auto' duckdb_read_mode: data files at or above this size stream via DuckDB's httpfs extension; smaller files materialize to local tmp first. Ignored when duckdb_read_mode is set explicitly to 'materialize' or 'httpfs'.")</ID>
+    <ID>MaxLineLength:DucklakeConfig.kt:DucklakeConfig$@ConfigDescription("Where the DuckDB-format read path executes: 'duckdb_local' (default — embedded DuckDB in the Trino worker JVM), 'quack' (out-of-process DuckDB reached over the Quack RPC protocol), or 'swanlake' (out-of-process DuckDB over Arrow Flight SQL — reserved). For 'quack', set ducklake.quack.host/port/token. The .db file must be reachable by the chosen engine — for 'quack' that means either a shared local path (multi-container pod) or s3:// access (not yet implemented on the quack path).")</ID>
+    <ID>MaxLineLength:DucklakeMetadata.kt:DucklakeMetadata$:</ID>
+    <ID>MaxLineLength:DucklakeMetadata.kt:DucklakeMetadata$if</ID>
+    <ID>MaxLineLength:DucklakeMetadata.kt:DucklakeMetadata$override</ID>
+    <ID>MaxLineLength:DucklakePageSourceProviderFactory.kt:DucklakePageSourceProviderFactory$return DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache, duckDbS3Config, ducklakeConfig, executorFactory)</ID>
+    <ID>MaxLineLength:DucklakeSessionProperties.kt:DucklakeSessionProperties$"Read strategy for duckdb-format data files: 'httpfs' (default; DuckDB streams blocks from S3 directly via the httpfs extension and maintains its own warm cache across queries), 'materialize' (download whole .db file to local tmp then ATTACH; useful when many small reads dominate), or 'auto' (picks per-file based on ducklake.duckdb.auto-httpfs-threshold). No effect when data_file_format is 'parquet'."</ID>
+    <ID>MaxLineLength:DucklakeSessionProperties.kt:DucklakeSessionProperties$"Writer implementation for the duckdb format: 'arrow_stream' (default — Page → Arrow → INSERT FROM registered stream, columnar) or 'appender' (JDBC Appender, per-cell JNI; kept for comparison). No effect when data_file_format is 'parquet'."</ID>
+    <ID>MaxLineLength:DucklakeSnapshotResolver.kt:DucklakeSnapshotResolver$private val catalogDefaultSnapshotTimestamp: Optional&lt;Instant&gt; = requireNotNull(catalogDefaultSnapshotTimestamp) { "catalogDefaultSnapshotTimestamp is null" }</ID>
+    <ID>MaxLineLength:DucklakeSplit.kt:DucklakeSplit$:</ID>
+    <ID>MaxLineLength:DucklakeSplitManager.kt:DucklakeSplitManager$.</ID>
+    <ID>MaxLineLength:DucklakeTableProperties.kt:DucklakeTableProperties$"Data file format for this table's CTAS payload: 'parquet' (default) or 'duckdb'. Overrides the session-level data_file_format for this CREATE only."</ID>
+    <ID>MaxLineLength:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$private</ID>
+    <ID>MaxLineLength:FooterPrefetchingParquetDataSource.kt:FooterPrefetchingParquetDataSource$override fun &lt;K&gt; planRead: Map&lt;K, ChunkedInputStream&gt;</ID>
+    <ID>MaxLineLength:TestDucklakeDelete.kt:TestDucklakeDelete$computeActual("INSERT INTO test_schema.delete_where VALUES (1, 'Alice', 100.0), (2, 'Bob', 200.0), (3, 'Charlie', 150.0), (4, 'Diana', 300.0), (5, 'Eve', 50.0)")</ID>
+    <ID>MaxLineLength:TestDucklakeDuckDbArrowStreamWriter.kt:TestDucklakeDuckDbArrowStreamWriter$" (1, true, CAST(127 AS TINYINT), CAST(32000 AS SMALLINT), 9223372036854775000, CAST(1.5 AS REAL), CAST(2.71828 AS DOUBLE), CAST('alpha' AS VARCHAR)), "</ID>
+    <ID>MaxLineLength:TestDucklakeDuckDbArrowStreamWriter.kt:TestDucklakeDuckDbArrowStreamWriter$" (2, false, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), -9223372036854775000, CAST(-3.5 AS REAL), CAST(-1.0 AS DOUBLE), CAST('beta' AS VARCHAR))"</ID>
+    <ID>MaxLineLength:TestDucklakeDuckDbExecutorBackends.kt:TestDucklakeDuckDbExecutorBackends$QuackDuckDbExecutor(quackServer!!.host, quackServer!!.mappedPort, quackServer!!.token, dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)</ID>
+    <ID>MaxLineLength:TestDucklakeDuckDbFormatRead.kt:TestDucklakeDuckDbFormatRead$" (1, true, CAST(127 AS TINYINT), CAST(32000 AS SMALLINT), CAST(2147483600 AS INTEGER), 9223372036854775000, CAST(1.5 AS REAL), CAST(2.718281828 AS DOUBLE), CAST('hello' AS VARCHAR)), "</ID>
+    <ID>MaxLineLength:TestDucklakeDuckDbFormatRead.kt:TestDucklakeDuckDbFormatRead$" (2, false, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), CAST(-2147483648 AS INTEGER), -9223372036854775000, CAST(-3.5 AS REAL), CAST(-1.0 AS DOUBLE), CAST('there' AS VARCHAR))"</ID>
+    <ID>MaxLineLength:TestDucklakeInlinedDeleteHandling.kt:TestDucklakeInlinedDeleteHandling.Companion$null</ID>
+    <ID>MaxLineLength:TestDucklakePageSourceProvider.kt:TestDucklakePageSourceProvider$null</ID>
+    <ID>MaxLineLength:TestDucklakeSnapshotResolver.kt:TestDucklakeSnapshotResolver$assertThatThrownBy { resolver.resolveSnapshotId(createSession(ImmutableMap.of()), OptionalLong.of(currentSnapshotId), Optional.of(currentSnapshotTime)) }</ID>
+    <ID>MaxLineLength:TrinoParityExtensionResolver.kt:TrinoParityExtensionResolver.Companion$log</ID>
+    <ID>NestedBlockDepth:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
+    <ID>NestedBlockDepth:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure.Companion$@Throws(IOException::class) private fun toThriftFileMetaData: org.apache.parquet.format.FileMetaData</ID>
+    <ID>NestedBlockDepth:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
+    <ID>NestedBlockDepth:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$private fun parseDucklakeListText: Array&lt;Any?&gt;</ID>
+    <ID>NestedBlockDepth:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$fun extractStats: List&lt;DucklakeFileColumnStats&gt;</ID>
+    <ID>NestedBlockDepth:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$private fun countColumnMappings: Int</ID>
+    <ID>NestedBlockDepth:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$private fun dataPathDir: String</ID>
+    <ID>NestedBlockDepth:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$private fun footerSizeForLatestDataFile: Long</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeWithPathologicalNames</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEnginePuffinDeleteRoundTrip.kt:TestDucklakeCrossEnginePuffinDeleteRoundTrip$@Test @Throws(Exception::class) fun testDuckdbPuffinDeleteSuppressesRowsInTrino</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineRoundTrip.kt:TestDucklakeCrossEngineRoundTrip$@Test @Throws(Exception::class) fun testDiagnosticTrinoWriteThenDuckdbRead</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineRoundTrip.kt:TestDucklakeCrossEngineRoundTrip$@Test @Throws(Exception::class) fun testDuckdbDescribeTrinoTable</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineRoundTrip.kt:TestDucklakeCrossEngineRoundTrip$@Test @Throws(Exception::class) fun testDuckdbShowTablesIncludesTrinoTables</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineTypeAudit.kt:TestDucklakeCrossEngineTypeAudit$@Test @Throws(Exception::class) fun testDuckdbInlineAlterThenInlineMatchesTrino</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineTypeAudit.kt:TestDucklakeCrossEngineTypeAudit$@Test @Throws(Exception::class) fun testDuckdbNineAlterNineStaysInlinedAndMatchesTrino</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineTypeAudit.kt:TestDucklakeCrossEngineTypeAudit$@Throws(Exception::class) private fun runListRoundTrip</ID>
+    <ID>NestedBlockDepth:TestDucklakeDuckDbFormatWrite.kt:TestDucklakeDuckDbFormatWrite$@Test @Throws(Exception::class) fun testCtasIntoDuckDbFormatProducesValidDbFile</ID>
+    <ID>NestedBlockDepth:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats$private fun dataPathDir: String</ID>
+    <ID>RethrowCaughtException:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.QueueArrowReader$throw e</ID>
+    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
+    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
+    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.LikePatternAccessor$fun extract: Extracted?</ID>
+    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateDomain: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateValues: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$private fun parquetPrimitiveToTrino: Type</ID>
+    <ID>ReturnCount:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun resolveTimeZoneKey: TimeZoneKey</ID>
+    <ID>ReturnCount:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
+    <ID>ReturnCount:DucklakeParquetTypeUtils.kt:DucklakeParquetTypeUtils$fun constructField: Optional&lt;Field&gt;</ID>
+    <ID>ReturnCount:DucklakeSnapshotResolver.kt:DucklakeSnapshotResolver$fun resolveSnapshotId: Long</ID>
+    <ID>ReturnCount:DucklakeSortPropertyMapper.kt:DucklakeSortPropertyMapper.Companion$internal fun parseColumnReference: String?</ID>
+    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun buildFileStatisticsDomain: TupleDomain&lt;DucklakeColumnHandle&gt;</ID>
+    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun partitionValueMatchesDomain: Boolean</ID>
+    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneDataFiles: List&lt;DucklakeDataFile&gt;</ID>
+    <ID>ReturnCount:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$@JvmStatic fun partitionValueMatchesDomain: Boolean</ID>
+    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$private fun extractEpochMicros: Long</ID>
+    <ID>SwallowedException:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$e: UnsupportedOperationException</ID>
+    <ID>SwallowedException:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$e: DucklakeAddFilesException</ID>
+    <ID>SwallowedException:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$e: IllegalArgumentException</ID>
+    <ID>SwallowedException:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$e: TimeZoneNotSupportedException</ID>
+    <ID>SwallowedException:DucklakeMergeSink.kt:DucklakeMergeSink$e: IOException</ID>
+    <ID>SwallowedException:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$e: RuntimeException</ID>
+    <ID>SwallowedException:DucklakeTableProperties.kt:DucklakeTableProperties.Companion$e: IllegalArgumentException</ID>
+    <ID>SwallowedException:ParquetFileWriter.kt:ParquetFileWriter$e: IOException</ID>
+    <ID>SwallowedException:TrinoParityExtensionResolver.kt:TrinoParityExtensionResolver.Companion$e: AtomicMoveNotSupportedException</ID>
+    <ID>ThrowsCount:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter$@Throws(IOException::class) override fun finishAndBuildFragment: DucklakeWriteFragment</ID>
+    <ID>ThrowsCount:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(IOException::class) override fun finishAndBuildFragment: DucklakeWriteFragment</ID>
+    <ID>ThrowsCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
+    <ID>ThrowsCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$private fun mapMap: DucklakeNameMapEntry</ID>
+    <ID>ThrowsCount:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
+    <ID>ThrowsCount:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$private fun buildFragment: dev.brikk.ducklake.catalog.DucklakeWriteFragment</ID>
+    <ID>ThrowsCount:DucklakeDuckDbExecutorFactory.kt:DucklakeDuckDbExecutorFactory$fun create: DucklakeDuckDbExecutor</ID>
+    <ID>ThrowsCount:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$internal fun decodeBlobText: ByteArray</ID>
+    <ID>ThrowsCount:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$private fun extractArrayElements: Array&lt;Any?&gt;</ID>
+    <ID>ThrowsCount:DucklakePuffinDeleteReader.kt:DucklakePuffinDeleteReader$@Throws(IOException::class) fun decodeBlob: Set&lt;Long&gt;</ID>
+    <ID>ThrowsCount:DucklakeStatsLeafProjector.kt:DucklakeStatsLeafProjector$private fun collect</ID>
+    <ID>ThrowsCount:DucklakeTableProperties.kt:DucklakeTableProperties.Companion$private fun parsePartitionField: PartitionFieldSpec</ID>
+    <ID>ThrowsCount:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
+    <ID>ThrowsCount:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
+    <ID>TooGenericExceptionCaught:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:DucklakeMergeSink.kt:DucklakeMergeSink$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:DucklakeMergeSink.kt:DucklakeMergeSink$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:DucklakeMetadata.kt:DucklakeMetadata$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:DucklakePageSink.kt:DucklakePageSink$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:DucklakePuffinDeleteReader.kt:DucklakePuffinDeleteReader$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:InProcessDuckDbExecutor.kt:InProcessDuckDbExecutor$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:InProcessDuckDbExecutor.kt:InProcessDuckDbExecutor.InProcessExecutionContext$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:QuackDuckDbExecutor.kt:QuackDuckDbExecutor$e: RuntimeException</ID>
+    <ID>TooGenericExceptionCaught:QuackDuckDbExecutor.kt:QuackDuckDbExecutor.QuackExecutionContext$t: Throwable</ID>
+    <ID>TooGenericExceptionThrown:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator$throw RuntimeException("Failed to delete: $path", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$throw RuntimeException("Failed to read delete file: $deleteFilePath", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakeMaterializedFileCache.kt:DucklakeMaterializedFileCache$throw RuntimeException("Failed to create DuckDB read cache dir: $cacheDir", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakeMergeSink.kt:DucklakeMergeSink$throw RuntimeException("Failed to finish insert sink", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakeMetadata.kt:DucklakeMetadata$throw RuntimeException("Failed to deserialize merge fragment", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$throw RuntimeException("Failed to create Parquet page source for file: " + split.dataFilePath, e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$throw RuntimeException("Failed to create Parquet page source for file: ${split.dataFilePath}", e)</ID>
+    <ID>TooGenericExceptionThrown:DucklakePageSourceProvider.kt:DucklakePageSourceProvider$throw RuntimeException("Failed to create page source for file: ${ducklakeSplit.dataFilePath}", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$throw RuntimeException("Failed to count ducklake_column_mapping rows", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$throw RuntimeException("Failed to read data_path from ducklake_metadata", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$throw RuntimeException("Failed to read footer_size from ducklake_data_file", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$throw RuntimeException(e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeAddFiles.kt:TestDucklakeAddFiles.Companion$throw RuntimeException(e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeMetadataTemporalVersionConversion.kt:TestDucklakeMetadataTemporalVersionConversion.Companion$throw RuntimeException("Unable to access DucklakeMetadata#getSnapshotTimestampFromVersion", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeMetadataTemporalVersionConversion.kt:TestDucklakeMetadataTemporalVersionConversion.Companion$throw RuntimeException("Unable to invoke DucklakeMetadata#getSnapshotTimestampFromVersion", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats$throw RuntimeException("Failed to read data_path from ducklake_metadata", e)</ID>
+    <ID>TooGenericExceptionThrown:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats.Companion$throw RuntimeException(e)</ID>
+    <ID>TooManyFunctions:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter : DucklakeFileWriter</ID>
+    <ID>TooManyFunctions:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator$Companion</ID>
+    <ID>TooManyFunctions:DucklakeConfig.kt:DucklakeConfig</ID>
+    <ID>TooManyFunctions:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter</ID>
+    <ID>TooManyFunctions:DucklakeMetadata.kt:DucklakeMetadata : ConnectorMetadata</ID>
+    <ID>TooManyFunctions:DucklakeMetadata.kt:DucklakeMetadata$Companion</ID>
+    <ID>TooManyFunctions:DucklakePageSink.kt:DucklakePageSink : ConnectorPageSink</ID>
+  </CurrentIssues>
+</SmellBaseline>
