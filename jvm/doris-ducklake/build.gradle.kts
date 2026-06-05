@@ -2,9 +2,19 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("buildlogic.kotlin.library")
+    alias(libs.plugins.detekt)
 }
 
 version = "0.0.1"
+
+// Idiomatic-Kotlin quality gate (detekt 2.0; jvmTarget read from Kotlin compilerOptions), same as
+// :ducklake-catalog / :trino-ducklake. Custom src + test/src layout; Doris SPI is compileOnly.
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    baseline = file("detekt-baseline.xml")
+    source.setFrom("src", "test/src")
+}
 
 // Doris FE pins to JDK 17, so emit JDK 17 bytecode/ABI — but compile with the project-wide
 // JDK 25 toolchain (from buildlogic.kotlin.common). Now that this module is Kotlin, the Kotlin
