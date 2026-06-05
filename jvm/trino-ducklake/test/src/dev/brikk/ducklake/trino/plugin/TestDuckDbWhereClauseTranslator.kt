@@ -54,13 +54,13 @@ class TestDuckDbWhereClauseTranslator {
     @Test
     fun allDomainProducesNoWhere() {
         val where = DuckDbWhereClauseTranslator.toWhereClause(TupleDomain.all<DucklakeColumnHandle>())
-        assertThat(where).isEmpty()
+        assertThat(where).isNull()
     }
 
     @Test
     fun noneDomainProducesFalse() {
         val where = DuckDbWhereClauseTranslator.toWhereClause(TupleDomain.none<DucklakeColumnHandle>())
-        assertThat(where).contains("FALSE")
+        assertThat(where).isEqualTo("FALSE")
     }
 
     @Test
@@ -68,7 +68,7 @@ class TestDuckDbWhereClauseTranslator {
         val id = col("id", INTEGER)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(id, Domain.singleValue(INTEGER, 42L)))
-        assertThat(where).contains("\"id\" = 42")
+        assertThat(where).isEqualTo("\"id\" = 42")
     }
 
     @Test
@@ -76,7 +76,7 @@ class TestDuckDbWhereClauseTranslator {
         val id = col("id", BIGINT)
         val domain = Domain.multipleValues(BIGINT, ImmutableList.of(10L, 20L, 30L))
         val where = DuckDbWhereClauseTranslator.toWhereClause(tupleDomain(id, domain))
-        assertThat(where).contains("\"id\" IN (10, 20, 30)")
+        assertThat(where).isEqualTo("\"id\" IN (10, 20, 30)")
     }
 
     @Test
@@ -86,8 +86,8 @@ class TestDuckDbWhereClauseTranslator {
         val range = Range.range(INTEGER, 10L, true, 100L, false)
         val domain = Domain.create(ValueSet.ofRanges(range), false)
         val where = DuckDbWhereClauseTranslator.toWhereClause(tupleDomain(id, domain))
-        assertThat(where).isPresent()
-        assertThat(where.get())
+        assertThat(where)
+            .isNotNull()
             .contains("\"id\" >= 10")
             .contains("\"id\" < 100")
             .contains(" AND ")
@@ -98,7 +98,7 @@ class TestDuckDbWhereClauseTranslator {
         val name = col("name", VARCHAR)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(name, Domain.singleValue(VARCHAR, Slices.utf8Slice("o'malley"))))
-        assertThat(where).contains("\"name\" = 'o''malley'")
+        assertThat(where).isEqualTo("\"name\" = 'o''malley'")
     }
 
     @Test
@@ -108,7 +108,7 @@ class TestDuckDbWhereClauseTranslator {
         val epochDay = LocalDate.of(2026, 5, 4).toEpochDay()
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(d, Domain.singleValue(DATE, epochDay)))
-        assertThat(where).contains("\"d\" = DATE '2026-05-04'")
+        assertThat(where).isEqualTo("\"d\" = DATE '2026-05-04'")
     }
 
     @Test
@@ -119,7 +119,7 @@ class TestDuckDbWhereClauseTranslator {
             .toEpochSecond(ZoneOffset.UTC) * 1_000_000L + 123_456L
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(ts, Domain.singleValue(TIMESTAMP_MICROS, micros)))
-        assertThat(where).contains("\"ts\" = TIMESTAMP '2026-05-04 12:34:56.123456'")
+        assertThat(where).isEqualTo("\"ts\" = TIMESTAMP '2026-05-04 12:34:56.123456'")
     }
 
     @Test
@@ -129,7 +129,7 @@ class TestDuckDbWhereClauseTranslator {
         // 123.45 unscaled = 12345
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(amount, Domain.singleValue(type, 12345L)))
-        assertThat(where).contains("\"amount\" = 123.45")
+        assertThat(where).isEqualTo("\"amount\" = 123.45")
     }
 
     @Test
@@ -140,7 +140,7 @@ class TestDuckDbWhereClauseTranslator {
         val unscaled = Int128.valueOf(BigInteger.valueOf(9_876_543_210L))
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(amount, Domain.singleValue(type, unscaled)))
-        assertThat(where).contains("\"amount\" = 987654.3210")
+        assertThat(where).isEqualTo("\"amount\" = 987654.3210")
     }
 
     @Test
@@ -148,7 +148,7 @@ class TestDuckDbWhereClauseTranslator {
         val id = col("id", INTEGER)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(id, Domain.onlyNull(INTEGER)))
-        assertThat(where).contains("\"id\" IS NULL")
+        assertThat(where).isEqualTo("\"id\" IS NULL")
     }
 
     @Test
@@ -156,7 +156,7 @@ class TestDuckDbWhereClauseTranslator {
         val id = col("id", INTEGER)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(id, Domain.notNull(INTEGER)))
-        assertThat(where).contains("\"id\" IS NOT NULL")
+        assertThat(where).isEqualTo("\"id\" IS NOT NULL")
     }
 
     @Test
@@ -164,8 +164,8 @@ class TestDuckDbWhereClauseTranslator {
         val id = col("id", INTEGER)
         val valueOrNull = Domain.create(ValueSet.of(INTEGER, 7L), true)
         val where = DuckDbWhereClauseTranslator.toWhereClause(tupleDomain(id, valueOrNull))
-        assertThat(where).isPresent()
-        assertThat(where.get())
+        assertThat(where)
+            .isNotNull()
             .contains("\"id\" = 7")
             .contains(" OR ")
             .contains("\"id\" IS NULL")
@@ -179,9 +179,9 @@ class TestDuckDbWhereClauseTranslator {
             id, Domain.singleValue(INTEGER, 1L),
             name, Domain.singleValue(VARCHAR, Slices.utf8Slice("alice"))))
         val where = DuckDbWhereClauseTranslator.toWhereClause(td)
-        assertThat(where).isPresent()
+        assertThat(where).isNotNull()
         // Order of conjuncts is not guaranteed (HashMap iteration); check both fragments present.
-        assertThat(where.get())
+        assertThat(where)
             .contains("\"id\" = 1")
             .contains("\"name\" = 'alice'")
             .contains(" AND ")
@@ -192,7 +192,7 @@ class TestDuckDbWhereClauseTranslator {
         val flag = col("flag", BOOLEAN)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(flag, Domain.singleValue(BOOLEAN, true)))
-        assertThat(where).contains("\"flag\" = TRUE")
+        assertThat(where).isEqualTo("\"flag\" = TRUE")
     }
 
     @Test
@@ -200,7 +200,7 @@ class TestDuckDbWhereClauseTranslator {
         val weird = col("a\"b", INTEGER)
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(weird, Domain.singleValue(INTEGER, 1L)))
-        assertThat(where).contains("\"a\"\"b\" = 1")
+        assertThat(where).isEqualTo("\"a\"\"b\" = 1")
     }
 
     @Test
@@ -211,8 +211,8 @@ class TestDuckDbWhereClauseTranslator {
             Range.greaterThan(INTEGER, 100L)) as SortedRangeSet
         val where = DuckDbWhereClauseTranslator.toWhereClause(
             tupleDomain(id, Domain.create(ranges, false)))
-        assertThat(where).isPresent()
-        assertThat(where.get())
+        assertThat(where)
+            .isNotNull()
             .contains("\"id\" < 10")
             .contains("\"id\" > 100")
             .contains(" OR ")

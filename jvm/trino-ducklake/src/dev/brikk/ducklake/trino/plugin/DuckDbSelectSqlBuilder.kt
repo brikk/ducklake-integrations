@@ -54,13 +54,13 @@ object DuckDbSelectSqlBuilder {
 
         val domainClause = DuckDbWhereClauseTranslator.toWhereClause(request.pushedPredicate())
         val expressionClauses = request.pushedExpressions()
-        val hasDomain = domainClause.isPresent
+        val hasDomain = domainClause != null
         val hasExpressions = !expressionClauses.isEmpty()
         if (hasDomain || hasExpressions) {
             sql.append(" WHERE ")
             var first = true
-            if (hasDomain) {
-                sql.append(domainClause.get())
+            if (domainClause != null) {
+                sql.append(domainClause)
                 first = false
             }
             for (clause in expressionClauses) {

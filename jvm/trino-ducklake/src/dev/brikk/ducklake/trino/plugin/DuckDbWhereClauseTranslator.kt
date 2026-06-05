@@ -54,31 +54,31 @@ import java.util.Optional
  * (TIMESTAMPTZ, VARBINARY, UUID, nested) are intentionally skipped here even when
  * supported on the read path; they fall back to Trino-side filtering.
  */
-object DuckDbWhereClauseTranslator {
+internal object DuckDbWhereClauseTranslator {
     private val TIMESTAMP_MICROS: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS", Locale.ROOT)
 
     /**
      * Translate a tuple domain into a DuckDB SQL boolean expression. Returns
-     * [Optional.empty] when the domain is "all" (no predicate to push) or when
+     * `null` when the domain is "all" (no predicate to push) or when
      * nothing is translatable.
      */
-    fun toWhereClause(predicate: TupleDomain<DucklakeColumnHandle>): Optional<String> {
+    fun toWhereClause(predicate: TupleDomain<DucklakeColumnHandle>): String? {
         if (predicate.isAll) {
-            return Optional.empty()
+            return null
         }
         if (predicate.isNone) {
-            return Optional.of("FALSE")
+            return "FALSE"
         }
         val domainsOpt: Optional<Map<DucklakeColumnHandle, Domain>> = predicate.getDomains()
         if (domainsOpt.isEmpty) {
-            return Optional.empty()
+            return null
         }
         val conjuncts = domainsOpt.get().entries.mapNotNull { translateDomain(it.key, it.value).orElse(null) }
         if (conjuncts.isEmpty()) {
-            return Optional.empty()
+            return null
         }
-        return Optional.of(conjuncts.joinToString(" AND "))
+        return conjuncts.joinToString(" AND ")
     }
 
     private fun translateDomain(column: DucklakeColumnHandle, domain: Domain): Optional<String> {
