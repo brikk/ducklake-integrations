@@ -1,168 +1,129 @@
-# Doris idiom kit (test + main slices)
+# Unified idiom kit — whole-codebase rationale
 
-One-page rationale for human readers. Companion: `IdiomKit.kt` (the proposed
-helpers) and `kit-notes.json` (the candidate audit trail) next to this file.
+One-page rationale for human readers, reconciled across all three Kotlin-ported
+modules. Companions in this directory:
 
-The **doris-main** slice (production source) appends one helper to the bottom of
-`IdiomKit.kt`; see "## doris-main slice" below. The **doris-test** rationale
-follows it unchanged.
+- `IdiomKit.kt` — the reconciled manifest of every surviving helper (not compiled;
+  the live helpers live in their module source sets, listed below).
+- `combined-kit-notes.json` — the catalog+trino combine-pass audit (2026-06-02).
+- `kit-notes.json` — the doris-test + doris-main candidate audit trail.
 
-> NOTE: the prior **combine pass** already deleted a unified `IdiomKit.kt` and
-> recorded its verdict in `combined-kit-notes.json` + the catalog/trino sections
-> of this directory's history: *default to inline; extract only at >= 3 distinct
-> sites where the helper is shorter/clearer.* This doris-test kit is evaluated
-> against exactly that bar.
+## The bar (applied uniformly to every slice)
 
-## TL;DR
+Extract a helper **only** when a pattern recurs at **>= 3 distinct call sites
+spanning >= 2 files**, the helper is **shorter/clearer** than inline, **and it
+has real callers** (no speculative interop surface). Otherwise: write the Kotlin
+idiom inline.
 
-The doris-test slice (8 ported `.kt` files under `jvm/doris-ducklake/test`) has
-**two** ceremonies dense enough to clear the >= 3-site bar with a readability
-win. Both survive into `IdiomKit.kt` as a proposal; everything else is
-single-file and stays inline.
+## Reconciled verdict by module
 
-## Survey of the 8 ported files
+| Module | Helpers | Where they live |
+|---|---|---|
+| `ducklake-catalog` | **none** — all inline | `_idioms/kit-notes.json` (audit only) |
+| `trino-ducklake` | **none** — all inline | `_idioms/kit-notes.json` (audit only) |
+| `doris-ducklake` | **3** (all wired) | `DorisMainIdiomKit.kt`, `DorisTestIdiomKit.kt` |
 
-| Pattern | Distinct sites | Files | Verdict |
-|---|---|---|---|
-| 5-key `isolatedProperties` map from `IsolatedCatalog` | 6 | ScanPlanProvider (5), Listing (1) | **KEEP** |
-| `Optional.orElseThrow { AssertionError(msg) }` | 6 | ScanPlanProvider (5), Listing (1*) | **KEEP** |
-| `DuckLakeConnectorProvider().create(props, FakeConnectorContext("dl", 1L)).use {}` | 6 | ScanPlanProvider (5), Listing (1) | DROP (see below) |
-| `populatedFormatDesc(range)` via `TTableFormatFileDesc()`+`TFileRangeDesc()` | 3 | ThriftParity (own helper), ScanPlanProvider (2 inline) | DROP |
-| `name(dlType)` / `precision(dlType)` accessors | many | TypeMapping only | DROP (1 file) |
-| `FakeConnectorContext("dl", 1L)` literal | 6 | ScanPlan, Listing, Capabilities | borderline — folded into helpers, not its own |
+There is no single shared helper file because the modules do not depend on each
+other (catalog cannot see trino, trino cannot see doris), and the port workflow
+forbids cross-module duplication. The "unified kit" is therefore this document +
+`IdiomKit.kt` (the manifest) pointing at three per-module source files.
 
-\* Listing also has one `getTableHandle(...).orElseThrow { AssertionError(...) }`
-for `analytics.events`, so the orElseThrow pattern is genuinely 2-file.
+## catalog + trino: everything inline
 
-## The two that survive
+The combine pass surveyed all **239 ported `.kt` files** in these two modules.
+Every candidate helper from the per-slice kits failed the bar:
 
-### `isolatedProperties(isolated)` -> `LinkedHashMap<String,String>`
+- **`lowercaseRoot()`** — 17 actual sites, every one already writes
+  `lowercase(Locale.ROOT)` directly; both per-slice kits called the direct form
+  "idiomatic enough"; zero callers ever migrated. DROP.
+- **`safeMessage(e, fallback)`** — only 3 null-safe message sites; 2 are
+  subsumed by first-line logic, the third uses `?: return false` flow control
+  that does not fit the signature. DROP.
+- **`firstLine` / `firstLineOf`** — only 2 sites
+  (`InProcessDuckDbExecutor` inline, `QuackDuckDbExecutor`'s private
+  `firstLineOrFull`). Below the bar; the project-local private fun is fine.
+  DROP.
 
-The same 6-line `mapOf("type" to "ducklake", METADATA_URL to isolated.jdbcUrl(),
-METADATA_USER to ..., METADATA_PASSWORD to ..., STORAGE_WAREHOUSE to
-isolated.dataDir().toAbsolutePath().toString())` is copy-pasted at 6 sites. One
-of those sites (the s3-credentials test) already uses a mutable
-`LinkedHashMap` and then `put`s extra keys — so the helper returns
-`LinkedHashMap` (not `Map`) to let that site keep mutating in place. This is the
-strongest candidate in the slice: 6 sites, 2 files, 5 lines collapsed to 1.
+Net: the unified `IdiomKit.kt` for these modules was deleted at combine time;
+the verdict is **write Kotlin idioms inline**. Each module keeps its
+`_idioms/kit-notes.json` as the historical record only.
 
-### `require(optional, msg)` / `Optional<T>.orFail(msg)`
+## doris-ducklake: 3 helpers survive
 
-`metadata.getTableHandle(...).orElseThrow { AssertionError("expected X handle") }`
-appears 6 times. Reading it as `metadata.getTableHandle(...).orFail("expected X
-handle")` states the intent (assert-or-fail) instead of spelling out the
-throw-lambda each time. The `@JvmStatic require` is the Java-interop-safe form;
-the `orFail` extension is Kotlin sugar (extensions are invisible to Java).
+Doris is the one module that earned helpers — its SPI surface is **erased**
+(`Object` / `ConnectorTableHandle` handles the plugin must re-narrow) and its
+test SPI surface repeats a fixed 5-key properties map.
 
-## What was dropped, and why
+### `Any?.asDuckLakeHandle<T>()` — doris-main (wired, 3 sites)
 
-- **`connectWithIsolated { connector -> }`** (provider.create + use): tempting,
-  but the `create(...).use { connector -> ... }` body varies a lot (some tests
-  pull `getMetadata`, some `getScanPlanProvider`, some both) and the
-  `FakeConnectorContext("dl", 1L)` is trivial. Wrapping it in a higher-order
-  helper hides the `.use {}` resource boundary — the single most important
-  line for a connector test to show explicitly. Folding the *properties* into
-  `isolatedProperties` already removes the bulk of the duplication; the
-  remaining `create(props, ctx).use {}` reads fine inline. **DROP.**
-- **`populatedFormatDesc`**: `ThriftParity` already has a private file-local
-  `populatedFormatDesc`; `ScanPlanProvider` inlines the
-  `TTableFormatFileDesc()`+`TFileRangeDesc()`+`populateRangeParams` twice for a
-  slightly different purpose (it reads `formatDesc.icebergParams`, not a golden
-  diff). 3 sites but split across two intents and one file already owns it.
-  Below a clean extraction. **DROP.**
-- **`name`/`precision` in TypeMapping**: single file, already private one-liners.
-  Promoting to a cross-file kit would add an import for zero other callers.
-  **DROP.**
+`DorisMainIdiomKit.kt`. Reified inline extension that narrows an erased SPI
+handle to the concrete `DuckLakeTableHandle`, throwing
+`IllegalArgumentException` naming the runtime class on mismatch. Collapses two
+byte-identical private copies (in `DuckLakeConnectorMetadata` and
+`DuckLakeScanPlanProvider`) and erases the `is X` / `javaClass.name` spelling at
+all three call sites, which become `req.table.asDuckLakeHandle<DuckLakeTableHandle>()`.
+Kotlin-only by construction (a reified inline generic is not callable from Java);
+all call sites are Kotlin, nothing on the Java-facing SPI regresses.
 
-## Java-interop safety
+### `isolatedProperties(isolated)` — doris-test (wired, 7 sites)
 
-`IdiomKit.kt` carries `@file:JvmName("DorisTestIdiomKit")` and `@JvmStatic` on
-both public helpers; both take/return JDK + plugin types (`Optional`,
-`LinkedHashMap`, `String`, `IsolatedCatalog`). The `orFail` extension is
-deliberately `internal` Kotlin-only sugar and is not part of the Java surface.
+`DorisTestIdiomKit.kt`. The 5-key `type` + metadata url/user/password + storage
+warehouse map every SPI-surface test builds from an `IsolatedCatalog`. Returns
+`LinkedHashMap` (not `Map`) so the s3-credentials test can `put` extra keys in
+place. `@JvmStatic` retained for cheap future Java-FE reach. 7 call sites across
+`DuckLakeScanPlanProviderTest` (6) and `DuckLakeConnectorListingTest` (1).
 
-## Rollout
+### `Optional<T>.orFail(message)` — doris-test (wired, 7 sites)
 
-Not applied to call sites in this step (kit artifact only — same convention the
-slice workflow uses before the combine/apply pass). If wired in, the file moves
-to the test source set `jvm/doris-ducklake/test/.../doris/plugin/` (same package
-as callers; no import churn, `internal` connector types stay reachable). The
-combine pass makes the final keep/drop call across all slices.
+`DorisTestIdiomKit.kt`. `getTableHandle(...).orFail("...")` reads as the
+assertion it is. `internal` Kotlin-only sugar (extensions are invisible to
+Java); tests are Kotlin-only so no Java entry point is needed. 7 call sites
+across `DuckLakeScanPlanProviderTest` (5) and `DuckLakeConnectorListingTest` (2).
 
----
+## What the reconciliation changed
 
-## doris-main slice
+The doris slices left a fourth helper in the live tree: a `@JvmStatic
+require(Optional<T>, String)` static that was the Java-facing twin of `orFail`.
+The grep shows **zero callers** — no Java sources exist in `doris-ducklake`, and
+every caller is Kotlin using `orFail`. Under the same bar that deleted the entire
+catalog/trino kit (drop speculative helpers with no migrated callers), `require`
+was **removed** from `DorisTestIdiomKit.kt`. The surviving doris helpers all have
+real, counted call sites.
 
-Surveyed the **13 ported `jvm/doris-ducklake/src/.../doris/plugin` files**
-against the same bar: extract only at >= 3 distinct call sites spanning >= 2
-files where the helper is shorter/clearer. Exactly **one** ceremony clears it.
+## What stayed dropped in doris (audit summary)
 
-### Survey of the 13 ported files
+- **`Objects.requireNonNull(x, "x")`** — Java-port residue on already-non-null
+  Kotlin params; a kotlin-idiom cleanup, not a shared idiom.
+- **`Optional.orElseThrow { ... }` on catalog reads** — 3 sites but divergent
+  exception types (`IllegalStateException` vs `IllegalArgumentException`) with
+  bespoke messages; a generic helper is no shorter and loses the type at a glance.
+- **`normalizeFileFormat` / lowercase-with-default** — 1 file; `ScanRange.toThrift`
+  lowercases with opposite semantics (throws vs defaults), not the same helper.
+- **double-checked-lock lazy init** — 1 file, divergent bodies (`catalog()` vs
+  `getScanPlanProvider`); a `by lazy` rewrite is a kotlin-idiom cleanup.
+- **`requireString(props, key)`** — already lives in `DuckLakeConnectorProperties`.
+- **`connectWithIsolated { }`** — would hide the `.use {}` resource boundary,
+  the single most important line a connector test should show explicitly.
+- **`populatedFormatDesc`**, **`name`/`precision` TypeMapping accessors**,
+  **`FakeConnectorContext("dl", 1L)` literal** — single-file or trivial.
 
-| Pattern | Distinct sites | Files | Verdict |
-|---|---|---|---|
-| `asDuckLakeHandle(...)` cast-or-throw (`is X` / `javaClass.name`) | 3 | ConnectorMetadata (2), ScanPlanProvider (1) | **KEEP** |
-| `Objects.requireNonNull(x, "x")` on non-null Kotlin params | many | ScanRange, PositionDelete, MvccSnapshot, ScanPlanProvider | DROP |
-| `Optional.orElseThrow { IllegalState/ArgException(...) }` on catalog reads | 3 | ScanPlanProvider (2), ConnectorMetadata (1) | DROP |
-| `normalizeFileFormat` / lowercase-with-default | 2 (1 file) | ScanPlanProvider | DROP |
-| `requireString(props, key)` | 4 | Connector | already extracted in `DuckLakeConnectorProperties` |
-| double-checked-lock lazy field (`catalog()` / `getScanPlanProvider`) | 2 | Connector only | DROP |
+## Java-interop safety (doris is Java-FE-facing)
 
-### The one that survives: `Any?.asDuckLakeHandle(): T`
+`doris-ducklake` is consumed by the Java FE, and `ducklake-catalog` is
+doris-Java-facing, so the reconciliation kept the Java surface stable:
 
-Doris hands every per-table SPI call an **erased** handle —
-`ConnectorScanRequest.table` is `Object`, the metadata SPI passes
-`ConnectorTableHandle`. The plugin re-narrows it to its concrete
-`DuckLakeTableHandle`, throwing `IllegalArgumentException` naming the actual
-runtime class on mismatch. The port carries **two byte-identical private
-`asDuckLakeHandle(...)` copies** (in `DuckLakeConnectorMetadata` and
-`DuckLakeScanPlanProvider`) differing only in the static param type
-(`ConnectorTableHandle` vs `Any?`).
+- `asDuckLakeHandle` is reified-inline → Kotlin-only by construction; it does not
+  add or remove anything on the Java SPI (a Java caller writes `instanceof` + cast).
+- `isolatedProperties` stays `@JvmStatic` returning JDK + plugin types.
+- `orFail` is deliberately `internal` Kotlin-only sugar (never a Java entry point).
+- The removed `require` static was the only Java-facing helper, and it had no
+  callers — removing it cannot break a Java consumer.
+- catalog + trino expose **no** kit helpers at all, so no Java surface changed there.
 
-A single `internal inline fun <reified T : Any> Any?.asDuckLakeHandle(): T`
-collapses both copies and erases the `is X` + `javaClass.name` spelling at all
-three call sites, which become `req.table.asDuckLakeHandle()` /
-`tableHandle.asDuckLakeHandle()` (target type inferred — no `.class`/`KClass`
-token). This is the textbook reified-helper win: a `.class`-token-free cast that
-de-duplicates across two files. **KEEP.**
+## Verification
 
-### What was dropped, and why
-
-- **`Objects.requireNonNull(x, "x")`**: Java-port residue. The params it guards
-  are already non-null in the Kotlin signatures; stripping it is a
-  *kotlin-idiom cleanup* (the `kotlin-idiom-review` skill's job), not a
-  cross-file shared idiom. Wrapping it in a helper would *preserve* dead
-  ceremony. **DROP.**
-- **`Optional.orElseThrow { ... }` on catalog reads**: 3 sites across 2 files,
-  so it clears the count, but each throws a *different* exception type
-  (`IllegalStateException` in ScanPlanProvider, `IllegalArgumentException` in
-  Metadata) with a bespoke multi-line interpolated message. A generic
-  `orElseThrow` helper would need both the exception factory and the message
-  passed in — no shorter than the inline lambda, and it loses the at-a-glance
-  exception type. **DROP.**
-- **`normalizeFileFormat`**: lives in one file (`ScanPlanProvider`, 2 internal
-  uses). `DuckLakeScanRange.toThrift` also lowercases a format string but with
-  *opposite* semantics (throws on non-parquet instead of defaulting), so it is
-  not the same helper. Single-file + divergent shape. **DROP.**
-- **double-checked-lock lazy init** (`Connector.catalog()` /
-  `getScanPlanProvider`): two instances, but both in one file, and the bodies
-  differ (one builds a catalog, the other a scan-plan provider). Single-file
-  control-flow; a generic DCL helper would obscure the `@Volatile` field it
-  guards. **DROP** (a `by lazy` rewrite is a kotlin-idiom cleanup, not a kit).
-
-### Java-interop safety
-
-`asDuckLakeHandle` is a **reified inline** extension — Kotlin-only by
-construction (reification cannot be expressed in Java bytecode as a callable
-generic). All three ported call sites are Kotlin, so this is the natural
-surface. A Java caller needing the same narrowing would write its own
-`instanceof` + cast; nothing in the Java surface regresses. The pre-existing
-test-slice helpers keep their `@JvmStatic` Java entry points.
-
-### Rollout
-
-Not applied to call sites in this step (kit artifact only, same as the test
-slice). If wired in, the helper lives in the production source set
-`jvm/doris-ducklake/src/.../doris/plugin/` (same package; `internal` handle
-types stay reachable, no import churn) and the two private `asDuckLakeHandle`
-copies are deleted. The combine pass makes the final keep/drop call.
+catalog + trino were verified green at combine time
+(`ducklake-catalog` 33 suites / 108 tests; `trino-ducklake` 70 suites / 825
+tests — BUILD SUCCESSFUL 2026-06-02). The doris reconciliation only removed a
+zero-caller helper; re-run `cd jvm && ./gradlew :doris-ducklake:test` to confirm
+the doris suites stay green.
