@@ -143,11 +143,13 @@ internal class DuckLakeScanRangeThriftParityTest {
 
         val deletes = range.positionDeletes()
         assertThat(deletes).containsExactly(pd)
-        // List.copyOf produces an unmodifiable list; mutation must throw so
-        // the range's internal state can't be corrupted by an outside caller.
+        // List.copyOf produces an unmodifiable list; mutation must throw so the range's internal
+        // state can't be corrupted by an outside caller. From Kotlin the return type is read-only
+        // (no `add`), so cast to MutableList to exercise the Java-visible add() — which the
+        // immutable copy rejects at runtime, exactly as a Java caller would experience.
         Assertions.assertThrows(
             UnsupportedOperationException::class.java,
-        ) { deletes.add(DuckLakePositionDelete("x", "parquet")) }
+        ) { (deletes as MutableList<DuckLakePositionDelete>).add(DuckLakePositionDelete("x", "parquet")) }
     }
 
     companion object {
