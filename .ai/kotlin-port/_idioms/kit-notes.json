@@ -1,0 +1,69 @@
+[
+  {
+    "slice": "doris-test",
+    "generated_at": "2026-06-05",
+    "scope": "jvm/doris-ducklake/test (8 ported .kt files under doris/plugin)",
+    "status": "created",
+    "kit_file": ".ai/kotlin-port/_idioms/IdiomKit.kt",
+    "applied_to_call_sites": false,
+    "ported_files": [
+      "DuckLakeScanPlanProviderTest.kt",
+      "DuckLakeScanRangeThriftParityTest.kt",
+      "DuckLakeConnectorMvccSnapshotCodecTest.kt",
+      "DuckLakeTestCatalogBootstrap.kt",
+      "DuckLakeConnectorListingTest.kt",
+      "DuckLakeTypeMappingTest.kt",
+      "DuckLakeConnectorCapabilitiesTest.kt",
+      "cache/FakeConnectorContext.kt"
+    ],
+    "helpers_kept": [
+      {
+        "name": "isolatedProperties",
+        "signature": "isolatedProperties(isolated: DuckLakeTestCatalogBootstrap.IsolatedCatalog): LinkedHashMap<String, String>",
+        "replaces": "the repeated 5-key mapOf(\"type\" to \"ducklake\", METADATA_URL to isolated.jdbcUrl(), METADATA_USER to isolated.user(), METADATA_PASSWORD to isolated.password(), STORAGE_WAREHOUSE to isolated.dataDir().toAbsolutePath().toString())",
+        "distinct_sites": 6,
+        "files": ["DuckLakeScanPlanProviderTest.kt (5)", "DuckLakeConnectorListingTest.kt (1)"],
+        "returns_linkedhashmap_rationale": "the s3-credentials test builds a mutable LinkedHashMap and puts extra keys; returning LinkedHashMap (not Map) lets that site keep mutating in place",
+        "interop": "@JvmStatic; JDK + plugin types only"
+      },
+      {
+        "name": "require / orFail",
+        "signature": "require(optional: Optional<T>, message: String): T  // + internal Optional<T>.orFail(message): T",
+        "replaces": "optional.orElseThrow { AssertionError(message) } on metadata SPI Optionals (table handles, scan-range path)",
+        "distinct_sites": 6,
+        "files": ["DuckLakeScanPlanProviderTest.kt (5)", "DuckLakeConnectorListingTest.kt (1 handle + 1 events handle)"],
+        "interop": "@JvmStatic require is the Java surface; orFail is internal Kotlin-only sugar"
+      }
+    ],
+    "candidates_dropped": [
+      {
+        "name": "connectWithIsolated",
+        "pattern": "DuckLakeConnectorProvider().create(props, FakeConnectorContext(\"dl\", 1L)).use { connector -> ... }",
+        "distinct_sites": 6,
+        "verdict": "DROP",
+        "rationale": "wrapping create+use in a higher-order helper hides the .use {} resource boundary, the single most important line a connector test should show explicitly. Bodies also vary (getMetadata vs getScanPlanProvider vs both). isolatedProperties already removes the bulk of the duplication; the residual create(props, ctx).use {} reads fine inline."
+      },
+      {
+        "name": "populatedFormatDesc",
+        "pattern": "TTableFormatFileDesc() + TFileRangeDesc() + range.populateRangeParams(...)",
+        "distinct_sites": 3,
+        "verdict": "DROP",
+        "rationale": "ThriftParity already owns a file-local private populatedFormatDesc; ScanPlanProvider inlines the same 3-call shape twice but for a different purpose (reads icebergParams, not golden diff). Split across two intents and one file already encapsulates it."
+      },
+      {
+        "name": "name / precision (DuckLakeTypeMapping accessors)",
+        "verdict": "DROP",
+        "rationale": "single file (DuckLakeTypeMappingTest), already private one-liners; cross-file promotion adds an import for zero other callers."
+      },
+      {
+        "name": "fakeContext",
+        "pattern": "FakeConnectorContext(\"dl\", 1L)",
+        "distinct_sites": 6,
+        "verdict": "DROP",
+        "rationale": "trivial 2-arg constructor; not worth its own helper. Capabilities test legitimately varies it; folding it into isolatedProperties/create would over-couple."
+      }
+    ],
+    "bar": ">= 3 distinct sites AND >= 2 files AND helper shorter/clearer than inline (per combined-kit-notes.json combine-pass verdict)",
+    "verification": "not applicable for this step — kit is an artifact proposal, call sites unchanged; rollout/keep decided by the combine pass"
+  }
+]

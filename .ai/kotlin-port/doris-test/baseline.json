@@ -1,0 +1,52 @@
+{
+  "overall": {
+    "tests": 39,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1
+  },
+  "classes": [
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeConnectorCapabilitiesTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeConnectorListingTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeConnectorMvccSnapshotCodecTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeScanPlanProviderTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeScanRangeThriftParityTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "fqcn": "dev.brikk.ducklake.doris.plugin.DuckLakeTypeMappingTest",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ]
+}

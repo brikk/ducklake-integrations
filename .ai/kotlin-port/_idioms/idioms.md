@@ -1,60 +1,86 @@
-# Unified idiom-kit verdict (combine pass)
+# Doris-test slice idiom kit
 
-One-page rationale for human readers. Companion: `combined-kit-notes.json` next
-to this file; per-slice kit-notes live in each `_idioms/` subdirectory under the
-module sources.
+One-page rationale for human readers. Companion: `IdiomKit.kt` (the proposed
+helpers) and `kit-notes.json` (the candidate audit trail) next to this file.
+
+> NOTE: the prior **combine pass** already deleted a unified `IdiomKit.kt` and
+> recorded its verdict in `combined-kit-notes.json` + the catalog/trino sections
+> of this directory's history: *default to inline; extract only at >= 3 distinct
+> sites where the helper is shorter/clearer.* This doris-test kit is evaluated
+> against exactly that bar.
 
 ## TL;DR
 
-The combine pass deleted the speculative `IdiomKit.kt` introduced during the
-trino-main slice. No helpers survived. Across 239 ported `.kt` files, inline
-Kotlin idioms beat every proposed helper on call-site density and readability.
+The doris-test slice (8 ported `.kt` files under `jvm/doris-ducklake/test`) has
+**two** ceremonies dense enough to clear the >= 3-site bar with a readability
+win. Both survive into `IdiomKit.kt` as a proposal; everything else is
+single-file and stays inline.
 
-## When to inline vs. write a helper
+## Survey of the 8 ported files
 
-Write a helper only when **both** are true:
+| Pattern | Distinct sites | Files | Verdict |
+|---|---|---|---|
+| 5-key `isolatedProperties` map from `IsolatedCatalog` | 6 | ScanPlanProvider (5), Listing (1) | **KEEP** |
+| `Optional.orElseThrow { AssertionError(msg) }` | 6 | ScanPlanProvider (5), Listing (1*) | **KEEP** |
+| `DuckLakeConnectorProvider().create(props, FakeConnectorContext("dl", 1L)).use {}` | 6 | ScanPlanProvider (5), Listing (1) | DROP (see below) |
+| `populatedFormatDesc(range)` via `TTableFormatFileDesc()`+`TFileRangeDesc()` | 3 | ThriftParity (own helper), ScanPlanProvider (2 inline) | DROP |
+| `name(dlType)` / `precision(dlType)` accessors | many | TypeMapping only | DROP (1 file) |
+| `FakeConnectorContext("dl", 1L)` literal | 6 | ScanPlan, Listing, Capabilities | borderline — folded into helpers, not its own |
 
-1. The pattern appears at **>= 3 distinct sites** in the ported code.
-2. The helper is **shorter or clearer** than the inline form at the call site
-   (after accounting for the import line and the helper-package reach).
+\* Listing also has one `getTableHandle(...).orElseThrow { AssertionError(...) }`
+for `analytics.events`, so the orElseThrow pattern is genuinely 2-file.
 
-A single-line one-liner does **not** earn a helper — the inline form is
-self-documenting and avoids an import.
+## The two that survive
 
-## What we evaluated, and why each was dropped
+### `isolatedProperties(isolated)` -> `LinkedHashMap<String,String>`
 
-The trino-main slice introduced four helpers and explicitly noted they were
-"introduced, not yet rolled out... future PRs can collapse them." The combine
-pass is that future PR; the verdict is the opposite — collapse the helpers.
+The same 6-line `mapOf("type" to "ducklake", METADATA_URL to isolated.jdbcUrl(),
+METADATA_USER to ..., METADATA_PASSWORD to ..., STORAGE_WAREHOUSE to
+isolated.dataDir().toAbsolutePath().toString())` is copy-pasted at 6 sites. One
+of those sites (the s3-credentials test) already uses a mutable
+`LinkedHashMap` and then `put`s extra keys — so the helper returns
+`LinkedHashMap` (not `Map`) to let that site keep mutating in place. This is the
+strongest candidate in the slice: 6 sites, 2 files, 5 lines collapsed to 1.
 
-| Helper        | Sites surveyed | Verdict | Reason                                                                    |
-|---------------|----------------|---------|---------------------------------------------------------------------------|
-| `lowercaseRoot` | 17 inline, 0 calls | DROP | `lowercase(Locale.ROOT)` is the same length, more familiar to Kotlin readers, no extra import. |
-| `safeMessage`   | 3 inline, 0 calls  | DROP | One site uses `?: return false`; two are wrapped by first-line logic. No clean (e, fallback) fit. |
-| `firstLine`     | 2 inline, 0 calls  | DROP | Below the 3-site bar. `QuackDuckDbExecutor.firstLineOrFull` (private) covers one site; the other is inlined in `InProcessDuckDbExecutor`. |
-| `firstLineOf`   | 0 sites            | DROP | Composition convenience for the two above; falls automatically.            |
+### `require(optional, msg)` / `Optional<T>.orFail(msg)`
 
-## What is still in the per-slice kits
+`metadata.getTableHandle(...).orElseThrow { AssertionError("expected X handle") }`
+appears 6 times. Reading it as `metadata.getTableHandle(...).orFail("expected X
+handle")` states the intent (assert-or-fail) instead of spelling out the
+throw-lambda each time. The `@JvmStatic require` is the Java-interop-safe form;
+the `orFail` extension is Kotlin sugar (extensions are invisible to Java).
 
-Per-slice `kit-notes.json` files record the DURING correctness wins (locale-aware
-lowercase, null-safe SQL messages, resource-leak `use{}`/try-rethrow patterns,
-retained-size fixes) and the idiom-cleanup batches (`@JvmRecord` data classes,
-`requireNonNull` drops, Kotlin collection factories). Those edits are real and
-shipped; the unified verdict above is **only about the speculative shared-helper
-extraction**, not about any of the in-line correctness/idiom edits.
+## What was dropped, and why
 
-## Cross-module note
+- **`connectWithIsolated { connector -> }`** (provider.create + use): tempting,
+  but the `create(...).use { connector -> ... }` body varies a lot (some tests
+  pull `getMetadata`, some `getScanPlanProvider`, some both) and the
+  `FakeConnectorContext("dl", 1L)` is trivial. Wrapping it in a higher-order
+  helper hides the `.use {}` resource boundary — the single most important
+  line for a connector test to show explicitly. Folding the *properties* into
+  `isolatedProperties` already removes the bulk of the duplication; the
+  remaining `create(props, ctx).use {}` reads fine inline. **DROP.**
+- **`populatedFormatDesc`**: `ThriftParity` already has a private file-local
+  `populatedFormatDesc`; `ScanPlanProvider` inlines the
+  `TTableFormatFileDesc()`+`TFileRangeDesc()`+`populateRangeParams` twice for a
+  slightly different purpose (it reads `formatDesc.icebergParams`, not a golden
+  diff). 3 sites but split across two intents and one file already owns it.
+  Below a clean extraction. **DROP.**
+- **`name`/`precision` in TypeMapping**: single file, already private one-liners.
+  Promoting to a cross-file kit would add an import for zero other callers.
+  **DROP.**
 
-The workflow constraint is explicit: do **not** introduce IdiomKit in
-`ducklake-catalog`. Catalog has 1 inline `lowercase(Locale.ROOT)` site and 1
-`?: return false` null-safe message site — far below the threshold, and a
-cross-module helper would require duplication (catalog cannot depend on
-trino-ducklake). The DuckDB executors' first-line logic stays project-local
-inside `trino-ducklake`.
+## Java-interop safety
 
-## Default for future authors
+`IdiomKit.kt` carries `@file:JvmName("DorisTestIdiomKit")` and `@JvmStatic` on
+both public helpers; both take/return JDK + plugin types (`Optional`,
+`LinkedHashMap`, `String`, `IsolatedCatalog`). The `orFail` extension is
+deliberately `internal` Kotlin-only sugar and is not part of the Java surface.
 
-Default to inline. If three new sites accumulate for the same pattern and the
-inline form is starting to drift, that is the moment to extract — at that point
-the helper will earn its keep, and this `combined-kit-notes.json` is the entry
-to update.
+## Rollout
+
+Not applied to call sites in this step (kit artifact only — same convention the
+slice workflow uses before the combine/apply pass). If wired in, the file moves
+to the test source set `jvm/doris-ducklake/test/.../doris/plugin/` (same package
+as callers; no import churn, `internal` connector types stay reachable). The
+combine pass makes the final keep/drop call across all slices.
