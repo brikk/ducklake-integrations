@@ -1,5 +1,11 @@
 /.idea/
 
+# Qodana spills its container HOME (JDK downloads, prefs) into the repo root via the
+# bind mount when `qodana scan` runs from jvm/. Ignore the leakage.
+/.java/
+/.jdks/
+/.local/
+
 # Vendored upstream repos for research/audit. The directories themselves
 # are never committed; only the clone script and any of our own docs at
 # the top level of vendor/ are tracked.

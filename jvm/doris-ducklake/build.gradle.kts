@@ -4,11 +4,15 @@ plugins {
 
 version = "0.0.1"
 
-// Doris FE pins to JDK 17; match it so the plugin classes load under FE's JVM.
+// Doris FE pins to JDK 17. Compile with the project-wide JDK 25 toolchain (one toolchain across
+// all modules) but emit JDK 17 bytecode/ABI so the plugin classes load under FE's JVM. Same
+// approach as :ducklake-catalog.
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        languageVersion = JavaLanguageVersion.of(25)
     }
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 
 // mavenLocal is required ONLY for this module: the Doris fe-connector-api / spi
