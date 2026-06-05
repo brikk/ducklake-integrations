@@ -135,10 +135,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val topLevelColumns: List<DucklakeColumn> = catalog.getTableColumns(tableId, snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
-            Optional.empty()
-        else
-            Optional.of(partitionSpecs.last())
+        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
         if (activePartitionSpec.isPresent && hivePartitioning) {
             for (field in activePartitionSpec.get().fields) {

@@ -117,6 +117,13 @@ import java.lang.Math.floorMod
 import java.util.Objects.requireNonNull
 
 /**
+ * The active partition spec is the most-recently-added one (highest version), or empty if the
+ * table has none. Shared by the metadata write paths and the add_files procedure.
+ */
+internal fun activePartitionSpecOf(specs: List<DucklakePartitionSpec>): Optional<DucklakePartitionSpec> =
+        if (specs.isEmpty()) Optional.empty() else Optional.of(specs.last())
+
+/**
  * Metadata implementation for Ducklake connector.
  * Provides access to Ducklake tables and views via SQL catalog.
  */
@@ -727,10 +734,7 @@ class DucklakeMetadata(
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
-            Optional.empty()
-        else
-            Optional.of(partitionSpecs.last())
+        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
         val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 
@@ -822,10 +826,7 @@ class DucklakeMetadata(
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.get().tableId, snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(table.get().tableId, snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
-            Optional.empty()
-        else
-            Optional.of(partitionSpecs.last())
+        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
         val tableDataPath: String = resolveTableDataPath(tableName.schemaName, tableName.tableName, snapshotId)
 
@@ -941,10 +942,7 @@ class DucklakeMetadata(
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = if (partitionSpecs.isEmpty())
-            Optional.empty()
-        else
-            Optional.of(partitionSpecs.last())
+        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
         val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 

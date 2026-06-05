@@ -80,7 +80,6 @@ import java.io.IOException
 import java.lang.Float.intBitsToFloat
 import java.lang.Math.floorDiv
 import java.lang.Math.floorMod
-import java.lang.String.format
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.nio.charset.StandardCharsets
@@ -91,11 +90,9 @@ import java.sql.SQLException
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.ArrayList
 import java.util.HashMap
-import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.UUID
@@ -222,7 +219,7 @@ constructor(
             }
             val col = columns[i]
             sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
-            sql.append(' ').append(toDuckDbSqlType(col.columnType))
+            sql.append(' ').append(DuckDbWriterSupport.toDuckDbSqlType(col.columnType, "DuckDB Arrow-stream writer"))
             if (!col.nullable) {
                 sql.append(" NOT NULL")
             }
@@ -381,8 +378,8 @@ constructor(
             val col: DucklakeColumnHandle = columns[i]
             val valueCount: Long = valueCounts[i]
             val nullCount = maxOf(0L, totalCount - valueCount)
-            val min: Optional<String> = formatStatValue(col.columnType, minValues[i])
-            val max: Optional<String> = formatStatValue(col.columnType, maxValues[i])
+            val min: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
+            val max: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
             result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
         }
         return result
@@ -538,59 +535,6 @@ constructor(
 
         /** Sentinel to wake the consumer thread when no more pages will arrive.  */
         private val END_OF_STREAM: Page = Page(0)
-
-        private fun toDuckDbSqlType(type: Type): String {
-            if (type == BOOLEAN) {
-                return "BOOLEAN"
-            }
-            if (type == TINYINT) {
-                return "TINYINT"
-            }
-            if (type == SMALLINT) {
-                return "SMALLINT"
-            }
-            if (type == INTEGER) {
-                return "INTEGER"
-            }
-            if (type == BIGINT) {
-                return "BIGINT"
-            }
-            if (type == REAL) {
-                return "REAL"
-            }
-            if (type == DOUBLE) {
-                return "DOUBLE"
-            }
-            if (type == DATE) {
-                return "DATE"
-            }
-            if (type == VARBINARY) {
-                return "BLOB"
-            }
-            if (type is DecimalType) {
-                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
-            }
-            if (type is TimestampType) {
-                return when (type.precision) {
-                    0 -> "TIMESTAMP_S"
-                    3 -> "TIMESTAMP_MS"
-                    6 -> "TIMESTAMP"
-                    9 -> "TIMESTAMP_NS"
-                    else -> "TIMESTAMP"
-                }
-            }
-            if (type is TimestampWithTimeZoneType) {
-                return "TIMESTAMPTZ"
-            }
-            if (type is VarcharType) {
-                return "VARCHAR"
-            }
-            if (type == UuidType.UUID) {
-                return "UUID"
-            }
-            throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
-        }
-
         private fun toArrowField(name: String, type: Type, nullable: Boolean): Field {
             val arrow: ArrowType = toArrowType(type)
             return Field(name, FieldType(nullable, arrow, null), null)
@@ -656,62 +600,6 @@ constructor(
             }
             throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
         }
-
-        private fun formatStatValue(type: Type, value: Any?): Optional<String> {
-            if (value == null) {
-                return Optional.empty()
-            }
-            if (type == BOOLEAN) {
-                return Optional.of(if ((value as Boolean)) "true" else "false")
-            }
-            if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
-                return Optional.of((value as Number).toLong().toString())
-            }
-            if (type == REAL) {
-                val f: Float = (value as Number).toFloat()
-                return if (java.lang.Float.isNaN(f)) Optional.empty() else Optional.of(f.toString())
-            }
-            if (type == DOUBLE) {
-                val d: Double = (value as Number).toDouble()
-                return if (java.lang.Double.isNaN(d)) Optional.empty() else Optional.of(d.toString())
-            }
-            if (type is DecimalType) {
-                val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
-                return Optional.of(bd.toPlainString())
-            }
-            if (type == DATE) {
-                if (value is java.sql.Date) {
-                    return Optional.of(value.toLocalDate().toString())
-                }
-                if (value is LocalDate) {
-                    return Optional.of(value.toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is TimestampType) {
-                if (value is LocalDateTime) {
-                    return Optional.of(value.toString())
-                }
-                if (value is java.sql.Timestamp) {
-                    return Optional.of(value.toLocalDateTime().toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is TimestampWithTimeZoneType) {
-                if (value is OffsetDateTime) {
-                    return Optional.of(value.toInstant().toString())
-                }
-                if (value is java.sql.Timestamp) {
-                    return Optional.of(value.toInstant().toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is VarcharType) {
-                return Optional.of(value.toString())
-            }
-            return Optional.empty()
-        }
-
         private fun closeQuietly(c: AutoCloseable?) {
             c ?: return
             try {

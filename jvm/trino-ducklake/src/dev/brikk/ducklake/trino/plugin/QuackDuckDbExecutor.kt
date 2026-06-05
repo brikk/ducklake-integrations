@@ -187,49 +187,21 @@ internal class QuackDuckDbExecutor(
 
         @Throws(IOException::class)
         override fun close() {
+            // Close in dependency order, keeping the first failure to log (never rethrow).
+            // No client-side DETACH needed — the client-side ATTACH was just the Quack engine
+            // catalog itself, lives with the connection. The server-side ATTACH of the .db file
+            // persists across this client's lifetime intentionally (next query against the same
+            // file is a no-op via IF NOT EXISTS); cache-row invalidation drives explicit DETACH
+            // from the cache manager, not from this page source.
             var suppressed: Throwable? = null
-            try {
-                arrowReader.close()
-            }
-            catch (t: Throwable) {
-                suppressed = t
-            }
-            try {
-                resultSet.close()
-            }
-            catch (t: Throwable) {
-                if (suppressed == null) {
-                    suppressed = t
+            for (resource in listOf(arrowReader, resultSet, statement, connection, allocator)) {
+                try {
+                    resource.close()
                 }
-            }
-            try {
-                statement.close()
-            }
-            catch (t: Throwable) {
-                if (suppressed == null) {
-                    suppressed = t
-                }
-            }
-            // No client-side DETACH needed — the client-side ATTACH was just
-            // the Quack engine catalog itself, lives with the connection. The
-            // server-side ATTACH of the .db file persists across this client's
-            // lifetime intentionally (next query against the same file is a
-            // no-op via IF NOT EXISTS); cache-row invalidation drives explicit
-            // DETACH from the cache manager, not from this page source.
-            try {
-                connection.close()
-            }
-            catch (t: Throwable) {
-                if (suppressed == null) {
-                    suppressed = t
-                }
-            }
-            try {
-                allocator.close()
-            }
-            catch (t: Throwable) {
-                if (suppressed == null) {
-                    suppressed = t
+                catch (t: Throwable) {
+                    if (suppressed == null) {
+                        suppressed = t
+                    }
                 }
             }
             if (suppressed != null) {

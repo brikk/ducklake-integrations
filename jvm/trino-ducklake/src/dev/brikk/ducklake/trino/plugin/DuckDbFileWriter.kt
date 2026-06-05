@@ -61,7 +61,6 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -145,7 +144,7 @@ constructor(
             }
             val col = columns[i]
             sql.append('"').append(col.columnName.replace("\"", "\"\"")).append('"')
-            sql.append(' ').append(toDuckDbSqlType(col.columnType))
+            sql.append(' ').append(DuckDbWriterSupport.toDuckDbSqlType(col.columnType, "DuckDB-format writer"))
             if (!col.nullable) {
                 sql.append(" NOT NULL")
             }
@@ -384,8 +383,8 @@ constructor(
             val col = columns[i]
             val valueCount = valueCounts[i]
             val nullCount = maxOf(0L, totalCount - valueCount)
-            val min = formatStatValue(col.columnType, minValues[i])
-            val max = formatStatValue(col.columnType, maxValues[i])
+            val min = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
+            val max = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
             result.add(DucklakeFileColumnStats(
                     col.columnId,
                     0L, // column_size_bytes — not readily available without per-block scan; safe at 0
@@ -449,59 +448,6 @@ constructor(
         private const val ATTACHED_DB: String = "ducklake_out"
         private const val ATTACHED_SCHEMA: String = "main"
         private const val ATTACHED_TABLE: String = "t"
-
-        private fun toDuckDbSqlType(type: Type): String {
-            if (type == BOOLEAN) {
-                return "BOOLEAN"
-            }
-            if (type == TINYINT) {
-                return "TINYINT"
-            }
-            if (type == SMALLINT) {
-                return "SMALLINT"
-            }
-            if (type == INTEGER) {
-                return "INTEGER"
-            }
-            if (type == BIGINT) {
-                return "BIGINT"
-            }
-            if (type == REAL) {
-                return "REAL"
-            }
-            if (type == DOUBLE) {
-                return "DOUBLE"
-            }
-            if (type == DATE) {
-                return "DATE"
-            }
-            if (type == VARBINARY) {
-                return "BLOB"
-            }
-            if (type == UUID) {
-                return "UUID"
-            }
-            if (type is DecimalType) {
-                return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
-            }
-            if (type is TimestampType) {
-                return when (type.precision) {
-                    0 -> "TIMESTAMP_S"
-                    3 -> "TIMESTAMP_MS"
-                    6 -> "TIMESTAMP"
-                    9 -> "TIMESTAMP_NS"
-                    else -> "TIMESTAMP"
-                }
-            }
-            if (type is TimestampWithTimeZoneType) {
-                return "TIMESTAMPTZ"
-            }
-            if (type is VarcharType) {
-                return "VARCHAR"
-            }
-            throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
-        }
-
         private fun microsToLocalDateTime(epochMicros: Long): LocalDateTime {
             val epochSecond = floorDiv(epochMicros, 1_000_000L)
             val nanoOfSecond = floorMod(epochMicros, 1_000_000L).toInt() * 1_000
@@ -518,59 +464,5 @@ constructor(
          * writer uses, so the catalog stays consistent across formats. See
          * {@link DucklakeStatsExtractor#convertStatValue}.
          */
-        private fun formatStatValue(type: Type, value: Any?): Optional<String> {
-            if (value == null) {
-                return Optional.empty()
-            }
-            if (type == BOOLEAN) {
-                return Optional.of(if (value as Boolean) "true" else "false")
-            }
-            if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
-                return Optional.of((value as Number).toLong().toString())
-            }
-            if (type == REAL) {
-                val f = (value as Number).toFloat()
-                return if (java.lang.Float.isNaN(f)) Optional.empty() else Optional.of(java.lang.String.valueOf(f))
-            }
-            if (type == DOUBLE) {
-                val d = (value as Number).toDouble()
-                return if (java.lang.Double.isNaN(d)) Optional.empty() else Optional.of(java.lang.String.valueOf(d))
-            }
-            if (type is DecimalType) {
-                val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
-                return Optional.of(bd.toPlainString())
-            }
-            if (type == DATE) {
-                if (value is java.sql.Date) {
-                    return Optional.of(value.toLocalDate().toString())
-                }
-                if (value is LocalDate) {
-                    return Optional.of(value.toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is TimestampType) {
-                if (value is LocalDateTime) {
-                    return Optional.of(value.toString())
-                }
-                if (value is java.sql.Timestamp) {
-                    return Optional.of(value.toLocalDateTime().toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is TimestampWithTimeZoneType) {
-                if (value is OffsetDateTime) {
-                    return Optional.of(value.toInstant().toString())
-                }
-                if (value is java.sql.Timestamp) {
-                    return Optional.of(value.toInstant().toString())
-                }
-                return Optional.of(value.toString())
-            }
-            if (type is VarcharType) {
-                return Optional.of(value.toString())
-            }
-            return Optional.empty()
-        }
     }
 }
