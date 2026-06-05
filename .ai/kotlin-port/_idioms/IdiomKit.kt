@@ -74,3 +74,56 @@ object DorisTestIdiomKit {
  */
 internal fun <T : Any> Optional<T>.orFail(message: String): T =
     orElseThrow { AssertionError(message) }
+
+// ---------------------------------------------------------------------------
+// doris-main slice (PROPOSAL — artifact, not yet wired into call sites)
+//
+// The 13 ported `doris-ducklake/src` production files were surveyed against the
+// same combine-pass bar the test slice used: extract only at >= 3 distinct call
+// sites spanning >= 2 files where the helper is shorter/clearer than inline.
+//
+// Exactly ONE ceremony clears that bar: the "cast an opaque SPI handle to our
+// concrete type, or throw IllegalArgumentException naming the runtime class"
+// dance. Doris hands every per-table SPI call an erased handle (`Object` /
+// `ConnectorTableHandle`); the plugin re-narrows it. The port carries TWO
+// byte-identical private `asDuckLakeHandle(...)` copies — one in
+// `DuckLakeConnectorMetadata` (2 call sites), one in `DuckLakeScanPlanProvider`
+// (1 call site) — differing only in the static param type. A single reified
+// helper collapses both copies AND erases the `is X` / `javaClass.name`
+// ceremony at each call site: `req.table.asDuckLakeHandle()`.
+//
+// Everything else stayed inline (see idioms.md "What was dropped"):
+//   - normalizeFileFormat / lowercase-with-default: single file (ScanPlanProvider);
+//     ScanRange's lowercase is a different shape (error, not default). DROP.
+//   - Optional.orElseThrow { IllegalState/ArgException(...) } on catalog reads:
+//     bespoke multi-line messages, mixed exception types, marginal win. DROP.
+//   - Objects.requireNonNull(x, "x"): Java-port residue on already-non-null
+//     Kotlin params; a kotlin-idiom cleanup, not a cross-file kit idiom. DROP.
+//
+// Home if wired in: the production source set
+// `jvm/doris-ducklake/src/.../doris/plugin/` (same package as callers — the
+// `internal` handle types stay reachable, no import churn).
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrows an opaque Doris SPI handle (`Object` from `ConnectorScanRequest.table`
+ * or a `ConnectorTableHandle` from the metadata SPI) to a concrete plugin handle
+ * type [T], throwing [IllegalArgumentException] naming the actual runtime class
+ * when it is the wrong type (or null).
+ *
+ * Replaces the two byte-identical private `asDuckLakeHandle(...)` helpers (one in
+ * `DuckLakeConnectorMetadata`, one in `DuckLakeScanPlanProvider`) and the `is X`
+ * / `javaClass.name` ceremony at all three call sites. Reified so call sites read
+ * `req.table.asDuckLakeHandle()` with no `.class` / `KClass` token — the target
+ * type is inferred from the assignment.
+ *
+ * Kotlin-only (reified inline functions cannot be expressed in Java). The ported
+ * call sites are all Kotlin, so this is the natural surface; a Java caller that
+ * ever needs the same narrowing would write its own `instanceof` + cast.
+ */
+internal inline fun <reified T : Any> Any?.asDuckLakeHandle(): T =
+    this as? T
+        ?: throw IllegalArgumentException(
+            "Expected ${T::class.java.simpleName}, got " +
+                (this?.javaClass?.name ?: "null"),
+        )

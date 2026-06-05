@@ -65,5 +65,80 @@
     ],
     "bar": ">= 3 distinct sites AND >= 2 files AND helper shorter/clearer than inline (per combined-kit-notes.json combine-pass verdict)",
     "verification": "not applicable for this step — kit is an artifact proposal, call sites unchanged; rollout/keep decided by the combine pass"
+  },
+  {
+    "slice": "doris-main",
+    "generated_at": "2026-06-05",
+    "scope": "jvm/doris-ducklake/src (13 ported .kt files under doris/plugin)",
+    "status": "extended",
+    "kit_file": ".ai/kotlin-port/_idioms/IdiomKit.kt",
+    "applied_to_call_sites": false,
+    "ported_files": [
+      "DuckLakeTypeMapping.kt",
+      "DuckLakeConnectorProvider.kt",
+      "DuckLakeConnectorMvccSnapshot.kt",
+      "DuckLakeTableHandle.kt",
+      "DuckLakePositionDelete.kt",
+      "DuckLakeConnectorProperties.kt",
+      "DuckLakePathResolver.kt",
+      "DuckLakeScanPlanProvider.kt",
+      "DuckLakeConnectorMetadata.kt",
+      "DuckLakeConnector.kt",
+      "DuckLakeScanRange.kt",
+      "package-info.kt",
+      "DuckLakeColumnHandle.kt"
+    ],
+    "helpers_kept": [
+      {
+        "name": "asDuckLakeHandle",
+        "signature": "internal inline fun <reified T : Any> Any?.asDuckLakeHandle(): T",
+        "replaces": "the two byte-identical private asDuckLakeHandle(...) helpers plus the `is X` / javaClass.name cast-or-throw ceremony that re-narrows an erased Doris SPI handle (Object from ConnectorScanRequest.table, or ConnectorTableHandle from the metadata SPI) to DuckLakeTableHandle, throwing IllegalArgumentException naming the runtime class on mismatch",
+        "distinct_sites": 3,
+        "files": ["DuckLakeConnectorMetadata.kt (2)", "DuckLakeScanPlanProvider.kt (1)"],
+        "reified_rationale": "call sites become `req.table.asDuckLakeHandle()` with no .class/KClass token; target type inferred from the assignment",
+        "interop": "Kotlin-only (reified inline cannot be expressed in Java); all ported call sites are Kotlin"
+      }
+    ],
+    "candidates_dropped": [
+      {
+        "name": "requireNonNull",
+        "pattern": "Objects.requireNonNull(x, \"x\")",
+        "distinct_sites": "many",
+        "files": ["DuckLakeScanRange.kt", "DuckLakePositionDelete.kt", "DuckLakeConnectorMvccSnapshot.kt", "DuckLakeScanPlanProvider.kt"],
+        "verdict": "DROP",
+        "rationale": "Java-port residue guarding params that are already non-null in the Kotlin signatures. Stripping it is a kotlin-idiom cleanup, not a cross-file shared idiom; a helper would preserve dead ceremony."
+      },
+      {
+        "name": "orElseThrow",
+        "pattern": "Optional.orElseThrow { IllegalState/ArgException(<bespoke interpolated msg>) }",
+        "distinct_sites": 3,
+        "files": ["DuckLakeScanPlanProvider.kt (2, IllegalStateException)", "DuckLakeConnectorMetadata.kt (1, IllegalArgumentException)"],
+        "verdict": "DROP",
+        "rationale": "clears the count but each throws a different exception type with a bespoke multi-line message. A generic helper would take both the exception factory and the message — no shorter than the inline lambda, and loses the at-a-glance exception type."
+      },
+      {
+        "name": "normalizeFileFormat",
+        "pattern": "lowercase-with-default(\"parquet\")",
+        "distinct_sites": 2,
+        "verdict": "DROP",
+        "rationale": "single file (DuckLakeScanPlanProvider, 2 internal uses). DuckLakeScanRange.toThrift also lowercases a format but with opposite semantics (throws on non-parquet rather than defaulting) — not the same helper."
+      },
+      {
+        "name": "doubleCheckedLockLazy",
+        "pattern": "@Volatile field + synchronized double-checked init",
+        "distinct_sites": 2,
+        "verdict": "DROP",
+        "rationale": "both instances in one file (DuckLakeConnector: catalog() and getScanPlanProvider) with different bodies. Single-file control-flow; a by-lazy rewrite is a kotlin-idiom cleanup, not a kit."
+      },
+      {
+        "name": "requireString",
+        "pattern": "requireString(props, key)",
+        "distinct_sites": 4,
+        "verdict": "ALREADY EXTRACTED",
+        "rationale": "lives in DuckLakeConnectorProperties.requireString and is reused 4x in DuckLakeConnector; no new kit helper needed."
+      }
+    ],
+    "bar": ">= 3 distinct sites AND >= 2 files AND helper shorter/clearer than inline (per combined-kit-notes.json combine-pass verdict)",
+    "verification": "not applicable for this step — kit is an artifact proposal, call sites unchanged; rollout/keep decided by the combine pass"
   }
 ]
