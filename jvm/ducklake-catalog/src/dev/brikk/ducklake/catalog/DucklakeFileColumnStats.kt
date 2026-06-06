@@ -18,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import java.util.Optional
 
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakeFileColumnStats @JsonCreator constructor(
     @param:JsonProperty("columnId") val columnId: Long,
     @param:JsonProperty("columnSizeBytes") val columnSizeBytes: Long,

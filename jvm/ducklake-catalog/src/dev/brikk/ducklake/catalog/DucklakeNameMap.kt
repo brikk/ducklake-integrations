@@ -25,6 +25,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * identical maps per call.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakeNameMap(
     val entries: List<DucklakeNameMapEntry>,
 ) {

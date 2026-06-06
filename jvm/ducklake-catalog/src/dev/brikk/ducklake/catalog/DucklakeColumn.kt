@@ -21,6 +21,7 @@ import java.util.Optional
  * Represents a column from the ducklake_column table.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakeColumn @JsonCreator constructor(
     @param:JsonProperty("columnId") val columnId: Long,
     @param:JsonProperty("beginSnapshot") val beginSnapshot: Long,

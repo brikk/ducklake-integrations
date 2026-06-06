@@ -19,6 +19,7 @@ import java.util.Optional
 import java.util.OptionalLong
 
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakeWriteFragment(
     @get:JsonProperty("path") val path: String,
     @get:JsonProperty("pathIsRelative") val pathIsRelative: Boolean,

@@ -29,6 +29,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * the same transaction) and re-introducing its count would double-subtract.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakeDeleteFragment @JsonCreator constructor(
     @param:JsonProperty("dataFileId") val dataFileId: Long,
     @param:JsonProperty("path") val path: String,

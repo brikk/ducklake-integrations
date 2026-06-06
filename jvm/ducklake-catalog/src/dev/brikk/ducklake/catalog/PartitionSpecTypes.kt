@@ -18,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import java.util.OptionalInt
 
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakePartitionField @JsonCreator constructor(
         @param:JsonProperty("partitionKeyIndex") val partitionKeyIndex: Int,
         @param:JsonProperty("columnId") val columnId: Long,
@@ -45,6 +46,7 @@ data class DucklakePartitionField @JsonCreator constructor(
 // identical signatures. Defensive copy dropped — Java callers already pass immutable
 // lists (List.of / ImmutableList.copyOf) and the test suite exercises the contract.
 @JvmRecord
+@JacksonSerializedInternalClass
 data class DucklakePartitionSpec @JsonCreator constructor(
     @JsonProperty("partitionId") val partitionId: Long,
     @JsonProperty("tableId") val tableId: Long,
@@ -57,6 +59,7 @@ data class DucklakePartitionSpec @JsonCreator constructor(
  * transform (the `N` in `bucket(N, col)`) and empty for all others.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
 data class PartitionFieldSpec(
         val columnName: String,
         val transform: DucklakePartitionTransform,

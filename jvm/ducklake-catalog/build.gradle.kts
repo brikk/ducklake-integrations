@@ -71,6 +71,14 @@ dependencies {
 
     testImplementation(libs.duckdb.jdbc)
     testRuntimeOnly(libs.postgres.jdbc)
+
+    // Golden wire-format test (TestJacksonWireFormat) exercises the SAME airlift
+    // JsonCodec that the production Trino fragment paths use, so the catalog's own
+    // wire types are locked against the real serializer rather than a bare
+    // ObjectMapper. The Trino BOM (test scope only) supplies the io.airlift:json
+    // version; the catalog main classpath stays Jackson-only.
+    testImplementation(platform(libs.trino.bom))
+    testImplementation("io.airlift:json")
 }
 
 // Stand up a Postgres container and bootstrap the DuckLake metadata schema in it. jOOQ

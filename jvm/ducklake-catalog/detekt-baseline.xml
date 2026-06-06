@@ -16,7 +16,7 @@
     <ID>SwallowedException:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: RuntimeException</ID>
     <ID>ThrowsCount:ConcurrentWriterHarness.kt:ConcurrentWriterHarness$@JvmStatic @JvmOverloads @Throws(InterruptedException::class) fun runWinnerWhileLoserParked: Result</ID>
     <ID>ThrowsCount:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$private fun attemptWriteTransaction</ID>
-    <ID>ThrowsCount:WriteTransactionRetry.kt:WriteTransactionRetry$@JvmStatic fun retryOnConflict</ID>
+    <ID>ThrowsCount:WriteTransactionRetry.kt:WriteTransactionRetry$fun retryOnConflict</ID>
     <ID>TooGenericExceptionCaught:DucklakeStatTypes.kt:DucklakeStatTypes$e: RuntimeException</ID>
     <ID>TooGenericExceptionCaught:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: Exception</ID>
     <ID>TooGenericExceptionCaught:JdbcDucklakeCatalog.kt:JdbcDucklakeCatalog$e: RuntimeException</ID>
