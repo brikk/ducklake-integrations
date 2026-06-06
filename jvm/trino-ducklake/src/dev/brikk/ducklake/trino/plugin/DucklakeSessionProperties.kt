@@ -69,12 +69,13 @@ open class DucklakeSessionProperties @Inject constructor() {
             booleanProperty(
                     PUSHDOWN_TIMESTAMP_WITH_TIMEZONE,
                     "Enable pushdown of date/time predicates over TIMESTAMP WITH TIME ZONE columns " +
-                            "to DuckDB on the duckdb-format read path. Off by default while the cross-engine " +
-                            "semantic corpus burns in. When on, requires successful SET TimeZone on attach " +
+                            "to DuckDB on the duckdb-format read path. On by default (the cross-engine " +
+                            "semantic corpus has burned in). Requires successful SET TimeZone on attach " +
                             "(automatic for all named IANA zones and integer-hour offsets; fractional bare " +
                             "offsets like '+05:30' get a one-shot WARN and the pushdown silently degrades " +
-                            "to Trino-side evaluation for that attach). See dev-docs/archive/REPORT-datetime-tz-handling.md.",
-                    false,
+                            "to Trino-side evaluation for that attach). Set to false to keep these predicates " +
+                            "above the scan. See dev-docs/archive/REPORT-datetime-tz-handling.md.",
+                    true,
                     false))
 
     open fun getSessionProperties(): List<PropertyMetadata<*>> = sessionProperties

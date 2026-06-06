@@ -244,6 +244,16 @@ follow-up.
 Two epics tracked here at high level. Neither is scheduled; both are
 "when a real workload pushes for them" items.
 
+**DuckDB extension availability (probed 2026-06-06, pinned DuckDB `1.5.3.0`):**
+both `lance` and `vortex` are **core** extensions (HTTP 200 at
+`extensions.duckdb.org/v1.5.3/{osx_arm64,linux_amd64}`), loadable via plain
+`INSTALL lance; LOAD lance;` / `INSTALL vortex; LOAD vortex;` from the
+in-process DuckDB executor — no community-repo opt-in. The reader probe for
+each epic (write one file via DuckDB → register against a DuckLake table with
+the matching `file_format` → attempt a Trino read through the duckdb-format
+executor path) is unblocked. See the availability matrix in
+[TODO-duckdb-lake-format.md](TODO-duckdb-lake-format.md).
+
 ### Lance file support
 
 DuckLake snapshots that reference Lance-format data files. Lance is the

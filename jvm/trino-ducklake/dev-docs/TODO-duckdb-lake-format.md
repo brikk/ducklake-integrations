@@ -245,3 +245,15 @@ arrow - https://duckdb.org/community_extensions/extensions/nanoarrow
 lance - https://duckdb.org/docs/current/core_extensions/lance
 vortex - https://duckdb.org/docs/current/core_extensions/vortex
 
+**Extension-catalog availability for our pinned DuckDB `1.5.3.0` (probed 2026-06-06):**
+
+| Extension | Catalog | v1.5.3 (osx_arm64 / linux_amd64) |
+|---|---|---|
+| `lance` | core (`extensions.duckdb.org`) | ✅ HTTP 200 / 200 |
+| `vortex` | core (`extensions.duckdb.org`) | ✅ HTTP 200 / 200 |
+| `crypto` | community | ✅ HTTP 200 / 200 |
+| `hashfuncs` | community | ✅ HTTP 200 / 200 |
+| `netquack` | community | ✅ HTTP 200 / 200 |
+
+Both `lance` and `vortex` are **core** extensions (not community), so an `INSTALL lance; LOAD lance;` / `INSTALL vortex; LOAD vortex;` from the in-process DuckDB executor is the load path — no community-repo opt-in needed. This unblocks the probe step for both the Lance and Vortex file-support epics in [TODO-READ-MODE.md](TODO-READ-MODE.md): write one `.lance` / `.vortex` file via DuckDB, register it against a DuckLake table with the matching `file_format`, attempt a Trino read through the duckdb-format executor path, record what blows up.
+

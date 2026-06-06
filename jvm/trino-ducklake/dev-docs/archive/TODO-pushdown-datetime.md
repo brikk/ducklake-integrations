@@ -170,7 +170,7 @@ User-visible behaviour change to call out in the commit / release notes: `SELECT
 The Quack-server-side path also benefits: `TestDucklakeDuckDbExecutorBackends.sessionTimeZonePropagatesToBothBackends` continues to pass without modification — that test uses CAST-to-VARCHAR predicates that DuckDB computes server-side, and the cast string formatting was always controlled by DuckDB's session TimeZone (chunk 2). The converter change only affects how Trino constructs WTZ values from incoming Arrow, which that test doesn't exercise.
 
 What's left for future chunks:
-- Default-on flip for `pushdown_timestamp_with_timezone`. Land this after a release of burn-in with the property explicitly enabled on staging.
+- ✅ **Default-on flip for `pushdown_timestamp_with_timezone` — DONE (2026-06-06).** Burn-in complete; the property now defaults to `true` in `DucklakeSessionProperties`. README + parent TODO updated. Set to `false` to keep Tier C predicates above the scan.
 - **Parquet-format WTZ path — confirmed UTC-hardcoded, fix deferred** (see "Parquet-format WTZ asymmetry" section below for the full audit and the fix design).
 
 ---
