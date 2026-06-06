@@ -20,7 +20,7 @@ import java.util.UUID
  * Represents a table from the ducklake_table table.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeTable(
     val tableId: Long,

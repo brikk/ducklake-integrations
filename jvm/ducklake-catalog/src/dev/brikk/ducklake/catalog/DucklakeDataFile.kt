@@ -19,7 +19,7 @@ import com.fasterxml.jackson.annotation.JsonInclude
  * Represents a data file from the ducklake_data_file table.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeDataFile(
     val dataFileId: Long,

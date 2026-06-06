@@ -16,7 +16,7 @@ package dev.brikk.ducklake.catalog
 import com.fasterxml.jackson.annotation.JsonInclude
 
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakePartitionField(
         val partitionKeyIndex: Int,
@@ -45,7 +45,7 @@ data class DucklakePartitionField(
 // identical signatures. Defensive copy dropped — Java callers already pass immutable
 // lists (List.of / ImmutableList.copyOf) and the test suite exercises the contract.
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 data class DucklakePartitionSpec(
     val partitionId: Long,
     val tableId: Long,
@@ -58,7 +58,7 @@ data class DucklakePartitionSpec(
  * transform (the `N` in `bucket(N, col)`) and empty for all others.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class PartitionFieldSpec(
         val columnName: String,

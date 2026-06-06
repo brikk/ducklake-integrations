@@ -16,7 +16,7 @@ package dev.brikk.ducklake.catalog
 import com.fasterxml.jackson.annotation.JsonInclude
 
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeColumnStats(
     val columnId: Long,

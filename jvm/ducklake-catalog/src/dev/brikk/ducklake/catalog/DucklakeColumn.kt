@@ -19,7 +19,7 @@ import com.fasterxml.jackson.annotation.JsonInclude
  * Represents a column from the ducklake_column table.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeColumn(
     val columnId: Long,

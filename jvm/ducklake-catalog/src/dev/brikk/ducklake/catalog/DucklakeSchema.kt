@@ -21,7 +21,7 @@ import java.util.UUID
  * Maps to the ducklake_schema metadata table.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeSchema(
     val schemaId: Long,

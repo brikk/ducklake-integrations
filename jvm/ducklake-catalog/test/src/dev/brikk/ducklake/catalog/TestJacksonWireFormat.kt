@@ -20,7 +20,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 /**
- * Golden wire-format lock for the `@JacksonSerializedInternalClass` catalog types.
+ * Golden wire-format lock for the `@JacksonSerializedInternalJavaCompatibleClass` catalog types.
  *
  * Each case serializes a representative instance through the SAME airlift
  * [JsonCodec] the production Trino fragment paths use, then asserts the JSON
@@ -226,7 +226,7 @@ class TestJacksonWireFormat {
 
     // --- DucklakeNameMapEntry / DucklakeNameMap (deserialize-only annotations) ---
     //
-    // These two are marked @JacksonSerializedInternalClass but, unlike the other
+    // These two are marked @JacksonSerializedInternalJavaCompatibleClass but, unlike the other
     // marked types, are NOT @JvmRecord and expose no serialization getters. The
     // codec therefore emits an empty `{}` (data is dropped) and then rejects that
     // empty object on read-back (sourceName is a non-null String with no value).

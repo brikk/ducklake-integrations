@@ -20,7 +20,7 @@ import com.fasterxml.jackson.annotation.JsonInclude
  * Views are snapshot-scoped: visible from beginSnapshot until endSnapshot.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeView(
     val viewId: Long,

@@ -26,7 +26,7 @@ package dev.brikk.ducklake.catalog
  * the same transaction) and re-introducing its count would double-subtract.
  */
 @JvmRecord
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 data class DucklakeDeleteFragment(
     val dataFileId: Long,
     val path: String,

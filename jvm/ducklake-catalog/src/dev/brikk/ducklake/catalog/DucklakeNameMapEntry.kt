@@ -31,7 +31,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * way (an entry in `ducklake_name_mapping` with
  * `is_partition = true`).
  */
-@JacksonSerializedInternalClass
+@JacksonSerializedInternalJavaCompatibleClass
 data class DucklakeNameMapEntry(
         val sourceName: String,
         val targetFieldId: Long,
