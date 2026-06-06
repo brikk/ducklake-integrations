@@ -19,7 +19,7 @@
     <ID>CyclomaticComplexMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
     <ID>CyclomaticComplexMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
     <ID>CyclomaticComplexMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun appendValue</ID>
-    <ID>CyclomaticComplexMethod:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: String?</ID>
     <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
     <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun toDuckDbSqlType: String</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
@@ -38,7 +38,7 @@
     <ID>CyclomaticComplexMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
     <ID>CyclomaticComplexMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneDataFiles: List&lt;DucklakeDataFile&gt;</ID>
     <ID>CyclomaticComplexMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$fun extractStats: List&lt;DucklakeFileColumnStats&gt;</ID>
-    <ID>CyclomaticComplexMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
     <ID>CyclomaticComplexMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
     <ID>CyclomaticComplexMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
     <ID>CyclomaticComplexMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
@@ -65,7 +65,7 @@
     <ID>LongMethod:DucklakePuffinDeleteReader.kt:DucklakePuffinDeleteReader$@Throws(IOException::class) fun decodeBlob: Set&lt;Long&gt;</ID>
     <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$override fun getSplits: ConnectorSplitSource</ID>
     <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
-    <ID>LongMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
+    <ID>LongMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
     <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
     <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
     <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
@@ -140,9 +140,8 @@
     <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
     <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
     <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.LikePatternAccessor$fun extract: Extracted?</ID>
-    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: Optional&lt;String&gt;</ID>
-    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateDomain: Optional&lt;String&gt;</ID>
-    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateValues: Optional&lt;String&gt;</ID>
+    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: String?</ID>
+    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateDomain: String?</ID>
     <ID>ReturnCount:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
     <ID>ReturnCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$private fun parquetPrimitiveToTrino: Type</ID>
     <ID>ReturnCount:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun resolveTimeZoneKey: TimeZoneKey</ID>
@@ -154,8 +153,8 @@
     <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun partitionValueMatchesDomain: Boolean</ID>
     <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
     <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneDataFiles: List&lt;DucklakeDataFile&gt;</ID>
-    <ID>ReturnCount:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: Optional&lt;String&gt;</ID>
-    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$@JvmStatic fun partitionValueMatchesDomain: Boolean</ID>
+    <ID>ReturnCount:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
+    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$fun partitionValueMatchesDomain: Boolean</ID>
     <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$private fun extractEpochMicros: Long</ID>
     <ID>SwallowedException:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$e: UnsupportedOperationException</ID>
     <ID>SwallowedException:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$e: DucklakeAddFilesException</ID>

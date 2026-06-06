@@ -2,9 +2,9 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>CyclomaticComplexMethod:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$@JvmStatic fun fromDucklakeType: ConnectorType</ID>
-    <ID>LongMethod:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$@JvmStatic fun fromDucklakeType: ConnectorType</ID>
-    <ID>ReturnCount:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$@JvmStatic fun fromDucklakeType: ConnectorType</ID>
+    <ID>CyclomaticComplexMethod:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$fun fromDucklakeType: ConnectorType</ID>
+    <ID>LongMethod:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$fun fromDucklakeType: ConnectorType</ID>
+    <ID>ReturnCount:DuckLakeTypeMapping.kt:DuckLakeTypeMapping$fun fromDucklakeType: ConnectorType</ID>
     <ID>ThrowsCount:DuckLakeConnectorMvccSnapshot.kt:DuckLakeConnectorMvccSnapshot.Codec$override fun decode: ConnectorMvccSnapshot</ID>
     <ID>TooGenericExceptionThrown:DuckLakeTestCatalogBootstrap.kt:DuckLakeTestCatalogBootstrap$throw RuntimeException("Failed to delete $path", e)</ID>
     <ID>TooManyFunctions:DuckLakeScanRange.kt:DuckLakeScanRange : ConnectorScanRangeSerializable</ID>
