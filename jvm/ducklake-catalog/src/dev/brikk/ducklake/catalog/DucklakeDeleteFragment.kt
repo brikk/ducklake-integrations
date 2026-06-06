@@ -13,9 +13,6 @@
  */
 package dev.brikk.ducklake.catalog
 
-import com.fasterxml.jackson.annotation.JsonCreator
-import com.fasterxml.jackson.annotation.JsonProperty
-
 /**
  * Describes a delete Parquet file written during a DELETE/UPDATE/MERGE operation.
  * Each fragment corresponds to one data file's deletions.
@@ -30,11 +27,11 @@ import com.fasterxml.jackson.annotation.JsonProperty
  */
 @JvmRecord
 @JacksonSerializedInternalClass
-data class DucklakeDeleteFragment @JsonCreator constructor(
-    @param:JsonProperty("dataFileId") val dataFileId: Long,
-    @param:JsonProperty("path") val path: String,
-    @param:JsonProperty("deleteCount") val deleteCount: Long,
-    @param:JsonProperty("fileSizeBytes") val fileSizeBytes: Long,
-    @param:JsonProperty("footerSize") val footerSize: Long,
-    @param:JsonProperty("newDeleteCount") val newDeleteCount: Long,
+data class DucklakeDeleteFragment(
+    val dataFileId: Long,
+    val path: String,
+    val deleteCount: Long,
+    val fileSizeBytes: Long,
+    val footerSize: Long,
+    val newDeleteCount: Long,
 )

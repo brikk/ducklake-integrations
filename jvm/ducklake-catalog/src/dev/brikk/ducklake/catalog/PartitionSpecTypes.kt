@@ -13,20 +13,18 @@
  */
 package dev.brikk.ducklake.catalog
 
-import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonInclude
-import com.fasterxml.jackson.annotation.JsonProperty
 
 @JvmRecord
 @JacksonSerializedInternalClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
-data class DucklakePartitionField @JsonCreator constructor(
-        @param:JsonProperty("partitionKeyIndex") val partitionKeyIndex: Int,
-        @param:JsonProperty("columnId") val columnId: Long,
-        @param:JsonProperty("transform") val transform: DucklakePartitionTransform,
+data class DucklakePartitionField(
+        val partitionKeyIndex: Int,
+        val columnId: Long,
+        val transform: DucklakePartitionTransform,
         // Bucket arity (the N in bucket(N)). Present only for BUCKET transforms,
         // null for IDENTITY / temporal kinds.
-        @param:JsonProperty("arity") val arity: Int?)
+        val arity: Int?)
 {
     init {
         if (transform == DucklakePartitionTransform.BUCKET && arity == null) {
@@ -48,10 +46,10 @@ data class DucklakePartitionField @JsonCreator constructor(
 // lists (List.of / ImmutableList.copyOf) and the test suite exercises the contract.
 @JvmRecord
 @JacksonSerializedInternalClass
-data class DucklakePartitionSpec @JsonCreator constructor(
-    @JsonProperty("partitionId") val partitionId: Long,
-    @JsonProperty("tableId") val tableId: Long,
-    @JsonProperty("fields") val fields: List<DucklakePartitionField>,
+data class DucklakePartitionSpec(
+    val partitionId: Long,
+    val tableId: Long,
+    val fields: List<DucklakePartitionField>,
 )
 
 /**

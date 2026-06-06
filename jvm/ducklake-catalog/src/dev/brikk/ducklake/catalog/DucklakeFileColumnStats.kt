@@ -13,19 +13,17 @@
  */
 package dev.brikk.ducklake.catalog
 
-import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonInclude
-import com.fasterxml.jackson.annotation.JsonProperty
 
 @JvmRecord
 @JacksonSerializedInternalClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
-data class DucklakeFileColumnStats @JsonCreator constructor(
-    @param:JsonProperty("columnId") val columnId: Long,
-    @param:JsonProperty("columnSizeBytes") val columnSizeBytes: Long,
-    @param:JsonProperty("valueCount") val valueCount: Long,
-    @param:JsonProperty("nullCount") val nullCount: Long,
-    @param:JsonProperty("minValue") val minValue: String?,
-    @param:JsonProperty("maxValue") val maxValue: String?,
-    @param:JsonProperty("containsNan") val containsNan: Boolean,
+data class DucklakeFileColumnStats(
+    val columnId: Long,
+    val columnSizeBytes: Long,
+    val valueCount: Long,
+    val nullCount: Long,
+    val minValue: String?,
+    val maxValue: String?,
+    val containsNan: Boolean,
 )

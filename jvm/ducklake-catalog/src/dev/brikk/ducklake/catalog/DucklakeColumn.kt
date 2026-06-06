@@ -13,9 +13,7 @@
  */
 package dev.brikk.ducklake.catalog
 
-import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonInclude
-import com.fasterxml.jackson.annotation.JsonProperty
 
 /**
  * Represents a column from the ducklake_column table.
@@ -23,14 +21,14 @@ import com.fasterxml.jackson.annotation.JsonProperty
 @JvmRecord
 @JacksonSerializedInternalClass
 @JsonInclude(JsonInclude.Include.NON_NULL)
-data class DucklakeColumn @JsonCreator constructor(
-    @param:JsonProperty("columnId") val columnId: Long,
-    @param:JsonProperty("beginSnapshot") val beginSnapshot: Long,
-    @param:JsonProperty("endSnapshot") val endSnapshot: Long?,
-    @param:JsonProperty("tableId") val tableId: Long,
-    @param:JsonProperty("columnOrder") val columnOrder: Long,
-    @param:JsonProperty("columnName") val columnName: String,
-    @param:JsonProperty("columnType") val columnType: String,
-    @param:JsonProperty("nullsAllowed") val nullsAllowed: Boolean,
-    @param:JsonProperty("parentColumn") val parentColumn: Long?,
+data class DucklakeColumn(
+    val columnId: Long,
+    val beginSnapshot: Long,
+    val endSnapshot: Long?,
+    val tableId: Long,
+    val columnOrder: Long,
+    val columnName: String,
+    val columnType: String,
+    val nullsAllowed: Boolean,
+    val parentColumn: Long?,
 )
