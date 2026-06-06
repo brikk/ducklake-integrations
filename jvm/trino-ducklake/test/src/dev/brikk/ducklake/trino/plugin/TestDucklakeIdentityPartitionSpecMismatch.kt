@@ -52,7 +52,7 @@ class TestDucklakeIdentityPartitionSpecMismatch {
     fun fileFromForeignSpecIsNotConstantFilled() {
         val result = DucklakeSplitManager.buildIdentityPartitionValues(
             dataFileId,
-            Optional.of(100L), // written under retired spec 100, not the active 200
+            100L, // written under retired spec 100, not the active 200
             Optional.of(activeSpec),
             partitionValuesByFile,
         )
@@ -65,7 +65,7 @@ class TestDucklakeIdentityPartitionSpecMismatch {
     fun fileFromActiveSpecIsConstantFilled() {
         val result = DucklakeSplitManager.buildIdentityPartitionValues(
             dataFileId,
-            Optional.of(200L), // same spec as the active one
+            200L, // same spec as the active one
             Optional.of(activeSpec),
             partitionValuesByFile,
         )
@@ -79,7 +79,7 @@ class TestDucklakeIdentityPartitionSpecMismatch {
         // active spec). Such files carry no foreign-spec values to mis-map.
         val result = DucklakeSplitManager.buildIdentityPartitionValues(
             dataFileId,
-            Optional.empty(),
+            null,
             Optional.of(activeSpec),
             partitionValuesByFile,
         )

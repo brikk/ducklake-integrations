@@ -143,8 +143,8 @@ class DucklakeSplitManager @Inject constructor(
             // parquet name). Avoid the query when no files in this set have mapping_ids.
             val mappingIds: Set<Long> = dataFiles.stream()
                     .map { it.mappingId }
-                    .filter { it.isPresent }
-                    .map { it.get() }
+                    .filter { it != null }
+                    .map { it!! }
                     .collect(java.util.stream.Collectors.toUnmodifiableSet())
             val nameMapsByMappingId: Map<Long, Map<Long, String>> = if (mappingIds.isEmpty())
                 mapOf()
@@ -403,7 +403,7 @@ class DucklakeSplitManager @Inject constructor(
         // dropping correct rows. Skip pruning any file whose partition_id isn't one of the
         // specs we actually have the field mapping for.
         val specPartitionIds: Set<Long> = specs.map { it.partitionId }.toSet()
-        val partitionIdByFileId: Map<Long, Long?> = dataFiles.associate { it.dataFileId to it.partitionId.orElse(null) }
+        val partitionIdByFileId: Map<Long, Long?> = dataFiles.associate { it.dataFileId to it.partitionId }
 
         val candidateFileIds: MutableSet<Long> = dataFiles.stream()
                 .map { it.dataFileId }
@@ -505,14 +505,12 @@ class DucklakeSplitManager @Inject constructor(
         // prefer the first recorded positive hint.
         val deleteFileFooterSizes: LinkedHashMap<String, Long> = LinkedHashMap()
         for (df in dataFileGroup) {
-            if (df.deleteFilePath.isEmpty) {
-                continue
-            }
+            val deleteFilePath = df.deleteFilePath ?: continue
             val resolvedDeletePath: String = pathResolver.resolveFilePath(
-                    df.deleteFilePath.orElseThrow(),
-                    df.deleteFilePathIsRelative.orElse(false),
+                    deleteFilePath,
+                    df.deleteFilePathIsRelative ?: false,
                     tableDataPath)
-            val hint: Long = df.deleteFileFooterSize.orElse(0L)
+            val hint: Long = df.deleteFileFooterSize ?: 0L
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
         }
         val deleteFilePaths: List<String> = deleteFileFooterSizes.keys.toList()
@@ -524,8 +522,8 @@ class DucklakeSplitManager @Inject constructor(
                 partitionValuesByFile)
 
         val fieldIdToParquetSourceName: Map<Long, String> = primary.mappingId
-                .map { mid -> nameMapsByMappingId.getOrDefault(mid, mapOf()) }
-                .orElse(mapOf())
+                ?.let { mid -> nameMapsByMappingId.getOrDefault(mid, mapOf()) }
+                ?: mapOf()
 
         @Suppress("UNCHECKED_CAST")
         val inlinedDeletedRowPositions: Set<Long> = inlinedDeletesByFileId.getOrDefault(primary.dataFileId, emptySet<Long>()) as Set<Long>
@@ -562,11 +560,8 @@ class DucklakeSplitManager @Inject constructor(
          */
         private fun validateDeleteFileFormats(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle) {
             for (dataFile in dataFiles) {
-                val deleteFileFormat: Optional<String> = dataFile.deleteFileFormat
-                if (deleteFileFormat.isEmpty) {
-                    continue
-                }
-                val normalized: String = deleteFileFormat.get().lowercase(Locale.ROOT)
+                val deleteFileFormat: String = dataFile.deleteFileFormat ?: continue
+                val normalized: String = deleteFileFormat.lowercase(Locale.ROOT)
                 if (normalized == "parquet" || normalized == "puffin") {
                     continue
                 }
@@ -576,7 +571,7 @@ class DucklakeSplitManager @Inject constructor(
                                 "deletion-vector files). Compact the table to materialize deletes before reading.",
                         tableHandle.schemaName,
                         tableHandle.tableName,
-                        deleteFileFormat.get()))
+                        deleteFileFormat))
             }
         }
 
@@ -592,7 +587,7 @@ class DucklakeSplitManager @Inject constructor(
          */
         internal fun buildIdentityPartitionValues(
                 dataFileId: Long,
-                filePartitionId: Optional<Long>,
+                filePartitionId: Long?,
                 activePartitionSpec: Optional<DucklakePartitionSpec>,
                 partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>): Map<Long, String> {
             if (activePartitionSpec.isEmpty) {
@@ -609,7 +604,7 @@ class DucklakeSplitManager @Inject constructor(
             // then reads the column from the file body (or yields NULL). A file with no
             // partition_id (unpartitioned, or fixtures that don't record it) keeps the prior
             // behavior of trusting the active spec — those carry no partition values anyway.
-            if (filePartitionId.isPresent && filePartitionId.get() != spec.partitionId) {
+            if (filePartitionId != null && filePartitionId != spec.partitionId) {
                 return mapOf()
             }
             val values: List<DucklakeFilePartitionValue> = partitionValuesByFile.getOrDefault(dataFileId, listOf())

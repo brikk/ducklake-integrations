@@ -13,20 +13,22 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
+import com.fasterxml.jackson.annotation.JsonInclude
 import java.util.UUID
 
 /**
  * Represents a table from the ducklake_table table.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeTable(
     val tableId: Long,
     val tableUuid: UUID,
     val beginSnapshot: Long,
-    val endSnapshot: Optional<Long>,
+    val endSnapshot: Long?,
     val schemaId: Long,
     val tableName: String,
-    val path: Optional<String>,
-    val pathIsRelative: Optional<Boolean>,
+    val path: String?,
+    val pathIsRelative: Boolean?,
 )

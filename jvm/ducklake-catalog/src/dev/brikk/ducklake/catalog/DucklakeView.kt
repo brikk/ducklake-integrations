@@ -13,14 +13,15 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
-import java.util.OptionalLong
+import com.fasterxml.jackson.annotation.JsonInclude
 
 /**
  * Represents a view stored in the ducklake_view catalog table.
  * Views are snapshot-scoped: visible from beginSnapshot until endSnapshot.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeView(
     val viewId: Long,
     val viewUuid: String,
@@ -28,7 +29,7 @@ data class DucklakeView(
     val viewName: String,
     val sql: String,
     val dialect: String,
-    val viewMetadata: Optional<String>,
+    val viewMetadata: String?,
     val beginSnapshot: Long,
-    val endSnapshot: OptionalLong,
+    val endSnapshot: Long?,
 )

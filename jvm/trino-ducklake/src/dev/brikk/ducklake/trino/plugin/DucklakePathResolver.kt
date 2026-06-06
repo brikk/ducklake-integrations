@@ -18,8 +18,6 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 
-import java.util.Optional
-
 open class DucklakePathResolver(
         private val catalog: DucklakeCatalog,
         private val configuredDataPath: String?)
@@ -45,16 +43,16 @@ open class DucklakePathResolver(
         return joinPaths(tableDataPath, path)
     }
 
-    fun resolveScopedPath(path: Optional<String>, isRelative: Optional<Boolean>, parentPath: String): String
+    fun resolveScopedPath(path: String?, isRelative: Boolean?, parentPath: String): String
     {
-        if (path.isEmpty || path.get().isBlank()) {
+        if (path == null || path.isBlank()) {
             return parentPath
         }
 
-        if (isRelative.orElse(false)) {
-            return joinPaths(parentPath, path.get())
+        if (isRelative ?: false) {
+            return joinPaths(parentPath, path)
         }
-        return path.get()
+        return path
     }
 
     companion object {

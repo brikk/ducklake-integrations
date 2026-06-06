@@ -1,7 +1,5 @@
 package dev.brikk.ducklake.doris.plugin
 
-import java.util.Optional
-
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
@@ -37,17 +35,17 @@ internal class DuckLakePathResolver(
     companion object {
         @JvmStatic
         fun resolveScopedPath(
-            path: Optional<String>,
-            isRelative: Optional<Boolean>,
+            path: String?,
+            isRelative: Boolean?,
             parentPath: String,
         ): String {
-            if (path.isEmpty || path.get().isBlank()) {
+            if (path == null || path.isBlank()) {
                 return parentPath
             }
-            if (isRelative.orElse(false)) {
-                return joinPaths(parentPath, path.get())
+            if (isRelative ?: false) {
+                return joinPaths(parentPath, path)
             }
-            return path.get()
+            return path
         }
 
         private fun joinPaths(parent: String, child: String): String {

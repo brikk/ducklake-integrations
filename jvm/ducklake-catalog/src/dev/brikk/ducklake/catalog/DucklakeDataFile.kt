@@ -13,17 +13,19 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
+import com.fasterxml.jackson.annotation.JsonInclude
 
 /**
  * Represents a data file from the ducklake_data_file table.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeDataFile(
     val dataFileId: Long,
     val tableId: Long,
     val beginSnapshot: Long,
-    val endSnapshot: Optional<Long>,
+    val endSnapshot: Long?,
     val fileOrder: Long,
     val path: String,
     val pathIsRelative: Boolean,
@@ -32,36 +34,13 @@ data class DucklakeDataFile(
     val fileSizeBytes: Long,
     val footerSize: Long,
     val rowIdStart: Long,
-    val partitionId: Optional<Long>,
-    val deleteFilePath: Optional<String>,
-    val deleteFilePathIsRelative: Optional<Boolean>,
-    val deleteFileFooterSize: Optional<Long>,
-    val deleteFileFormat: Optional<String>,
-    val mappingId: Optional<Long>,
+    val partitionId: Long?,
+    val deleteFilePath: String?,
+    val deleteFilePathIsRelative: Boolean?,
+    val deleteFileFooterSize: Long?,
+    val deleteFileFormat: String?,
+    val mappingId: Long?,
 ) {
-    init {
-        // Parity with Java record's compact-constructor requireNonNull on
-        // platform-typed callers (e.g. raw Java callers via reflection).
-        @Suppress("SENSELESS_COMPARISON")
-        if (path == null) throw NullPointerException("path is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (fileFormat == null) throw NullPointerException("fileFormat is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (endSnapshot == null) throw NullPointerException("endSnapshot is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (partitionId == null) throw NullPointerException("partitionId is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (deleteFilePath == null) throw NullPointerException("deleteFilePath is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (deleteFilePathIsRelative == null) throw NullPointerException("deleteFilePathIsRelative is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (deleteFileFooterSize == null) throw NullPointerException("deleteFileFooterSize is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (deleteFileFormat == null) throw NullPointerException("deleteFileFormat is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (mappingId == null) throw NullPointerException("mappingId is null")
-    }
-
     /**
      * Backwards-compatible constructor for call sites that don't carry a name-map id.
      */
@@ -69,7 +48,7 @@ data class DucklakeDataFile(
         dataFileId: Long,
         tableId: Long,
         beginSnapshot: Long,
-        endSnapshot: Optional<Long>,
+        endSnapshot: Long?,
         fileOrder: Long,
         path: String,
         pathIsRelative: Boolean,
@@ -78,15 +57,15 @@ data class DucklakeDataFile(
         fileSizeBytes: Long,
         footerSize: Long,
         rowIdStart: Long,
-        partitionId: Optional<Long>,
-        deleteFilePath: Optional<String>,
-        deleteFilePathIsRelative: Optional<Boolean>,
-        deleteFileFooterSize: Optional<Long>,
-        deleteFileFormat: Optional<String>,
+        partitionId: Long?,
+        deleteFilePath: String?,
+        deleteFilePathIsRelative: Boolean?,
+        deleteFileFooterSize: Long?,
+        deleteFileFormat: String?,
     ) : this(
         dataFileId, tableId, beginSnapshot, endSnapshot, fileOrder, path, pathIsRelative,
         fileFormat, recordCount, fileSizeBytes, footerSize, rowIdStart, partitionId,
         deleteFilePath, deleteFilePathIsRelative, deleteFileFooterSize, deleteFileFormat,
-        Optional.empty(),
+        null,
     )
 }

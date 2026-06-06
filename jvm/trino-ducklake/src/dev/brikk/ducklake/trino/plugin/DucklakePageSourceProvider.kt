@@ -294,8 +294,8 @@ class DucklakePageSourceProvider @Inject constructor(
             row["record_count"] = file.recordCount
             row["file_size_bytes"] = file.fileSizeBytes
             row["row_id_start"] = file.rowIdStart
-            row["partition_id"] = file.partitionId.orElse(null)
-            row["delete_file_path"] = file.deleteFilePath.orElse(null)
+            row["partition_id"] = file.partitionId
+            row["delete_file_path"] = file.deleteFilePath
             rows.add(row)
         }
         return rows
@@ -693,10 +693,10 @@ class DucklakePageSourceProvider @Inject constructor(
             for (change in changes) {
                 val row: MutableMap<String, Any?> = LinkedHashMap()
                 row["snapshot_id"] = change.snapshotId
-                row["changes_made"] = change.changesMade.orElse(null)
-                row["author"] = change.author.orElse(null)
-                row["commit_message"] = change.commitMessage.orElse(null)
-                row["commit_extra_info"] = change.commitExtraInfo.orElse(null)
+                row["changes_made"] = change.changesMade
+                row["author"] = change.author
+                row["commit_message"] = change.commitMessage
+                row["commit_extra_info"] = change.commitExtraInfo
                 rows.add(row)
             }
             return rows

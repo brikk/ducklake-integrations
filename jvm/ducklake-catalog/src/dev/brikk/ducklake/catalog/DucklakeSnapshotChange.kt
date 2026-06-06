@@ -13,25 +13,15 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
+import com.fasterxml.jackson.annotation.JsonInclude
 
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeSnapshotChange(
     val snapshotId: Long,
-    val changesMade: Optional<String>,
-    val author: Optional<String>,
-    val commitMessage: Optional<String>,
-    val commitExtraInfo: Optional<String>,
-) {
-    init {
-        // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.
-        @Suppress("SENSELESS_COMPARISON")
-        if (changesMade == null) throw NullPointerException("changesMade is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (author == null) throw NullPointerException("author is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (commitMessage == null) throw NullPointerException("commitMessage is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (commitExtraInfo == null) throw NullPointerException("commitExtraInfo is null")
-    }
-}
+    val changesMade: String?,
+    val author: String?,
+    val commitMessage: String?,
+    val commitExtraInfo: String?,
+)

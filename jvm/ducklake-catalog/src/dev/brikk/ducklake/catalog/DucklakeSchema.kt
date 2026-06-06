@@ -13,7 +13,7 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
+import com.fasterxml.jackson.annotation.JsonInclude
 import java.util.UUID
 
 /**
@@ -21,12 +21,14 @@ import java.util.UUID
  * Maps to the ducklake_schema metadata table.
  */
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeSchema(
     val schemaId: Long,
     val schemaUuid: UUID,
     val beginSnapshot: Long,
-    val endSnapshot: Optional<Long>,
+    val endSnapshot: Long?,
     val schemaName: String,
-    val path: Optional<String>,
-    val pathIsRelative: Optional<Boolean>,
+    val path: String?,
+    val pathIsRelative: Boolean?,
 )

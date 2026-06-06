@@ -95,18 +95,18 @@ internal class DuckLakeScanPlanProvider(
         tableDataPath: String,
     ): List<DuckLakePositionDelete> {
         val deletePath = file.deleteFilePath
-        if (deletePath.isEmpty) {
+        if (deletePath == null) {
             return listOf()
         }
         // PATH_IS_RELATIVE and FORMAT come from the same row as PATH; when
         // PATH is non-null the others are non-null too. Defensive defaults
         // mirror DuckLake's own convention (relative paths under the
         // warehouse, parquet format).
-        val isRelative = file.deleteFilePathIsRelative.orElse(true)
+        val isRelative = file.deleteFilePathIsRelative ?: true
         val absolutePath = pathResolver.resolveFilePath(
-            deletePath.get(), isRelative, tableDataPath,
+            deletePath, isRelative, tableDataPath,
         )
-        val format = normalizeFileFormat(file.deleteFileFormat.orElse("parquet"))
+        val format = normalizeFileFormat(file.deleteFileFormat ?: "parquet")
         return listOf(DuckLakePositionDelete(absolutePath, format))
     }
 

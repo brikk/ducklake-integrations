@@ -367,7 +367,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 orZero(r.get(file.DATA_FILE_ID)),
                 orZero(r.get(file.TABLE_ID)),
                 orZero(r.get(file.BEGIN_SNAPSHOT)),
-                Optional.ofNullable(r.get(file.END_SNAPSHOT)),
+                r.get(file.END_SNAPSHOT),
                 orZero(r.get(file.FILE_ORDER)),
                 r.get(dataFilePath),
                 r.get(dataFilePathIsRelative) == true,
@@ -376,12 +376,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 orZero(r.get(file.FILE_SIZE_BYTES)),
                 orZero(r.get(dataFileFooterSize)),
                 orZero(r.get(file.ROW_ID_START)),
-                Optional.ofNullable(r.get(file.PARTITION_ID)),
-                Optional.ofNullable(r.get(deleteFilePath)),
-                Optional.ofNullable(r.get(deleteFilePathIsRelative)),
-                Optional.ofNullable(r.get(deleteFileFooterSize)),
-                Optional.ofNullable(r.get(delfile.FORMAT)),
-                Optional.ofNullable(r.get(file.MAPPING_ID)),
+                r.get(file.PARTITION_ID),
+                r.get(deleteFilePath),
+                r.get(deleteFilePathIsRelative),
+                r.get(deleteFileFooterSize),
+                r.get(delfile.FORMAT),
+                r.get(file.MAPPING_ID),
             )
         }
     }
@@ -510,8 +510,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                     counts[0],
                     counts[1],
                     counts[2],
-                    Optional.ofNullable(minAccumulators[columnId]),
-                    Optional.ofNullable(maxAccumulators[columnId]),
+                    minAccumulators[columnId],
+                    maxAccumulators[columnId],
                 ),
             )
         }
@@ -2386,10 +2386,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         private fun toDucklakeSnapshotChange(r: DucklakeSnapshotChangesRecord): DucklakeSnapshotChange {
             return DucklakeSnapshotChange(
                 r.snapshotId,
-                Optional.ofNullable(r.changesMade),
-                Optional.ofNullable(r.author),
-                Optional.ofNullable(r.commitMessage),
-                Optional.ofNullable(r.commitExtraInfo),
+                r.changesMade,
+                r.author,
+                r.commitMessage,
+                r.commitExtraInfo,
             )
         }
 
@@ -2398,10 +2398,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.schemaId,
                 r.schemaUuid!!,
                 orZero(r.beginSnapshot),
-                Optional.ofNullable(r.endSnapshot),
+                r.endSnapshot,
                 r.schemaName!!,
-                Optional.ofNullable(r.path),
-                Optional.ofNullable(r.pathIsRelative),
+                r.path,
+                r.pathIsRelative,
             )
         }
 
@@ -2410,11 +2410,11 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 orZero(r.tableId),
                 r.tableUuid!!,
                 orZero(r.beginSnapshot),
-                Optional.ofNullable(r.endSnapshot),
+                r.endSnapshot,
                 orZero(r.schemaId),
                 r.tableName!!,
-                Optional.ofNullable(r.path),
-                Optional.ofNullable(r.pathIsRelative),
+                r.path,
+                r.pathIsRelative,
             )
         }
 
@@ -2427,8 +2427,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
 
         private fun toDucklakeView(r: DucklakeViewRecord): DucklakeView {
-            val endRaw: Long? = r.endSnapshot
-            val endSnapshot: OptionalLong = if (endRaw == null) OptionalLong.empty() else OptionalLong.of(endRaw)
             val viewUuid: UUID? = r.viewUuid
             // The Kotlin-ported DucklakeView record declares viewUuid as non-null; the Java
             // side passed null straight through without checking. Mirror the Java shape via
@@ -2442,9 +2440,9 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.viewName!!,
                 r.sql!!,
                 r.dialect!!,
-                Optional.ofNullable(r.columnAliases),
+                r.columnAliases,
                 orZero(r.beginSnapshot),
-                endSnapshot,
+                r.endSnapshot,
             )
         }
     }

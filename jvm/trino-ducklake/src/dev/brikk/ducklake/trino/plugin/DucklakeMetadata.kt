@@ -347,7 +347,7 @@ class DucklakeMetadata(
 
         val table = tableHandle as DucklakeTableHandle
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(table.tableId, table.snapshotId)
-        val hasDeleteFiles = dataFiles.stream().anyMatch { dataFile -> dataFile.deleteFilePath.isPresent }
+        val hasDeleteFiles = dataFiles.stream().anyMatch { dataFile -> dataFile.deleteFilePath != null }
         if (hasDeleteFiles) {
             // Conservative mode: delete-file snapshots can make row-level table stats stale across engines.
             // Prefer unknown over wrong.
@@ -957,10 +957,10 @@ class DucklakeMetadata(
         val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = LinkedHashMap()
         for (df in dataFiles) {
             primaryByFileId.putIfAbsent(df.dataFileId, df)
-            if (df.deleteFilePath.isPresent) {
+            if (df.deleteFilePath != null) {
                 val resolved: String = pathResolver!!.resolveFilePath(
-                        df.deleteFilePath.orElseThrow(),
-                        df.deleteFilePathIsRelative.orElse(false),
+                        df.deleteFilePath!!,
+                        df.deleteFilePathIsRelative ?: false,
                         tableDataPath)
                 deletePathsByFileId
                         .computeIfAbsent(df.dataFileId) { _ -> ArrayList() }
@@ -1258,9 +1258,10 @@ class DucklakeMetadata(
     private fun decodeTrinoView(view: DucklakeView, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
     {
         // Trino views store the full ConnectorViewDefinition as JSON in column_aliases
-        if (view.viewMetadata.isPresent && !view.viewMetadata.get().isBlank()) {
+        val viewMetadata = view.viewMetadata
+        if (viewMetadata != null && !viewMetadata.isBlank()) {
             try {
-                return Optional.of(VIEW_CODEC.fromJson(view.viewMetadata.get()))
+                return Optional.of(VIEW_CODEC.fromJson(viewMetadata))
             }
             catch (e: RuntimeException) {
                 log.warn(e, "Failed to decode Trino view metadata for %s", viewName)
@@ -1325,13 +1326,10 @@ class DucklakeMetadata(
 
         private fun toDoubleRange(type: Type, stats: DucklakeColumnStats): Optional<DoubleRange>
         {
-            if (stats.minValue.isEmpty || stats.maxValue.isEmpty) {
-                return Optional.empty()
-            }
+            val minStr: String = stats.minValue ?: return Optional.empty()
+            val maxStr: String = stats.maxValue ?: return Optional.empty()
 
             try {
-                val minStr: String = stats.minValue.get()
-                val maxStr: String = stats.maxValue.get()
 
                 if (type == BIGINT || type == INTEGER || type == SMALLINT || type == TINYINT) {
                     return Optional.of(DoubleRange(minStr.toDouble(), maxStr.toDouble()))

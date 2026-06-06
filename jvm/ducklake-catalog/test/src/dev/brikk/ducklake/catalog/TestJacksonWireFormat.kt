@@ -250,4 +250,196 @@ class TestJacksonWireFormat {
         assertThatThrownBy { c.fromJson(c.toJsonBytes(instance)) }
             .isInstanceOf(IllegalArgumentException::class.java)
     }
+
+    // --- DucklakeDataFile (Optional<Long>/<String>/<Boolean> fields) ---
+
+    @Test
+    fun dataFileOptionalPresent() {
+        val instance = DucklakeDataFile(
+            1L, 2L, 3L, 4L, 5L, "f.parquet", true, "parquet",
+            100L, 1024L, 200L, 0L, 7L, "del.parquet",
+            true, 99L, "parquet",
+            8L,
+        )
+        assertJson(
+            DucklakeDataFile::class.java,
+            instance,
+            """{"dataFileId":1,"tableId":2,"beginSnapshot":3,"endSnapshot":4,"fileOrder":5,""" +
+                """"path":"f.parquet","pathIsRelative":true,"fileFormat":"parquet","recordCount":100,""" +
+                """"fileSizeBytes":1024,"footerSize":200,"rowIdStart":0,"partitionId":7,""" +
+                """"deleteFilePath":"del.parquet","deleteFilePathIsRelative":true,""" +
+                """"deleteFileFooterSize":99,"deleteFileFormat":"parquet","mappingId":8}""",
+        )
+        assertRoundTrip(DucklakeDataFile::class.java, instance)
+    }
+
+    @Test
+    fun dataFileOptionalEmpty() {
+        val instance = DucklakeDataFile(
+            1L, 2L, 3L, null, 5L, "f.parquet", true, "parquet",
+            100L, 1024L, 200L, 0L, null, null,
+            null, null, null,
+            null,
+        )
+        assertJson(
+            DucklakeDataFile::class.java,
+            instance,
+            """{"dataFileId":1,"tableId":2,"beginSnapshot":3,"fileOrder":5,""" +
+                """"path":"f.parquet","pathIsRelative":true,"fileFormat":"parquet","recordCount":100,""" +
+                """"fileSizeBytes":1024,"footerSize":200,"rowIdStart":0}""",
+        )
+        assertRoundTrip(DucklakeDataFile::class.java, instance)
+    }
+
+    // --- DucklakeSnapshotChange (Optional<String> fields) ---
+
+    @Test
+    fun snapshotChangeOptionalPresent() {
+        val instance = DucklakeSnapshotChange(
+            1L, "made", "me",
+            "msg", "extra",
+        )
+        assertJson(
+            DucklakeSnapshotChange::class.java,
+            instance,
+            """{"snapshotId":1,"changesMade":"made","author":"me",""" +
+                """"commitMessage":"msg","commitExtraInfo":"extra"}""",
+        )
+        assertRoundTrip(DucklakeSnapshotChange::class.java, instance)
+    }
+
+    @Test
+    fun snapshotChangeOptionalEmpty() {
+        val instance = DucklakeSnapshotChange(
+            1L, null, null,
+            null, null,
+        )
+        assertJson(
+            DucklakeSnapshotChange::class.java,
+            instance,
+            """{"snapshotId":1}""",
+        )
+        assertRoundTrip(DucklakeSnapshotChange::class.java, instance)
+    }
+
+    // --- DucklakeColumnStats (Optional<String> minValue, maxValue) ---
+
+    @Test
+    fun columnStatsOptionalPresent() {
+        val instance = DucklakeColumnStats(1L, 100L, 5L, 512L, "a", "z")
+        assertJson(
+            DucklakeColumnStats::class.java,
+            instance,
+            """{"columnId":1,"totalValueCount":100,"totalNullCount":5,""" +
+                """"totalSizeBytes":512,"minValue":"a","maxValue":"z"}""",
+        )
+        assertRoundTrip(DucklakeColumnStats::class.java, instance)
+    }
+
+    @Test
+    fun columnStatsOptionalEmpty() {
+        val instance = DucklakeColumnStats(1L, 100L, 5L, 512L, null, null)
+        assertJson(
+            DucklakeColumnStats::class.java,
+            instance,
+            """{"columnId":1,"totalValueCount":100,"totalNullCount":5,"totalSizeBytes":512}""",
+        )
+        assertRoundTrip(DucklakeColumnStats::class.java, instance)
+    }
+
+    // --- DucklakeSchema (Optional<Long> endSnapshot, Optional<String> path, Optional<Boolean> pathIsRelative) ---
+
+    @Test
+    fun schemaOptionalPresent() {
+        val uuid = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001")
+        val instance = DucklakeSchema(
+            1L, uuid, 2L, 3L, "sch", "p", true,
+        )
+        assertJson(
+            DucklakeSchema::class.java,
+            instance,
+            """{"schemaId":1,"schemaUuid":"00000000-0000-0000-0000-000000000001","beginSnapshot":2,""" +
+                """"endSnapshot":3,"schemaName":"sch","path":"p","pathIsRelative":true}""",
+        )
+        assertRoundTrip(DucklakeSchema::class.java, instance)
+    }
+
+    @Test
+    fun schemaOptionalEmpty() {
+        val uuid = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001")
+        val instance = DucklakeSchema(
+            1L, uuid, 2L, null, "sch", null, null,
+        )
+        assertJson(
+            DucklakeSchema::class.java,
+            instance,
+            """{"schemaId":1,"schemaUuid":"00000000-0000-0000-0000-000000000001","beginSnapshot":2,""" +
+                """"schemaName":"sch"}""",
+        )
+        assertRoundTrip(DucklakeSchema::class.java, instance)
+    }
+
+    // --- DucklakeTable (Optional<Long> endSnapshot, Optional<String> path, Optional<Boolean> pathIsRelative) ---
+
+    @Test
+    fun tableOptionalPresent() {
+        val uuid = java.util.UUID.fromString("00000000-0000-0000-0000-000000000002")
+        val instance = DucklakeTable(
+            1L, uuid, 2L, 3L, 4L, "tbl", "p", false,
+        )
+        assertJson(
+            DucklakeTable::class.java,
+            instance,
+            """{"tableId":1,"tableUuid":"00000000-0000-0000-0000-000000000002","beginSnapshot":2,""" +
+                """"endSnapshot":3,"schemaId":4,"tableName":"tbl","path":"p","pathIsRelative":false}""",
+        )
+        assertRoundTrip(DucklakeTable::class.java, instance)
+    }
+
+    @Test
+    fun tableOptionalEmpty() {
+        val uuid = java.util.UUID.fromString("00000000-0000-0000-0000-000000000002")
+        val instance = DucklakeTable(
+            1L, uuid, 2L, null, 4L, "tbl", null, null,
+        )
+        assertJson(
+            DucklakeTable::class.java,
+            instance,
+            """{"tableId":1,"tableUuid":"00000000-0000-0000-0000-000000000002","beginSnapshot":2,""" +
+                """"schemaId":4,"tableName":"tbl"}""",
+        )
+        assertRoundTrip(DucklakeTable::class.java, instance)
+    }
+
+    // --- DucklakeView (Optional<String> viewMetadata, OptionalLong endSnapshot) ---
+
+    @Test
+    fun viewOptionalPresent() {
+        val instance = DucklakeView(
+            1L, "vu", 2L, "v", "SELECT 1", "duckdb",
+            "meta", 3L, 4L,
+        )
+        assertJson(
+            DucklakeView::class.java,
+            instance,
+            """{"viewId":1,"viewUuid":"vu","schemaId":2,"viewName":"v","sql":"SELECT 1",""" +
+                """"dialect":"duckdb","viewMetadata":"meta","beginSnapshot":3,"endSnapshot":4}""",
+        )
+        assertRoundTrip(DucklakeView::class.java, instance)
+    }
+
+    @Test
+    fun viewOptionalEmpty() {
+        val instance = DucklakeView(
+            1L, "vu", 2L, "v", "SELECT 1", "duckdb",
+            null, 3L, null,
+        )
+        assertJson(
+            DucklakeView::class.java,
+            instance,
+            """{"viewId":1,"viewUuid":"vu","schemaId":2,"viewName":"v","sql":"SELECT 1",""" +
+                """"dialect":"duckdb","beginSnapshot":3}""",
+        )
+        assertRoundTrip(DucklakeView::class.java, instance)
+    }
 }

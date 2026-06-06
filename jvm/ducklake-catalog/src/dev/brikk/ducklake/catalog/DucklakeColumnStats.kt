@@ -13,22 +13,16 @@
  */
 package dev.brikk.ducklake.catalog
 
-import java.util.Optional
+import com.fasterxml.jackson.annotation.JsonInclude
 
 @JvmRecord
+@JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeColumnStats(
     val columnId: Long,
     val totalValueCount: Long,
     val totalNullCount: Long,
     val totalSizeBytes: Long,
-    val minValue: Optional<String>,
-    val maxValue: Optional<String>,
-) {
-    init {
-        // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.
-        @Suppress("SENSELESS_COMPARISON")
-        if (minValue == null) throw NullPointerException("minValue is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (maxValue == null) throw NullPointerException("maxValue is null")
-    }
-}
+    val minValue: String?,
+    val maxValue: String?,
+)

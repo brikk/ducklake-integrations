@@ -178,10 +178,10 @@ class TestJdbcDucklakeCatalogIntegration {
             .findFirst()
             .orElseThrow()
 
-        assertThat(priceStats.minValue.orElseThrow().toDouble()).isLessThanOrEqualTo(19.99)
-        assertThat(priceStats.maxValue.orElseThrow().toDouble()).isGreaterThanOrEqualTo(59.99)
-        assertThat(idStats.minValue.orElseThrow().toLong()).isEqualTo(1L)
-        assertThat(idStats.maxValue.orElseThrow().toLong()).isEqualTo(5L)
+        assertThat(priceStats.minValue!!.toDouble()).isLessThanOrEqualTo(19.99)
+        assertThat(priceStats.maxValue!!.toDouble()).isGreaterThanOrEqualTo(59.99)
+        assertThat(idStats.minValue!!.toLong()).isEqualTo(1L)
+        assertThat(idStats.maxValue!!.toLong()).isEqualTo(5L)
         assertThat(priceStats.totalValueCount).isEqualTo(5L)
         assertThat(priceStats.totalNullCount).isEqualTo(0L)
     }
@@ -224,8 +224,8 @@ class TestJdbcDucklakeCatalogIntegration {
             .findFirst()
             .orElseThrow()
 
-        assertThat(LocalDate.parse(dateStats.minValue.orElseThrow())).isEqualTo(LocalDate.of(2024, 1, 5))
-        assertThat(LocalDate.parse(dateStats.maxValue.orElseThrow())).isEqualTo(LocalDate.of(2024, 3, 10))
+        assertThat(LocalDate.parse(dateStats.minValue!!)).isEqualTo(LocalDate.of(2024, 1, 5))
+        assertThat(LocalDate.parse(dateStats.maxValue!!)).isEqualTo(LocalDate.of(2024, 3, 10))
     }
 
     private fun getSchema(schemaName: String): DucklakeSchema {
