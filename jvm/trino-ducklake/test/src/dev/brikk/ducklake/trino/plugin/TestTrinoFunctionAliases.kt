@@ -422,6 +422,40 @@ class TestTrinoFunctionAliases {
                     c("sha256 1: abc", "sha256", 1,
                             "SELECT lower(hex(trino_sha256('abc')))",
                             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+                    // Native hash functions (trino_parity src/hash_functions.cpp), vendored
+                    // xxHash + WjCryptLib SHA — no community-extension dependency.
+                    // sha512: standard SHA-512, BLOB out matching Trino's VARBINARY.
+                    c("sha512 1: empty", "sha512", 1,
+                            "SELECT lower(hex(trino_sha512('')))",
+                            "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce" +
+                                    "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"),
+                    c("sha512 1: abc", "sha512", 1,
+                            "SELECT lower(hex(trino_sha512('abc')))",
+                            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a" +
+                                    "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"),
+                    c("sha512 1: NULL propagates", "sha512", 1,
+                            "SELECT trino_sha512(NULL)", null),
+                    // xxhash64: canonical xxHash64 (seed 0) emitted as 8 big-endian bytes,
+                    // matching Trino's VarbinaryFunctions.xxhash64. Compare via hex.
+                    c("xxhash64 1: empty", "xxhash64", 1,
+                            "SELECT lower(hex(trino_xxhash64('')))", "ef46db3751d8e999"),
+                    c("xxhash64 1: abc", "xxhash64", 1,
+                            "SELECT lower(hex(trino_xxhash64('abc')))", "44bc2cf5ad770999"),
+                    c("xxhash64 1: NULL propagates", "xxhash64", 1,
+                            "SELECT trino_xxhash64(NULL)", null),
+                    // hmac_sha256(data, key): HMAC-SHA256 over raw bytes. Native — operates on
+                    // arbitrary VARBINARY (the reason it's pushable where the VARCHAR-only
+                    // crypto_hmac was not). Arg order is data-first, key-second (Trino's).
+                    c("hmac_sha256 2: reference vector", "hmac_sha256", 2,
+                            "SELECT lower(hex(trino_hmac_sha256('The quick brown fox jumps over the lazy dog', 'key')))",
+                            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"),
+                    c("hmac_sha256 2: empty key + message", "hmac_sha256", 2,
+                            "SELECT lower(hex(trino_hmac_sha256('', '')))",
+                            "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"),
+                    c("hmac_sha256 2: NULL data propagates", "hmac_sha256", 2,
+                            "SELECT trino_hmac_sha256(NULL, 'key')", null),
+                    c("hmac_sha256 2: NULL key propagates", "hmac_sha256", 2,
+                            "SELECT trino_hmac_sha256('data', NULL)", null),
                     // Round 6a — core DuckDB easy wins
                     c("sign 1: negative", "sign", 1,
                             "SELECT trino_sign(-5)", -1),

@@ -12,13 +12,14 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 > `normalize/{1,2}` are native C++ in
 > [duckdb-trino-parity-extension](../../../duckdb-trino-parity-extension);
 > the rest of the `trino_<name>` macros are `DefaultMacro[]` arrays in the
-> same extension; `trino_meta()` has 92 entries; the connector bundles the
+> same extension; `trino_meta()` has 95 entries; the connector bundles the
 > extension binary into the plugin jar and `LOAD`s it on attach. The text
 > below still mentions placeholders, warn-on-emit, the SQL resource — read
 > those sections as historical record of how we got here, not as live state.
 > Current open work: items 5 (DuckDB-namespaced exclusives via
-> `ConnectorFunctionProvider`), 6 (Lance), Tier C default-on flip, plus
-> the extension repo's own [TODO.md](../../../duckdb-trino-parity-extension/TODO.md).
+> `ConnectorFunctionProvider`), 6 (Lance), plus the extension repo's own
+> [TODO.md](../../../duckdb-trino-parity-extension/TODO.md). (Tier C default-on
+> flip landed 2026-06-06 — `pushdown_timestamp_with_timezone` now defaults on.)
 
 ## Discipline (non-negotiable)
 
@@ -106,13 +107,14 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
   - `lower/1`, `upper/1`, `reverse/1` shipped as **pushable placeholders** with one-shot warn-on-emit (round 4 — see [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md)). Native extension required for full Trino-equivalent semantics on non-ASCII input.
   - `chr`, `url_encode/decode`, `to_hex/from_hex`, `to_base64/from_base64`, `levenshtein_distance`, `hamming_distance` (round 4).
   - Still deferred: `concat` (NULL-propagation differs), `position` (operator-form).
-- Step 4 (date / time) — **complete (chunks 1 + 2 + 3 + 3.5 + 4 shipped)**. Chunk 1 (round 6j) added the translator's argument-type-gate registry plus 12 new pushable entries (Tier A DATE-only, Tier B DATE or TIMESTAMP no-TZ). Chunk 2 added `TrinoTimeZoneNormaliser` and threaded Trino's session `TimeZoneKey` through the page-source / executor stack so `SET TimeZone` fires at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor`. Chunk 3 added the `pushdown_timestamp_with_timezone` session property (default off), threaded `ConnectorSession` through the translator's gates. Chunk 3.5 fixed `DucklakeArrowToPageConverter` to use the Arrow schema TZ instead of hardcoding `UTC_KEY` and promoted the full Tier C surface (`year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff`). Chunk 4 added `from_unixtime/1` and `with_timezone/2`; `at_timezone(WTZ, varchar)` was probed and confirmed **not pushable** through this connector (DuckDB's TIMESTAMPTZ has no per-value zone metadata, so the "rezone display" operation is fundamentally not expressible — documented). Year-boundary smoking gun confirmed end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through the full Trino stack. User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` now renders in session zone (matches Iceberg / Hive / Parquet `isAdjustedToUtc=true`) instead of UTC. Date-specific design docs archived to [archive/](archive/). Open follow-up: parquet-format read path uses Trino's standard parquet reader which hardcodes `UTC_KEY` (same fault mode as our Arrow path pre-3.5) — documented in the archived TODO; not blocking since function-shape pushdown doesn't fire on parquet splits today. Default-on flip for the property pending burn-in.
+- Step 4 (date / time) — **complete (chunks 1 + 2 + 3 + 3.5 + 4 shipped)**. Chunk 1 (round 6j) added the translator's argument-type-gate registry plus 12 new pushable entries (Tier A DATE-only, Tier B DATE or TIMESTAMP no-TZ). Chunk 2 added `TrinoTimeZoneNormaliser` and threaded Trino's session `TimeZoneKey` through the page-source / executor stack so `SET TimeZone` fires at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor`. Chunk 3 added the `pushdown_timestamp_with_timezone` session property (default off), threaded `ConnectorSession` through the translator's gates. Chunk 3.5 fixed `DucklakeArrowToPageConverter` to use the Arrow schema TZ instead of hardcoding `UTC_KEY` and promoted the full Tier C surface (`year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff`). Chunk 4 added `from_unixtime/1` and `with_timezone/2`; `at_timezone(WTZ, varchar)` was probed and confirmed **not pushable** through this connector (DuckDB's TIMESTAMPTZ has no per-value zone metadata, so the "rezone display" operation is fundamentally not expressible — documented). Year-boundary smoking gun confirmed end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through the full Trino stack. User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` now renders in session zone (matches Iceberg / Hive / Parquet `isAdjustedToUtc=true`) instead of UTC. Date-specific design docs archived to [archive/](archive/). Open follow-up: parquet-format read path uses Trino's standard parquet reader which hardcodes `UTC_KEY` (same fault mode as our Arrow path pre-3.5) — documented in the archived TODO; not blocking since function-shape pushdown doesn't fire on parquet splits today. **Default-on flip landed 2026-06-06: `pushdown_timestamp_with_timezone` now defaults to `true`** (set `false` to keep Tier C predicates above the scan).
 - Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
 - Step 6 (Lance table functions) — not started.
 
-### Catalog totals (as of round 6j + step 4 chunk 4)
+### Catalog totals (as of the native hash port — 2026-06-06)
 
-- 92 `trino_meta()` rows / ~76 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional). Round 6j (step 4 chunk 1) added 12 date/time entries with the translator's first argument-type gate; step 4 chunk 4 added `from_unixtime/1` and `with_timezone/2` as Tier C extras; `at_timezone` is documented as not-pushable. Date-specific design docs are in [archive/](archive/).
+- 95 `trino_meta()` rows / ~79 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional). Round 6j (step 4 chunk 1) added 12 date/time entries with the translator's first argument-type gate; step 4 chunk 4 added `from_unixtime/1` and `with_timezone/2` as Tier C extras; `at_timezone` is documented as not-pushable. Date-specific design docs are in [archive/](archive/).
+- Hash port shipped (2026-06-06): `sha512/1`, `xxhash64/1`, and `hmac_sha256/2` are **native C++ scalar functions** in the `trino_parity` extension (`src/hash_functions.cpp`), over vendored xxHash (BSD-2) + WjCryptLib SHA (public domain) in `third_party/hash/`. This replaced an interim macro layer that INSTALL/LOADed the `crypto`/`hashfuncs` *community* extensions best-effort — dropped to remove both the per-DuckDB-version availability lag and those extensions' load-time telemetry. `hmac_sha256` is pushable natively (raw-bytes HMAC) where the VARCHAR-only `crypto_hmac` macro route was not. `murmur3` deferred — see rounds 6b-ext/6c below.
 - 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
 - Round 6a shipped: `sign/1`, `bit_length/1`, `pi/0`, `bitwise_xor/2`, `regexp_replace/{2,3}` (with `'g'` flag for Trino-aligned global default).
 - Round 6b-core shipped: `md5/1`, `sha1/1`, `sha256/1` (via `unhex(...)` wrap for VARBINARY return type).
@@ -123,7 +125,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Round 6j shipped (step 4 chunk 1, translator + macros): argument-type-gate registry in the translator (sparse `TYPE_GATES` map keyed by `NameArity`, accepts/rejects entries based on actual call argument types — closes the latent bug where date macros pushed for any arg type). Re-gated `year/month/day/quarter`/`date_trunc`/`date_diff` to `{DATE, TIMESTAMP no-TZ}`. Added Tier A (DATE-only): `day_of_week/1` (`isodow`, ISO 1=Mon..7=Sun, avoiding DuckDB's bare 0=Sun trap), `day_of_year/1`, `last_day_of_month/1`, `week/1`, `week_of_year/1`, `year_of_week/1`, `yow/1`. Added Tier B (DATE or TIMESTAMP no-TZ): `hour/1`, `minute/1`, `second/1`, `millisecond/1` (millis-of-second 0..999), `to_unixtime/1`. TIMESTAMP WITH TIME ZONE deferred to chunk 3 (needs session-TZ plumbing from chunk 2).
 - Step 4 chunk 2 shipped (plumbing, no new macros): `TrinoTimeZoneNormaliser` in production (lift of the validated three-rule function from `ProbeDuckDbTimeZoneHandling`, 14 unit-test cases covering every shape from the REPORT Q3 table). `ExecutionRequest` extended with `Optional<String> duckDbTimeZone`; threaded through `DucklakePageSourceProvider.createDuckDbPageSource` → `DuckDbFilePageSource` constructor. Both executors now run `SET TimeZone = '<normalised>'` immediately after attach (`InProcessDuckDbExecutor.applySessionTimeZone`; `QuackDuckDbExecutor.applyServerSideTimeZone` via `quack_query_by_name`). One-shot WARN per (executor, normalised-zone) on `SET TimeZone` failure; execution proceeds without setting the zone — Tier A/B is wall-clock invariant so the failure mode is graceful. Empirically confirmed (`TestDucklakeDuckDbExecutorBackends.sessionTimeZonePropagatesToBothBackends`) that the SET TimeZone persists across `quack_query_by_name` calls in the same client session, that LA-zone request renders the smoking-gun TIMESTAMPTZ in LA, and that LA-zone request does NOT match a Singapore-rendered string (control case, proves the zone is being consulted not incidentally matched).
 - Step 4 chunk 3 shipped (narrow Tier C): added `pushdown_timestamp_with_timezone` session property (default off). Translator's `ArgTypeGate` interface extended with `ConnectorSession session`; backward-compat overloads (`translateConjuncts(expr, assignments)`, `translate(expr, assignments)`) delegate with `null` session → property reads as off → existing test fixtures unchanged. `DucklakeMetadata.applyFilter` passes session through. ONLY `to_unixtime/1` was promoted to accept `TIMESTAMP WITH TIME ZONE` when property is on — it's the lone zone-invariant entry in the catalog (returns absolute UTC epoch in both engines regardless of any zone). Zone-dependent extracts (`year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff`) stayed blocked over WTZ pending chunk 3.5 converter fix.
-- Step 4 chunk 3.5 shipped (converter + full Tier C): `DucklakeArrowToPageConverter.writeTimestampTzColumn` now resolves a `TimeZoneKey` from `vector.getField().getType()` as `ArrowType.Timestamp.getTimezone()` and constructs WTZ values with it. Defensive fallback to `UTC_KEY` on null TZ or unparseable string (`TimeZoneKey.getTimeZoneKey` throwing `TimeZoneNotSupportedException` or `IllegalArgumentException`) with one-shot WARN per zone. Translator gates for `year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff` unified to share `argTier(...)` with `to_unixtime`. Year-boundary smoking gun (`testTierCYearBoundarySmokingGunSingaporeSession`) fires end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over `'2024-12-31 22:00 UTC'` matches the row through Trino's full stack; property-off returns the same row (invariance under toggle is the load-bearing claim). User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` renders in session zone now, matching other Trino connectors (Iceberg / Hive / Parquet `isAdjustedToUtc=true`); no existing test pinned the prior UTC rendering. Property still default off; flip to default on after burn-in.
+- Step 4 chunk 3.5 shipped (converter + full Tier C): `DucklakeArrowToPageConverter.writeTimestampTzColumn` now resolves a `TimeZoneKey` from `vector.getField().getType()` as `ArrowType.Timestamp.getTimezone()` and constructs WTZ values with it. Defensive fallback to `UTC_KEY` on null TZ or unparseable string (`TimeZoneKey.getTimeZoneKey` throwing `TimeZoneNotSupportedException` or `IllegalArgumentException`) with one-shot WARN per zone. Translator gates for `year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff` unified to share `argTier(...)` with `to_unixtime`. Year-boundary smoking gun (`testTierCYearBoundarySmokingGunSingaporeSession`) fires end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over `'2024-12-31 22:00 UTC'` matches the row through Trino's full stack; property-off returns the same row (invariance under toggle is the load-bearing claim). User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` renders in session zone now, matching other Trino connectors (Iceberg / Hive / Parquet `isAdjustedToUtc=true`); no existing test pinned the prior UTC rendering. Property defaulted off at ship; flipped to default **on** 2026-06-06 after burn-in.
 - Step 4 chunk 4 shipped (Tier C extras): `from_unixtime/1` (Trino `double → TIMESTAMP(3) WITH TIME ZONE`) via DuckDB's `to_timestamp(numeric)`; both engines return zone-invariant absolute epochs and the WTZ output composes safely with chunk-3.5's converter. `with_timezone/2` (Trino `(timestamp, varchar) → WTZ`) via DuckDB's `timezone(zone, t)` — note the arg-order flip; gate strictly to TIMESTAMP no-TZ input. Probed `at_timezone(WTZ, varchar)` and confirmed **not pushable** through this connector — DuckDB's `WTZ AT TIME ZONE 'X'` and `timezone('X', WTZ)` return TIMESTAMP no-TZ instead of WTZ, because DuckDB's TIMESTAMPTZ has no per-value zone metadata. Documented in macro SQL header + RESEARCH-function-mapping.md. After this chunk the date-specific design docs (PLAN / REPORT / chunk-tracker) are archived to `dev-docs/archive/`; the date pushdown program is complete for this iteration.
 
 ---
@@ -162,55 +164,64 @@ Cheap wins. All confirmed aligned via DuckDB docs check; no probe required.
 | `sha1(varbinary) -> varbinary` | `unhex(sha1(b))` | ✅ |
 | `sha256(varbinary) -> varbinary` | `unhex(sha256(b))` | ✅ |
 
-### Round 6b-ext — Crypto extension (1 new ext, 5 entries) — **WAITING on catalog**
+> **PORTED TO NATIVE (2026-06-06).** `sha512`, `xxhash64`, and `hmac_sha256` are
+> now native C++ scalar functions in the `trino_parity` extension
+> (`src/hash_functions.cpp`), implemented over vendored primitives — **xxHash**
+> (BSD-2, header-only) and **WjCryptLib SHA-256/512** (public domain) — in
+> `third_party/hash/`. The macro layer and the best-effort `INSTALL … FROM
+> community` of `crypto`/`hashfuncs` were **removed**. Rationale: those are
+> *community* extensions (per-DuckDB-version availability lag — we hit a 2-week
+> 1.5.3 gap), and both ship **load-time telemetry** (`query_farm_telemetry.cpp`
+> POSTs to `duckdb-in.query-farm.services`, auto-loading httpfs) — unacceptable
+> for an embedded data-plane connector. Going native also **revived
+> `hmac_sha256`** (see below). The round notes below are kept as the research
+> record of how we got here.
 
-Macro pattern: `CREATE OR REPLACE MACRO trino_<name>(...) AS unhex(crypto_hash('<algo>', ...));` — wraps hex VARCHAR back into BLOB matching Trino's VARBINARY return.
+### Round 6b-ext — Crypto extension — **sha512 + hmac_sha256 PORTED NATIVE**
 
-Pre-step: extend `TrinoFunctionAliases` (or the executor attach) to `INSTALL crypto; LOAD crypto;` as best-effort, mirroring the ICU pattern.
+**`sha512` — ✅ SHIPPED (native).** Standard SHA-512 over the raw bytes, 64-byte
+BLOB matching Trino's VARBINARY. NULL-propagates. Vectors: `''`→`cf83e135…da3e`,
+`'abc'`→`ddaf35a1…ca49f`. (Interim macro route, now removed, used `crypto`'s
+`crypto_hash('sha2-512', b)` — which in 1.5.3 returns BLOB directly, no `unhex`.)
 
-**⚠️ Catalog wait:** `crypto` was HTTP 404 on `extensions.duckdb.org` for DuckDB 1.5.3 (probed 2026-05-28). Likely cause is the community catalog hasn't yet cut a 1.5.3 build — not a permanent platform gap. Re-probe in a few days; the catalog catches up over time. See [archive/REPORT-hash-null-handling.md](archive/REPORT-hash-null-handling.md).
+**`hmac_sha256` — ✅ SHIPPED (native), reversing the earlier rejection.** The
+*macro* route was not pushable: DuckDB's `crypto_hmac` is
+**`[VARCHAR, VARCHAR, VARCHAR]`** — key/message VARCHAR-only — while Trino's
+`hmac_sha256(data, key)` (`HmacFunctions.java`, 481: data first) operates on
+arbitrary **`VARBINARY`**. A `BLOB→VARCHAR` bridge **escapes non-printable
+bytes** (`from_hex('ff00')::VARCHAR` → the 8-char string `'\xFF\x00'`), silently
+hashing the wrong bytes on binary input. The **native** function (HMAC-SHA256 over
+WjCryptLib SHA-256, raw bytes) has no such problem, so it is pushable. Vectors:
+HMAC(`key`,`"The quick brown fox…"`)→`f7bc83f4…2d1a3cd8`; HMAC(`''`,`''`)→`b613679a…92c5ad`;
+NULL data or key → NULL. `hmac_md5`/`hmac_sha1`/`hmac_sha512` remain unported
+(add the matching WjCryptLib primitives if a workload wants them).
 
-| Trino | DuckDB macro body | Notes |
-|---|---|---|
-| `sha512(varbinary) -> varbinary` | `unhex(crypto_hash('sha2-512', b))` | ✅ no core equivalent — extension required |
-| `hmac_md5(k, m) -> varbinary` | `unhex(crypto_hmac('md5', k, m))` | ✅ |
-| `hmac_sha1(k, m) -> varbinary` | `unhex(crypto_hmac('sha1', k, m))` | ✅ |
-| `hmac_sha256(k, m) -> varbinary` | `unhex(crypto_hmac('sha2-256', k, m))` | ✅ |
-| `hmac_sha512(k, m) -> varbinary` | `unhex(crypto_hmac('sha2-512', k, m))` | ✅ |
+### Round 6c — Hashfuncs extension — **xxhash64 PORTED NATIVE; murmur3 DEFERRED**
 
-Verification step before promoting to `PUSHABLE_FUNCTIONS`: probe hash output exact-bytes against Trino-reference vectors. Once aligned, ship.
+**`xxhash64` — ✅ SHIPPED (native).** Byte-order question resolved:
+- Trino 481 (`VarbinaryFunctions.xxhash64`): `hash.setLong(0, Long.reverseBytes(XxHash64.hash(slice)))`. `Slice.setLong` writes little-endian, so `reverseBytes(H)` written LE = **big-endian serialization of `H`**.
+- xxHash64 (seed 0) is a frozen spec: empty → `ef46db3751d8e999`, `abc` → `44bc2cf5ad770999`. The native function calls upstream `XXH64(bytes, len, 0)` and emits the 8 bytes big-endian, byte-for-byte equal to Trino. `xxhash64(NULL)=NULL`.
 
-### Round 6c — Hashfuncs extension (1 new ext, ~2 new entries) — **WAITING on catalog**
+The native function (`trino_xxhash64`, no type gate — Trino emits only over VARBINARY, same as md5/sha1/sha256) replaces the interim macro `unhex(printf('%016x', xxh64(b)))` that depended on the `hashfuncs` extension.
 
-**⚠️ Catalog wait:** `hashfuncs` HTTP 404 for DuckDB 1.5.3 — community catalog likely hasn't cut a 1.5.3 build yet. Re-probe in a few days.
+**`murmur3` — ⚠️ DEFER (reconstructable, but not worth it yet).** DuckDB `murmurhash3_x64_128(ANY) -> UHUGEINT` is standard seed-0 (empty → 0; `abc` → `3ba2744126ca2d52b4963f3f3fad7867`, packing `UHUGEINT = (h1<<64)|h2`). Trino 481 (`murmur3`) returns `setLong(0,h1); setLong(8,h2)` = **`LE(h1) ++ LE(h2)`** (each half byte-reversed vs the big-endian packing). A faithful macro would be:
+```
+reverse(unhex(printf('%016x', (murmurhash3_x64_128(b) >> 64)::UBIGINT)))
+  || reverse(unhex(printf('%016x', (murmurhash3_x64_128(b) & 18446744073709551615)::UBIGINT)))
+```
+i.e. expected Trino `murmur3('abc')` bytes = `522dca264174a23b6778ad3f3f3f96b4`. **Why defer:** (a) a macro can't bind a local, so it double-evaluates the 128-bit hash; (b) the `h1==hi64` half-assignment + airlift seed-0 equivalence is *inferred from source*, not yet confirmed against a live Trino-481 value; (c) `murmur3` is niche. Recommendation: leave unpushed unless a workload asks; if pursued, pin one live Trino value first and consider a small native helper instead of the double-hash macro.
 
-| Trino | DuckDB macro body | Notes |
-|---|---|---|
-| `xxhash64(varbinary) -> varbinary` (8 bytes) | TBD — `xxh64(b)` returns UBIGINT; need to encode as 8-byte BLOB. Candidates: `unhex(printf('%016x', xxh64(b)))`, or a struct-cast trick. | ⚠️ Verify byte-order (Trino XXH64 → big-endian per impl? little-endian?). Probe before shipping. |
-| `murmur3(varbinary) -> varbinary` (16 bytes, x64 128-bit variant) | TBD — `murmurhash3_x64_128(b)` returns UHUGEINT; encode as 16-byte BLOB. Same byte-order question. | ⚠️ Same — verify byte-order vs Trino. |
+### Round 6d — NetQuack extension — **❌ NOT PUSHABLE (research 2026-06-06)**
 
-If byte-order verification fails, these become extension-required candidates instead.
+`netquack` is in the catalog, but the `extract_*` functions are **not lossless** against Trino's `url_extract_*`. Verified divergences:
 
-Pre-step: `INSTALL hashfuncs; LOAD hashfuncs;` best-effort.
+- **NULL vs empty string (systematic).** Trino 481 `url_extract_*` are all `@SqlNullable` and return **NULL** when the component is absent or the URL is malformed (`return (uri == null) ? null : slice(uri.getScheme())`, etc.). DuckDB `extract_*` return **empty string `''`** for absent components (`extract_schema('ex.com/a')=''`, `extract_query_string('http://ex.com/a')=''`, `extract_fragment(...)=''`). Any predicate touching absent components (`IS NULL`, `= ''`, `IS NOT NULL`) would silently change results.
+- **`url_extract_port` type mismatch.** Trino: `-> BIGINT`, NULL when absent. DuckDB `extract_port`: `-> VARCHAR`, `''` when absent.
+- **Path divergence.** Trino `url_extract_path('http://ex.com')` → `''` (Java `URI.getPath()`); DuckDB `extract_path('http://ex.com')` → `'/'`.
 
-### Round 6d — NetQuack extension (1 new ext, 6 new entries) — **WAITING on catalog**
+Per the lossless discipline ("when in doubt, don't push"), **reject all six.** Revisiting would require per-function `NULLIF(x,'')` + cast wrappers and case-by-case malformed-URL alignment — that's a curated normalization project, not a rename round. Not worth it absent a concrete workload.
 
-**⚠️ Catalog wait:** `netquack` HTTP 404 for DuckDB 1.5.3 — same likely cause as crypto/hashfuncs. Re-probe in a few days.
-
-All straight macro renames. No type conversion.
-
-| Trino | DuckDB macro body | Notes |
-|---|---|---|
-| `url_extract_protocol(url)` | `extract_schema(url)` | ✅ |
-| `url_extract_host(url)` | `extract_host(url)` | ✅ |
-| `url_extract_port(url)` | `extract_port(url)` | ✅ |
-| `url_extract_path(url)` | `extract_path(url)` | ✅ |
-| `url_extract_query(url)` | `extract_query_string(url)` | ✅ Note the name diff. |
-| `url_extract_fragment(url)` | `extract_fragment(url)` | ✅ |
-
-Pre-step: `INSTALL netquack; LOAD netquack;` best-effort.
-
-Note: NetQuack also ships `base64_encode`/`base64_decode` that overlap core DuckDB's `to_base64`/`from_base64` (already in round 4). No additional value beyond URL parsing — we don't re-route through netquack for base64.
+Note: NetQuack also ships `base64_encode`/`base64_decode` overlapping core DuckDB's `to_base64`/`from_base64` (already in round 4). No additional value.
 
 ### Round 6e (deferred — separate infra round) — Translator rewrites, not macros
 

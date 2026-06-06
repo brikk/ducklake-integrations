@@ -142,6 +142,20 @@ class DuckDbExpressionTranslator private constructor() {
                 NameArity("md5", 1),
                 NameArity("sha1", 1),
                 NameArity("sha256", 1),
+                // Native hash functions in the trino_parity extension
+                // (src/hash_functions.cpp), self-contained over vendored xxHash +
+                // WjCryptLib SHA — no community-extension dependency. No type gate:
+                // Trino's signatures only accept VARBINARY, so the planner never emits
+                // these over another type (same as md5/sha1/sha256 above).
+                //   sha512(varbinary)      → SHA-512
+                //   xxhash64(varbinary)    → xxHash64, big-endian (matches Trino)
+                //   hmac_sha256(data, key) → HMAC-SHA256 over raw bytes. Pushable
+                //     because the native function hashes the real VARBINARY bytes; the
+                //     earlier crypto_hmac macro route was VARCHAR-only and silently
+                //     mangled non-UTF-8 input, so it was rejected.
+                NameArity("sha512", 1),
+                NameArity("xxhash64", 1),
+                NameArity("hmac_sha256", 2),
                 // Round 6a — core DuckDB easy wins
                 NameArity("sign", 1),
                 NameArity("bit_length", 1),
