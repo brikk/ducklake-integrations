@@ -93,7 +93,7 @@ open class DucklakePagePartitioner(
                     sourceBlock,
                     position,
                     mapping.field.transform,
-                    mapping.field.arity,
+                    mapping.field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
                     encoding)
             values[mapping.field.partitionKeyIndex] = value
         }
@@ -131,7 +131,7 @@ open class DucklakePagePartitioner(
                         mapping.sourceColumn.columnType,
                         sourceBlock,
                         mapping.field.transform,
-                        mapping.field.arity)
+                        mapping.field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty())
             }
         }
         @Suppress("UNCHECKED_CAST")

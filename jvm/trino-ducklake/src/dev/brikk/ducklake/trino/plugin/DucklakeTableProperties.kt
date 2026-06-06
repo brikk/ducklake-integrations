@@ -28,7 +28,6 @@ import io.trino.spi.type.ArrayType
 import io.trino.spi.type.VarcharType.VARCHAR
 import java.util.Locale
 import java.util.Optional
-import java.util.OptionalInt
 import java.util.regex.Pattern
 
 open class DucklakeTableProperties @Inject constructor() {
@@ -169,7 +168,7 @@ open class DucklakeTableProperties @Inject constructor() {
                     throw TrinoException(INVALID_TABLE_PROPERTY, "bucket(N, col) requires a positive arity, got $arity")
                 }
                 val columnName = bucketMatcher.group(2).trim()
-                return PartitionFieldSpec(columnName, DucklakePartitionTransform.BUCKET, OptionalInt.of(arity))
+                return PartitionFieldSpec(columnName, DucklakePartitionTransform.BUCKET, arity)
             }
 
             val matcher = TRANSFORM_PATTERN.matcher(trimmed)

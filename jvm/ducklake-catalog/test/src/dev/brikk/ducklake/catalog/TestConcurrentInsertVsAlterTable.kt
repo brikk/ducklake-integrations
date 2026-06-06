@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Acceptance test for the `tables_inserted_into × altered_tables`
@@ -88,8 +87,8 @@ class TestConcurrentInsertVsAlterTable {
                     32L,
                     /* valueCount */ 5L,
                     /* nullCount */ 0L,
-                    Optional.of("1"),
-                    Optional.of("100"),
+                    "1",
+                    "100",
                     /* containsNan */ false,
                 ),
             ),

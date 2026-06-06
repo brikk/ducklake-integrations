@@ -18,9 +18,6 @@ import io.airlift.json.JsonCodecFactory
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
-import java.util.Optional
-import java.util.OptionalInt
-import java.util.OptionalLong
 
 /**
  * Golden wire-format lock for the `@JacksonSerializedInternalClass` catalog types.
@@ -63,7 +60,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun columnOptionalPresent() {
-        val instance = DucklakeColumn(7L, 1L, Optional.of(9L), 3L, 0L, "id", "BIGINT", true, Optional.of(2L))
+        val instance = DucklakeColumn(7L, 1L, 9L, 3L, 0L, "id", "BIGINT", true, 2L)
         assertJson(
             DucklakeColumn::class.java,
             instance,
@@ -75,7 +72,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun columnOptionalEmpty() {
-        val instance = DucklakeColumn(7L, 1L, Optional.empty(), 3L, 0L, "id", "BIGINT", true, Optional.empty())
+        val instance = DucklakeColumn(7L, 1L, null, 3L, 0L, "id", "BIGINT", true, null)
         assertJson(
             DucklakeColumn::class.java,
             instance,
@@ -89,7 +86,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun fileColumnStatsOptionalPresent() {
-        val instance = DucklakeFileColumnStats(1L, 512L, 100L, 5L, Optional.of("a"), Optional.of("z"), false)
+        val instance = DucklakeFileColumnStats(1L, 512L, 100L, 5L, "a", "z", false)
         assertJson(
             DucklakeFileColumnStats::class.java,
             instance,
@@ -101,7 +98,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun fileColumnStatsOptionalEmpty() {
-        val instance = DucklakeFileColumnStats(1L, 512L, 100L, 5L, Optional.empty(), Optional.empty(), true)
+        val instance = DucklakeFileColumnStats(1L, 512L, 100L, 5L, null, null, true)
         assertJson(
             DucklakeFileColumnStats::class.java,
             instance,
@@ -130,10 +127,10 @@ class TestJacksonWireFormat {
     fun writeFragmentOptionalPresent() {
         val instance = DucklakeWriteFragment(
             "f.parquet", true, "parquet", 1024L, 200L, 100L,
-            listOf(DucklakeFileColumnStats(1L, 512L, 100L, 0L, Optional.of("1"), Optional.of("9"), false)),
+            listOf(DucklakeFileColumnStats(1L, 512L, 100L, 0L, "1", "9", false)),
             mapOf(0 to "US"),
-            OptionalLong.of(42L),
-            Optional.of(DucklakeNameMap(listOf(DucklakeNameMapEntry("c", 1L)))),
+            42L,
+            DucklakeNameMap(listOf(DucklakeNameMapEntry("c", 1L))),
         )
         // NOTE: nameMap serializes as `{"entries":[{}]}` — DucklakeNameMapEntry has no
         // serialization getters, so its content is lost here (see nameMap* cases below).
@@ -166,7 +163,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun partitionFieldArityPresent() {
-        val instance = DucklakePartitionField(0, 5L, DucklakePartitionTransform.BUCKET, OptionalInt.of(8))
+        val instance = DucklakePartitionField(0, 5L, DucklakePartitionTransform.BUCKET, 8)
         assertJson(
             DucklakePartitionField::class.java,
             instance,
@@ -177,7 +174,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun partitionFieldArityEmpty() {
-        val instance = DucklakePartitionField(0, 5L, DucklakePartitionTransform.IDENTITY, OptionalInt.empty())
+        val instance = DucklakePartitionField(0, 5L, DucklakePartitionTransform.IDENTITY, null)
         assertJson(
             DucklakePartitionField::class.java,
             instance,
@@ -192,7 +189,7 @@ class TestJacksonWireFormat {
     fun partitionSpec() {
         val instance = DucklakePartitionSpec(
             1L, 2L,
-            listOf(DucklakePartitionField(0, 5L, DucklakePartitionTransform.IDENTITY, OptionalInt.empty())),
+            listOf(DucklakePartitionField(0, 5L, DucklakePartitionTransform.IDENTITY, null)),
         )
         assertJson(
             DucklakePartitionSpec::class.java,
@@ -207,7 +204,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun partitionFieldSpecArityPresent() {
-        val instance = PartitionFieldSpec("c", DucklakePartitionTransform.BUCKET, OptionalInt.of(4))
+        val instance = PartitionFieldSpec("c", DucklakePartitionTransform.BUCKET, 4)
         assertJson(
             PartitionFieldSpec::class.java,
             instance,
@@ -218,7 +215,7 @@ class TestJacksonWireFormat {
 
     @Test
     fun partitionFieldSpecArityEmpty() {
-        val instance = PartitionFieldSpec("c", DucklakePartitionTransform.IDENTITY, OptionalInt.empty())
+        val instance = PartitionFieldSpec("c", DucklakePartitionTransform.IDENTITY, null)
         assertJson(
             PartitionFieldSpec::class.java,
             instance,

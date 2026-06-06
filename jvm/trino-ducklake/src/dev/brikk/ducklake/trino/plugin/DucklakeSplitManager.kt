@@ -52,6 +52,7 @@ import java.util.HashMap
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 import java.util.Optional
+import java.util.OptionalInt
 import java.util.stream.Collectors.toCollection
 
 /**
@@ -384,7 +385,13 @@ class DucklakeSplitManager @Inject constructor(
         for (spec in specs) {
             for (field in spec.fields) {
                 columnToPartKeys.computeIfAbsent(field.columnId) { _ -> ArrayList() }
-                        .add(PartitionKeyMapping(field.partitionKeyIndex, field.transform, field.arity))
+                        .add(
+                            PartitionKeyMapping(
+                                field.partitionKeyIndex,
+                                field.transform,
+                                field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
+                            ),
+                        )
             }
         }
 

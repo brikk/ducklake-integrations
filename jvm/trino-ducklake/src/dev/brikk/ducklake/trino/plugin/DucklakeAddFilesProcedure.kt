@@ -291,8 +291,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     recordCount,
                     stats,
                     partitionValues,
-                    partitionId,
-                    Optional.of(nameMap))
+                    if (partitionId.isPresent) partitionId.asLong else null,
+                    nameMap)
         }
         catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read parquet footer: $filePath", e)

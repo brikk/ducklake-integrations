@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Gold acceptance test for [LogicalConflictCheck]: an INSERT whose
@@ -82,8 +81,8 @@ class TestConcurrentInsertVsDropColumn {
                 64L,
                 /* valueCount */ 5L,
                 /* nullCount */ 0L,
-                Optional.of("a"),
-                Optional.of("z"),
+                "a",
+                "z",
                 /* containsNan */ false,
             )
             return DucklakeWriteFragment(

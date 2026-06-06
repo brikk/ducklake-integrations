@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Pins today's behavior for two writers concurrently committing INSERTs to the
@@ -80,8 +79,8 @@ class TestConcurrentInsertSameTable {
                 32L,
                 /* valueCount */ 10L,
                 /* nullCount */ 0L,
-                Optional.of(minId.toString()),
-                Optional.of(maxId.toString()),
+                minId.toString(),
+                maxId.toString(),
                 /* containsNan */ false,
             )
             return DucklakeWriteFragment(

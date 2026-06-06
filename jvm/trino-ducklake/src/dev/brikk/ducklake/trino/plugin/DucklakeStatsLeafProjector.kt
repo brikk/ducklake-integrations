@@ -57,7 +57,7 @@ object DucklakeStatsLeafProjector {
     private fun buildChildrenByParent(allCatalogColumns: List<DucklakeColumn>): Map<Long, MutableMap<String, DucklakeColumn>> {
         val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = HashMap()
         for (column in allCatalogColumns) {
-            column.parentColumn.ifPresent { parentId ->
+            column.parentColumn?.let { parentId ->
                 childrenByParent
                         .computeIfAbsent(parentId) { _ -> HashMap() }[column.columnName] = column
             }

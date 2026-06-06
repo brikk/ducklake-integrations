@@ -93,7 +93,7 @@ class ParquetFileWriter(
                 recordCount,
                 columnStats,
                 partitionValues,
-                partitionId)
+                if (partitionId.isPresent) partitionId.asLong else null)
     }
 
     override fun abort() {

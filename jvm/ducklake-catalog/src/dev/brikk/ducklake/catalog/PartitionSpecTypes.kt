@@ -14,30 +14,31 @@
 package dev.brikk.ducklake.catalog
 
 import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
-import java.util.OptionalInt
 
 @JvmRecord
 @JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakePartitionField @JsonCreator constructor(
         @param:JsonProperty("partitionKeyIndex") val partitionKeyIndex: Int,
         @param:JsonProperty("columnId") val columnId: Long,
         @param:JsonProperty("transform") val transform: DucklakePartitionTransform,
         // Bucket arity (the N in bucket(N)). Present only for BUCKET transforms,
-        // empty for IDENTITY / temporal kinds.
-        @param:JsonProperty("arity") val arity: OptionalInt)
+        // null for IDENTITY / temporal kinds.
+        @param:JsonProperty("arity") val arity: Int?)
 {
     init {
-        if (transform == DucklakePartitionTransform.BUCKET && arity.isEmpty) {
+        if (transform == DucklakePartitionTransform.BUCKET && arity == null) {
             throw IllegalArgumentException("BUCKET transform requires an arity")
         }
-        if (transform != DucklakePartitionTransform.BUCKET && arity.isPresent) {
+        if (transform != DucklakePartitionTransform.BUCKET && arity != null) {
             throw IllegalArgumentException("Arity is only valid for BUCKET transform")
         }
     }
 
     constructor(partitionKeyIndex: Int, columnId: Long, transform: DucklakePartitionTransform)
-            : this(partitionKeyIndex, columnId, transform, OptionalInt.empty())
+            : this(partitionKeyIndex, columnId, transform, null)
 }
 
 // Fidelity note: the Java record's compact constructor did `fields = List.copyOf(fields)`.
@@ -60,23 +61,24 @@ data class DucklakePartitionSpec @JsonCreator constructor(
  */
 @JvmRecord
 @JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class PartitionFieldSpec(
         val columnName: String,
         val transform: DucklakePartitionTransform,
-        val arity: OptionalInt)
+        val arity: Int?)
 {
     init {
-        if (transform == DucklakePartitionTransform.BUCKET && arity.isEmpty) {
+        if (transform == DucklakePartitionTransform.BUCKET && arity == null) {
             throw IllegalArgumentException("BUCKET transform requires an arity (use bucket(N, col))")
         }
-        if (transform == DucklakePartitionTransform.BUCKET && arity.asInt <= 0) {
-            throw IllegalArgumentException("BUCKET arity must be positive, got " + arity.asInt)
+        if (transform == DucklakePartitionTransform.BUCKET && arity!! <= 0) {
+            throw IllegalArgumentException("BUCKET arity must be positive, got $arity")
         }
-        if (transform != DucklakePartitionTransform.BUCKET && arity.isPresent) {
+        if (transform != DucklakePartitionTransform.BUCKET && arity != null) {
             throw IllegalArgumentException("Arity is only valid for BUCKET transform")
         }
     }
 
     constructor(columnName: String, transform: DucklakePartitionTransform)
-            : this(columnName, transform, OptionalInt.empty())
+            : this(columnName, transform, null)
 }

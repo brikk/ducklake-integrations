@@ -17,8 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
-import java.util.OptionalLong
 
 /**
  * Mirrors [TestConcurrentInsertVsDropTable] for `commitAddFiles`.
@@ -110,8 +108,8 @@ class TestConcurrentAddFilesVsDropTable {
                     32L,
                     5L,
                     0L,
-                    Optional.of("1"),
-                    Optional.of("100"),
+                    "1",
+                    "100",
                     false)
             val nameMap = DucklakeNameMap(listOf(
                     DucklakeNameMapEntry("id", columnId)))
@@ -124,8 +122,8 @@ class TestConcurrentAddFilesVsDropTable {
                     /* recordCount = */ 5L,
                     listOf(colStats),
                     emptyMap(),
-                    OptionalLong.empty(),
-                    Optional.of(nameMap))
+                    null,
+                    nameMap)
         }
     }
 }

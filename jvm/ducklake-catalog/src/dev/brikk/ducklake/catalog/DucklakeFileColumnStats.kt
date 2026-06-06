@@ -14,25 +14,18 @@
 package dev.brikk.ducklake.catalog
 
 import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
-import java.util.Optional
 
 @JvmRecord
 @JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeFileColumnStats @JsonCreator constructor(
     @param:JsonProperty("columnId") val columnId: Long,
     @param:JsonProperty("columnSizeBytes") val columnSizeBytes: Long,
     @param:JsonProperty("valueCount") val valueCount: Long,
     @param:JsonProperty("nullCount") val nullCount: Long,
-    @param:JsonProperty("minValue") val minValue: Optional<String>,
-    @param:JsonProperty("maxValue") val maxValue: Optional<String>,
+    @param:JsonProperty("minValue") val minValue: String?,
+    @param:JsonProperty("maxValue") val maxValue: String?,
     @param:JsonProperty("containsNan") val containsNan: Boolean,
-) {
-    init {
-        // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.
-        @Suppress("SENSELESS_COMPARISON")
-        if (minValue == null) throw NullPointerException("minValue is null")
-        @Suppress("SENSELESS_COMPARISON")
-        if (maxValue == null) throw NullPointerException("maxValue is null")
-    }
-}
+)

@@ -14,12 +14,12 @@
 package dev.brikk.ducklake.catalog
 
 import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
-import java.util.Optional
-import java.util.OptionalLong
 
 @JvmRecord
 @JacksonSerializedInternalClass
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class DucklakeWriteFragment(
     @get:JsonProperty("path") val path: String,
     @get:JsonProperty("pathIsRelative") val pathIsRelative: Boolean,
@@ -29,8 +29,8 @@ data class DucklakeWriteFragment(
     @get:JsonProperty("recordCount") val recordCount: Long,
     @get:JsonProperty("columnStats") val columnStats: List<DucklakeFileColumnStats>,
     @get:JsonProperty("partitionValues") val partitionValues: Map<Int, String?>,
-    @get:JsonProperty("partitionId") val partitionId: OptionalLong,
-    @get:JsonProperty("nameMap") val nameMap: Optional<DucklakeNameMap>,
+    @get:JsonProperty("partitionId") val partitionId: Long?,
+    @get:JsonProperty("nameMap") val nameMap: DucklakeNameMap?,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on
@@ -63,8 +63,8 @@ data class DucklakeWriteFragment(
         recordCount = recordCount,
         columnStats = columnStats.toList(),
         partitionValues = emptyMap(),
-        partitionId = OptionalLong.empty(),
-        nameMap = Optional.empty(),
+        partitionId = null,
+        nameMap = null,
     )
 
     /**
@@ -78,7 +78,7 @@ data class DucklakeWriteFragment(
         recordCount: Long,
         columnStats: List<DucklakeFileColumnStats>,
         partitionValues: Map<Int, String?>,
-        partitionId: OptionalLong,
+        partitionId: Long?,
     ) : this(
         path = path,
         pathIsRelative = true,
@@ -89,7 +89,7 @@ data class DucklakeWriteFragment(
         columnStats = columnStats.toList(),
         partitionValues = partitionValues.toMap(),
         partitionId = partitionId,
-        nameMap = Optional.empty(),
+        nameMap = null,
     )
 
     /**
@@ -106,7 +106,7 @@ data class DucklakeWriteFragment(
         recordCount: Long,
         columnStats: List<DucklakeFileColumnStats>,
         partitionValues: Map<Int, String?>,
-        partitionId: OptionalLong,
+        partitionId: Long?,
     ) : this(
         path = path,
         pathIsRelative = true,
@@ -117,7 +117,7 @@ data class DucklakeWriteFragment(
         columnStats = columnStats.toList(),
         partitionValues = partitionValues.toMap(),
         partitionId = partitionId,
-        nameMap = Optional.empty(),
+        nameMap = null,
     )
 
     companion object {
@@ -143,8 +143,8 @@ data class DucklakeWriteFragment(
             @JsonProperty("recordCount") recordCount: Long,
             @JsonProperty("columnStats") columnStats: List<DucklakeFileColumnStats>,
             @JsonProperty("partitionValues") partitionValues: Map<Int, String?>?,
-            @JsonProperty("partitionId") partitionId: OptionalLong?,
-            @JsonProperty("nameMap") nameMap: Optional<DucklakeNameMap>?,
+            @JsonProperty("partitionId") partitionId: Long?,
+            @JsonProperty("nameMap") nameMap: DucklakeNameMap?,
         ): DucklakeWriteFragment {
             return DucklakeWriteFragment(
                 path = path,
@@ -160,8 +160,8 @@ data class DucklakeWriteFragment(
                 else {
                     partitionValues.toMap()
                 },
-                partitionId = partitionId ?: OptionalLong.empty(),
-                nameMap = nameMap ?: Optional.empty(),
+                partitionId = partitionId,
+                nameMap = nameMap,
             )
         }
     }

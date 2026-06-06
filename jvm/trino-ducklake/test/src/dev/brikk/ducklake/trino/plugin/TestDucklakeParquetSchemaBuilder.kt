@@ -79,9 +79,9 @@ internal class TestDucklakeParquetSchemaBuilder {
 
         // Nested columns: parentColumn=100
         val allColumns: List<DucklakeColumn> = listOf(
-                DucklakeColumn(100, 1, Optional.empty(), 1, 1, "metadata", "STRUCT(key VARCHAR, value INTEGER)", true, Optional.empty()),
-                DucklakeColumn(101, 1, Optional.empty(), 1, 2, "key", "VARCHAR", true, Optional.of(100L)),
-                DucklakeColumn(102, 1, Optional.empty(), 1, 3, "value", "INTEGER", true, Optional.of(100L)))
+                DucklakeColumn(100, 1, null, 1, 1, "metadata", "STRUCT(key VARCHAR, value INTEGER)", true, null),
+                DucklakeColumn(101, 1, null, 1, 2, "key", "VARCHAR", true, 100L),
+                DucklakeColumn(102, 1, null, 1, 3, "value", "INTEGER", true, 100L))
 
         val converter = ParquetSchemaConverter(
                 columns.map { it.columnType },

@@ -25,7 +25,6 @@ import io.trino.spi.type.VarcharType.VARCHAR
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 internal class TestDucklakeStatsLeafProjector {
     @Test
@@ -204,13 +203,13 @@ internal class TestDucklakeStatsLeafProjector {
             return DucklakeColumn(
                     columnId,
                     0L,
-                    Optional.empty(),
+                    null,
                     1L,
                     0L,
                     name,
                     "",
                     true,
-                    Optional.of(parentColumnId))
+                    parentColumnId)
         }
     }
 }

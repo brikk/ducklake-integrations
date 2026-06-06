@@ -131,7 +131,7 @@ internal class DuckLakeConnectorMetadata(
         val rows = catalog.getTableColumns(handle.tableId, handle.snapshotId)
         val top = ArrayList<DucklakeColumn>(rows.size)
         for (col in rows) {
-            if (col.parentColumn.isEmpty) {
+            if (col.parentColumn == null) {
                 top.add(col)
             }
         }

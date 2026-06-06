@@ -230,7 +230,7 @@ internal class TestDucklakeStatsExtractor {
         // If parquetColumnIndex were positional in the leaf list, the second target
         // would have picked up the skipped column's INT bytes and decoded "99" instead
         // of the VARCHAR-decoded "x"/"y" — pin against that regression.
-        assertThat(stats[1].minValue.orElseThrow()).doesNotContain("99")
+        assertThat(stats[1].minValue!!).doesNotContain("99")
         assertThat(stats[1].minValue).contains("x")
         assertThat(stats[1].maxValue).contains("y")
     }

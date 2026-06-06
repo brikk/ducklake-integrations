@@ -276,14 +276,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
         val childrenByParent: MutableMap<Long, MutableList<DucklakeColumn>> = mutableMapOf()
         for (column in allColumns) {
-            column.parentColumn.ifPresent { parent ->
+            column.parentColumn?.let { parent ->
                 childrenByParent.getOrPut(parent) { mutableListOf() }.add(column)
             }
         }
 
         val topLevelColumns: MutableList<DucklakeColumn> = mutableListOf()
         for (column in allColumns) {
-            if (column.parentColumn.isEmpty) {
+            if (column.parentColumn == null) {
                 topLevelColumns.add(
                     DucklakeColumn(
                         column.columnId,
@@ -294,7 +294,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                         column.columnName,
                         resolveColumnType(column, childrenByParent),
                         column.nullsAllowed,
-                        Optional.empty(),
+                        null,
                     ),
                 )
             }
@@ -557,7 +557,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                         orZero(r.get(partcol.PARTITION_KEY_INDEX)).toInt(),
                         orZero(r.get(partcol.COLUMN_ID)),
                         parsed.transform,
-                        parsed.arity,
+                        if (parsed.arity.isPresent) parsed.arity.asInt else null,
                     ),
                 )
             null // mapper return discarded — using fold-into-maps idiom
@@ -1488,7 +1488,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                         .set(partcol.TABLE_ID, tableId)
                         .set(partcol.PARTITION_KEY_INDEX, keyIndex++)
                         .set(partcol.COLUMN_ID, columnId)
-                        .set(partcol.TRANSFORM, field.transform.toCatalogString(field.arity))
+                        .set(
+                            partcol.TRANSFORM,
+                            field.transform.toCatalogString(
+                                field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
+                            ),
+                        )
                         .execute()
                 }
             }
@@ -1767,11 +1772,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 dataFile.setFooterSize(fragment.footerSize)
             }
             dataFile.setRowIdStart(runningRowId)
-            if (fragment.partitionId.isPresent) {
-                dataFile.setPartitionId(fragment.partitionId.asLong)
-            }
-            if (fragment.nameMap.isPresent) {
-                val nameMap = fragment.nameMap.get()
+            fragment.partitionId?.let { dataFile.setPartitionId(it) }
+            fragment.nameMap?.let { nameMap ->
                 var mappingId = nameMapToId[nameMap]
                 if (mappingId == null) {
                     mappingId = tx.allocateCatalogId()
@@ -1804,8 +1806,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.setColumnSizeBytes(columnStats.columnSizeBytes)
                 r.setValueCount(columnStats.valueCount)
                 r.setNullCount(columnStats.nullCount)
-                r.setMinValue(columnStats.minValue.orElse(null))
-                r.setMaxValue(columnStats.maxValue.orElse(null))
+                r.setMinValue(columnStats.minValue)
+                r.setMaxValue(columnStats.maxValue)
                 // contains_nan: TRUE when set, SQL NULL otherwise (upstream convention).
                 r.setContainsNan(if (columnStats.containsNan) java.lang.Boolean.TRUE else null)
                 fileColumnStatsRecords.add(r)
@@ -2075,15 +2077,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             if (stats.containsNan) {
                 containsNan = true
             }
-            if (stats.minValue.isPresent) {
-                val v = stats.minValue.get()
+            stats.minValue?.let { v ->
                 val current = minValue
                 if (current == null || v < current) {
                     minValue = v
                 }
             }
-            if (stats.maxValue.isPresent) {
-                val v = stats.maxValue.get()
+            stats.maxValue?.let { v ->
                 val current = maxValue
                 if (current == null || v > current) {
                     maxValue = v
@@ -2372,13 +2372,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             return DucklakeColumn(
                 orZero(r.columnId),
                 orZero(r.beginSnapshot),
-                Optional.ofNullable(r.endSnapshot),
+                r.endSnapshot,
                 orZero(r.tableId),
                 orZero(r.columnOrder),
                 r.columnName!!,
                 r.columnType!!,
                 r.nullsAllowed == true,
-                Optional.ofNullable(r.parentColumn),
+                r.parentColumn,
             )
         }
 

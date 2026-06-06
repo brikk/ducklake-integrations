@@ -322,7 +322,7 @@ constructor(
                 rowCount,
                 columnStats,
                 partitionValues,
-                partitionId)
+                if (partitionId.isPresent) partitionId.asLong else null)
     }
 
     /**
@@ -390,8 +390,8 @@ constructor(
                     0L, // column_size_bytes — not readily available without per-block scan; safe at 0
                     valueCount,
                     nullCount,
-                    min,
-                    max,
+                    min.orElse(null),
+                    max.orElse(null),
                     false))
         }
         return result

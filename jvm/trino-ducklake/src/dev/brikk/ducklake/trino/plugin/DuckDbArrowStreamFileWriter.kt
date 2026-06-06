@@ -329,7 +329,7 @@ constructor(
                 rowCount,
                 columnStats,
                 partitionValues,
-                partitionId)
+                if (partitionId.isPresent) partitionId.asLong else null)
     }
 
     @Throws(SQLException::class)
@@ -380,7 +380,7 @@ constructor(
             val nullCount = maxOf(0L, totalCount - valueCount)
             val min: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
             val max: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
-            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
+            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min.orElse(null), max.orElse(null), false))
         }
         return result
     }

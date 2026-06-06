@@ -815,7 +815,7 @@ class DucklakeMetadata(
 
         val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.get().tableId, snapshotId)
         val columnHandles: List<DucklakeColumnHandle> = catalogColumns.stream()
-                .filter { col -> col.parentColumn.isEmpty }
+                .filter { col -> col.parentColumn == null }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
                         col.columnName,
@@ -931,7 +931,7 @@ class DucklakeMetadata(
 
         // Build insert handle for UPDATE support (delete+insert pattern)
         val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
-                .filter { col -> col.parentColumn.isEmpty }
+                .filter { col -> col.parentColumn == null }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
                         col.columnName,

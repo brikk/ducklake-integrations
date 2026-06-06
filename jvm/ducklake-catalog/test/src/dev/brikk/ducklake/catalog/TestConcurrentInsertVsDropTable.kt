@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Covers the table-active branch of [LogicalConflictCheck]: an INSERT
@@ -76,8 +75,8 @@ class TestConcurrentInsertVsDropTable {
                 32L,
                 /* valueCount */ 5L,
                 /* nullCount */ 0L,
-                Optional.of("1"),
-                Optional.of("100"),
+                "1",
+                "100",
                 /* containsNan */ false,
             )
             return DucklakeWriteFragment(

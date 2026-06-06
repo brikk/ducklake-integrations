@@ -119,8 +119,8 @@ object DucklakeStatsExtractor {
                     totalCompressedSize,
                     totalValueCount,
                     totalNullCount,
-                    if (hasStats) minValue else Optional.empty(),
-                    if (hasStats) maxValue else Optional.empty(),
+                    if (hasStats) minValue.orElse(null) else null,
+                    if (hasStats) maxValue.orElse(null) else null,
                     containsNan))
         }
 

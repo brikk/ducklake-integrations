@@ -122,7 +122,7 @@ internal class DucklakeAddFilesNameMapper(
         // Build parent → name → child lookup
         val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = hashMapOf()
         for (column in allColumns) {
-            column.parentColumn.ifPresent { parentId ->
+            column.parentColumn?.let { parentId ->
                 childrenByParent
                         .computeIfAbsent(parentId) { _ -> hashMapOf() }[column.columnName.lowercase(Locale.ROOT)] =
                     column
