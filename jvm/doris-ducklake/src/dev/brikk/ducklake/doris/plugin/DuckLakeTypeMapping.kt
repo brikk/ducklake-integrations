@@ -30,7 +30,6 @@ internal object DuckLakeTypeMapping {
      *
      * @throws IllegalArgumentException if the type string cannot be parsed
      */
-    @JvmStatic
     fun fromDucklakeType(ducklakeType: String?): ConnectorType {
         requireNotNull(ducklakeType) { "ducklakeType is null" }
         val normalized = ducklakeType.trim().lowercase()

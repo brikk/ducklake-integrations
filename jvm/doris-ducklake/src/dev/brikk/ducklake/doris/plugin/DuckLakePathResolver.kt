@@ -33,7 +33,6 @@ internal class DuckLakePathResolver(
     }
 
     companion object {
-        @JvmStatic
         fun resolveScopedPath(
             path: String?,
             isRelative: Boolean?,

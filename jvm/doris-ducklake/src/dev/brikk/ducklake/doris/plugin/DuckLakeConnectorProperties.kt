@@ -14,7 +14,6 @@ internal object DuckLakeConnectorProperties {
     const val METADATA_PASSWORD = "metadata.password"
     const val STORAGE_WAREHOUSE = "storage.warehouse"
 
-    @JvmStatic
     fun catalogProperties(): List<ConnectorPropertyMetadata<*>> =
         listOf(
             ConnectorPropertyMetadata.requiredStringProperty(
@@ -37,7 +36,6 @@ internal object DuckLakeConnectorProperties {
             ),
         )
 
-    @JvmStatic
     fun requireString(props: Map<String, String>, key: String): String {
         val value = props[key]
         require(!value.isNullOrEmpty()) {

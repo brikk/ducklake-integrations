@@ -1,7 +1,5 @@
 package dev.brikk.ducklake.doris.plugin
 
-import java.util.HashMap
-import java.util.LinkedHashMap
 import java.util.Objects
 import java.util.Optional
 
@@ -124,7 +122,7 @@ internal class DuckLakeScanPlanProvider(
         columns: List<ConnectorColumnHandle>,
         filter: Optional<ConnectorExpression>,
     ): Map<String, String> {
-        val out: MutableMap<String, String> = LinkedHashMap()
+        val out: MutableMap<String, String> = linkedMapOf()
         // Tell PluginDrivenScanNode which BE reader to dispatch (else it
         // defaults to FORMAT_JNI and the iceberg reader bails with
         // "Not supported create reader for table format: iceberg / file
@@ -147,7 +145,7 @@ internal class DuckLakeScanPlanProvider(
             return
         }
         if (params.properties == null) {
-            params.properties = HashMap()
+            params.properties = mutableMapOf()
         }
         val out = params.properties
         for ((key, value) in nodeProperties) {
@@ -198,7 +196,6 @@ internal class DuckLakeScanPlanProvider(
          *   AWS_ACCESS_KEY / AWS_SECRET_KEY / AWS_ENDPOINT / AWS_REGION / AWS_TOKEN
          * ```
          */
-        @JvmStatic
         fun canonicalAwsAlias(unprefixedKey: String): String? =
             when (unprefixedKey) {
                 "s3.access_key" -> "AWS_ACCESS_KEY"
@@ -218,7 +215,6 @@ internal class DuckLakeScanPlanProvider(
          * `enable.mapping.varbinary`) are deliberately excluded — they're
          * either FE-only or carry no meaning on the BE.
          */
-        @JvmStatic
         fun isStorageProperty(key: String): Boolean =
             key.startsWith("s3.") ||
                 key.startsWith("AWS_") ||
@@ -226,7 +222,6 @@ internal class DuckLakeScanPlanProvider(
                 key.startsWith("fs.") ||
                 key == "use_path_style"
 
-        @JvmStatic
         private fun normalizeFileFormat(catalogFormat: String?): String =
             // The catalog stores the format as-recorded by the writer
             // ("parquet" / "PARQUET"). Doris's BE reader dispatch is case-sensitive
