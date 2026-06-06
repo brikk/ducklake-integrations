@@ -13,9 +13,6 @@
  */
 package dev.brikk.ducklake.catalog
 
-import com.fasterxml.jackson.annotation.JsonCreator
-import com.fasterxml.jackson.annotation.JsonProperty
-
 /**
  * One entry in a [DucklakeNameMap]: maps a parquet column path (by
  * source name) onto a target DuckLake field_id. Recurses through nested
@@ -31,33 +28,17 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * way (an entry in `ducklake_name_mapping` with
  * `is_partition = true`).
  */
+@JvmRecord
 @JacksonSerializedInternalJavaCompatibleClass
 data class DucklakeNameMapEntry(
-        val sourceName: String,
-        val targetFieldId: Long,
-        val isPartition: Boolean,
-        val children: List<DucklakeNameMapEntry>)
-{
-    companion object {
-        @JsonCreator
-        fun jsonCreate(
-                @JsonProperty("sourceName") sourceName: String,
-                @JsonProperty("targetFieldId") targetFieldId: Long,
-                @JsonProperty("isPartition") isPartition: Boolean,
-                @JsonProperty("children") children: List<DucklakeNameMapEntry>?): DucklakeNameMapEntry
-        {
-            return DucklakeNameMapEntry(
-                    sourceName,
-                    targetFieldId,
-                    isPartition,
-                children?.toList() ?: emptyList()
-            )
-        }
-    }
-
+    val sourceName: String,
+    val targetFieldId: Long,
+    val isPartition: Boolean,
+    val children: List<DucklakeNameMapEntry> = emptyList(),
+) {
     constructor(sourceName: String, targetFieldId: Long)
             : this(sourceName, targetFieldId, false, emptyList())
 
     constructor(sourceName: String, targetFieldId: Long, children: List<DucklakeNameMapEntry>)
-            : this(sourceName, targetFieldId, false, children.toList())
+            : this(sourceName, targetFieldId, false, children.clone())
 }

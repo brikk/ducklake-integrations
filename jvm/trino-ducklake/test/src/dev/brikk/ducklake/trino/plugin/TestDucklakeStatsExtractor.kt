@@ -36,61 +36,60 @@ import org.junit.jupiter.api.Test
 import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Optional
 
 internal class TestDucklakeStatsExtractor {
     @Test
     fun testConvertIntegerStats() {
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(42).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, INTEGER)).isEqualTo(Optional.of("42"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, INTEGER)).isEqualTo("42")
     }
 
     @Test
     fun testConvertNegativeInteger() {
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(-17).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, INTEGER)).isEqualTo(Optional.of("-17"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, INTEGER)).isEqualTo("-17")
     }
 
     @Test
     fun testConvertBigintStats() {
         val bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(9_000_000_000L).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BIGINT)).isEqualTo(Optional.of("9000000000"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BIGINT)).isEqualTo("9000000000")
     }
 
     @Test
     fun testConvertDoubleStats() {
         val bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(3.14).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DOUBLE)).isEqualTo(Optional.of("3.14"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DOUBLE)).isEqualTo("3.14")
     }
 
     @Test
     fun testConvertDoubleNan() {
         val bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(Double.NaN).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DOUBLE)).isEmpty()
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DOUBLE)).isNull()
     }
 
     @Test
     fun testConvertRealStats() {
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(2.5f).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, REAL)).isEqualTo(Optional.of("2.5"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, REAL)).isEqualTo("2.5")
     }
 
     @Test
     fun testConvertVarcharStats() {
         val bytes = "hello world".toByteArray(java.nio.charset.StandardCharsets.UTF_8)
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, VARCHAR)).isEqualTo(Optional.of("hello world"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, VARCHAR)).isEqualTo("hello world")
     }
 
     @Test
     fun testConvertBooleanTrue() {
         val bytes = byteArrayOf(1)
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BOOLEAN)).isEqualTo(Optional.of("true"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BOOLEAN)).isEqualTo("true")
     }
 
     @Test
     fun testConvertBooleanFalse() {
         val bytes = byteArrayOf(0)
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BOOLEAN)).isEqualTo(Optional.of("false"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, BOOLEAN)).isEqualTo("false")
     }
 
     @Test
@@ -98,7 +97,7 @@ internal class TestDucklakeStatsExtractor {
         // 2024-01-15 = epoch day 19737
         val epochDay = java.time.LocalDate.of(2024, 1, 15).toEpochDay().toInt()
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(epochDay).array()
-        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DATE)).isEqualTo(Optional.of("2024-01-15"))
+        assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DATE)).isEqualTo("2024-01-15")
     }
 
     @Test
@@ -108,7 +107,7 @@ internal class TestDucklakeStatsExtractor {
         val type = DecimalType.createDecimalType(5, 2)
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(12345).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT32))
-                .isEqualTo(Optional.of("123.45"))
+                .isEqualTo("123.45")
     }
 
     @Test
@@ -116,7 +115,7 @@ internal class TestDucklakeStatsExtractor {
         val type = DecimalType.createDecimalType(5, 2)
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(-12345).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT32))
-                .isEqualTo(Optional.of("-123.45"))
+                .isEqualTo("-123.45")
     }
 
     @Test
@@ -125,7 +124,7 @@ internal class TestDucklakeStatsExtractor {
         val type = DecimalType.createDecimalType(18, 4)
         val bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(123_456_789L).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT64))
-                .isEqualTo(Optional.of("12345.6789"))
+                .isEqualTo("12345.6789")
     }
 
     @Test
@@ -134,17 +133,17 @@ internal class TestDucklakeStatsExtractor {
         val type = DecimalType.createDecimalType(38, 0)
         val bytes = BigInteger.valueOf(1_000_000L).toByteArray()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.FIXED_LEN_BYTE_ARRAY))
-                .isEqualTo(Optional.of("1000000"))
+                .isEqualTo("1000000")
     }
 
     @Test
     fun testConvertEmptyValue() {
-        assertThat(DucklakeStatsExtractor.convertStatValue(ByteArray(0), INTEGER)).isEmpty()
+        assertThat(DucklakeStatsExtractor.convertStatValue(ByteArray(0), INTEGER)).isNull()
     }
 
     @Test
     fun testConvertNullValue() {
-        assertThat(DucklakeStatsExtractor.convertStatValue(null, INTEGER)).isEmpty()
+        assertThat(DucklakeStatsExtractor.convertStatValue(null, INTEGER)).isNull()
     }
 
     // ==================== extractStats — nested-leaf coverage ====================

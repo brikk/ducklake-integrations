@@ -132,8 +132,6 @@ class TestJacksonWireFormat {
             42L,
             DucklakeNameMap(listOf(DucklakeNameMapEntry("c", 1L))),
         )
-        // NOTE: nameMap serializes as `{"entries":[{}]}` — DucklakeNameMapEntry has no
-        // serialization getters, so its content is lost here (see nameMap* cases below).
         assertJson(
             DucklakeWriteFragment::class.java,
             instance,
@@ -141,7 +139,8 @@ class TestJacksonWireFormat {
                 """"fileSizeBytes":1024,"footerSize":200,"recordCount":100,""" +
                 """"columnStats":[{"columnId":1,"columnSizeBytes":512,"valueCount":100,""" +
                 """"nullCount":0,"minValue":"1","maxValue":"9","containsNan":false}],""" +
-                """"partitionValues":{"0":"US"},"partitionId":42,"nameMap":{"entries":[{}]}}""",
+                """"partitionValues":{"0":"US"},"partitionId":42,"nameMap":{"entries":[""" +
+                """{"sourceName":"c","targetFieldId":1,"isPartition":false,"children":[]}]}}""",
         )
     }
 
@@ -224,31 +223,28 @@ class TestJacksonWireFormat {
         assertRoundTrip(PartitionFieldSpec::class.java, instance)
     }
 
-    // --- DucklakeNameMapEntry / DucklakeNameMap (deserialize-only annotations) ---
+    // --- DucklakeNameMapEntry / DucklakeNameMap (now proper @JvmRecord round-trip) ---
     //
-    // These two are marked @JacksonSerializedInternalJavaCompatibleClass but, unlike the other
-    // marked types, are NOT @JvmRecord and expose no serialization getters. The
-    // codec therefore emits an empty `{}` (data is dropped) and then rejects that
-    // empty object on read-back (sourceName is a non-null String with no value).
-    // The asserts below LOCK that real lossy behaviour so the upcoming Optional
-    // change can't silently alter it.
+    // Both are now @JvmRecord + @JacksonSerializedInternalJavaCompatibleClass.
+    // The airlift codec (RecordAutoDetectModule + ParameterNamesModule) correctly
+    // serializes and deserializes them via record components.
 
     @Test
-    fun nameMapEntrySerializesEmptyAndIsNotRoundTrippable() {
+    fun nameMapEntryRoundTrips() {
         val c = codec(DucklakeNameMapEntry::class.java)
         val instance = DucklakeNameMapEntry("col", 3L, false, listOf(DucklakeNameMapEntry("child", 4L)))
-        assertThat(c.toJson(instance)).isEqualTo("{}")
-        assertThatThrownBy { c.fromJson(c.toJsonBytes(instance)) }
-            .isInstanceOf(IllegalArgumentException::class.java)
+        assertRoundTrip(c, instance)
     }
 
     @Test
-    fun nameMapSerializesEntriesAsEmptyAndIsNotRoundTrippable() {
+    fun nameMapRoundTrips() {
         val c = codec(DucklakeNameMap::class.java)
         val instance = DucklakeNameMap(listOf(DucklakeNameMapEntry("col", 3L)))
-        assertThat(c.toJson(instance)).isEqualTo("""{"entries":[{}]}""")
-        assertThatThrownBy { c.fromJson(c.toJsonBytes(instance)) }
-            .isInstanceOf(IllegalArgumentException::class.java)
+        assertRoundTrip(c, instance)
+    }
+
+    private fun <T> assertRoundTrip(c: JsonCodec<T>, instance: T) {
+        assertThat(c.fromJson(c.toJsonBytes(instance))).isEqualTo(instance)
     }
 
     // --- DucklakeDataFile (Optional<Long>/<String>/<Boolean> fields) ---

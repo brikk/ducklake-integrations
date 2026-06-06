@@ -14,15 +14,10 @@
 package dev.brikk.ducklake.catalog
 
 /**
- * A column-name → field-id mapping for one or more data files registered
- * by `add_files`. Persisted to the catalog as one
- * `ducklake_column_mapping` row plus one
- * `ducklake_name_mapping` row per leaf-or-branch entry. Reused
- * across files that share the same parquet schema — the catalog dedupes
- * identical maps per call.
+ * Defensive copy, spelled with intent. `someList.clone()` reads as "take a private snapshot so a
+ * later mutation of the source can't reach into us" — clearer than the bare `.toList()`, which
+ * many read as a no-op conversion. Pure delegation to [toList] (an idiomatic rename, not new
+ * behavior): the result is a new read-only list that does not reflect later changes to the source.
  */
-@JvmRecord
-@JacksonSerializedInternalJavaCompatibleClass
-data class DucklakeNameMap(
-    val entries: List<DucklakeNameMapEntry>,
-)
+@Suppress("NOTHING_TO_INLINE") // intentional: inline away the wrapper so `.clone()` is exactly `.toList()`
+inline fun <T> List<T>.clone(): List<T> = toList()
