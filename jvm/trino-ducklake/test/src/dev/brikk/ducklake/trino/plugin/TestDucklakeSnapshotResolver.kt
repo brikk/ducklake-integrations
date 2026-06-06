@@ -71,9 +71,9 @@ class TestDucklakeSnapshotResolver {
 
     @Test
     fun testSessionTimestampSnapshotResolution() {
-        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(catalog!!.currentSnapshotId).orElseThrow()
+        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(catalog!!.currentSnapshotId)!!
         val sessionTimestamp: Instant = currentSnapshot.snapshotTime.plusMillis(1)
-        val expectedSnapshotId = catalog!!.getSnapshotAtOrBefore(sessionTimestamp).orElseThrow().snapshotId
+        val expectedSnapshotId = catalog!!.getSnapshotAtOrBefore(sessionTimestamp)!!.snapshotId
         val resolver = DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.empty())
         val session: ConnectorSession = createSession(ImmutableMap.of(
                 READ_SNAPSHOT_TIMESTAMP,
@@ -92,9 +92,9 @@ class TestDucklakeSnapshotResolver {
 
     @Test
     fun testCatalogDefaultSnapshotTimestampUsedWhenSessionUnset() {
-        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(catalog!!.currentSnapshotId).orElseThrow()
+        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(catalog!!.currentSnapshotId)!!
         val catalogDefaultTimestamp: Instant = currentSnapshot.snapshotTime.plusMillis(1)
-        val expectedSnapshotId = catalog!!.getSnapshotAtOrBefore(catalogDefaultTimestamp).orElseThrow().snapshotId
+        val expectedSnapshotId = catalog!!.getSnapshotAtOrBefore(catalogDefaultTimestamp)!!.snapshotId
         val resolver = DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.of(catalogDefaultTimestamp))
 
         assertThat(resolver.resolveSnapshotId(createSession(ImmutableMap.of()))).isEqualTo(expectedSnapshotId)
@@ -110,7 +110,7 @@ class TestDucklakeSnapshotResolver {
     @Test
     fun testSessionSnapshotPropertiesAreMutuallyExclusive() {
         val currentSnapshotId = catalog!!.currentSnapshotId
-        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(currentSnapshotId).orElseThrow()
+        val currentSnapshot: DucklakeSnapshot = catalog!!.getSnapshot(currentSnapshotId)!!
         val resolver = DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.empty())
         val session: ConnectorSession = createSession(ImmutableMap.of(
                 READ_SNAPSHOT_ID, currentSnapshotId,
@@ -124,7 +124,7 @@ class TestDucklakeSnapshotResolver {
     @Test
     fun testQuerySnapshotReferenceMustBeExclusive() {
         val currentSnapshotId = catalog!!.currentSnapshotId
-        val currentSnapshotTime: Instant = catalog!!.getSnapshot(currentSnapshotId).orElseThrow().snapshotTime
+        val currentSnapshotTime: Instant = catalog!!.getSnapshot(currentSnapshotId)!!.snapshotTime
         val resolver = DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.empty())
 
         assertThatThrownBy { resolver.resolveSnapshotId(createSession(ImmutableMap.of()), OptionalLong.of(currentSnapshotId), Optional.of(currentSnapshotTime)) }
@@ -135,7 +135,7 @@ class TestDucklakeSnapshotResolver {
     @Test
     fun testResolveSnapshotAtOrBeforeTimestamp() {
         val currentSnapshotId = catalog!!.currentSnapshotId
-        val currentSnapshotTime: Instant = catalog!!.getSnapshot(currentSnapshotId).orElseThrow().snapshotTime
+        val currentSnapshotTime: Instant = catalog!!.getSnapshot(currentSnapshotId)!!.snapshotTime
         val resolver = DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.empty())
 
         assertThat(resolver.resolveSnapshotIdAtOrBefore(currentSnapshotTime)).isEqualTo(currentSnapshotId)

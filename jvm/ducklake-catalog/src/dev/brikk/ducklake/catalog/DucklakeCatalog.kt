@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.catalog
 
 import java.time.Instant
-import java.util.Optional
 
 /**
  * Interface for Ducklake SQL-based catalog operations.
@@ -29,12 +28,12 @@ interface DucklakeCatalog {
     /**
      * Get a specific snapshot ID (for time travel queries)
      */
-    fun getSnapshot(snapshotId: Long): Optional<DucklakeSnapshot>
+    fun getSnapshot(snapshotId: Long): DucklakeSnapshot?
 
     /**
      * Get the latest snapshot with snapshot_time <= timestamp.
      */
-    fun getSnapshotAtOrBefore(timestamp: Instant): Optional<DucklakeSnapshot>
+    fun getSnapshotAtOrBefore(timestamp: Instant): DucklakeSnapshot?
 
     /**
      * List all snapshots in the catalog, newest first.
@@ -54,7 +53,7 @@ interface DucklakeCatalog {
     /**
      * Get a specific schema by name at the given snapshot
      */
-    fun getSchema(schemaName: String, snapshotId: Long): Optional<DucklakeSchema>
+    fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema?
 
     /**
      * List all tables in a schema at the given snapshot
@@ -64,12 +63,12 @@ interface DucklakeCatalog {
     /**
      * Get a specific table by name at the given snapshot
      */
-    fun getTable(schemaName: String, tableName: String, snapshotId: Long): Optional<DucklakeTable>
+    fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable?
 
     /**
      * Get table by ID at the given snapshot
      */
-    fun getTableById(tableId: Long, snapshotId: Long): Optional<DucklakeTable>
+    fun getTableById(tableId: Long, snapshotId: Long): DucklakeTable?
 
     /**
      * Get top-level columns for a table at the given snapshot (nested types resolved into type strings).
@@ -93,7 +92,7 @@ interface DucklakeCatalog {
      * existing data when neither a session property nor a statement-level override is in play.
      * Returns empty when the table has no data files yet.
      */
-    fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): Optional<String>
+    fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String?
 
     /**
      * Find data file IDs whose column statistics overlap with the given range.
@@ -104,7 +103,7 @@ interface DucklakeCatalog {
     /**
      * Get table-level statistics (record count, file size) from ducklake_table_stats
      */
-    fun getTableStats(tableId: Long): Optional<DucklakeTableStats>
+    fun getTableStats(tableId: Long): DucklakeTableStats?
 
     /**
      * Get aggregated column statistics across all active data files.
@@ -138,7 +137,7 @@ interface DucklakeCatalog {
      * file's column names don't match the table's (e.g. case-difference, registered
      * via `add_files`). Returns an empty map for the empty input set.
      */
-    fun getNameMaps(mappingIds: java.util.Set<Long>): Map<Long, Map<Long, String>>
+    fun getNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>>
 
     /**
      * Get partition values for all active data files of a table at the given snapshot
@@ -195,7 +194,7 @@ interface DucklakeCatalog {
      * does not exist (the common case for tables DuckDB never inlined deletes
      * for) or when no rows match the snapshot filter.
      */
-    fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, java.util.Set<Long>>
+    fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, Set<Long>>
 
     /**
      * Read inlined data rows for a table at a given snapshot.
@@ -207,7 +206,7 @@ interface DucklakeCatalog {
     /**
      * Get the base data path from ducklake_metadata
      */
-    fun getDataPath(): Optional<String>
+    fun getDataPath(): String?
 
     // ==================== Schema DDL ====================
 
@@ -238,8 +237,8 @@ interface DucklakeCatalog {
         schemaName: String,
         tableName: String,
         columns: List<TableColumnSpec>,
-        partitionSpec: Optional<List<PartitionFieldSpec>>,
-        location: Optional<TableLocationSpec>,
+        partitionSpec: List<PartitionFieldSpec>?,
+        location: TableLocationSpec?,
     )
 
     /**
@@ -318,7 +317,7 @@ interface DucklakeCatalog {
     /**
      * Get a specific view by name at the given snapshot
      */
-    fun getView(schemaName: String, viewName: String, snapshotId: Long): Optional<DucklakeView>
+    fun getView(schemaName: String, viewName: String, snapshotId: Long): DucklakeView?
 
     /**
      * Create a new view in the catalog.

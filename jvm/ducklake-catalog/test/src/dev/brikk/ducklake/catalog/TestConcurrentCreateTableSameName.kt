@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Acceptance test for [ConflictMatrix]'s
@@ -43,12 +42,13 @@ class TestConcurrentCreateTableSameName {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                 server, "concurrent-create-table-same-name")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -72,8 +72,8 @@ class TestConcurrentCreateTableSameName {
 
         val result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
             catalog,
-            Runnable { catalog.createTable("test_schema", "dueling_table", columns, Optional.empty(), Optional.empty()) },
-            Runnable { catalog.createTable("test_schema", "dueling_table", columns, Optional.empty(), Optional.empty()) })
+            Runnable { catalog.createTable("test_schema", "dueling_table", columns, null, null) },
+            Runnable { catalog.createTable("test_schema", "dueling_table", columns, null, null) })
 
         assertThat(result.loserException)
             .`as`("two concurrent createTable with same (schema, name) must conflict")
@@ -95,6 +95,6 @@ class TestConcurrentCreateTableSameName {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTable("test_schema", "dueling_table", latestSnapshot))
             .`as`("winner's createTable lands; loser's aborted before commit")
-            .isPresent
+            .isNotNull()
     }
 }

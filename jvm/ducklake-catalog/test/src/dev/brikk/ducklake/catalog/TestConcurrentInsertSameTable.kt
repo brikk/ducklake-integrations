@@ -44,16 +44,17 @@ class TestConcurrentInsertSameTable {
             val isolated =
                 JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-insert-same-table")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
 
             val snapshotId = catalog.currentSnapshotId
-            val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
+            val table = catalog.getTable("test_schema", "simple_table", snapshotId)!!
             tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
                 .filter { c -> c.columnName == "id" }

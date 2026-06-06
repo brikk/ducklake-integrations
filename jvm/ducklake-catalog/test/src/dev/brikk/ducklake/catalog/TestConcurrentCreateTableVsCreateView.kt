@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Acceptance test for the cross-kind name-collision branch of
@@ -42,12 +41,13 @@ class TestConcurrentCreateTableVsCreateView {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                 server, "concurrent-create-table-vs-create-view")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -71,8 +71,8 @@ class TestConcurrentCreateTableVsCreateView {
             Runnable {
                 catalog.createTable("test_schema", "shared_name",
                     listOf(TableColumnSpec.leaf("id", "integer", false)),
-                    Optional.empty(),
-                    Optional.empty())
+                    null,
+                    null)
             },
             Runnable {
                 catalog.createView("test_schema", "shared_name",
@@ -99,9 +99,9 @@ class TestConcurrentCreateTableVsCreateView {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTable("test_schema", "shared_name", latestSnapshot))
             .`as`("winner's table lands at the latest snapshot")
-            .isPresent
+            .isNotNull()
         assertThat(catalog.getView("test_schema", "shared_name", latestSnapshot))
             .`as`("loser's view did NOT land — its action was rolled back")
-            .isEmpty
+            .isNull()
     }
 }

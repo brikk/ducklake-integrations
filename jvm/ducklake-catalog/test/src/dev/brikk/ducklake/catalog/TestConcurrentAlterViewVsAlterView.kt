@@ -45,12 +45,13 @@ class TestConcurrentAlterViewVsAlterView {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                 server, "concurrent-alter-view-vs-alter-view")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
 
             // The view exists before the race; both writers want to rewrite its SQL.
@@ -100,8 +101,7 @@ class TestConcurrentAlterViewVsAlterView {
             .isEqualTo(2)
 
         val latestSnapshot = catalog.currentSnapshotId
-        val landedView = catalog.getView("test_schema", "alter_dueling_view", latestSnapshot)
-            .orElseThrow()
+        val landedView = catalog.getView("test_schema", "alter_dueling_view", latestSnapshot)!!
         assertThat(landedView.sql)
             .`as`("winner's SQL is the one that landed; loser's was rolled back")
             .isEqualTo("SELECT 2 AS winner_sql")

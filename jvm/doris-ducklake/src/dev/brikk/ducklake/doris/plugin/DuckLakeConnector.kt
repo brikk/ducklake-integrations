@@ -100,25 +100,19 @@ class DuckLakeConnector internal constructor(
                 "PostgreSQL JDBC driver missing from plugin classpath", e,
             )
         }
-        val config = DucklakeCatalogConfig()
-            .setCatalogDatabaseUrl(
-                DuckLakeConnectorProperties.requireString(
-                    properties, DuckLakeConnectorProperties.METADATA_URL,
-                ),
+        val config = DucklakeCatalogConfig().apply {
+            catalogDatabaseUrl = DuckLakeConnectorProperties.requireString(
+                properties, DuckLakeConnectorProperties.METADATA_URL,
             )
-            .setCatalogDatabaseUser(
-                DuckLakeConnectorProperties.requireString(
-                    properties, DuckLakeConnectorProperties.METADATA_USER,
-                ),
+            catalogDatabaseUser = DuckLakeConnectorProperties.requireString(
+                properties, DuckLakeConnectorProperties.METADATA_USER,
             )
-            .setCatalogDatabasePassword(
-                properties.getOrDefault(DuckLakeConnectorProperties.METADATA_PASSWORD, ""),
+            catalogDatabasePassword =
+                properties.getOrDefault(DuckLakeConnectorProperties.METADATA_PASSWORD, "")
+            dataPath = DuckLakeConnectorProperties.requireString(
+                properties, DuckLakeConnectorProperties.STORAGE_WAREHOUSE,
             )
-            .setDataPath(
-                DuckLakeConnectorProperties.requireString(
-                    properties, DuckLakeConnectorProperties.STORAGE_WAREHOUSE,
-                ),
-            )
+        }
         return JdbcDucklakeCatalog(config)
     }
 

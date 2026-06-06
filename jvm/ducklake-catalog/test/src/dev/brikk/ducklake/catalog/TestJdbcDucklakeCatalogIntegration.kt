@@ -19,7 +19,6 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
-import java.util.Optional
 
 class TestJdbcDucklakeCatalogIntegration {
     companion object {
@@ -34,12 +33,13 @@ class TestJdbcDucklakeCatalogIntegration {
             server = TestingDucklakePostgreSqlCatalogServer()
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server!!, "catalog-integration")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
             snapshotId = catalog!!.currentSnapshotId
         }
@@ -55,12 +55,11 @@ class TestJdbcDucklakeCatalogIntegration {
     @Test
     fun testCurrentSnapshotAndSnapshotLookup() {
         val catalog = catalog!!
-        val snapshot = catalog.getSnapshot(snapshotId).orElseThrow()
+        val snapshot = catalog.getSnapshot(snapshotId)!!
         assertThat(snapshotId).isGreaterThan(0)
         assertThat(catalog.getSnapshotAtOrBefore(snapshot.snapshotTime))
-            .isPresent()
-            .get()
-            .extracting(DucklakeSnapshot::snapshotId)
+            .isNotNull()
+            .extracting { it!!.snapshotId }
             .isEqualTo(snapshotId)
     }
 
@@ -74,8 +73,8 @@ class TestJdbcDucklakeCatalogIntegration {
         val snapshots = catalog.listSnapshots()
         assertThat(snapshots).isNotEmpty()
 
-        fun scanAtOrBefore(ts: Instant): Optional<DucklakeSnapshot> =
-            snapshots.stream().filter { !it.snapshotTime.isAfter(ts) }.findFirst()
+        fun scanAtOrBefore(ts: Instant): DucklakeSnapshot? =
+            snapshots.firstOrNull { !it.snapshotTime.isAfter(ts) }
 
         val probes = buildList {
             add(snapshots.last().snapshotTime.minusSeconds(1)) // strictly before earliest -> empty
@@ -83,9 +82,9 @@ class TestJdbcDucklakeCatalogIntegration {
             add(snapshots.first().snapshotTime.plusSeconds(3600)) // after latest -> latest row
         }
         for (ts in probes) {
-            assertThat(catalog.getSnapshotAtOrBefore(ts).map(DucklakeSnapshot::snapshotId))
+            assertThat(catalog.getSnapshotAtOrBefore(ts)?.snapshotId)
                 .`as`("getSnapshotAtOrBefore(%s)", ts)
-                .isEqualTo(scanAtOrBefore(ts).map(DucklakeSnapshot::snapshotId))
+                .isEqualTo(scanAtOrBefore(ts)?.snapshotId)
         }
     }
 
@@ -107,9 +106,8 @@ class TestJdbcDucklakeCatalogIntegration {
         val catalog = catalog!!
         val table = getTable("test_schema", "simple_table")
         assertThat(catalog.getTableById(table.tableId, snapshotId))
-            .isPresent()
-            .get()
-            .extracting(DucklakeTable::tableName)
+            .isNotNull()
+            .extracting { it!!.tableName }
             .isEqualTo("simple_table")
 
         assertThat(catalog.getDataFiles(table.tableId, snapshotId))

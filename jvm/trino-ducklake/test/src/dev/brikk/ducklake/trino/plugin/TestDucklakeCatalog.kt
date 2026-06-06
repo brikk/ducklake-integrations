@@ -370,11 +370,11 @@ class TestDucklakeCatalog {
         var historicalSnapshotId = -1L
         var snapshotId = currentSnapshotId
         while (snapshotId >= 1) {
-            if (catalog!!.getSnapshot(snapshotId).isEmpty) {
+            if (catalog!!.getSnapshot(snapshotId) == null) {
                 snapshotId--
                 continue
             }
-            if (catalog!!.getTable("test_schema", "schema_evolution_table", snapshotId).isEmpty) {
+            if (catalog!!.getTable("test_schema", "schema_evolution_table", snapshotId) == null) {
                 snapshotId--
                 continue
             }

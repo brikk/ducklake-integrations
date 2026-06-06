@@ -88,13 +88,13 @@ open class DucklakeSnapshotResolver(
             throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID must be greater than 0: $snapshotId")
         }
         val snapshot: DucklakeSnapshot = catalog.getSnapshot(snapshotId)
-                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID does not exist: $snapshotId") }
+                ?: throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID does not exist: $snapshotId")
         return snapshot.snapshotId
     }
 
     fun resolveSnapshotIdAtOrBefore(timestamp: Instant): Long {
         val snapshot: DucklakeSnapshot = catalog.getSnapshotAtOrBefore(timestamp)
-                .orElseThrow { TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: $timestamp") }
+                ?: throw TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: $timestamp")
         return snapshot.snapshotId
     }
 }

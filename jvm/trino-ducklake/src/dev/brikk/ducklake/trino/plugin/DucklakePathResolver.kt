@@ -30,8 +30,7 @@ open class DucklakePathResolver(
 
     open fun resolveTableDataPath(schema: DucklakeSchema, table: DucklakeTable): String
     {
-        val catalogDataPath: Optional<String> = catalog.getDataPath()
-        val rootDataPath: String = catalogDataPath.orElse(configuredDataPath)
+        val rootDataPath: String = (catalog.getDataPath() ?: configuredDataPath)
             ?: throw IllegalStateException("No data path configured for relative file paths")
 
         val schemaDataPath = resolveScopedPath(schema.path, schema.pathIsRelative, rootDataPath)

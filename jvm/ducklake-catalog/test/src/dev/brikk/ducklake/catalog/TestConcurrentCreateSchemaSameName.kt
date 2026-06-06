@@ -43,12 +43,13 @@ class TestConcurrentCreateSchemaSameName {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                 server, "concurrent-create-schema-same-name")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -91,6 +92,6 @@ class TestConcurrentCreateSchemaSameName {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getSchema("dueling_schema", latestSnapshot))
             .`as`("winner's createSchema lands; loser's aborted before commit")
-            .isPresent
+            .isNotNull()
     }
 }

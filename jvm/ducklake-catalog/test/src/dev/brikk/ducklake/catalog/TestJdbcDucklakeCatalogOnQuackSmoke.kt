@@ -81,11 +81,12 @@ open class TestJdbcDucklakeCatalogOnQuackSmoke {
 
             val url = "jdbc:duckdb:quack://" + server!!.getHost() + ":" + server!!.getMappedPort() +
                 "?metadata_catalog=smoke_meta"
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(url)
-                .setCatalogDatabasePassword(server!!.getToken())
-                .setDataPath(dataDir!!.toAbsolutePath().toString())
-                .setMaxCatalogConnections(3)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = url
+                catalogDatabasePassword = server!!.getToken()
+                dataPath = dataDir!!.toAbsolutePath().toString()
+                maxCatalogConnections = 3
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 

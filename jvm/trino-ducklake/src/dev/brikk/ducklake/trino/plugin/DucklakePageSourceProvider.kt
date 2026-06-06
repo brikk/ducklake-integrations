@@ -270,8 +270,8 @@ class DucklakePageSourceProvider @Inject constructor(
             DucklakeMetadataTableType.FILES -> buildFilesRows(metadataSplit)
             DucklakeMetadataTableType.SNAPSHOTS -> buildSnapshotRows(catalog.listSnapshots())
             DucklakeMetadataTableType.CURRENT_SNAPSHOT -> catalog.getSnapshot(metadataSplit.snapshotId)
-                    .map { snapshot -> buildSnapshotRows(listOf(snapshot)) }
-                    .orElse(emptyList())
+                    ?.let { snapshot -> buildSnapshotRows(listOf(snapshot)) }
+                    ?: emptyList()
             DucklakeMetadataTableType.SNAPSHOT_CHANGES -> buildSnapshotChangeRows(catalog.listSnapshotChanges())
         }
 

@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Acceptance test for [ConflictMatrix]'s
@@ -42,12 +41,13 @@ class TestConcurrentCreateTableInDroppedSchema {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                 server, "concurrent-create-table-in-dropped-schema")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
 
             // The dropped schema must be empty for dropSchema to succeed; create
@@ -84,7 +84,7 @@ class TestConcurrentCreateTableInDroppedSchema {
         val result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
             catalog,
             Runnable { catalog.dropSchema("about_to_be_dropped") },
-            Runnable { catalog.createTable("about_to_be_dropped", "racing_table", columns, Optional.empty(), Optional.empty()) })
+            Runnable { catalog.createTable("about_to_be_dropped", "racing_table", columns, null, null) })
 
         assertThat(result.loserException)
             .`as`("loser's createTable in a concurrently-dropped schema must abort")
@@ -103,7 +103,7 @@ class TestConcurrentCreateTableInDroppedSchema {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getSchema("about_to_be_dropped", latestSnapshot))
             .`as`("winner's dropSchema must be visible at the latest snapshot")
-            .isEmpty
+            .isNull()
         assertThat(catalog.listSchemas(latestSnapshot))
             .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .`as`("no resurrected schema; loser did not re-create it")

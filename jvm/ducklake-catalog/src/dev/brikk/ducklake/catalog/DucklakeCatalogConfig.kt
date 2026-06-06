@@ -20,44 +20,9 @@ package dev.brikk.ducklake.catalog
  * belong in the engine's own config class.
  */
 class DucklakeCatalogConfig {
-    private var catalogDatabaseUrl: String? = null
-    private var catalogDatabaseUser: String? = null
-    private var catalogDatabasePassword: String? = null
-    private var dataPath: String? = null
-    private var maxCatalogConnections: Int = 10
-
-    fun getCatalogDatabaseUrl(): String? = catalogDatabaseUrl
-
-    fun setCatalogDatabaseUrl(catalogDatabaseUrl: String?): DucklakeCatalogConfig {
-        this.catalogDatabaseUrl = catalogDatabaseUrl
-        return this
-    }
-
-    fun getCatalogDatabaseUser(): String? = catalogDatabaseUser
-
-    fun setCatalogDatabaseUser(catalogDatabaseUser: String?): DucklakeCatalogConfig {
-        this.catalogDatabaseUser = catalogDatabaseUser
-        return this
-    }
-
-    fun getCatalogDatabasePassword(): String? = catalogDatabasePassword
-
-    fun setCatalogDatabasePassword(catalogDatabasePassword: String?): DucklakeCatalogConfig {
-        this.catalogDatabasePassword = catalogDatabasePassword
-        return this
-    }
-
-    fun getDataPath(): String? = dataPath
-
-    fun setDataPath(dataPath: String?): DucklakeCatalogConfig {
-        this.dataPath = dataPath
-        return this
-    }
-
-    fun getMaxCatalogConnections(): Int = maxCatalogConnections
-
-    fun setMaxCatalogConnections(maxCatalogConnections: Int): DucklakeCatalogConfig {
-        this.maxCatalogConnections = maxCatalogConnections
-        return this
-    }
+    var catalogDatabaseUrl: String? = null
+    var catalogDatabaseUser: String? = null
+    var catalogDatabasePassword: String? = null
+    var dataPath: String? = null
+    var maxCatalogConnections: Int = 10
 }

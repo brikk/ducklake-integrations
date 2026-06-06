@@ -94,7 +94,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         if (config == null) throw NullPointerException("config is null")
 
         val hikariConfig = HikariConfig()
-        val configuredUrl: String = config.getCatalogDatabaseUrl()!!
+        val configuredUrl: String = config.catalogDatabaseUrl!!
         val dialectInferenceUrl: String
         val metadataQuery: MetadataQuery
         if (QuackBackedDuckDbCatalogUrl.matches(configuredUrl)) {
@@ -106,7 +106,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             // bare references to `ducklake_*` tables resolve directly to the remote
             // metadata storage — JdbcDucklakeCatalog's jOOQ DSL stays unchanged.
             val quack = QuackBackedDuckDbCatalogUrl.parse(
-                configuredUrl, config.getCatalogDatabasePassword(), config.getDataPath())
+                configuredUrl, config.catalogDatabasePassword, config.dataPath)
             hikariConfig.jdbcUrl = QuackBackedDuckDbCatalogUrl.UNDERLYING_JDBC_URL
             hikariConfig.connectionInitSql = quack.connectionInitSql()
             // The user/password slots aren't used at the JDBC layer for this backend;
@@ -122,16 +122,16 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
         else {
             hikariConfig.jdbcUrl = configuredUrl
-            if (config.getCatalogDatabaseUser() != null) {
-                hikariConfig.username = config.getCatalogDatabaseUser()
+            if (config.catalogDatabaseUser != null) {
+                hikariConfig.username = config.catalogDatabaseUser
             }
-            if (config.getCatalogDatabasePassword() != null) {
-                hikariConfig.password = config.getCatalogDatabasePassword()
+            if (config.catalogDatabasePassword != null) {
+                hikariConfig.password = config.catalogDatabasePassword
             }
             dialectInferenceUrl = configuredUrl
             metadataQuery = DirectMetadataQuery()
         }
-        hikariConfig.maximumPoolSize = config.getMaxCatalogConnections()
+        hikariConfig.maximumPoolSize = config.maxCatalogConnections
         hikariConfig.minimumIdle = 1
         hikariConfig.connectionTimeout = 30000
 
@@ -159,7 +159,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         log.log(
             System.Logger.Level.INFO,
             "Initialized Ducklake JDBC catalog: {0} (jOOQ dialect: {1})",
-            config.getCatalogDatabaseUrl(), dialect)
+            config.catalogDatabaseUrl, dialect)
     }
 
     /**
@@ -185,15 +185,15 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             return maxId ?: throw IllegalStateException("No snapshots found in ducklake_snapshot table")
         }
 
-    override fun getSnapshot(snapshotId: Long): Optional<DucklakeSnapshot> {
+    override fun getSnapshot(snapshotId: Long): DucklakeSnapshot? {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         return dsl.selectFrom(snap)
             .where(snap.SNAPSHOT_ID.eq(snapshotId))
-            .fetchOptional()
-            .map { toDucklakeSnapshot(it) }
+            .fetchOne()
+            ?.let { toDucklakeSnapshot(it) }
     }
 
-    override fun getSnapshotAtOrBefore(timestamp: Instant): Optional<DucklakeSnapshot> {
+    override fun getSnapshotAtOrBefore(timestamp: Instant): DucklakeSnapshot? {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         // Push the predicate + ordering + limit into SQL so the database returns the single
         // matching row instead of materializing the whole snapshot table and filtering in Java.
@@ -205,8 +205,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .where(snap.SNAPSHOT_TIME.le(timestamp.atOffset(ZoneOffset.UTC)))
             .orderBy(snap.SNAPSHOT_ID.desc())
             .limit(1)
-            .fetchOptional()
-            .map { toDucklakeSnapshot(it) }
+            .fetchOne()
+            ?.let { toDucklakeSnapshot(it) }
     }
 
     override fun listSnapshots(): List<DucklakeSnapshot> {
@@ -230,13 +230,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .fetch { toDucklakeSchema(it) }
     }
 
-    override fun getSchema(schemaName: String, snapshotId: Long): Optional<DucklakeSchema> {
+    override fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema? {
         val sch = DUCKLAKE_SCHEMA.`as`("sch")
         return dsl.selectFrom(sch)
             .where(sch.SCHEMA_NAME.eq(schemaName))
             .and(activeAt(sch, snapshotId))
-            .fetchOptional()
-            .map { toDucklakeSchema(it) }
+            .fetchOne()
+            ?.let { toDucklakeSchema(it) }
     }
 
     override fun listTables(schemaId: Long, snapshotId: Long): List<DucklakeTable> {
@@ -247,28 +247,25 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .fetch { toDucklakeTable(it) }
     }
 
-    override fun getTable(schemaName: String, tableName: String, snapshotId: Long): Optional<DucklakeTable> {
-        val schema = getSchema(schemaName, snapshotId)
-        if (schema.isEmpty) {
-            return Optional.empty()
-        }
+    override fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable? {
+        val schema = getSchema(schemaName, snapshotId) ?: return null
 
         val tab = DUCKLAKE_TABLE.`as`("tab")
         return dsl.selectFrom(tab)
-            .where(tab.SCHEMA_ID.eq(schema.get().schemaId))
+            .where(tab.SCHEMA_ID.eq(schema.schemaId))
             .and(tab.TABLE_NAME.eq(tableName))
             .and(activeAt(tab, snapshotId))
-            .fetchOptional()
-            .map { toDucklakeTable(it) }
+            .fetchOne()
+            ?.let { toDucklakeTable(it) }
     }
 
-    override fun getTableById(tableId: Long, snapshotId: Long): Optional<DucklakeTable> {
+    override fun getTableById(tableId: Long, snapshotId: Long): DucklakeTable? {
         val tab = DUCKLAKE_TABLE.`as`("tab")
         return dsl.selectFrom(tab)
             .where(tab.TABLE_ID.eq(tableId))
             .and(activeAt(tab, snapshotId))
-            .fetchOptional()
-            .map { toDucklakeTable(it) }
+            .fetchOne()
+            ?.let { toDucklakeTable(it) }
     }
 
     override fun getTableColumns(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
@@ -389,20 +386,18 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    override fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): Optional<String> {
+    override fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String? {
         // "Latest" = highest data_file_id among rows still active at the requested snapshot.
         // data_file_id is allocated from a monotonic catalog sequence at insert time, so DESC
         // order on it picks the most recently committed file (cross-snapshot, cross-partition).
         val file = DUCKLAKE_DATA_FILE.`as`("file")
-        return Optional.ofNullable(
-            dsl.select(file.FILE_FORMAT)
-                .from(file)
-                .where(file.TABLE_ID.eq(tableId))
-                .and(activeAt(file, snapshotId))
-                .orderBy(file.DATA_FILE_ID.desc())
-                .limit(1)
-                .fetchOne(file.FILE_FORMAT),
-        )
+        return dsl.select(file.FILE_FORMAT)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(activeAt(file, snapshotId))
+            .orderBy(file.DATA_FILE_ID.desc())
+            .limit(1)
+            .fetchOne(file.FILE_FORMAT)
     }
 
     override fun findDataFileIdsInRange(tableId: Long, snapshotId: Long, predicate: ColumnRangePredicate): List<Long> {
@@ -453,12 +448,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .toList()
     }
 
-    override fun getTableStats(tableId: Long): Optional<DucklakeTableStats> {
+    override fun getTableStats(tableId: Long): DucklakeTableStats? {
         val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
         return dsl.selectFrom(tabstats)
             .where(tabstats.TABLE_ID.eq(tableId))
-            .fetchOptional()
-            .map { toDucklakeTableStats(it) }
+            .fetchOne()
+            ?.let { toDucklakeTableStats(it) }
     }
 
     override fun getColumnStats(tableId: Long, snapshotId: Long): List<DucklakeColumnStats> {
@@ -638,7 +633,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         return result
     }
 
-    override fun getNameMaps(mappingIds: java.util.Set<Long>): Map<Long, Map<Long, String>> {
+    override fun getNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> {
         if (mappingIds.isEmpty()) {
             return emptyMap()
         }
@@ -796,7 +791,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    override fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, java.util.Set<Long>> {
+    override fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, Set<Long>> {
         // Schema (per upstream data_inlining.md):
         //   ducklake_inlined_delete_<tableId>(file_id BIGINT, row_id BIGINT, begin_snapshot BIGINT)
         // file_id = ducklake_data_file.data_file_id
@@ -823,8 +818,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 }
                 grouped.getOrPut(fid) { mutableSetOf() }.add(rid)
             }
-            @Suppress("UNCHECKED_CAST")
-            grouped as Map<Long, java.util.Set<Long>>
+            grouped
         }
         catch (e: DataAccessException) {
             log.log(
@@ -849,11 +843,9 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val inlined = InlinedDataTable.of(tableId, schemaVersion)
 
         val sourceSchemaSnapshot = getSnapshotIdForSchemaVersion(tableId, schemaVersion, snapshotId)
-        if (sourceSchemaSnapshot.isEmpty) {
-            return emptyList()
-        }
+            ?: return emptyList()
 
-        val sourceColumnsById: Map<Long, DucklakeColumn> = getTableColumns(tableId, sourceSchemaSnapshot.asLong)
+        val sourceColumnsById: Map<Long, DucklakeColumn> = getTableColumns(tableId, sourceSchemaSnapshot)
             .associateBy { it.columnId }
 
         val projected: MutableList<Field<*>> = ArrayList(columns.size)
@@ -900,7 +892,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    private fun getSnapshotIdForSchemaVersion(tableId: Long, schemaVersion: Long, snapshotId: Long): OptionalLong {
+    private fun getSnapshotIdForSchemaVersion(tableId: Long, schemaVersion: Long, snapshotId: Long): Long? {
         // Prefer table-scoped schema version rows when available.
         // Some catalogs include ducklake_schema_versions.table_id (DuckDB behavior),
         // which gives an unambiguous snapshot where this table's schema version was introduced.
@@ -915,7 +907,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .limit(1)
                 .fetchOne(schver.BEGIN_SNAPSHOT)
             if (tableScoped != null) {
-                return OptionalLong.of(tableScoped)
+                return tableScoped
             }
         }
         catch (e: DataAccessException) {
@@ -936,7 +928,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .orderBy(snap.SNAPSHOT_ID.desc())
             .limit(1)
             .fetchOne(snap.SNAPSHOT_ID)
-        return if (fallback == null) OptionalLong.empty() else OptionalLong.of(fallback)
+        return fallback
     }
 
     /**
@@ -973,12 +965,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     // `ducklake_snapshot_changes.changes_made` serializer share one source
     // of truth.
 
-    override fun getDataPath(): Optional<String> {
+    override fun getDataPath(): String? {
         val meta = DUCKLAKE_METADATA.`as`("meta")
         return dsl.select(meta.VALUE)
             .from(meta)
             .where(meta.KEY.eq("data_path"))
-            .fetchOptional(meta.VALUE)
+            .fetchOne(meta.VALUE)
     }
 
     // ==================== View operations ====================
@@ -991,19 +983,16 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .fetch { toDucklakeView(it) }
     }
 
-    override fun getView(schemaName: String, viewName: String, snapshotId: Long): Optional<DucklakeView> {
-        val schema = getSchema(schemaName, snapshotId)
-        if (schema.isEmpty) {
-            return Optional.empty()
-        }
+    override fun getView(schemaName: String, viewName: String, snapshotId: Long): DucklakeView? {
+        val schema = getSchema(schemaName, snapshotId) ?: return null
 
         val view = DUCKLAKE_VIEW.`as`("view")
         return dsl.selectFrom(view)
-            .where(view.SCHEMA_ID.eq(schema.get().schemaId))
+            .where(view.SCHEMA_ID.eq(schema.schemaId))
             .and(view.VIEW_NAME.eq(viewName))
             .and(activeAt(view, snapshotId))
-            .fetchOptional()
-            .map { toDucklakeView(it) }
+            .fetchOne()
+            ?.let { toDucklakeView(it) }
     }
 
     // Write transaction infrastructure
@@ -1432,14 +1421,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         schemaName: String,
         tableName: String,
         columns: List<TableColumnSpec>,
-        partitionSpec: Optional<List<PartitionFieldSpec>>,
-        location: Optional<TableLocationSpec>,
+        partitionSpec: List<PartitionFieldSpec>?,
+        location: TableLocationSpec?,
     ) {
         val tab = DUCKLAKE_TABLE.`as`("tab")
         val partinfo = DUCKLAKE_PARTITION_INFO.`as`("partinfo")
         val partcol = DUCKLAKE_PARTITION_COLUMN.`as`("partcol")
-        val tablePath: String = location.map { it.path }.orElse("$tableName/")
-        val pathIsRelative: Boolean = location.map { it.isRelative }.orElse(true)
+        val tablePath: String = location?.path ?: "$tableName/"
+        val pathIsRelative: Boolean = location?.isRelative ?: true
         executeWriteTransaction("create table $schemaName.$tableName") { tx ->
             val schemaId = tx.resolveSchemaId(schemaName)
             val tableId = tx.allocateCatalogId()
@@ -1470,7 +1459,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             // DuckDB's GetGlobalTableStats to crash (GetValueInternal on NULL).
 
             // 4. Insert partition spec if provided
-            if (partitionSpec.isPresent && partitionSpec.get().isNotEmpty()) {
+            if (partitionSpec != null && partitionSpec.isNotEmpty()) {
                 val partitionId = tx.allocateCatalogId()
 
                 ctx.insertInto(partinfo)
@@ -1480,7 +1469,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                     .execute()
 
                 var keyIndex: Long = 0
-                for (field in partitionSpec.get()) {
+                for (field in partitionSpec) {
                     val columnId = topLevelColumnIds[field.columnName]
                         ?: throw RuntimeException("Partition column not found: ${field.columnName}")
                     ctx.insertInto(partcol)

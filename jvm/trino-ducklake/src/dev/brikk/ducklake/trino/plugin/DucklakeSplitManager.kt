@@ -112,9 +112,9 @@ class DucklakeSplitManager @Inject constructor(
         var parquetSplits: List<DucklakeSplit> = listOf()
         if (!dataFiles.isEmpty()) {
             val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId, tableHandle.snapshotId)
-                    .orElseThrow { IllegalStateException("Table metadata missing for table ID: ${tableHandle.tableId}") }
+                    ?: throw IllegalStateException("Table metadata missing for table ID: ${tableHandle.tableId}")
             val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName, tableHandle.snapshotId)
-                    .orElseThrow { IllegalStateException("Schema metadata missing for schema: ${tableHandle.schemaName}") }
+                    ?: throw IllegalStateException("Schema metadata missing for schema: ${tableHandle.schemaName}")
             val tableDataPath: String = pathResolver.resolveTableDataPath(schemaMetadata, tableMetadata)
 
             val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
@@ -141,11 +141,11 @@ class DucklakeSplitManager @Inject constructor(
             // source uses these when a column's table name doesn't appear in the parquet
             // schema (e.g. case-difference, or a renamed column whose old file kept the old
             // parquet name). Avoid the query when no files in this set have mapping_ids.
-            val mappingIds: java.util.Set<Long> = dataFiles.stream()
+            val mappingIds: Set<Long> = dataFiles.stream()
                     .map { it.mappingId }
                     .filter { it.isPresent }
                     .map { it.get() }
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet()) as java.util.Set<Long>
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet())
             val nameMapsByMappingId: Map<Long, Map<Long, String>> = if (mappingIds.isEmpty())
                 mapOf()
             else
@@ -157,7 +157,7 @@ class DucklakeSplitManager @Inject constructor(
             // than as a parquet delete file. The page source merges these positions into
             // the same deleted-row set as parquet delete files. Empty map when the per-table
             // metadata table doesn't exist (common case).
-            val inlinedDeletesByFileId: Map<Long, java.util.Set<Long>> = if (catalog.hasInlinedDeletes(
+            val inlinedDeletesByFileId: Map<Long, Set<Long>> = if (catalog.hasInlinedDeletes(
                             tableHandle.tableId, tableHandle.snapshotId))
                 catalog.getInlinedDeletes(tableHandle.tableId, tableHandle.snapshotId)
             else
@@ -494,7 +494,7 @@ class DucklakeSplitManager @Inject constructor(
             activePartitionSpec: Optional<DucklakePartitionSpec>,
             partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>,
             nameMapsByMappingId: Map<Long, Map<Long, String>>,
-            inlinedDeletesByFileId: Map<Long, java.util.Set<Long>>): DucklakeSplit {
+            inlinedDeletesByFileId: Map<Long, Set<Long>>): DucklakeSplit {
         val primary: DucklakeDataFile = dataFileGroup.first()
         val dataFilePath: String = pathResolver.resolveFilePath(primary.path, primary.pathIsRelative, tableDataPath)
 

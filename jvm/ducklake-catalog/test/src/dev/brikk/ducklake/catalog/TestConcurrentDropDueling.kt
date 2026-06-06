@@ -17,7 +17,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import java.util.Optional
 
 /**
  * Pins behavior for two writers concurrently dropping the SAME catalog
@@ -54,12 +53,13 @@ class TestConcurrentDropDueling {
                 "concurrent-drop-dueling",
             )
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -81,8 +81,8 @@ class TestConcurrentDropDueling {
         catalog.createTable(
             "test_schema", "drop_dueling_table",
             listOf(TableColumnSpec.leaf("id", "integer", false)),
-            Optional.empty(),
-            Optional.empty(),
+            null,
+            null,
         )
 
         val result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
@@ -101,7 +101,7 @@ class TestConcurrentDropDueling {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTable("test_schema", "drop_dueling_table", latestSnapshot))
             .`as`("table is dropped at the latest snapshot — winner's drop landed exactly once")
-            .isEmpty
+            .isNull()
     }
 
     @Test
@@ -122,7 +122,7 @@ class TestConcurrentDropDueling {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getSchema("drop_dueling_schema", latestSnapshot))
             .`as`("schema is dropped at the latest snapshot — winner's drop landed exactly once")
-            .isEmpty
+            .isNull()
     }
 
     @Test
@@ -146,6 +146,6 @@ class TestConcurrentDropDueling {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getView("test_schema", "drop_dueling_view", latestSnapshot))
             .`as`("view is dropped at the latest snapshot — winner's drop landed exactly once")
-            .isEmpty
+            .isNull()
     }
 }

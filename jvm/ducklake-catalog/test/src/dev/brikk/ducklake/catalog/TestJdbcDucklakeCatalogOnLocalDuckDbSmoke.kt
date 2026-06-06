@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
-import java.util.Optional
 
 /**
  * Coverage smoke for [JdbcDucklakeCatalog] against a local DuckDB
@@ -77,10 +76,11 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
                 }
             }
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl("jdbc:duckdb:" + catalogFile.toAbsolutePath())
-                .setDataPath(dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(3)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = "jdbc:duckdb:" + catalogFile.toAbsolutePath()
+                dataPath = dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 3
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -120,7 +120,7 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
             TableColumnSpec.leaf("active", "BOOLEAN", true),
             TableColumnSpec.leaf("event_date", "DATE", true),
         )
-        catalog.createTable(schemaName, "smoke_tbl", cols, Optional.empty(), Optional.empty())
+        catalog.createTable(schemaName, "smoke_tbl", cols, null, null)
 
         val snapshotId = catalog.currentSnapshotId
         assertThat(catalog.listTables(schema.schemaId, snapshotId))

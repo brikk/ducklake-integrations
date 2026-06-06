@@ -44,19 +44,15 @@ internal class DuckLakeScanPlanProvider(
         val handle = req.table.asDuckLakeHandle<DuckLakeTableHandle>()
 
         val schema = catalog.getSchema(handle.database, handle.snapshotId)
-            .orElseThrow {
-                IllegalStateException(
-                    "Schema metadata missing for '" + handle.database + "' at snapshot " +
-                        handle.snapshotId,
-                )
-            }
+            ?: throw IllegalStateException(
+                "Schema metadata missing for '" + handle.database + "' at snapshot " +
+                    handle.snapshotId,
+            )
         val table = catalog.getTableById(handle.tableId, handle.snapshotId)
-            .orElseThrow {
-                IllegalStateException(
-                    "Table metadata missing for tableId=" + handle.tableId +
-                        " at snapshot " + handle.snapshotId,
-                )
-            }
+            ?: throw IllegalStateException(
+                "Table metadata missing for tableId=" + handle.tableId +
+                    " at snapshot " + handle.snapshotId,
+            )
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
 

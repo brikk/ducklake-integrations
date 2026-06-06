@@ -116,15 +116,11 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
-        val schema: Optional<DucklakeSchema> = catalog.getSchema(schemaName, snapshotId)
-        if (schema.isEmpty) {
+        if (catalog.getSchema(schemaName, snapshotId) == null) {
             throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
         }
-        val table: Optional<DucklakeTable> = catalog.getTable(schemaName, tableName, snapshotId)
-        if (table.isEmpty) {
-            throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
-        }
-        val tableInfo = table.get()
+        val tableInfo: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
+            ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
         val tableId = tableInfo.tableId
 
         // getTableColumns returns top-level columns with type strings already resolved

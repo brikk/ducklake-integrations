@@ -44,16 +44,17 @@ class TestConcurrentInsertDifferentTables {
             val isolated =
                 JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "concurrent-insert-different-tables")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
 
             val snapshotId = catalog.currentSnapshotId
-            val simpleTable = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
+            val simpleTable = catalog.getTable("test_schema", "simple_table", snapshotId)!!
             simpleTableId = simpleTable.tableId
             simpleIdColumnId = catalog.getTableColumns(simpleTableId, snapshotId).stream()
                 .filter { c -> c.columnName == "id" }
@@ -61,7 +62,7 @@ class TestConcurrentInsertDifferentTables {
                 .orElseThrow()
                 .columnId
 
-            val partitionedTable = catalog.getTable("test_schema", "partitioned_table", snapshotId).orElseThrow()
+            val partitionedTable = catalog.getTable("test_schema", "partitioned_table", snapshotId)!!
             partitionedTableId = partitionedTable.tableId
             partitionedIdColumnId = catalog.getTableColumns(partitionedTableId, snapshotId).stream()
                 .filter { c -> c.columnName == "id" }

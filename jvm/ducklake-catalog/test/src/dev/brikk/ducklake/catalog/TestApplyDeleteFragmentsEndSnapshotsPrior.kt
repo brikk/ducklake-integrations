@@ -60,20 +60,21 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
             server = TestingDucklakePostgreSqlCatalogServer()
             isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server, "apply-delete-fragments-end-snapshot")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             val cat = JdbcDucklakeCatalog(config)
             catalog = cat
 
             val snapshotId = cat.currentSnapshotId
-            val table = cat.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
+            val table = cat.getTable("test_schema", "simple_table", snapshotId)!!
             tableId = table.tableId
             dataFileId = cat.getDataFiles(tableId, snapshotId).first().dataFileId
-            initialRecordCount = cat.getTableStats(tableId).orElseThrow().recordCount
+            initialRecordCount = cat.getTableStats(tableId)!!.recordCount
             // simple_table is seeded with 5 rows in a single data file
             assertThat(initialRecordCount).isEqualTo(5L)
         }
@@ -103,7 +104,7 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
         catalog!!.commitDelete(tableId, listOf(first))
 
         val activeAfterFirst = countActiveDeleteFiles(dataFileId)
-        val recordCountAfterFirst = catalog!!.getTableStats(tableId).orElseThrow().recordCount
+        val recordCountAfterFirst = catalog!!.getTableStats(tableId)!!.recordCount
         assertThat(activeAfterFirst)
             .`as`("exactly one active delete file after the first commit")
             .isEqualTo(1L)
@@ -124,7 +125,7 @@ class TestApplyDeleteFragmentsEndSnapshotsPrior {
         catalog!!.commitDelete(tableId, listOf(second))
 
         val activeAfterSecond = countActiveDeleteFiles(dataFileId)
-        val recordCountAfterSecond = catalog!!.getTableStats(tableId).orElseThrow().recordCount
+        val recordCountAfterSecond = catalog!!.getTableStats(tableId)!!.recordCount
 
         assertThat(activeAfterSecond)
             .`as`(

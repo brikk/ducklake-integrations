@@ -31,27 +31,22 @@ internal class DuckLakeConnectorMetadata(
 
     override fun databaseExists(session: ConnectorSession?, database: String): Boolean {
         val snapshotId = catalog.currentSnapshotId
-        return catalog.getSchema(database, snapshotId).isPresent
+        return catalog.getSchema(database, snapshotId) != null
     }
 
     override fun getDatabase(session: ConnectorSession?, database: String): ConnectorDatabaseMetadata {
         val snapshotId = catalog.currentSnapshotId
         val schema = catalog.getSchema(database, snapshotId)
-            .orElseThrow {
-                IllegalArgumentException(
-                    "database '$database' not found in DuckLake catalog",
-                )
-            }
+            ?: throw IllegalArgumentException(
+                "database '$database' not found in DuckLake catalog",
+            )
         return ConnectorDatabaseMetadata(schema.schemaName, emptyMap<String, String>())
     }
 
     override fun listTableNames(session: ConnectorSession?, database: String): List<String> {
         val snapshotId = catalog.currentSnapshotId
-        val schema = catalog.getSchema(database, snapshotId)
-        if (schema.isEmpty) {
-            return emptyList()
-        }
-        val tables = catalog.listTables(schema.get().schemaId, snapshotId)
+        val schema = catalog.getSchema(database, snapshotId) ?: return emptyList()
+        val tables = catalog.listTables(schema.schemaId, snapshotId)
         val names = ArrayList<String>(tables.size)
         for (table in tables) {
             names.add(table.tableName)
@@ -66,15 +61,17 @@ internal class DuckLakeConnectorMetadata(
     ): Optional<ConnectorTableHandle> {
         val snapshotId = catalog.currentSnapshotId
         val schema = catalog.getSchema(database, snapshotId)
-        if (schema.isEmpty) {
+        if (schema == null) {
             return Optional.empty()
         }
         val ducklakeTable = catalog.getTable(database, table, snapshotId)
-        return ducklakeTable.map { t ->
-            DuckLakeTableHandle(
-                database, table, schema.get().schemaId, t.tableId, snapshotId,
-            )
-        }
+        return Optional.ofNullable(
+            ducklakeTable?.let { t ->
+                DuckLakeTableHandle(
+                    database, table, schema.schemaId, t.tableId, snapshotId,
+                )
+            },
+        )
     }
 
     override fun getTableSchema(

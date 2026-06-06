@@ -354,12 +354,13 @@ class DucklakeConfig {
     }
 
     fun toCatalogConfig(): DucklakeCatalogConfig {
-        return DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(catalogDatabaseUrl)
-                .setCatalogDatabaseUser(catalogDatabaseUser)
-                .setCatalogDatabasePassword(catalogDatabasePassword)
-                .setDataPath(dataPath)
-                .setMaxCatalogConnections(maxCatalogConnections)
+        val catalogConfig = DucklakeCatalogConfig()
+        catalogConfig.catalogDatabaseUrl = catalogDatabaseUrl
+        catalogConfig.catalogDatabaseUser = catalogDatabaseUser
+        catalogConfig.catalogDatabasePassword = catalogDatabasePassword
+        catalogConfig.dataPath = dataPath
+        catalogConfig.maxCatalogConnections = maxCatalogConnections
+        return catalogConfig
     }
 
     fun getDuckdbParityExtensionPath(): Optional<String> {

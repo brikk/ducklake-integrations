@@ -40,12 +40,13 @@ class TestJdbcDucklakeCatalogConcurrentCommit {
             server = TestingDucklakePostgreSqlCatalogServer()
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(server!!, "concurrent-commit")
 
-            val config = DucklakeCatalogConfig()
-                .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                .setCatalogDatabaseUser(isolated.user)
-                .setCatalogDatabasePassword(isolated.password)
-                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                catalogDatabaseUrl = isolated.jdbcUrl
+                catalogDatabaseUser = isolated.user
+                catalogDatabasePassword = isolated.password
+                dataPath = isolated.dataDir.toAbsolutePath().toString()
+                maxCatalogConnections = 5
+            }
             catalog = JdbcDucklakeCatalog(config)
         }
 
@@ -77,9 +78,9 @@ class TestJdbcDucklakeCatalogConcurrentCommit {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getSchema("winner_schema", latestSnapshot))
             .`as`("winner_schema must be present at latest snapshot")
-            .isPresent()
+            .isNotNull()
         assertThat(catalog.getSchema("loser_schema", latestSnapshot))
             .`as`("loser_schema must be present at latest snapshot (proves retry committed)")
-            .isPresent()
+            .isNotNull()
     }
 }

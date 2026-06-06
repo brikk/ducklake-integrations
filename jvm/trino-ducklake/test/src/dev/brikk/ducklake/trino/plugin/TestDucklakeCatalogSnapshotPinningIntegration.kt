@@ -64,16 +64,16 @@ class TestDucklakeCatalogSnapshotPinningIntegration : AbstractTestQueryFramework
             try {
                 val currentSnapshotId = catalog.currentSnapshotId
                 val table = catalog.getTable("test_schema", "schema_evolution_table", currentSnapshotId)
-                        .orElseThrow { AssertionError("Missing schema_evolution_table") }
+                        ?: throw AssertionError("Missing schema_evolution_table")
 
                 var historicalSnapshotId: Long = -1
                 var snapshotId = currentSnapshotId
                 while (snapshotId >= 1) {
-                    if (catalog.getSnapshot(snapshotId).isEmpty) {
+                    if (catalog.getSnapshot(snapshotId) == null) {
                         snapshotId--
                         continue
                     }
-                    if (catalog.getTable("test_schema", "schema_evolution_table", snapshotId).isEmpty) {
+                    if (catalog.getTable("test_schema", "schema_evolution_table", snapshotId) == null) {
                         snapshotId--
                         continue
                     }

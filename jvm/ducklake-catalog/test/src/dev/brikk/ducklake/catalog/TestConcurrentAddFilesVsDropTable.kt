@@ -56,7 +56,7 @@ class TestConcurrentAddFilesVsDropTable {
         val latestSnapshot = catalog.currentSnapshotId
         assertThat(catalog.getTable("test_schema", "simple_table", latestSnapshot))
                 .`as`("winner's DROP TABLE must be visible at the latest snapshot")
-                .isEmpty
+                .isNull()
     }
 
     companion object {
@@ -73,16 +73,17 @@ class TestConcurrentAddFilesVsDropTable {
             val isolated = JdbcDucklakeCatalogTestDataGenerator.generateIsolatedCatalog(
                     server, "concurrent-add-files-vs-drop-table")
 
-            val config = DucklakeCatalogConfig()
-                    .setCatalogDatabaseUrl(isolated.jdbcUrl)
-                    .setCatalogDatabaseUser(isolated.user)
-                    .setCatalogDatabasePassword(isolated.password)
-                    .setDataPath(isolated.dataDir.toAbsolutePath().toString())
-                    .setMaxCatalogConnections(5)
+            val config = DucklakeCatalogConfig().apply {
+                    catalogDatabaseUrl = isolated.jdbcUrl
+                    catalogDatabaseUser = isolated.user
+                    catalogDatabasePassword = isolated.password
+                    dataPath = isolated.dataDir.toAbsolutePath().toString()
+                    maxCatalogConnections = 5
+                }
             catalog = JdbcDucklakeCatalog(config)
 
             val snapshotId = catalog.currentSnapshotId
-            val table = catalog.getTable("test_schema", "simple_table", snapshotId).orElseThrow()
+            val table = catalog.getTable("test_schema", "simple_table", snapshotId)!!
             tableId = table.tableId
             idColumnId = catalog.getTableColumns(tableId, snapshotId).stream()
                     .filter { it.columnName == "id" }
