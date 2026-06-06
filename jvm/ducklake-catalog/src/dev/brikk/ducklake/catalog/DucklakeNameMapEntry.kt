@@ -32,13 +32,12 @@ import com.fasterxml.jackson.annotation.JsonProperty
  * `is_partition = true`).
  */
 data class DucklakeNameMapEntry(
-        @get:JvmName("sourceName") val sourceName: String,
-        @get:JvmName("targetFieldId") val targetFieldId: Long,
-        @get:JvmName("isPartition") val isPartition: Boolean,
-        @get:JvmName("children") val children: List<DucklakeNameMapEntry>)
+        val sourceName: String,
+        val targetFieldId: Long,
+        val isPartition: Boolean,
+        val children: List<DucklakeNameMapEntry>)
 {
     companion object {
-        @JvmStatic
         @JsonCreator
         fun jsonCreate(
                 @JsonProperty("sourceName") sourceName: String,

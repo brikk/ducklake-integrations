@@ -25,10 +25,10 @@ package dev.brikk.ducklake.catalog
  */
 @JvmRecord
 data class DucklakeInlinedDataInfo(
-    @get:JvmName("tableId") val tableId: Long,
-    @get:JvmName("tableName") val tableName: String,
-    @get:JvmName("schemaVersion") val schemaVersion: Long,
-    @get:JvmName("hasLiveRows") val hasLiveRows: Boolean,
+    val tableId: Long,
+    val tableName: String,
+    val schemaVersion: Long,
+    val hasLiveRows: Boolean,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

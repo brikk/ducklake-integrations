@@ -17,12 +17,12 @@ import java.util.Optional
 
 @JvmRecord
 data class DucklakeColumnStats(
-    @get:JvmName("columnId") val columnId: Long,
-    @get:JvmName("totalValueCount") val totalValueCount: Long,
-    @get:JvmName("totalNullCount") val totalNullCount: Long,
-    @get:JvmName("totalSizeBytes") val totalSizeBytes: Long,
-    @get:JvmName("minValue") val minValue: Optional<String>,
-    @get:JvmName("maxValue") val maxValue: Optional<String>,
+    val columnId: Long,
+    val totalValueCount: Long,
+    val totalNullCount: Long,
+    val totalSizeBytes: Long,
+    val minValue: Optional<String>,
+    val maxValue: Optional<String>,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

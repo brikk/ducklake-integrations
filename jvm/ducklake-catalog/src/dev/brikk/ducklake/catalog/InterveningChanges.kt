@@ -45,49 +45,35 @@ class InterveningChanges {
      * created-vs-created name-collision check; tables and views share the
      * namespace within a schema, so they live in one map.
      */
-    internal val createdTablesByName: MutableMap<String, MutableMap<String, String>> = HashMap()
+    internal val createdTablesByName: MutableMap<String, MutableMap<String, String>> = mutableMapOf()
 
-    @JvmField
-    internal val createdSchemas: MutableSet<String> = HashSet()
+    internal val createdSchemas: MutableSet<String> = mutableSetOf()
 
-    @JvmField
-    internal val droppedSchemas: MutableSet<Long> = HashSet()
+    internal val droppedSchemas: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val droppedTables: MutableSet<Long> = HashSet()
+    internal val droppedTables: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val droppedViews: MutableSet<Long> = HashSet()
+    internal val droppedViews: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val insertedTables: MutableSet<Long> = HashSet()
+    internal val insertedTables: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesDeletedFrom: MutableSet<Long> = HashSet()
+    internal val tablesDeletedFrom: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val alteredTables: MutableSet<Long> = HashSet()
+    internal val alteredTables: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val alteredViews: MutableSet<Long> = HashSet()
+    internal val alteredViews: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesCompacted: MutableSet<Long> = HashSet()
+    internal val tablesCompacted: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesMergeAdjacent: MutableSet<Long> = HashSet()
+    internal val tablesMergeAdjacent: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesRewriteDelete: MutableSet<Long> = HashSet()
+    internal val tablesRewriteDelete: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesInsertedInlined: MutableSet<Long> = HashSet()
+    internal val tablesInsertedInlined: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesDeletedInlined: MutableSet<Long> = HashSet()
+    internal val tablesDeletedInlined: MutableSet<Long> = mutableSetOf()
 
-    @JvmField
-    internal val tablesFlushedInlined: MutableSet<Long> = HashSet()
+    internal val tablesFlushedInlined: MutableSet<Long> = mutableSetOf()
 
     /**
      * Merge `other` into `this`; cumulative across multiple
@@ -96,7 +82,7 @@ class InterveningChanges {
     internal fun mergeFrom(other: InterveningChanges) {
         for (e in other.createdTablesByName.entries) {
             createdTablesByName
-                .getOrPut(e.key) { HashMap() }
+                .getOrPut(e.key) { mutableMapOf() }
                 .putAll(e.value)
         }
         createdSchemas.addAll(other.createdSchemas)
@@ -188,12 +174,12 @@ class InterveningChanges {
                 "created_table" -> {
                     val e = parseCatalogEntry(value)
                     result.createdTablesByName
-                        .getOrPut(e.schema) { HashMap() }[e.name] = "table"
+                        .getOrPut(e.schema) { mutableMapOf() }[e.name] = "table"
                 }
                 "created_view" -> {
                     val e = parseCatalogEntry(value)
                     result.createdTablesByName
-                        .getOrPut(e.schema) { HashMap() }[e.name] = "view"
+                        .getOrPut(e.schema) { mutableMapOf() }[e.name] = "view"
                 }
                 "created_schema" -> result.createdSchemas.add(parseQuotedValueOnly(value))
                 "dropped_schema" -> result.droppedSchemas.add(parseUnsignedLong(value))

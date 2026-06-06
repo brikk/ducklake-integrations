@@ -15,23 +15,21 @@ package dev.brikk.ducklake.catalog
 
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
-import java.util.Collections
-import java.util.HashMap
 import java.util.Optional
 import java.util.OptionalLong
 
 @JvmRecord
 data class DucklakeWriteFragment(
-    @get:JsonProperty("path") @get:JvmName("path") val path: String,
-    @get:JsonProperty("pathIsRelative") @get:JvmName("pathIsRelative") val pathIsRelative: Boolean,
-    @get:JsonProperty("fileFormat") @get:JvmName("fileFormat") val fileFormat: String,
-    @get:JsonProperty("fileSizeBytes") @get:JvmName("fileSizeBytes") val fileSizeBytes: Long,
-    @get:JsonProperty("footerSize") @get:JvmName("footerSize") val footerSize: Long,
-    @get:JsonProperty("recordCount") @get:JvmName("recordCount") val recordCount: Long,
-    @get:JsonProperty("columnStats") @get:JvmName("columnStats") val columnStats: List<DucklakeFileColumnStats>,
-    @get:JsonProperty("partitionValues") @get:JvmName("partitionValues") val partitionValues: Map<Int, String?>,
-    @get:JsonProperty("partitionId") @get:JvmName("partitionId") val partitionId: OptionalLong,
-    @get:JsonProperty("nameMap") @get:JvmName("nameMap") val nameMap: Optional<DucklakeNameMap>,
+    @get:JsonProperty("path") val path: String,
+    @get:JsonProperty("pathIsRelative") val pathIsRelative: Boolean,
+    @get:JsonProperty("fileFormat") val fileFormat: String,
+    @get:JsonProperty("fileSizeBytes") val fileSizeBytes: Long,
+    @get:JsonProperty("footerSize") val footerSize: Long,
+    @get:JsonProperty("recordCount") val recordCount: Long,
+    @get:JsonProperty("columnStats") val columnStats: List<DucklakeFileColumnStats>,
+    @get:JsonProperty("partitionValues") val partitionValues: Map<Int, String?>,
+    @get:JsonProperty("partitionId") val partitionId: OptionalLong,
+    @get:JsonProperty("nameMap") val nameMap: Optional<DucklakeNameMap>,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on
@@ -88,7 +86,7 @@ data class DucklakeWriteFragment(
         footerSize = footerSize,
         recordCount = recordCount,
         columnStats = columnStats.toList(),
-        partitionValues = Collections.unmodifiableMap(HashMap(partitionValues)),
+        partitionValues = partitionValues.toMap(),
         partitionId = partitionId,
         nameMap = Optional.empty(),
     )
@@ -116,7 +114,7 @@ data class DucklakeWriteFragment(
         footerSize = footerSize,
         recordCount = recordCount,
         columnStats = columnStats.toList(),
-        partitionValues = Collections.unmodifiableMap(HashMap(partitionValues)),
+        partitionValues = partitionValues.toMap(),
         partitionId = partitionId,
         nameMap = Optional.empty(),
     )
@@ -134,7 +132,6 @@ data class DucklakeWriteFragment(
          * Jackson through this factory preserves the Java side's exact
          * "missing JSON field becomes the documented default" behaviour.
          */
-        @JvmStatic
         @JsonCreator
         fun jsonCreate(
             @JsonProperty("path") path: String,
@@ -160,7 +157,7 @@ data class DucklakeWriteFragment(
                     emptyMap()
                 }
                 else {
-                    Collections.unmodifiableMap(HashMap(partitionValues))
+                    partitionValues.toMap()
                 },
                 partitionId = partitionId ?: OptionalLong.empty(),
                 nameMap = nameMap ?: Optional.empty(),

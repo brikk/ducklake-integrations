@@ -30,7 +30,6 @@ data class TableColumnSpec(
     val children: List<TableColumnSpec>,
 ) {
     companion object {
-        @JvmStatic
         fun leaf(name: String, ducklakeType: String, nullable: Boolean): TableColumnSpec {
             return TableColumnSpec(name, ducklakeType, nullable, emptyList())
         }

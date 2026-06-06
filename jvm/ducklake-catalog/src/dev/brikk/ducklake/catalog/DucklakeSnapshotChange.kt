@@ -17,11 +17,11 @@ import java.util.Optional
 
 @JvmRecord
 data class DucklakeSnapshotChange(
-    @get:JvmName("snapshotId") val snapshotId: Long,
-    @get:JvmName("changesMade") val changesMade: Optional<String>,
-    @get:JvmName("author") val author: Optional<String>,
-    @get:JvmName("commitMessage") val commitMessage: Optional<String>,
-    @get:JvmName("commitExtraInfo") val commitExtraInfo: Optional<String>,
+    val snapshotId: Long,
+    val changesMade: Optional<String>,
+    val author: Optional<String>,
+    val commitMessage: Optional<String>,
+    val commitExtraInfo: Optional<String>,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

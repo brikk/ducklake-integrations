@@ -22,13 +22,13 @@ import java.util.OptionalLong
  */
 @JvmRecord
 data class DucklakeView(
-    @get:JvmName("viewId") val viewId: Long,
-    @get:JvmName("viewUuid") val viewUuid: String,
-    @get:JvmName("schemaId") val schemaId: Long,
-    @get:JvmName("viewName") val viewName: String,
-    @get:JvmName("sql") val sql: String,
-    @get:JvmName("dialect") val dialect: String,
-    @get:JvmName("viewMetadata") val viewMetadata: Optional<String>,
-    @get:JvmName("beginSnapshot") val beginSnapshot: Long,
-    @get:JvmName("endSnapshot") val endSnapshot: OptionalLong,
+    val viewId: Long,
+    val viewUuid: String,
+    val schemaId: Long,
+    val viewName: String,
+    val sql: String,
+    val dialect: String,
+    val viewMetadata: Optional<String>,
+    val beginSnapshot: Long,
+    val endSnapshot: OptionalLong,
 )

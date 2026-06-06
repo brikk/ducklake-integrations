@@ -20,11 +20,11 @@ import java.time.Instant
  */
 @JvmRecord
 data class DucklakeSnapshot(
-    @get:JvmName("snapshotId") val snapshotId: Long,
-    @get:JvmName("snapshotTime") val snapshotTime: Instant,
-    @get:JvmName("schemaVersion") val schemaVersion: Long,
-    @get:JvmName("nextCatalogId") val nextCatalogId: Long,
-    @get:JvmName("nextFileId") val nextFileId: Long,
+    val snapshotId: Long,
+    val snapshotTime: Instant,
+    val schemaVersion: Long,
+    val nextCatalogId: Long,
+    val nextFileId: Long,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

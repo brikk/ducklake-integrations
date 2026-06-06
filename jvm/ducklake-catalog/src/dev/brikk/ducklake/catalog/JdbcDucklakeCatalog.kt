@@ -68,9 +68,6 @@ import java.sql.Connection
 import java.sql.SQLException
 import java.time.Instant
 import java.time.ZoneOffset
-import java.util.HashMap
-import java.util.HashSet
-import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.Optional
 import java.util.OptionalInt
@@ -277,14 +274,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     override fun getTableColumns(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         val allColumns = fetchTableColumns(tableId, snapshotId)
 
-        val childrenByParent: MutableMap<Long, MutableList<DucklakeColumn>> = HashMap()
+        val childrenByParent: MutableMap<Long, MutableList<DucklakeColumn>> = mutableMapOf()
         for (column in allColumns) {
             column.parentColumn.ifPresent { parent ->
-                childrenByParent.getOrPut(parent) { ArrayList() }.add(column)
+                childrenByParent.getOrPut(parent) { mutableListOf() }.add(column)
             }
         }
 
-        val topLevelColumns: MutableList<DucklakeColumn> = ArrayList()
+        val topLevelColumns: MutableList<DucklakeColumn> = mutableListOf()
         for (column in allColumns) {
             if (column.parentColumn.isEmpty) {
                 topLevelColumns.add(
@@ -468,9 +465,9 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val columnTypes: Map<Long, String> = getTableColumns(tableId, snapshotId)
             .associate { it.columnId to it.columnType }
 
-        val countAccumulators: MutableMap<Long, LongArray> = HashMap() // [valueCount, nullCount, sizeBytes]
-        val minAccumulators: MutableMap<Long, String> = HashMap()
-        val maxAccumulators: MutableMap<Long, String> = HashMap()
+        val countAccumulators: MutableMap<Long, LongArray> = mutableMapOf() // [valueCount, nullCount, sizeBytes]
+        val minAccumulators: MutableMap<Long, String> = mutableMapOf()
+        val maxAccumulators: MutableMap<Long, String> = mutableMapOf()
 
         val colstats = DUCKLAKE_FILE_COLUMN_STATS.`as`("colstats")
         val file = DUCKLAKE_DATA_FILE.`as`("file")
@@ -510,7 +507,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             null
         }
 
-        val result: MutableList<DucklakeColumnStats> = ArrayList()
+        val result: MutableList<DucklakeColumnStats> = mutableListOf()
         for ((columnId, counts) in countAccumulators) {
             result.add(
                 DucklakeColumnStats(
@@ -528,8 +525,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     }
 
     override fun getPartitionSpecs(tableId: Long, snapshotId: Long): List<DucklakePartitionSpec> {
-        val fieldsByPartition: MutableMap<Long, MutableList<DucklakePartitionField>> = LinkedHashMap()
-        val tableIdByPartition: MutableMap<Long, Long> = HashMap()
+        val fieldsByPartition: MutableMap<Long, MutableList<DucklakePartitionField>> = linkedMapOf()
+        val tableIdByPartition: MutableMap<Long, Long> = mutableMapOf()
 
         val partinfo = DUCKLAKE_PARTITION_INFO.`as`("partinfo")
         val partcol = DUCKLAKE_PARTITION_COLUMN.`as`("partcol")
@@ -554,7 +551,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             val partitionId = orZero(r.get(partinfo.PARTITION_ID))
             tableIdByPartition[partitionId] = orZero(r.get(partinfo.TABLE_ID))
             val parsed = DucklakePartitionTransform.parseCatalogTransform(r.get(partcol.TRANSFORM))
-            fieldsByPartition.getOrPut(partitionId) { ArrayList() }
+            fieldsByPartition.getOrPut(partitionId) { mutableListOf() }
                 .add(
                     DucklakePartitionField(
                         orZero(r.get(partcol.PARTITION_KEY_INDEX)).toInt(),
@@ -566,7 +563,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             null // mapper return discarded — using fold-into-maps idiom
         }
 
-        val specs: MutableList<DucklakePartitionSpec> = ArrayList()
+        val specs: MutableList<DucklakePartitionSpec> = mutableListOf()
         for ((partitionId, fields) in fieldsByPartition) {
             specs.add(DucklakePartitionSpec(partitionId, tableIdByPartition[partitionId]!!, fields))
         }
@@ -607,7 +604,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     }
 
     override fun getFilePartitionValues(tableId: Long, snapshotId: Long): Map<Long, List<DucklakeFilePartitionValue>> {
-        val result: MutableMap<Long, MutableList<DucklakeFilePartitionValue>> = HashMap()
+        val result: MutableMap<Long, MutableList<DucklakeFilePartitionValue>> = mutableMapOf()
 
         val partval = DUCKLAKE_FILE_PARTITION_VALUE.`as`("partval")
         val file = DUCKLAKE_DATA_FILE.`as`("file")
@@ -627,7 +624,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .and(activeAt(file, snapshotId)),
         ) { r ->
             val dataFileId = orZero(r.get(partval.DATA_FILE_ID))
-            result.getOrPut(dataFileId) { ArrayList() }
+            result.getOrPut(dataFileId) { mutableListOf() }
                 .add(
                     DucklakeFilePartitionValue(
                         dataFileId,
@@ -646,7 +643,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             return emptyMap()
         }
         val nm = DUCKLAKE_NAME_MAPPING.`as`("nm")
-        val result: MutableMap<Long, MutableMap<Long, String>> = HashMap()
+        val result: MutableMap<Long, MutableMap<Long, String>> = mutableMapOf()
         dsl.select(nm.MAPPING_ID, nm.TARGET_FIELD_ID, nm.SOURCE_NAME)
             .from(nm)
             .where(nm.MAPPING_ID.`in`(mappingIds))
@@ -660,7 +657,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 val fieldId = r.get(nm.TARGET_FIELD_ID)
                 val sourceName = r.get(nm.SOURCE_NAME)
                 if (mappingId != null && fieldId != null && sourceName != null) {
-                    result.getOrPut(mappingId) { HashMap() }[fieldId] = sourceName
+                    result.getOrPut(mappingId) { mutableMapOf() }[fieldId] = sourceName
                 }
             }
         return result
@@ -817,14 +814,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .from(tab)
                 .where(beginSnapshot.le(snapshotId))
                 .fetch()
-            val grouped: MutableMap<Long, HashSet<Long>> = HashMap()
+            val grouped: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
             for (rec in result) {
                 val fid = rec.get(fileId)
                 val rid = rec.get(rowId)
                 if (fid == null || rid == null) {
                     continue
                 }
-                grouped.getOrPut(fid) { HashSet() }.add(rid)
+                grouped.getOrPut(fid) { mutableSetOf() }.add(rid)
             }
             @Suppress("UNCHECKED_CAST")
             grouped as Map<Long, java.util.Set<Long>>
@@ -958,7 +955,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
 
         companion object {
-            @JvmStatic
             fun of(tableId: Long, schemaVersion: Long): InlinedDataTable {
                 val name = "ducklake_inlined_data_${tableId}_$schemaVersion"
                 return InlinedDataTable(
@@ -1027,7 +1023,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
      * No-op in production.
      */
     @Volatile
-    @JvmField
     var beforeWriteTransactionAction: Runnable = Runnable {}
 
     /**
@@ -1463,7 +1458,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
             // 2. Insert column rows (flattening nested types with parent links)
             // column_order is 1-based per DuckDB convention
-            val topLevelColumnIds: MutableMap<String, Long> = LinkedHashMap()
+            val topLevelColumnIds: MutableMap<String, Long> = linkedMapOf()
             var columnOrder: Long = 1
             for (column in columns) {
                 val columnId = insertColumnTree(tx, tableId, column, columnOrder++, OptionalLong.empty())
@@ -1740,16 +1735,16 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         var runningRowId: Long = if (existingStats == null) 0L else orZero(existingStats.nextRowId)
         var totalRecords: Long = 0
         var totalFileSize: Long = 0
-        val partitionValueRecords: MutableList<DucklakeFilePartitionValueRecord> = ArrayList()
-        val fileColumnStatsRecords: MutableList<DucklakeFileColumnStatsRecord> = ArrayList()
-        val dataFileRecords: MutableList<DucklakeDataFileRecord> = ArrayList()
+        val partitionValueRecords: MutableList<DucklakeFilePartitionValueRecord> = mutableListOf()
+        val fileColumnStatsRecords: MutableList<DucklakeFileColumnStatsRecord> = mutableListOf()
+        val dataFileRecords: MutableList<DucklakeDataFileRecord> = mutableListOf()
         // Dedupe identical NameMap structures within this call. Upstream's
         // ducklake_add_data_files writes one ducklake_column_mapping row per
         // unique parquet schema seen in a batch; matching that here lets a
         // glob over homogeneous parquet files share one mapping_id.
-        val nameMapToId: MutableMap<DucklakeNameMap, Long> = HashMap()
-        val columnMappingRecords: MutableList<DucklakeColumnMappingRecord> = ArrayList()
-        val nameMappingRecords: MutableList<DucklakeNameMappingRecord> = ArrayList()
+        val nameMapToId: MutableMap<DucklakeNameMap, Long> = mutableMapOf()
+        val columnMappingRecords: MutableList<DucklakeColumnMappingRecord> = mutableListOf()
+        val nameMappingRecords: MutableList<DucklakeNameMappingRecord> = mutableListOf()
 
         for (fragment in fragments) {
             val dataFileId = tx.allocateFileId()
@@ -1859,7 +1854,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
 
         // Upsert ducklake_table_column_stats: aggregate min/max/null across all fragments per column
-        val columnAggregates: MutableMap<Long, AggregatedColumnStats> = LinkedHashMap()
+        val columnAggregates: MutableMap<Long, AggregatedColumnStats> = linkedMapOf()
         for (fragment in fragments) {
             for (colStats in fragment.columnStats) {
                 columnAggregates.getOrPut(colStats.columnId) { AggregatedColumnStats() }.merge(colStats)
@@ -1867,7 +1862,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
 
         val existingColumnStats: Set<Long> = loadExistingColumnStatsColumnIds(tx, tableId, columnAggregates.keys)
-        val insertRecords: MutableList<DucklakeTableColumnStatsRecord> = ArrayList()
+        val insertRecords: MutableList<DucklakeTableColumnStatsRecord> = mutableListOf()
         for ((columnId, agg) in columnAggregates) {
             if (existingColumnStats.contains(columnId)) {
                 // CASE-based typed min/max merge. Mirrors the original
@@ -2008,7 +2003,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
         val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
         var totalNewDeleteCount: Long = 0
-        val deleteFileRecords: MutableList<DucklakeDeleteFileRecord> = ArrayList()
+        val deleteFileRecords: MutableList<DucklakeDeleteFileRecord> = mutableListOf()
 
         // End-snapshot any prior active delete files for the data_file_ids we're about to
         // write new delete files for. DuckLake's spec invariant is ≤1 active delete file per
@@ -2068,10 +2063,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     }
 
     private class AggregatedColumnStats {
-        @JvmField var containsNull: Boolean = false
-        @JvmField var containsNan: Boolean = false
-        @JvmField var minValue: String? = null
-        @JvmField var maxValue: String? = null
+        var containsNull: Boolean = false
+        var containsNan: Boolean = false
+        var minValue: String? = null
+        var maxValue: String? = null
 
         fun merge(stats: DucklakeFileColumnStats) {
             if (stats.nullCount > 0) {
@@ -2175,10 +2170,8 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
         private val V7_UUIDS: TimeBasedEpochGenerator = Generators.timeBasedEpochGenerator()
 
-        // Package-private (Java) → public-with-@JvmStatic so tests can pin the version
-        // without reflection. Same-package callers (Java + Kotlin) use the unqualified
-        // form `JdbcDucklakeCatalog.newCatalogUuid()`.
-        @JvmStatic
+        // Test seam: callers pin the UUID version via the companion. Kotlin callers use
+        // the unqualified form `JdbcDucklakeCatalog.newCatalogUuid()`.
         fun newCatalogUuid(): String =
             V7_UUIDS.generate().toString()
 
@@ -2251,7 +2244,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         ) {
             // Collect my data_file_ids whose tables also had intervening deletes.
             // Outside that overlap, no contention is possible.
-            val myFileIds: MutableSet<Long> = HashSet()
+            val myFileIds: MutableSet<Long> = mutableSetOf()
             for (c in myChanges) {
                 if (c is WriteChange.DeletedFromTable && other.tablesDeletedFrom.contains(c.tableId)) {
                     myFileIds.addAll(c.referencedDataFileIds)

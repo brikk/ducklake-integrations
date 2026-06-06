@@ -23,8 +23,8 @@ package dev.brikk.ducklake.catalog
  */
 @JvmRecord
 data class TableLocationSpec(
-    @get:JvmName("path") val path: String,
-    @get:JvmName("isRelative") val isRelative: Boolean,
+    val path: String,
+    val isRelative: Boolean,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

@@ -15,7 +15,7 @@ package dev.brikk.ducklake.catalog
 
 @JvmRecord
 data class DucklakeTableStats(
-    @get:JvmName("tableId") val tableId: Long,
-    @get:JvmName("recordCount") val recordCount: Long,
-    @get:JvmName("fileSizeBytes") val fileSizeBytes: Long,
+    val tableId: Long,
+    val recordCount: Long,
+    val fileSizeBytes: Long,
 )

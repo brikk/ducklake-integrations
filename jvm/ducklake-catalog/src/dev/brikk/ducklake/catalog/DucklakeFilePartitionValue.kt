@@ -18,7 +18,7 @@ package dev.brikk.ducklake.catalog
  */
 @JvmRecord
 data class DucklakeFilePartitionValue(
-    @get:JvmName("dataFileId") val dataFileId: Long,
-    @get:JvmName("partitionKeyIndex") val partitionKeyIndex: Int,
-    @get:JvmName("partitionValue") val partitionValue: String?,
+    val dataFileId: Long,
+    val partitionKeyIndex: Int,
+    val partitionValue: String?,
 )

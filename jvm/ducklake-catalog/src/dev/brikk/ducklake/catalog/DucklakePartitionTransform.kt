@@ -51,7 +51,6 @@ enum class DucklakePartitionTransform {
     companion object {
         private val BUCKET_PATTERN: Pattern = Pattern.compile("bucket\\((\\d+)\\)", Pattern.CASE_INSENSITIVE)
 
-        @JvmStatic
         fun fromString(value: String): DucklakePartitionTransform {
             return DucklakePartitionTransform.valueOf(value.uppercase(Locale.ENGLISH))
         }
@@ -61,7 +60,6 @@ enum class DucklakePartitionTransform {
          * Returns the transform kind plus, for `bucket(N)`, the arity `N`.
          * Simple kinds (`identity`, `year`, `month`, `day`, `hour`) return an empty arity.
          */
-        @JvmStatic
         fun parseCatalogTransform(value: String): ParsedTransform {
             val matcher = BUCKET_PATTERN.matcher(value.trim())
             if (matcher.matches()) {

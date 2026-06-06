@@ -19,13 +19,13 @@ import java.util.Optional
 
 @JvmRecord
 data class DucklakeFileColumnStats @JsonCreator constructor(
-    @param:JsonProperty("columnId") @get:JvmName("columnId") val columnId: Long,
-    @param:JsonProperty("columnSizeBytes") @get:JvmName("columnSizeBytes") val columnSizeBytes: Long,
-    @param:JsonProperty("valueCount") @get:JvmName("valueCount") val valueCount: Long,
-    @param:JsonProperty("nullCount") @get:JvmName("nullCount") val nullCount: Long,
-    @param:JsonProperty("minValue") @get:JvmName("minValue") val minValue: Optional<String>,
-    @param:JsonProperty("maxValue") @get:JvmName("maxValue") val maxValue: Optional<String>,
-    @param:JsonProperty("containsNan") @get:JvmName("containsNan") val containsNan: Boolean,
+    @param:JsonProperty("columnId") val columnId: Long,
+    @param:JsonProperty("columnSizeBytes") val columnSizeBytes: Long,
+    @param:JsonProperty("valueCount") val valueCount: Long,
+    @param:JsonProperty("nullCount") val nullCount: Long,
+    @param:JsonProperty("minValue") val minValue: Optional<String>,
+    @param:JsonProperty("maxValue") val maxValue: Optional<String>,
+    @param:JsonProperty("containsNan") val containsNan: Boolean,
 ) {
     init {
         // Parity with Java record's compact-constructor requireNonNull on platform-typed callers.

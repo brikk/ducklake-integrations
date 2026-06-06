@@ -22,11 +22,11 @@ import java.util.UUID
  */
 @JvmRecord
 data class DucklakeSchema(
-    @get:JvmName("schemaId") val schemaId: Long,
-    @get:JvmName("schemaUuid") val schemaUuid: UUID,
-    @get:JvmName("beginSnapshot") val beginSnapshot: Long,
-    @get:JvmName("endSnapshot") val endSnapshot: Optional<Long>,
-    @get:JvmName("schemaName") val schemaName: String,
-    @get:JvmName("path") val path: Optional<String>,
-    @get:JvmName("pathIsRelative") val pathIsRelative: Optional<Boolean>,
+    val schemaId: Long,
+    val schemaUuid: UUID,
+    val beginSnapshot: Long,
+    val endSnapshot: Optional<Long>,
+    val schemaName: String,
+    val path: Optional<String>,
+    val pathIsRelative: Optional<Boolean>,
 )

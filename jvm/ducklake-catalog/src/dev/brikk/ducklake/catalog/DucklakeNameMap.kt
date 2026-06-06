@@ -26,10 +26,9 @@ import com.fasterxml.jackson.annotation.JsonProperty
  */
 @JvmRecord
 data class DucklakeNameMap(
-    @get:JvmName("entries") val entries: List<DucklakeNameMapEntry>,
+    val entries: List<DucklakeNameMapEntry>,
 ) {
     companion object {
-        @JvmStatic
         @JsonCreator
         fun jsonCreate(
             @JsonProperty("entries") entries: List<DucklakeNameMapEntry>?,

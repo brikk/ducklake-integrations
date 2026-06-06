@@ -105,19 +105,15 @@ object DucklakeStatTypes {
         return a.compareTo(b)
     }
 
-    @JvmStatic
     fun min(a: String, b: String, canonicalType: String?): String =
         if (compare(a, b, canonicalType) <= 0) a else b
 
-    @JvmStatic
     fun max(a: String, b: String, canonicalType: String?): String =
         if (compare(a, b, canonicalType) >= 0) a else b
 
-    @JvmStatic
     fun min(a: String, b: String, numeric: Boolean): String =
         if (compare(a, b, numeric) <= 0) a else b
 
-    @JvmStatic
     fun max(a: String, b: String, numeric: Boolean): String =
         if (compare(a, b, numeric) >= 0) a else b
 

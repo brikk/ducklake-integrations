@@ -93,8 +93,8 @@ sealed interface WriteChange {
      *        (mirrors the Java record's compact-constructor `Set.copyOf`).
      */
     class InsertedIntoTable private constructor(
-        @get:JvmName("tableId") val tableId: Long,
-        @get:JvmName("referencedColumnIds") val referencedColumnIds: Set<Long>,
+        val tableId: Long,
+        val referencedColumnIds: Set<Long>,
         @Suppress("UNUSED_PARAMETER") marker: Unit,
     ) : WriteChange {
         constructor(tableId: Long, referencedColumnIds: Set<Long>) :
@@ -127,8 +127,8 @@ sealed interface WriteChange {
      *        `Set.copyOf`).
      */
     class DeletedFromTable private constructor(
-        @get:JvmName("tableId") val tableId: Long,
-        @get:JvmName("referencedDataFileIds") val referencedDataFileIds: Set<Long>,
+        val tableId: Long,
+        val referencedDataFileIds: Set<Long>,
         @Suppress("UNUSED_PARAMETER") marker: Unit,
     ) : WriteChange {
         constructor(tableId: Long, referencedDataFileIds: Set<Long>) :
@@ -194,7 +194,6 @@ sealed interface WriteChange {
          * commas; balanced double quotes are tracked so commas inside quoted values
          * are literal.
          */
-        @JvmStatic
         fun formatChangesMade(changes: List<WriteChange>): String =
             changes.joinToString(",") { it.toChangesMadeEntry() }
 
@@ -204,7 +203,6 @@ sealed interface WriteChange {
          * `third_party/ducklake/src/common/ducklake_util.cpp`: wrap in double
          * quotes and escape embedded `"` by doubling.
          */
-        @JvmStatic
         fun writeQuotedValue(value: String): String =
             "\"${value.replace("\"", "\"\"")}\""
     }

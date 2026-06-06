@@ -19,15 +19,11 @@ import java.util.OptionalInt
 
 @JvmRecord
 data class DucklakePartitionField @JsonCreator constructor(
-        @get:JvmName("partitionKeyIndex")
         @param:JsonProperty("partitionKeyIndex") val partitionKeyIndex: Int,
-        @get:JvmName("columnId")
         @param:JsonProperty("columnId") val columnId: Long,
-        @get:JvmName("transform")
         @param:JsonProperty("transform") val transform: DucklakePartitionTransform,
         // Bucket arity (the N in bucket(N)). Present only for BUCKET transforms,
         // empty for IDENTITY / temporal kinds.
-        @get:JvmName("arity")
         @param:JsonProperty("arity") val arity: OptionalInt)
 {
     init {
@@ -62,9 +58,9 @@ data class DucklakePartitionSpec @JsonCreator constructor(
  */
 @JvmRecord
 data class PartitionFieldSpec(
-        @get:JvmName("columnName") val columnName: String,
-        @get:JvmName("transform") val transform: DucklakePartitionTransform,
-        @get:JvmName("arity") val arity: OptionalInt)
+        val columnName: String,
+        val transform: DucklakePartitionTransform,
+        val arity: OptionalInt)
 {
     init {
         if (transform == DucklakePartitionTransform.BUCKET && arity.isEmpty) {

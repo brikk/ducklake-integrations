@@ -96,7 +96,6 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
          */
         const val UNDERLYING_JDBC_URL: String = "jdbc:duckdb:"
 
-        @JvmStatic
         fun matches(url: String?): Boolean = url != null && url.startsWith(SYNTHETIC_URL_PREFIX)
 
         /**
@@ -108,7 +107,6 @@ internal class QuackBackedDuckDbCatalogUrl private constructor(
          * @param dataPath where DuckLake parquet data files live (must be a path
          *                 the JVM can read/write — DuckLake resolves it on the client)
          */
-        @JvmStatic
         fun parse(url: String, token: String?, dataPath: String?): QuackBackedDuckDbCatalogUrl {
             require(matches(url)) { "not a Quack-backed DuckDB catalog URL: $url" }
             // Strip the JDBC prefix to leave a parseable scheme://authority?query URI.

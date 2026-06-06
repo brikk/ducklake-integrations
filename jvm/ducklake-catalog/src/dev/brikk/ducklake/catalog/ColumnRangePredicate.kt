@@ -24,7 +24,7 @@ package dev.brikk.ducklake.catalog
  */
 @JvmRecord
 data class ColumnRangePredicate(
-    @get:JvmName("columnId") val columnId: Long,
-    @get:JvmName("minValue") val minValue: String?,
-    @get:JvmName("maxValue") val maxValue: String?,
+    val columnId: Long,
+    val minValue: String?,
+    val maxValue: String?,
 )

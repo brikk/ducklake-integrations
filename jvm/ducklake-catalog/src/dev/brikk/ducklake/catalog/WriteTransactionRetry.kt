@@ -43,7 +43,6 @@ object WriteTransactionRetry {
         fun run()
     }
 
-    @JvmStatic
     fun retryOnConflict(
         maxRetries: Int,
         initialWaitMs: Long,
