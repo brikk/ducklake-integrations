@@ -85,8 +85,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
-import java.util.ArrayList
-import java.util.HashSet
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.Optional
@@ -181,18 +179,18 @@ class DucklakeMetadata(
             }
         }
 
-        val metadataTable: Optional<MetadataTableName> = parseMetadataTableName(tableName)
-        val baseTableName: SchemaTableName = metadataTable
-                .map { parsed -> SchemaTableName(tableName.schemaName, parsed.baseTableName) }
-                .orElse(tableName)
+        val metadataTable: MetadataTableName? = parseMetadataTableName(tableName)
+        val baseTableName: SchemaTableName =
+                if (metadataTable != null) SchemaTableName(tableName.schemaName, metadataTable.baseTableName)
+                else tableName
 
         val snapshotId = snapshotResolver.resolveSnapshotId(session, querySnapshotId, querySnapshotTimestamp)
 
         val table: DucklakeTable = catalog.getTable(baseTableName.schemaName, baseTableName.tableName, snapshotId)
             ?: return null
 
-        if (metadataTable.isPresent) {
-            val parsed = metadataTable.get()
+        if (metadataTable != null) {
+            val parsed = metadataTable
             return DucklakeMetadataTableHandle(
                     tableName.schemaName,
                     tableName.tableName,
@@ -248,7 +246,7 @@ class DucklakeMetadata(
         if (sortKeys.isEmpty()) {
             return ConnectorTableProperties()
         }
-        val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = HashMap()
+        val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = mutableMapOf()
         for (column in catalog.getTableColumns(handle.tableId, handle.snapshotId)) {
             columnHandlesByLowercaseName[column.columnName.lowercase(Locale.ROOT)] = DucklakeColumnHandle(
                     column.columnId,
@@ -369,10 +367,8 @@ class DucklakeMetadata(
         }
         else {
             val fallbackRecordCount = getFallbackRecordCount(table)
-            if (fallbackRecordCount.isEmpty) {
-                return TableStatistics.empty()
-            }
-            recordCount = fallbackRecordCount.asLong
+                    ?: return TableStatistics.empty()
+            recordCount = fallbackRecordCount
         }
 
         val stats: TableStatistics.Builder = TableStatistics.builder()
@@ -390,7 +386,7 @@ class DucklakeMetadata(
             return stats.build()
         }
 
-        val seenDataFileIds: MutableSet<Long> = HashSet()
+        val seenDataFileIds: MutableSet<Long> = mutableSetOf()
         var activeDataFileRowCount: Long = 0
         for (dataFile in dataFiles) {
             if (seenDataFileIds.add(dataFile.dataFileId)) {
@@ -427,7 +423,7 @@ class DucklakeMetadata(
                 colBuilder.setDataSize(Estimate.of(colStats.totalSizeBytes.toDouble()))
             }
 
-            toDoubleRange(column.columnType, colStats).ifPresent { colBuilder.setRange(it) }
+            toDoubleRange(column.columnType, colStats)?.let { colBuilder.setRange(it) }
 
             stats.setColumnStatistics(column, colBuilder.build())
         }
@@ -440,27 +436,26 @@ class DucklakeMetadata(
             // that lists it), so no second per-table hasInlinedRows round trip is needed here.
             catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
 
-    private fun getFallbackRecordCount(table: DucklakeTableHandle): OptionalLong
+    private fun getFallbackRecordCount(table: DucklakeTableHandle): Long?
     {
         // Align with Iceberg/Delta behavior: if we can prove there is no data at this snapshot,
         // return row count 0 instead of unknown.
         if (!catalog.getDataFiles(table.tableId, table.snapshotId).isEmpty()) {
             // Data files exist but no table stats were found. Keep row count unknown.
-            return OptionalLong.empty()
+            return null
         }
 
         val inlinedInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(table.tableId, table.snapshotId)
         if (inlinedInfos.isEmpty()) {
-            return OptionalLong.of(0)
+            return 0
         }
 
         // Count via SELECT COUNT(*) per schema version rather than materialising the inlined
         // row payload into memory just to call .size() (pg_ducklake #195 warns about OOM on
         // large inlined heaps; a count is negligible by comparison).
-        val inlinedRowCount: Long = inlinedInfos.stream()
+        return inlinedInfos.stream()
                 .mapToLong { info -> catalog.countInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
                 .sum()
-        return OptionalLong.of(inlinedRowCount)
     }
 
     override fun applyFilter(
@@ -578,11 +573,11 @@ class DucklakeMetadata(
                 .orElseGet { listTables(session, prefix.schema) }
 
         for (tableName in tables) {
-            val metadataTable: Optional<MetadataTableName> = parseMetadataTableName(tableName)
-            if (metadataTable.isPresent) {
-                val baseTable = SchemaTableName(tableName.schemaName, metadataTable.get().baseTableName)
+            val metadataTable: MetadataTableName? = parseMetadataTableName(tableName)
+            if (metadataTable != null) {
+                val baseTable = SchemaTableName(tableName.schemaName, metadataTable.baseTableName)
                 if (catalog.getTable(baseTable.schemaName, baseTable.tableName, snapshotId) != null) {
-                    columns.put(tableName, getMetadataColumns(metadataTable.get().metadataTableType))
+                    columns.put(tableName, getMetadataColumns(metadataTable.metadataTableType))
                 }
                 continue
             }
@@ -953,8 +948,8 @@ class DucklakeMetadata(
         // this commit's new deletes (B3a: writeDeleteFile must preserve prior deletions when
         // it produces a superseding file, otherwise positions resurrect).
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(handle.tableId, handle.snapshotId)
-        val primaryByFileId: LinkedHashMap<Long, DucklakeDataFile> = LinkedHashMap()
-        val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = LinkedHashMap()
+        val primaryByFileId: LinkedHashMap<Long, DucklakeDataFile> = linkedMapOf()
+        val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = linkedMapOf()
         for (df in dataFiles) {
             primaryByFileId.putIfAbsent(df.dataFileId, df)
             if (df.deleteFilePath != null) {
@@ -963,7 +958,7 @@ class DucklakeMetadata(
                         df.deleteFilePathIsRelative ?: false,
                         tableDataPath)
                 deletePathsByFileId
-                        .computeIfAbsent(df.dataFileId) { _ -> ArrayList() }
+                        .computeIfAbsent(df.dataFileId) { _ -> mutableListOf() }
                         .add(resolved)
             }
         }
@@ -988,8 +983,8 @@ class DucklakeMetadata(
         val mergeHandle = mergeTableHandle as DucklakeMergeTableHandle
         val tableHandle: DucklakeTableHandle = mergeHandle.tableHandle
 
-        val deleteFragments: MutableList<DucklakeDeleteFragment> = ArrayList()
-        val insertFragments: MutableList<DucklakeWriteFragment> = ArrayList()
+        val deleteFragments: MutableList<DucklakeDeleteFragment> = mutableListOf()
+        val insertFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
 
         for (fragment in fragments) {
             val bytes: ByteArray = fragment.bytes
@@ -1292,6 +1287,9 @@ class DucklakeMetadata(
             throw TrinoException(NOT_SUPPORTED, "Unsupported type for table version: ${versionType.displayName}")
         }
 
+        // @JvmStatic: TestDucklakeMetadataTemporalVersionConversion reflects this as a real
+        // static method (getDeclaredMethod(...).invoke(null, ...)); without it the companion
+        // accessor moves off the class and the test's static initializer fails.
         @JvmStatic
         private fun getSnapshotTimestampFromVersion(session: ConnectorSession, version: ConnectorTableVersion): Instant
         {
@@ -1324,29 +1322,29 @@ class DucklakeMetadata(
             throw TrinoException(NOT_SUPPORTED, "Unsupported type for temporal table version: ${versionType.displayName}")
         }
 
-        private fun toDoubleRange(type: Type, stats: DucklakeColumnStats): Optional<DoubleRange>
+        private fun toDoubleRange(type: Type, stats: DucklakeColumnStats): DoubleRange?
         {
-            val minStr: String = stats.minValue ?: return Optional.empty()
-            val maxStr: String = stats.maxValue ?: return Optional.empty()
+            val minStr: String = stats.minValue ?: return null
+            val maxStr: String = stats.maxValue ?: return null
 
             try {
 
                 if (type == BIGINT || type == INTEGER || type == SMALLINT || type == TINYINT) {
-                    return Optional.of(DoubleRange(minStr.toDouble(), maxStr.toDouble()))
+                    return DoubleRange(minStr.toDouble(), maxStr.toDouble())
                 }
                 if (type == DOUBLE || type == REAL) {
-                    return Optional.of(DoubleRange(minStr.toDouble(), maxStr.toDouble()))
+                    return DoubleRange(minStr.toDouble(), maxStr.toDouble())
                 }
                 if (type == DATE) {
                     val minDays: Long = LocalDate.parse(minStr).toEpochDay()
                     val maxDays: Long = LocalDate.parse(maxStr).toEpochDay()
-                    return Optional.of(DoubleRange(minDays.toDouble(), maxDays.toDouble()))
+                    return DoubleRange(minDays.toDouble(), maxDays.toDouble())
                 }
             }
             catch (_: RuntimeException) {
                 // If parsing fails, skip range
             }
-            return Optional.empty()
+            return null
         }
 
         private fun mergePushedExpressions(existing: List<String>, additions: List<String>): List<String>
@@ -1447,18 +1445,19 @@ class DucklakeMetadata(
             return TupleDomain.withColumnDomains(domains)
         }
 
-        private fun parseMetadataTableName(tableName: SchemaTableName): Optional<MetadataTableName>
+        private fun parseMetadataTableName(tableName: SchemaTableName): MetadataTableName?
         {
             val rawTableName: String = tableName.tableName
             val separator: Int = rawTableName.lastIndexOf(METADATA_TABLE_SEPARATOR)
             if (separator <= 0 || separator == rawTableName.length - 1) {
-                return Optional.empty()
+                return null
             }
 
             val baseName: String = rawTableName.substring(0, separator)
             val suffix: String = rawTableName.substring(separator + 1)
             return DucklakeMetadataTableType.fromSuffix(suffix)
                     .map { type -> MetadataTableName(baseName, type) }
+                    .orElse(null)
         }
 
         private fun toColumnHandles(metadataColumns: List<ColumnMetadata>): Map<String, ColumnHandle>

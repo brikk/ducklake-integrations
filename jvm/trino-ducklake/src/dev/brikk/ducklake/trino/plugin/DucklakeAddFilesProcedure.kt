@@ -50,8 +50,6 @@ import java.io.IOException
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
-import java.util.HashSet
-import java.util.LinkedHashMap
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -146,8 +144,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
-        val processed: MutableSet<String> = HashSet()
-        val fragments: MutableList<dev.brikk.ducklake.catalog.DucklakeWriteFragment> = ArrayList()
+        val processed: MutableSet<String> = mutableSetOf()
+        val fragments: MutableList<dev.brikk.ducklake.catalog.DucklakeWriteFragment> = mutableListOf()
 
         for (filePath in filePaths) {
             if (filePath.isEmpty()) {
@@ -318,7 +316,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             // happen to lay parquet under key=value/ without a partition spec.
             return mapOf()
         }
-        val out: MutableMap<Int, String> = LinkedHashMap()
+        val out: MutableMap<Int, String> = linkedMapOf()
         for (field in activePartitionSpec.get().fields) {
             val value = byFieldId[field.columnId.toInt()]
             if (value != null) {
@@ -410,7 +408,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
          * connector convention.
          */
         private fun parseHivePartitions(path: String): Map<String, String> {
-            val out: MutableMap<String, String> = LinkedHashMap()
+            val out: MutableMap<String, String> = linkedMapOf()
             val normalized = path.replace('\\', '/')
             // Strip filename so we don't accidentally split on a "=" in the basename.
             val lastSlash = normalized.lastIndexOf('/')
@@ -462,11 +460,11 @@ class DucklakeAddFilesProcedure @Inject constructor(
         private fun toThriftFileMetaData(metadata: ParquetMetadata): org.apache.parquet.format.FileMetaData {
             val thrift = org.apache.parquet.format.FileMetaData()
             var numRows: Long = 0
-            val rowGroups: MutableList<org.apache.parquet.format.RowGroup> = ArrayList()
+            val rowGroups: MutableList<org.apache.parquet.format.RowGroup> = mutableListOf()
             for (block in metadata.blocks) {
                 val rg = org.apache.parquet.format.RowGroup()
                 rg.setNum_rows(block.rowCount())
-                val chunks: MutableList<org.apache.parquet.format.ColumnChunk> = ArrayList()
+                val chunks: MutableList<org.apache.parquet.format.ColumnChunk> = mutableListOf()
                 for (column in block.columns()) {
                     val chunk = org.apache.parquet.format.ColumnChunk()
                     val meta = org.apache.parquet.format.ColumnMetaData()

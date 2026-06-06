@@ -27,7 +27,6 @@ import io.trino.spi.type.Type
 import java.time.LocalDate
 
 object DucklakeTemporalPartitionMatcher {
-    @JvmStatic
     fun partitionValueMatchesDomain(
             columnType: Type,
             partitionValue: String,
@@ -227,7 +226,6 @@ object DucklakeTemporalPartitionMatcher {
 
     private data class TemporalValue(val date: LocalDate, val epochDay: Long, val epochHour: Long, val hourOfDay: Int) {
         companion object {
-            @JvmStatic
             fun from(columnType: Type, value: Any): TemporalValue {
                 if (columnType == io.trino.spi.type.DateType.DATE) {
                     val epochDay = (value as Number).toLong()

@@ -45,12 +45,10 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
      * through the factory which surfaces a CONFIGURATION_INVALID error instead.
      */
     internal constructor() : this(DuckDbTuning.defaults(), TrinoParityExtensionResolver.resolveBundledExtensionPath()
-            .orElseThrow {
-                IllegalStateException(
-                        "No bundled trino_parity extension found on classpath. " +
-                                "Build the extension first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`, " +
-                                "then rebuild the trino-ducklake plugin jar.")
-            })
+            ?: throw IllegalStateException(
+                    "No bundled trino_parity extension found on classpath. " +
+                            "Build the extension first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`, " +
+                            "then rebuild the trino-ducklake plugin jar."))
 
     @Throws(SQLException::class)
     override fun execute(request: DucklakeDuckDbExecutor.ExecutionRequest): DucklakeDuckDbExecutor.ExecutionContext {

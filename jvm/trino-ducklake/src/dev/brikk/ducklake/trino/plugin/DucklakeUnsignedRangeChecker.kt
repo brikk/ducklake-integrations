@@ -182,7 +182,6 @@ class DucklakeUnsignedRangeChecker private constructor(private val checks: List<
          *                              (e.g. "uint8") — typically derived from
          *                              `DucklakeWritableTableHandle.allCatalogColumns()`
          */
-        @JvmStatic
         fun build(
                 columns: List<DucklakeColumnHandle>,
                 catalogColumnTypeById: Map<Long, String>): DucklakeUnsignedRangeChecker {
@@ -205,7 +204,6 @@ class DucklakeUnsignedRangeChecker private constructor(private val checks: List<
             return if (checks.isEmpty()) NO_OP else DucklakeUnsignedRangeChecker(checks)
         }
 
-        @JvmStatic
         fun build(
                 columns: List<DucklakeColumnHandle>,
                 allCatalogColumns: List<DucklakeColumn>): DucklakeUnsignedRangeChecker {

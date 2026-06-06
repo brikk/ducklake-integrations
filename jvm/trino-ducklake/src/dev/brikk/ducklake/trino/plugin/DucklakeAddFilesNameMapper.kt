@@ -78,17 +78,17 @@ internal class DucklakeAddFilesNameMapper(
         private val fileName: String,
         private val tableName: String,
 ) {
-    private val resultEntries: MutableList<DucklakeNameMapEntry> = ArrayList()
+    private val resultEntries: MutableList<DucklakeNameMapEntry> = mutableListOf()
     // Maps each top-level parquet column to a (Trino target type, DuckLake field id).
     // Used to reorder columns when feeding the existing DucklakeStatsExtractor — its
     // contract is "column N of the columns list maps to row-group column N of the file".
-    private val topLevelMatches: MutableList<TopLevelMatch> = ArrayList()
+    private val topLevelMatches: MutableList<TopLevelMatch> = mutableListOf()
     private val partitionValues: MutableMap<Int, Any?> = linkedMapOf()
     // One LeafStatsTarget per *mapped* parquet leaf — i.e., leaves that have a
     // corresponding DuckLake catalog column. Skipped leaves (ignore_extra_columns
     // children, hive-partition-wins overlap) still advance leafCounter so the
     // emitted parquetColumnIndex stays aligned with the file's RowGroup.columns.
-    private val leafStatsTargets: MutableList<LeafStatsTarget> = ArrayList()
+    private val leafStatsTargets: MutableList<LeafStatsTarget> = mutableListOf()
     private val leafCounter: IntArray = intArrayOf(0)
 
     /**
@@ -276,7 +276,7 @@ internal class DucklakeAddFilesNameMapper(
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
         val children: Map<String, DucklakeColumn> = childrenByParent[target.columnId] ?: emptyMap()
-        val childEntries: MutableList<DucklakeNameMapEntry> = ArrayList()
+        val childEntries: MutableList<DucklakeNameMapEntry> = mutableListOf()
         for (field in group.fields) {
             val fieldName = field.name
             val childTarget: DucklakeColumn? = children[fieldName.lowercase(Locale.ROOT)]

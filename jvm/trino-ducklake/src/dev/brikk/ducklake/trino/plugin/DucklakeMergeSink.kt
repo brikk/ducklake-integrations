@@ -38,8 +38,6 @@ import org.apache.parquet.format.CompressionCodec
 import java.io.IOException
 import java.io.OutputStream
 import java.io.UncheckedIOException
-import java.util.ArrayList
-import java.util.HashMap
 import java.util.LinkedHashSet
 import java.util.NavigableMap
 import java.util.TreeMap
@@ -67,7 +65,7 @@ open class DucklakeMergeSink(
     private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
 
     // Accumulated delete row IDs grouped by data file ID
-    private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = HashMap()
+    private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = mutableMapOf()
 
     // Data-file ranges keyed by their (unique, non-overlapping) rowIdStart so resolveDataFileId
     // can resolve a global rowId in O(log F) via floorEntry instead of an O(F) linear scan per
@@ -114,7 +112,7 @@ open class DucklakeMergeSink(
     }
 
     override fun finish(): CompletableFuture<Collection<Slice>> {
-        val fragments: ArrayList<Slice> = ArrayList()
+        val fragments: MutableList<Slice> = mutableListOf()
 
         // Write delete Parquet files
         for (entry in deletesByDataFile.entries) {

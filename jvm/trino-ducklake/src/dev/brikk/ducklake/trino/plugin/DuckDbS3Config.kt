@@ -63,20 +63,20 @@ data class DuckDbS3Config(
     companion object {
         fun fromCatalogConfig(config: Map<String, String>): DuckDbS3Config {
             val endpoint = trimmed(config["s3.endpoint"])
-            val useSsl = endpoint.map { e -> !e.lowercase(java.util.Locale.ROOT).startsWith("http://") }
-                    .orElse(true)
+            val useSsl = endpoint?.let { e -> !e.lowercase(java.util.Locale.ROOT).startsWith("http://") }
+                    ?: true
             return DuckDbS3Config(
-                    endpoint,
-                    trimmed(config["s3.region"]),
-                    trimmed(config["s3.aws-access-key"]),
-                    trimmed(config["s3.aws-secret-key"]),
+                    Optional.ofNullable(endpoint),
+                    Optional.ofNullable(trimmed(config["s3.region"])),
+                    Optional.ofNullable(trimmed(config["s3.aws-access-key"])),
+                    Optional.ofNullable(trimmed(config["s3.aws-secret-key"])),
                     java.lang.Boolean.parseBoolean(config.getOrDefault("s3.path-style-access", "false")),
                     useSsl)
         }
 
-        private fun trimmed(value: String?): Optional<String> {
-            val t = (value ?: return Optional.empty()).trim()
-            return if (t.isEmpty()) Optional.empty() else Optional.of(t)
+        private fun trimmed(value: String?): String? {
+            val t = (value ?: return null).trim()
+            return t.ifEmpty { null }
         }
 
         private fun stripScheme(url: String): String {

@@ -24,7 +24,6 @@ import org.apache.parquet.format.FileMetaData
 import org.apache.parquet.format.Util
 import java.io.IOException
 import java.io.OutputStream
-import java.util.HashMap
 import java.util.OptionalLong
 
 /**
@@ -40,7 +39,7 @@ class ParquetFileWriter(
     columns: List<DucklakeColumnHandle>,
     allCatalogColumns: List<DucklakeColumn>)
         : DucklakeFileWriter {
-    private val partitionValues: MutableMap<Int, String?> = HashMap(partitionValues)
+    private val partitionValues: MutableMap<Int, String?> = partitionValues.toMutableMap()
     private val leafStatsTargets: List<LeafStatsTarget> =
         DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns)
 

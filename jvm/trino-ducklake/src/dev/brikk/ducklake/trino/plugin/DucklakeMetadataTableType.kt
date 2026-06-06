@@ -27,7 +27,6 @@ enum class DucklakeMetadataTableType(private val suffix: String) {
     }
 
     companion object {
-        @JvmStatic
         fun fromSuffix(suffix: String?): Optional<DucklakeMetadataTableType> {
             val normalized = requireNotNull(suffix) { "suffix is null" }
                     .lowercase(Locale.ENGLISH)

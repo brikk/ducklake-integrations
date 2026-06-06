@@ -20,7 +20,6 @@ enum class DucklakeTemporalPartitionEncoding {
     EPOCH;
 
     companion object {
-        @JvmStatic
         fun fromString(value: String?): DucklakeTemporalPartitionEncoding {
             val nonNull = value ?: throw IllegalArgumentException("Temporal partition encoding is null")
             return valueOf(nonNull.trim().uppercase(Locale.ENGLISH))

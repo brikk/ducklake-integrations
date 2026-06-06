@@ -60,7 +60,6 @@ data class DucklakeColumnHandle @JsonCreator constructor(
         const val ROW_ID_COLUMN_ID: Long = -100
         const val ROW_ID_COLUMN_NAME: String = "\$row_id"
 
-        @JvmStatic
         fun rowIdColumnHandle(): DucklakeColumnHandle
         {
             return DucklakeColumnHandle(ROW_ID_COLUMN_ID, ROW_ID_COLUMN_NAME, BIGINT, false)

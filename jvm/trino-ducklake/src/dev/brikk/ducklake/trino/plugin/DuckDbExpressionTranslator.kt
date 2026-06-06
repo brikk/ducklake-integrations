@@ -69,7 +69,6 @@ class DuckDbExpressionTranslator private constructor() {
          * `TestTrinoFunctionAliases` class has a parity check that fails if
          * this set drifts from `SELECT * FROM trino_meta()`.
          */
-        @JvmField
         val PUSHABLE_FUNCTIONS: Set<NameArity> = setOf(
                 // Round 1 — string
                 //   lower/1, upper/1, reverse/1 used to be macro placeholders that diverged

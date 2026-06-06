@@ -19,7 +19,6 @@ import io.trino.spi.type.ArrayType
 import io.trino.spi.type.MapType
 import io.trino.spi.type.RowType
 import io.trino.spi.type.Type
-import java.util.HashMap
 
 /**
  * Builds the flat list of parquet-leaf stats targets that
@@ -37,7 +36,6 @@ import java.util.HashMap
  * catalog tree for nested leaves).
  */
 object DucklakeStatsLeafProjector {
-    @JvmStatic
     fun projectFromCatalogTree(
             topLevelColumns: List<DucklakeColumnHandle>,
             allCatalogColumns: List<DucklakeColumn>): List<LeafStatsTarget> {
@@ -55,11 +53,11 @@ object DucklakeStatsLeafProjector {
     }
 
     private fun buildChildrenByParent(allCatalogColumns: List<DucklakeColumn>): Map<Long, MutableMap<String, DucklakeColumn>> {
-        val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = HashMap()
+        val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = mutableMapOf()
         for (column in allCatalogColumns) {
             column.parentColumn?.let { parentId ->
                 childrenByParent
-                        .computeIfAbsent(parentId) { _ -> HashMap() }[column.columnName] = column
+                        .computeIfAbsent(parentId) { _ -> mutableMapOf() }[column.columnName] = column
             }
         }
         return childrenByParent

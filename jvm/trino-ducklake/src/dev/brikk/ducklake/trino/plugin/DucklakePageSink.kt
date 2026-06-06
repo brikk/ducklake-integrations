@@ -75,9 +75,9 @@ class DucklakePageSink(
 
     // Writers: for unpartitioned tables, only index 0 is used.
     // For partitioned tables, one writer per unique partition combination.
-    private val writers: MutableList<DucklakeFileWriter?> = ArrayList()
-    private val completedFragments: MutableList<DucklakeWriteFragment> = ArrayList()
-    private val writtenFilePaths: MutableList<Location> = ArrayList()
+    private val writers: MutableList<DucklakeFileWriter?> = mutableListOf()
+    private val completedFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
+    private val writtenFilePaths: MutableList<Location> = mutableListOf()
 
     init {
 

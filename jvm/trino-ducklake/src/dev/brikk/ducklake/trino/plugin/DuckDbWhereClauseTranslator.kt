@@ -74,22 +74,22 @@ internal object DuckDbWhereClauseTranslator {
         if (domainsOpt.isEmpty) {
             return null
         }
-        val conjuncts = domainsOpt.get().entries.mapNotNull { translateDomain(it.key, it.value).orElse(null) }
+        val conjuncts = domainsOpt.get().entries.mapNotNull { translateDomain(it.key, it.value) }
         if (conjuncts.isEmpty()) {
             return null
         }
         return conjuncts.joinToString(" AND ")
     }
 
-    private fun translateDomain(column: DucklakeColumnHandle, domain: Domain): Optional<String> {
+    private fun translateDomain(column: DucklakeColumnHandle, domain: Domain): String? {
         val name = quoteIdentifier(column.columnName)
         val type: Type = column.columnType
 
         if (domain.isAll) {
-            return Optional.empty()
+            return null
         }
         if (domain.isNone) {
-            return Optional.of("FALSE")
+            return "FALSE"
         }
 
         val values: ValueSet = domain.values
@@ -97,38 +97,32 @@ internal object DuckDbWhereClauseTranslator {
 
         if (values.isNone) {
             // Only NULL or nothing.
-            return Optional.of(if (nullAllowed) "$name IS NULL" else "FALSE")
+            return if (nullAllowed) "$name IS NULL" else "FALSE"
         }
         if (values.isAll) {
             // Any non-null value is fine; honor null disposition.
-            return Optional.of(if (nullAllowed) "TRUE" else "$name IS NOT NULL")
+            return if (nullAllowed) "TRUE" else "$name IS NOT NULL"
         }
 
-        val valuesTerm = translateValues(name, type, values)
-        if (valuesTerm.isEmpty) {
-            return Optional.empty()
-        }
+        val valuesTerm = translateValues(name, type, values) ?: return null
         if (nullAllowed) {
-            return Optional.of("(" + valuesTerm.get() + " OR " + name + " IS NULL)")
+            return "($valuesTerm OR $name IS NULL)"
         }
         return valuesTerm
     }
 
-    private fun translateValues(name: String, type: Type, values: ValueSet): Optional<String> {
+    private fun translateValues(name: String, type: Type, values: ValueSet): String? {
         if (values.isDiscreteSet) {
             val discrete: List<Any> = values.discreteSet
             val literals: MutableList<String> = ArrayList(discrete.size)
             for (v in discrete) {
-                val lit = formatLiteral(type, v)
-                if (lit.isEmpty) {
-                    return Optional.empty()
-                }
-                literals.add(lit.get())
+                val lit = formatLiteral(type, v) ?: return null
+                literals.add(lit)
             }
             if (literals.size == 1) {
-                return Optional.of(name + " = " + literals.first())
+                return name + " = " + literals.first()
             }
-            return Optional.of(name + " IN (" + literals.joinToString(", ") + ")")
+            return name + " IN (" + literals.joinToString(", ") + ")"
         }
 
         // Range-based value sets — sortedRangeSet exposes ordered ranges.
@@ -136,80 +130,71 @@ internal object DuckDbWhereClauseTranslator {
             val ranges: List<Range> = values.ranges.orderedRanges
             val terms: MutableList<String> = ArrayList(ranges.size)
             for (r in ranges) {
-                val rangeTerm = formatRange(name, type, r)
-                if (rangeTerm.isEmpty) {
-                    return Optional.empty()
-                }
-                terms.add(rangeTerm.get())
+                val rangeTerm = formatRange(name, type, r) ?: return null
+                terms.add(rangeTerm)
             }
             if (terms.isEmpty()) {
-                return Optional.empty()
+                return null
             }
             if (terms.size == 1) {
-                return Optional.of(terms.first())
+                return terms.first()
             }
-            return Optional.of("(" + terms.joinToString(" OR ") + ")")
+            return "(" + terms.joinToString(" OR ") + ")"
         }
         catch (e: UnsupportedOperationException) {
-            return Optional.empty()
+            return null
         }
     }
 
-    private fun formatRange(name: String, type: Type, r: Range): Optional<String> {
+    private fun formatRange(name: String, type: Type, r: Range): String? {
         if (r.isSingleValue) {
-            val lit = formatLiteral(type, r.getSingleValue())
-            return lit.map { l -> "$name = $l" }
+            val lit = formatLiteral(type, r.getSingleValue()) ?: return null
+            return "$name = $lit"
         }
 
         val sb = StringBuilder()
         if (!r.isLowUnbounded) {
-            val lit = formatLiteral(type, r.lowBoundedValue)
-            if (lit.isEmpty) {
-                return Optional.empty()
-            }
-            sb.append(name).append(if (r.isLowInclusive) " >= " else " > ").append(lit.get())
+            val lit = formatLiteral(type, r.lowBoundedValue) ?: return null
+            sb.append(name).append(if (r.isLowInclusive) " >= " else " > ").append(lit)
         }
         if (!r.isHighUnbounded) {
             if (sb.isNotEmpty()) {
                 sb.append(" AND ")
             }
-            val lit = formatLiteral(type, r.highBoundedValue)
-            if (lit.isEmpty) {
-                return Optional.empty()
-            }
-            sb.append(name).append(if (r.isHighInclusive) " <= " else " < ").append(lit.get())
+            val lit = formatLiteral(type, r.highBoundedValue) ?: return null
+            sb.append(name).append(if (r.isHighInclusive) " <= " else " < ").append(lit)
         }
         if (sb.isEmpty()) {
-            return Optional.empty()
+            return null
         }
-        return Optional.of("($sb)")
+        return "($sb)"
     }
 
-    private fun formatLiteral(type: Type, value: Any?): Optional<String> {
+    private fun formatLiteral(type: Type, value: Any?): String? {
         if (value == null) {
-            return Optional.empty()
+            return null
         }
         if (type == BOOLEAN) {
-            return Optional.of(if ((value as Boolean)) "TRUE" else "FALSE")
+            return if ((value as Boolean)) "TRUE" else "FALSE"
         }
         if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
             // Trino stores all integer-family values as long.
-            return Optional.of((value as Long).toString())
+            return (value as Long).toString()
         }
         if (type == REAL) {
             // Trino REAL is encoded as the float bits in a long.
             val f = java.lang.Float.intBitsToFloat((value as Long).toInt())
             if (java.lang.Float.isFinite(f)) {
-                return Optional.of(f.toString())
+                return f.toString()
             }
-            return Optional.empty()
+            return null
         }
         if (type == DOUBLE) {
             val d = value as Double
             if (java.lang.Double.isFinite(d)) {
-                return Optional.of(d.toString())
+                return d.toString()
             }
-            return Optional.empty()
+            return null
         }
         if (type is DecimalType) {
             val decimalType: DecimalType = type
@@ -221,7 +206,7 @@ internal object DuckDbWhereClauseTranslator {
                 val i128 = value as Int128
                 bd = BigDecimal(BigInteger(i128.toBigEndianBytes()), decimalType.scale)
             }
-            return Optional.of(bd.toPlainString())
+            return bd.toPlainString()
         }
         if (type == DATE) {
             val days = value as Long
@@ -229,9 +214,9 @@ internal object DuckDbWhereClauseTranslator {
             // DuckDB's DATE literal parser rejects the signed/extended forms LocalDate emits for
             // years <1 (BC, '-') or >9999 ('+'); leave such values unpushed so Trino evaluates them.
             if (date.year !in 1..9999) {
-                return Optional.empty()
+                return null
             }
-            return Optional.of("DATE '$date'")
+            return "DATE '$date'"
         }
         if (type is TimestampType && type.isShort) {
             val micros = value as Long
@@ -242,15 +227,15 @@ internal object DuckDbWhereClauseTranslator {
             // year as a positive year (wrong instant, no era marker) and emits a leading '+' past
             // 9999. Leave out-of-range temporal literals unpushed rather than mis-compare.
             if (ldt.year !in 1..9999) {
-                return Optional.empty()
+                return null
             }
-            return Optional.of("TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'")
+            return "TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'"
         }
         if (type is VarcharType) {
             val slice = value as Slice
-            return Optional.of("'" + slice.toStringUtf8().replace("'", "''") + "'")
+            return "'" + slice.toStringUtf8().replace("'", "''") + "'"
         }
-        return Optional.empty()
+        return null
     }
 
     private fun quoteIdentifier(name: String): String =
@@ -258,5 +243,5 @@ internal object DuckDbWhereClauseTranslator {
 
     fun formatLiteralOrThrow(type: Type, value: Any?): String =
         formatLiteral(type, value)
-                .orElseThrow { IllegalArgumentException("Cannot format $type value as DuckDB literal") }
+                ?: throw IllegalArgumentException("Cannot format $type value as DuckDB literal")
 }

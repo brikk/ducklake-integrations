@@ -94,7 +94,6 @@ open class DucklakeTableProperties @Inject constructor() {
          * fall back to [DucklakeSessionProperties.getDataFileFormat] when this
          * returns null.
          */
-        @JvmStatic
         fun getDataFileFormat(tableProperties: Map<String, Any?>): String? {
             return tableProperties[DATA_FILE_FORMAT_PROPERTY] as String?
         }
@@ -112,7 +111,6 @@ open class DucklakeTableProperties @Inject constructor() {
          * Validation (rejected as `INVALID_TABLE_PROPERTY`) happens in
          * [validateLocation].
          */
-        @JvmStatic
         fun getLocation(tableProperties: Map<String, Any?>): Optional<TableLocationSpec> {
             val raw = tableProperties[LOCATION_PROPERTY] as String?
             if (raw.isNullOrBlank()) {
@@ -142,7 +140,6 @@ open class DucklakeTableProperties @Inject constructor() {
             }
         }
 
-        @JvmStatic
         @Suppress("UNCHECKED_CAST")
         fun getPartitionFields(tableProperties: Map<String, Any?>): List<PartitionFieldSpec> {
             val partitionBy = tableProperties[PARTITIONED_BY_PROPERTY] as List<String>?

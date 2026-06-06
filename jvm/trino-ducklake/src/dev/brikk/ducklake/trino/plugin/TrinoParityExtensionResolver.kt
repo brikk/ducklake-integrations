@@ -86,20 +86,19 @@ class TrinoParityExtensionResolver private constructor() {
          * destination throw IOException on all-but-one thread and the first
          * unlucky thread's empty Optional gets cached for the JVM lifetime.
          */
-        @JvmStatic
-        internal fun resolveBundledExtensionPath(): Optional<String> {
+        internal fun resolveBundledExtensionPath(): String? {
             val cached = CACHED.get()
             if (cached != null) {
-                return cached
+                return cached.orElse(null)
             }
             return synchronized(RESOLVE_LOCK) {
                 val inner = CACHED.get()
                 if (inner != null) {
-                    inner
+                    inner.orElse(null)
                 }
                 else {
                     val resolved = doResolve()
-                    CACHED.set(resolved)
+                    CACHED.set(Optional.ofNullable(resolved))
                     resolved
                 }
             }
@@ -111,7 +110,6 @@ class TrinoParityExtensionResolver private constructor() {
          * Linux testcontainer even though the JVM runs on macOS. Result is NOT
          * cached — different platforms have different paths.
          */
-        @JvmStatic
         fun resolveBundledExtensionPathFor(platform: String): Optional<String> {
             return synchronized(RESOLVE_LOCK) {
                 val resourcePath = "$RESOURCE_DIR/$platform/$RESOURCE_FILE"
@@ -140,19 +138,19 @@ class TrinoParityExtensionResolver private constructor() {
             }
         }
 
-        private fun doResolve(): Optional<String> {
+        private fun doResolve(): String? {
             val platform = detectPlatform()
-            if (platform.isEmpty) {
+            if (platform == null) {
                 log.info("trino_parity: unsupported host platform (os.name=%s, os.arch=%s); no bundled extension available",
                         System.getProperty("os.name"), System.getProperty("os.arch"))
-                return Optional.empty()
+                return null
             }
-            val resourcePath = "$RESOURCE_DIR/${platform.get()}/$RESOURCE_FILE"
+            val resourcePath = "$RESOURCE_DIR/$platform/$RESOURCE_FILE"
             val url = TrinoParityExtensionResolver::class.java.classLoader.getResource(resourcePath)
             if (url == null) {
                 log.info("trino_parity: no bundled extension on classpath for platform %s (resource %s missing). Operators must set ducklake.duckdb.parity-extension-path or rebuild the plugin jar with the extension binary present.",
-                        platform.get(), resourcePath)
-                return Optional.empty()
+                        platform, resourcePath)
+                return null
             }
             try {
                 // KEEP THE BASENAME "trino_parity.duckdb_extension" — DuckDB derives
@@ -160,7 +158,7 @@ class TrinoParityExtensionResolver private constructor() {
                 // `<stem>_duckdb_cpp_init`. Mangling the filename to encode the
                 // platform breaks symbol resolution at LOAD time. Disambiguate via
                 // the parent dir instead.
-                val tempDir = Path.of(System.getProperty("java.io.tmpdir"), "trino-ducklake", platform.get())
+                val tempDir = Path.of(System.getProperty("java.io.tmpdir"), "trino-ducklake", platform)
                 Files.createDirectories(tempDir)
                 val target = tempDir.resolve(RESOURCE_FILE)
                 // Always replace — the bundled bytes might have changed between
@@ -168,15 +166,15 @@ class TrinoParityExtensionResolver private constructor() {
                 // simply rewriting ~36MB once per JVM.
                 extractAtomically(url, tempDir, target)
                 log.info("trino_parity: extracted bundled extension for platform %s to %s",
-                        platform.get(), target.toAbsolutePath())
-                return Optional.of(target.toAbsolutePath().toString())
+                        platform, target.toAbsolutePath())
+                return target.toAbsolutePath().toString()
             }
             catch (e: IOException) {
                 // Pass the exception (not just e.message) so the cause chain / stack survives —
                 // Files.createDirectories/Files.copy IOExceptions often have a terse or null
                 // message, and this WARN is the only diagnostic before the call site degrades.
-                log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform.get())
-                return Optional.empty()
+                log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform)
+                return null
             }
         }
 
@@ -210,8 +208,7 @@ class TrinoParityExtensionResolver private constructor() {
             }
         }
 
-        @JvmStatic
-        internal fun detectPlatform(): Optional<String> {
+        internal fun detectPlatform(): String? {
             val os = System.getProperty("os.name", "").lowercase(Locale.ROOT)
             val arch = System.getProperty("os.arch", "").lowercase(Locale.ROOT)
             val osPart: String
@@ -225,15 +222,15 @@ class TrinoParityExtensionResolver private constructor() {
                 osPart = "windows"
             }
             else {
-                return Optional.empty()
+                return null
             }
             val archPart: String
             when (arch) {
                 "x86_64", "amd64" -> archPart = "amd64"
                 "aarch64", "arm64" -> archPart = "arm64"
-                else -> return Optional.empty()
+                else -> return null
             }
-            return Optional.of("$osPart-$archPart")
+            return "$osPart-$archPart"
         }
     }
 }

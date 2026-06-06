@@ -117,13 +117,11 @@ open class DucklakeSessionProperties @Inject constructor() {
          */
         const val PUSHDOWN_TIMESTAMP_WITH_TIMEZONE: String = "pushdown_timestamp_with_timezone"
 
-        @JvmStatic
         fun getReadSnapshotId(session: ConnectorSession): OptionalLong =
             session.getProperty(READ_SNAPSHOT_ID, Long::class.javaObjectType)
                 ?.let { OptionalLong.of(it) }
                 ?: OptionalLong.empty()
 
-        @JvmStatic
         fun getReadSnapshotTimestamp(session: ConnectorSession): Optional<Instant> {
             val timestamp = session.getProperty(READ_SNAPSHOT_TIMESTAMP, String::class.java) ?: return Optional.empty()
             // The stored value was already validated by parseSnapshotTimestamp as the SET-time
@@ -134,7 +132,6 @@ open class DucklakeSessionProperties @Inject constructor() {
             return Optional.of(Instant.parse(timestamp))
         }
 
-        @JvmStatic
         private fun parseSnapshotTimestamp(value: String): Instant {
             try {
                 return Instant.parse(value)
@@ -146,12 +143,10 @@ open class DucklakeSessionProperties @Inject constructor() {
             }
         }
 
-        @JvmStatic
         fun getDataFileFormat(session: ConnectorSession): Optional<String> {
             return Optional.ofNullable(session.getProperty(DATA_FILE_FORMAT, String::class.java))
         }
 
-        @JvmStatic
         private fun validateDataFileFormat(value: String) {
             // Validator only fires on explicit SET — null (unset) never reaches this method.
             if (!FORMAT_PARQUET.equals(value, ignoreCase = true) && !FORMAT_DUCKDB.equals(value, ignoreCase = true)) {
@@ -162,11 +157,9 @@ open class DucklakeSessionProperties @Inject constructor() {
             }
         }
 
-        @JvmStatic
         fun getDuckDbWriterMode(session: ConnectorSession): String =
             session.getProperty(DUCKDB_WRITER_MODE, String::class.java)
 
-        @JvmStatic
         private fun validateDuckDbWriterMode(value: String) {
             if (!WRITER_MODE_APPENDER.equals(value, ignoreCase = true) && !WRITER_MODE_ARROW_STREAM.equals(value, ignoreCase = true)) {
                 throw TrinoException(
@@ -176,7 +169,6 @@ open class DucklakeSessionProperties @Inject constructor() {
             }
         }
 
-        @JvmStatic
         fun getDuckDbReadMode(session: ConnectorSession): String =
             session.getProperty(DUCKDB_READ_MODE, String::class.java)
 
@@ -188,7 +180,6 @@ open class DucklakeSessionProperties @Inject constructor() {
          * which keeps the safer "don't push WTZ" behaviour for unit tests
          * that synthesize calls without a session.
          */
-        @JvmStatic
         fun isPushdownTimestampWithTimeZone(session: ConnectorSession?): Boolean {
             if (session == null) {
                 return false
@@ -197,7 +188,6 @@ open class DucklakeSessionProperties @Inject constructor() {
             return v != null && v
         }
 
-        @JvmStatic
         private fun validateDuckDbReadMode(value: String) {
             if (!READ_MODE_MATERIALIZE.equals(value, ignoreCase = true)
                     && !READ_MODE_HTTPFS.equals(value, ignoreCase = true)

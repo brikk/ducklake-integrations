@@ -76,8 +76,8 @@ class DucklakeDuckDbExecutorFactory @Inject constructor(private val config: Duck
             return configured.get()
         }
         val bundled = TrinoParityExtensionResolver.resolveBundledExtensionPath()
-        if (bundled.isPresent) {
-            return bundled.get()
+        if (bundled != null) {
+            return bundled
         }
         throw TrinoException(CONFIGURATION_INVALID,
                 "trino_parity extension required: set ducklake.duckdb.parity-extension-path " +

@@ -83,9 +83,6 @@ import java.io.IOException
 import java.nio.file.Path
 import java.time.Instant
 import java.util.ArrayList
-import java.util.HashMap
-import java.util.HashSet
-import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
@@ -287,7 +284,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(metadataSplit.baseTableId, metadataSplit.snapshotId)
         val rows: MutableList<Map<String, Any?>> = ArrayList(dataFiles.size)
         for (file in dataFiles) {
-            val row: MutableMap<String, Any?> = LinkedHashMap()
+            val row: MutableMap<String, Any?> = linkedMapOf()
             row["data_file_id"] = file.dataFileId
             row["path"] = file.path
             row["file_format"] = file.fileFormat
@@ -314,7 +311,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // checks both interpretations per page position, so adding both into the same set
         // is correct: a parquet delete file row_id matches the rowId branch, an inlined
         // delete row_id matches the rowOffset branch.
-        val deletedRows: MutableSet<Long> = HashSet(split.inlinedDeletedRowPositions)
+        val deletedRows: MutableSet<Long> = split.inlinedDeletedRowPositions.toMutableSet()
         for (deleteFilePath in split.deleteFilePaths) {
             if (isPuffinPath(deleteFilePath)) {
                 deletedRows.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
@@ -424,7 +421,7 @@ class DucklakePageSourceProvider @Inject constructor(
 
             // Separate out the synthetic $row_id column (used for DELETE/UPDATE/MERGE)
             var rowIdOutputPosition = -1
-            val fileColumns: MutableList<DucklakeColumnHandle> = ArrayList()
+            val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
             for (i in columns.indices) {
                 if (columns[i].isRowIdColumn()) {
                     rowIdOutputPosition = i
@@ -441,7 +438,7 @@ class DucklakePageSourceProvider @Inject constructor(
             var parquetColumnOrdinal = 0
 
             // Build field_id → ColumnIO index for field_id-based column matching (schema evolution: renames)
-            val fieldIdToColumnIO: MutableMap<Int, ColumnIO> = HashMap()
+            val fieldIdToColumnIO: MutableMap<Int, ColumnIO> = mutableMapOf()
             for (field in fileSchema.fields) {
                 if (field.id != null) {
                     val childIO: ColumnIO? = messageColumnIO.getChild(field.name)
@@ -569,7 +566,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // they are injected after the data page source returns its rows, exactly as on the
         // parquet path.
         var rowIdOutputPosition = -1
-        val fileColumns: MutableList<DucklakeColumnHandle> = ArrayList()
+        val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
         for (i in columns.indices) {
             if (columns[i].isRowIdColumn()) {
                 rowIdOutputPosition = i
@@ -599,7 +596,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // Hash-set membership so the per-domain filter is O(predicateColumns) rather than
         // O(predicateColumns * fileColumns) — fileColumns is an ArrayList, so .contains is a
         // linear scan with record-based equals per probe.
-        val fileColumnSet: Set<DucklakeColumnHandle> = HashSet(fileColumns)
+        val fileColumnSet: Set<DucklakeColumnHandle> = fileColumns.toHashSet()
         val filePredicate: TupleDomain<DucklakeColumnHandle> = if (splitHasActiveDeletes(split))
                 TupleDomain.all()
             else
@@ -676,7 +673,7 @@ class DucklakePageSourceProvider @Inject constructor(
         {
             val rows: MutableList<Map<String, Any?>> = ArrayList(snapshots.size)
             for (snapshot in snapshots) {
-                val row: MutableMap<String, Any?> = LinkedHashMap()
+                val row: MutableMap<String, Any?> = linkedMapOf()
                 row["snapshot_id"] = snapshot.snapshotId
                 row["snapshot_time"] = snapshot.snapshotTime
                 row["schema_version"] = snapshot.schemaVersion
@@ -691,7 +688,7 @@ class DucklakePageSourceProvider @Inject constructor(
         {
             val rows: MutableList<Map<String, Any?>> = ArrayList(changes.size)
             for (change in changes) {
-                val row: MutableMap<String, Any?> = LinkedHashMap()
+                val row: MutableMap<String, Any?> = linkedMapOf()
                 row["snapshot_id"] = change.snapshotId
                 row["changes_made"] = change.changesMade
                 row["author"] = change.author
@@ -777,7 +774,6 @@ class DucklakePageSourceProvider @Inject constructor(
          * file-absolute positions for delete matching (B3b — see the bug trace and option-(B)
          * fix in {@code .ai/kotlin-port/BEFORE-RESUME.md}).
          */
-        @JvmStatic
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
             split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
 

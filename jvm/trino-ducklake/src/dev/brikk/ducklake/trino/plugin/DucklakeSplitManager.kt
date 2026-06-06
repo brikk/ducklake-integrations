@@ -48,7 +48,6 @@ import io.trino.spi.type.DateType.DATE
 import java.time.LocalDate
 import java.util.Locale
 import java.util.ArrayList
-import java.util.HashMap
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 import java.util.Optional
@@ -381,10 +380,10 @@ class DucklakeSplitManager @Inject constructor(
         // Build columnId -> list of (partitionKeyIndex, transform, arity) for all fields.
         // A single column can have multiple transforms (e.g., year + month on the same date column).
         // Arity is populated only for BUCKET transforms; other kinds carry empty.
-        val columnToPartKeys: MutableMap<Long, MutableList<PartitionKeyMapping>> = HashMap()
+        val columnToPartKeys: MutableMap<Long, MutableList<PartitionKeyMapping>> = mutableMapOf()
         for (spec in specs) {
             for (field in spec.fields) {
-                columnToPartKeys.computeIfAbsent(field.columnId) { _ -> ArrayList() }
+                columnToPartKeys.computeIfAbsent(field.columnId) { _ -> mutableListOf() }
                         .add(
                             PartitionKeyMapping(
                                 field.partitionKeyIndex,
@@ -503,7 +502,7 @@ class DucklakeSplitManager @Inject constructor(
         // pass so resolved paths line up with their catalog-recorded footer sizes; paths
         // are still deduplicated, and when duplicates carry different (or absent) hints we
         // prefer the first recorded positive hint.
-        val deleteFileFooterSizes: LinkedHashMap<String, Long> = LinkedHashMap()
+        val deleteFileFooterSizes: LinkedHashMap<String, Long> = linkedMapOf()
         for (df in dataFileGroup) {
             val deleteFilePath = df.deleteFilePath ?: continue
             val resolvedDeletePath: String = pathResolver.resolveFilePath(
@@ -611,11 +610,11 @@ class DucklakeSplitManager @Inject constructor(
             if (values.isEmpty()) {
                 return mapOf()
             }
-            val byKeyIndex: MutableMap<Int, String?> = HashMap()
+            val byKeyIndex: MutableMap<Int, String?> = mutableMapOf()
             for (v in values) {
                 byKeyIndex[v.partitionKeyIndex] = v.partitionValue
             }
-            val out: MutableMap<Long, String> = HashMap()
+            val out: MutableMap<Long, String> = mutableMapOf()
             for (field in spec.fields) {
                 if (field.transform != DucklakePartitionTransform.IDENTITY) {
                     continue

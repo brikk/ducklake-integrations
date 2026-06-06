@@ -39,7 +39,7 @@ open class DucklakePagePartitioner(
 
     init {
         // Build mappings: for each partition field, find the source column index and type
-        val mappings: MutableList<PartitionColumnMapping> = ArrayList()
+        val mappings: MutableList<PartitionColumnMapping> = mutableListOf()
         for (field in partitionSpec.fields) {
             var sourceColumnIndex = -1
             var sourceColumn: DucklakeColumnHandle? = null
@@ -85,7 +85,7 @@ open class DucklakePagePartitioner(
      * Compute partition values for a given row position. Returns a map of partitionKeyIndex -> value string.
      */
     open fun getPartitionValues(page: Page, position: Int): Map<Int, String?> {
-        val values: MutableMap<Int, String?> = HashMap()
+        val values: MutableMap<Int, String?> = mutableMapOf()
         for (mapping in partitionColumnMappings) {
             val sourceBlock = page.getBlock(mapping.sourceColumnIndex)
             val value = DucklakePartitionComputer.computePartitionValue(

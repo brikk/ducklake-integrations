@@ -91,7 +91,6 @@ class FooterPrefetchingParquetDataSource private constructor(
         // (see tables/ducklake_data_file.md); the post-script sits immediately after.
         private const val POST_SCRIPT_SIZE: Int = 8
 
-        @JvmStatic
         @Throws(IOException::class)
         fun wrapIfHintUsable(delegate: ParquetDataSource, footerSizeHint: Long, maxFooterReadSize: Long): ParquetDataSource {
             if (footerSizeHint <= 0) {
@@ -127,7 +126,6 @@ class FooterPrefetchingParquetDataSource private constructor(
          * large as the read MetadataReader will request, or the reader falls through to the
          * delegate as it would for a too-small hint.
          */
-        @JvmStatic
         fun wrapWithPrefetchedTail(delegate: ParquetDataSource, prefetchedTail: Slice): ParquetDataSource =
             FooterPrefetchingParquetDataSource(delegate, prefetchedTail)
     }

@@ -191,11 +191,9 @@ class TestTrinoFunctionAliases {
         @Throws(java.sql.SQLException::class)
         private fun openConnectionWithExtension(): Connection {
             val path = TrinoParityExtensionResolver.resolveBundledExtensionPath()
-                    .orElseThrow {
-                        AssertionError(
-                                "trino_parity extension not bundled in plugin jar on this platform — " +
-                                        "build it first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`.")
-                    }
+                    ?: throw AssertionError(
+                            "trino_parity extension not bundled in plugin jar on this platform — " +
+                                    "build it first: `(cd duckdb-trino-parity-extension && GEN=ninja make)`.")
             val props = Properties()
             props.setProperty("allow_unsigned_extensions", "true")
             val conn = DriverManager.getConnection("jdbc:duckdb:", props)

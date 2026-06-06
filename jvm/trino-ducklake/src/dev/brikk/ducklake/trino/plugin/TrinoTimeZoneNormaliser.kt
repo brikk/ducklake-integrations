@@ -46,7 +46,6 @@ object TrinoTimeZoneNormaliser {
      * string for any case the rules can't translate; the caller handles
      * DuckDB's actual response.
      */
-    @JvmStatic
     fun normalise(trinoZoneId: String?): String? {
         if (trinoZoneId == null) {
             return null
@@ -73,6 +72,5 @@ object TrinoTimeZoneNormaliser {
         return trinoZoneId
     }
 
-    @JvmStatic
     private fun isAsciiDigit(c: Char): Boolean = c in '0'..'9'
 }

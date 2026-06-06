@@ -45,7 +45,6 @@ object TrinoFunctionAliases
      * have been opened with {@code allow_unsigned_extensions=true} as a
      * Properties entry — that setting is immutable once the DB is running.
      */
-    @JvmStatic
     @Throws(SQLException::class)
     fun loadInProcess(connection: Connection, path: String)
     {
@@ -61,7 +60,6 @@ object TrinoFunctionAliases
      * must have been started with {@code -unsigned} (the testcontainer
      * entrypoint does this; production Quack deployments need the same).
      */
-    @JvmStatic
     @Throws(SQLException::class)
     fun loadServerSide(forwarder: QuackStatementForwarder, path: String)
     {

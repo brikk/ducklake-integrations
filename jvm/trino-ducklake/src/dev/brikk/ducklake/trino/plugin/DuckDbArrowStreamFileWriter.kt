@@ -92,7 +92,6 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.ArrayList
-import java.util.HashMap
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.UUID
@@ -130,7 +129,7 @@ constructor(
     private val partitionId: OptionalLong,
     columns: List<DucklakeColumnHandle>,
     localTempDir: Path) : DucklakeFileWriter {
-    private val partitionValues: Map<Int, String?> = HashMap(partitionValues)
+    private val partitionValues: Map<Int, String?> = partitionValues.toMap()
     private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.map { it.columnType }
     private val localTempFile: Path
