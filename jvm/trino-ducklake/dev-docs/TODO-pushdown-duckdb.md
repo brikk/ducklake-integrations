@@ -2,6 +2,10 @@
 
 Bring our duckdb-format read path up to the BigQuery / Snowflake connector shape: a curated translator that turns Trino's `ConnectorExpression` predicates into DuckDB SQL, plus DuckDB-namespaced functions exposed through Trino's function SPI for things Trino doesn't have natively.
 
+This file is the **program tracker** (roadmap, history, open items). For the
+**current pushable surface** — every operator, transform, and function that
+pushes today — see [REFERENCE-duckdb-pushdown.md](REFERENCE-duckdb-pushdown.md).
+
 Background and architecture: see [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md).
 Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function-mapping.md).
 

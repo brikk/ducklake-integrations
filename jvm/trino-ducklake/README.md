@@ -208,7 +208,7 @@ operators and functions are not available through Trino.
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
 | SELECT / table scans | Yes | |
-| Predicate pushdown (WHERE) | Yes | TupleDomain on all types; function-shape pushdown on duckdb-format splits — see [Function Pushdown](#function-pushdown) |
+| Predicate pushdown (WHERE) | Yes | TupleDomain on all types (both formats); duckdb-format splits also get operator/`CAST`/`LIKE`/function pushdown into DuckDB — see [`dev-docs/REFERENCE-duckdb-pushdown.md`](dev-docs/REFERENCE-duckdb-pushdown.md) |
 | File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files via `ducklake_file_column_stats` (top-level and nested-leaf rows). Trino predicates today land on top-level handles; the nested-leaf stats are emitted on write so DuckDB readers can prune subfield predicates against Trino-written tables. |
 | Partition pruning | Yes | Identity and temporal partitions |
 | Bucket partition pruning | Yes | Murmur3 hash; prunes files for equality predicates (ranges aren't pruned — bucketing scrambles ordering) |
@@ -300,40 +300,13 @@ catalogs; it should not be needed against any v1-conformant catalog.
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
 
-## Function Pushdown
-
-When a query reads a duckdb-format data file (see [DuckDB-Format Data Files](#duckdb-format-data-files-experimental)), the connector translates Trino predicates into DuckDB SQL fragments and pushes them server-side. Parquet-format reads still use Trino's standard Parquet reader; function-shape pushdown does not fire on parquet splits today.
-
-**Discipline (non-negotiable):**
-
-- Lossless pushdown only — anything we can't translate with confidence stays in Trino.
-- Curated map, not "translate anything that looks similar" — each translation is an explicit entry with recorded NULL / Unicode / edge semantics.
-- Cross-engine semantic test per entry — pushed result must match Trino's own evaluation byte-for-byte.
-
-**92 catalog entries** across 8 categories (`trino_meta()`, sourced from the
-[`trino_parity` DuckDB extension](../../duckdb-trino-parity-extension)), plus
-translator-level rewrites for standard operators, CAST, and `concat` → `||`.
-
-| Category | Surface | Notes |
-|---|---|-------|
-| Standard operators | `=`, `<>`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT DISTINCT FROM`, `+`, `-`, `*`, `/`, `%`, `COALESCE`, `NULLIF`, unary `-`, `CAST` / `TRY_CAST` for primitive types | Translated directly to infix / prefix SQL. |
-| LIKE / NOT LIKE | `value LIKE 'pattern' [ESCAPE 'c']` | NOT LIKE rides the existing `NOT` recursion. Dynamic patterns and NULL patterns stay unpushed. |
-| String (native, ICU) | `lower`, `upper`, `reverse`, `trim`/`ltrim`/`rtrim`, `normalize/1` | Full Unicode parity with Trino's Java semantics — root-locale full case folding, code-point reverse, `Character.isWhitespace`-aligned trim, NFC via `icu::Normalizer2`. Implemented in the extension's `string_functions.cpp`. The 2-arg `normalize(s, form)` (NFD/NFKC/NFKD selector) is intentionally not pushed — the extension's vendored ICU snapshot ships only NFC data. |
-| String (macro) | `length`, `substring/{2,3}`, `replace`, `strpos`, `starts_with`, `lpad`, `rpad`, `concat_ws/{2..5}`, `translate`, `chr`, `bit_length` | Unicode pressure pinned in fixtures (codepoint counts on ZWJ family, combining marks, 4-byte emoji). |
-| String rewrite | `concat(a, b, c, ...)` → `(a \|\| b \|\| c \|\| ...)` for VARCHAR returns | Translator-level rewrite, not a macro — DuckDB's `concat` skips NULL while Trino's NULL-propagates; the `\|\|` operator propagates in both. |
-| Numeric | `abs`, `ceil`, `floor`, `mod`, `power`, `sqrt`, `exp`, `ln`, `log2`, `log10`, trig + hyperbolic (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`), `degrees`, `radians`, `cbrt`, `truncate`, `sign`, `bit_length`, `pi()`, `bitwise_and/or/not/xor`, `bitwise_left_shift`/`bitwise_right_shift` | |
-| Regex | `regexp_like`, `regexp_extract/{2,3}`, `regexp_replace/{2,3}` | RE2 on both sides. |
-| Encoding / distance / hash | `url_encode`, `url_decode`, `to_hex`, `from_hex`, `to_base64`, `from_base64`, `levenshtein_distance`, `hamming_distance`, `md5`, `sha1`, `sha256`, `sha512`, `xxhash64`, `hmac_sha256` | `md5`/`sha1`/`sha256` wrap DuckDB's hex output in `unhex(...)`. `sha512`, `xxhash64`, and `hmac_sha256` are **native** functions in the bundled `trino_parity` extension (vendored xxHash + WjCryptLib SHA — no dependency on third-party community extensions). `xxhash64` is emitted big-endian to match Trino; `hmac_sha256(data, key)` operates on raw VARBINARY bytes. |
-| Conditional | `if/{2,3}` | |
-| Date / time | `year`, `month`, `day`, `quarter`, `hour`, `minute`, `second`, `millisecond`, `day_of_week` (ISO), `day_of_year`, `last_day_of_month`, `week` / `week_of_year` (ISO), `year_of_week` / `yow`, `date_trunc`, `date_diff`, `to_unixtime`, `from_unixtime`, `with_timezone` | Type-gated registry restricts each entry to safe argument types. Session property `pushdown_timestamp_with_timezone` (default on) extends Tier C support to `TIMESTAMP WITH TIME ZONE`; set to false to keep these predicates above the scan. `at_timezone` is not pushable — DuckDB's `TIMESTAMPTZ` has no per-value zone metadata. |
-
-Open program items tracked in [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md): step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`), step 6 (Lance table functions).
-
 ## DuckDB-Format Data Files (EXPERIMENTAL)
 
 > **Experimental.** The `.db`-format read/write path is feature-complete with cross-engine tests, but the surface is still evolving (executor abstractions, session properties, write modes). Default to parquet for production workloads unless you've evaluated the trade-offs.
 
-DuckLake's `ducklake_data_file.file_format` column enumerates the file format per data file; values today are `parquet` and `duckdb`. A duckdb-format split is one whose data lives in a single-table DuckDB database file (`.db`). Function pushdown (above) fires on duckdb-format splits only.
+DuckLake's `ducklake_data_file.file_format` column enumerates the file format per data file; values today are `parquet` and `duckdb`. A duckdb-format split is one whose data lives in a single-table DuckDB database file (`.db`).
+
+**Predicate & function pushdown.** duckdb-format splits get an extra pushdown layer on top of the standard TupleDomain + file-pruning: the connector translates Trino predicates — standard operators, `CAST`, `LIKE`, `concat`, and ~95 catalogued functions (string, numeric, regex, encoding, distance, hash, date/time) — into DuckDB SQL and evaluates them server-side. Parquet splits use Trino's standard reader and don't get this layer. **Full reference (every operator, transform, and function):** [`dev-docs/REFERENCE-duckdb-pushdown.md`](dev-docs/REFERENCE-duckdb-pushdown.md). Roadmap/history: [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md).
 
 **Read modes** (session property `duckdb_read_mode`, default `httpfs`):
 
@@ -559,6 +532,7 @@ research item.
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
 - [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
 - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
-- [TODO for Function Pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
+- [Pushdown reference (DuckDB-format reads)](dev-docs/REFERENCE-duckdb-pushdown.md) — complete current surface: predicate/pruning, operators, transforms, all ~95 functions
+- [TODO for pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
 - [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
 - [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail
