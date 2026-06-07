@@ -12,10 +12,12 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 > `normalize/{1,2}` are native C++ in
 > [duckdb-trino-parity-extension](../../../duckdb-trino-parity-extension);
 > the rest of the `trino_<name>` macros are `DefaultMacro[]` arrays in the
-> same extension; `trino_meta()` has 95 entries; the connector bundles the
-> extension binary into the plugin jar and `LOAD`s it on attach. The text
-> below still mentions placeholders, warn-on-emit, the SQL resource — read
-> those sections as historical record of how we got here, not as live state.
+> same extension; `sha512`/`xxhash64`/`hmac_sha256` are native C++ over vendored
+> primitives; `trino_meta()` has 95 entries; the connector bundles the extension
+> binary into the plugin jar and `LOAD`s it on attach. Functions DuckDB can't
+> match natively — full-case-folding `lower`/`upper`, code-point `reverse` —
+> are native C++ in the extension too (the old `@placeholder` / warn-on-emit
+> machinery and the SQL-resource replay path are gone).
 > Current open work: items 5 (DuckDB-namespaced exclusives via
 > `ConnectorFunctionProvider`), 6 (Lance), plus the extension repo's own
 > [TODO.md](../../../duckdb-trino-parity-extension/TODO.md). (Tier C default-on
@@ -38,7 +40,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
    - Function-shape numerics shipped via macros: `abs/1`, `ceil/1`, `floor/1`, `mod/2`, `power/2`, `sqrt/1`, `exp/1`, `ln/1`, `log2/1`, `log10/1`, plus round 5 trig + round 6a sign/bit_length/pi/bitwise_xor.
 3. ✅ **String basics** — `SUBSTRING`, `LENGTH`, `LOWER`, `UPPER`, `TRIM`, `CONCAT`, `POSITION`. Watch the Unicode caveat — pin behavior, test against non-ASCII.
    - Shipped: `length/1`, `reverse/1`, `trim/1`, `ltrim/1`, `rtrim/1`, `substring/{2,3}`, `replace/3`, `strpos/2`, `starts_with/2`, `lpad/3`, `rpad/3`, `concat_ws/{2..5}`, `translate/3`.
-   - **`lower/1` and `upper/1` ARE placeholders, NOT shipped.** Empirically, DuckDB's lower/upper do simple Unicode case folding (`lower('İ')` → `'i'`, `upper('ß')` → `'ẞ'`) while Trino's Java-based implementations do full case folding (`lower('İ')` → `'i' + U+0307`, `upper('ß')` → `'SS'`). Collations (NOCASE / NOACCENT / NFC / icu_*) and `nfc_normalize` do NOT change `lower()`/`upper()` output in DuckDB — verified by `ProbeDuckDbCaseFolding` before deletion. Pushing would silently drop rows Trino would have kept. The macros are installed (for ASCII-safe direct use) but excluded from `trino_meta()` and `PUSHABLE_FUNCTIONS`. See "Placeholder macros — extension required" above.
+   - **`lower/1`, `upper/1`, `reverse/1` SHIPPED as native C++ in the extension (fully Trino-aligned).** DuckDB's built-in `lower`/`upper` do *simple* case folding (`lower('İ')` → `'i'`, `upper('ß')` → `'ẞ'`) while Trino's Java implementations do *full* case folding (`lower('İ')` → `'i' + U+0307`, `upper('ß')` → `'SS'`); DuckDB's `reverse` is grapheme-cluster-aware while Trino's is code-point-only. Collations / `nfc_normalize` do NOT fix this (verified by the since-deleted `ProbeDuckDbCaseFolding`). These were initially shipped as pushed *placeholders* (ASCII-safe, warn-on-emit), then replaced by native ICU-backed C++ functions in `trino_parity` (`src/string_functions.cpp`) that match Trino's full-folding / code-point semantics. They are now in `trino_meta()` + `PUSHABLE_FUNCTIONS`, pinned by `TestTrinoFunctionAliases#testUnicodeCaseFoldingMatchesTrinoSpec`.
    - **`concat` shipped as translator rewrite** (round 6e): `Call(concat, [a,b,c])` → `(a || b || c)` when return type is `VARCHAR`. DuckDB's `concat` skips NULL; the `||` operator NULL-propagates in both engines and matches Trino's `concat` semantics.
    - Not yet shipped: `position` (operator-form; needs translator special case).
    - Regex (RE2 on both): `regexp_like/2`, `regexp_extract/{2,3}`. `regexp_like` exercises the rename pattern (Trino `regexp_like` → DuckDB `regexp_matches` via macro body).
@@ -50,28 +52,20 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 
 - ✅ **Done.** `DuckDbExpressionTranslator` reads `Constraint.getExpression()` and emits DuckDB SQL fragments via `trino_<name>(...)` macros. `DucklakeMetadata.applyFilter` decomposes top-level AND-conjuncts, translates each, and stores the survivors on `DucklakeTableHandle.pushedExpressions`. `ConstraintApplicationResult` returns translated conjuncts in `remainingExpression` too (mixed-format safety — see "When pushdown is allowed to fire" below).
 - ✅ **Done.** The handle's pushed state surfaces in the SQL via `DuckDbSelectSqlBuilder`, shared by both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor`. Same WHERE-clause shape regardless of engine.
-- ✅ **Done — alias layer + brain.** `trino-function-aliases.sql` defines `trino_*` macros and a `trino_meta()` table macro. `TrinoFunctionAliases` loads the SQL on every attach (best-effort INSTALL/LOAD icu; required CREATE OR REPLACE MACRO). The Java-side `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS` set is kept in lockstep with `trino_meta()` by `TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta`. Adding a new alias means updating both sides and adding a semantic fixture; the lockstep tests fail otherwise.
+- ✅ **Done — alias layer + brain.** The `trino_*` macros and the `trino_meta()` table macro are `DefaultMacro[]` / `DefaultTableMacro[]` arrays in the `trino_parity` extension (`src/macro_definitions.cpp`), registered at LOAD via `DefaultFunctionGenerator::CreateInternalMacroInfo`; functions DuckDB can't match as a macro (`lower`/`upper`/`reverse`, the trim family, `normalize/1`, and the hash trio) are native C++. `TrinoFunctionAliases` just `LOAD`s the bundled extension binary on attach (no SQL-resource replay; it also best-effort `INSTALL/LOAD icu` for `with_timezone`). The Java-side `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS` set is kept in lockstep with `trino_meta()` by `TestTrinoFunctionAliases#testJavaPushableSetMatchesDuckDbMeta`. Adding a new entry means updating both sides and adding a semantic fixture; the lockstep tests fail otherwise.
 - ⏳ `DucklakeFunctionProvider` (for step 5 — DuckDB-namespaced exclusives via `ConnectorFunctionProvider`). Not started.
-- ⏳ **Native DuckDB extension for Trino-equivalent semantics.** Required for functions where DuckDB's built-in diverges from Trino's documented behavior in ways collations and SQL-only wrapping can't fix. First known cases: `lower`/`upper` (Unicode case folding). Likely future cases: anything where Trino's Java-stdlib semantics produce multi-codepoint expansions or locale-specific behavior DuckDB doesn't expose. Rust template: <https://github.com/duckdb/extension-template-rs>. Until shipped, the affected macros stay as ASCII-only placeholders (see below).
+- ✅ **Done — native DuckDB extension for Trino-equivalent semantics.** The `trino_parity` extension carries native C++ implementations for functions where DuckDB's built-in diverges from Trino in ways collations / SQL wrapping can't fix: `lower`/`upper` (ICU full case folding), `reverse` (code-point), the trim family, `normalize/1` (NFC), and the hash trio `sha512`/`xxhash64`/`hmac_sha256` (vendored xxHash + WjCryptLib). The connector bundles the host-built binary and `LOAD`s it on attach. Any future divergence of this shape gets a native function in the same extension rather than a placeholder.
 
-### Placeholder macros — extension required
+### Native-semantics functions (formerly placeholders)
 
-When a `trino_<name>` macro can be installed but produces results that diverge from Trino on real-world inputs, we tag it with `-- @placeholder <name>` in `trino-function-aliases.sql`. As of round 4 the policy is:
+Some functions can't be expressed as a macro over DuckDB's built-ins without diverging from Trino on real-world (non-ASCII) input. These were *initially* shipped as pushed "placeholders" (ASCII-safe macros, with a one-shot warn-on-emit), and have since been **replaced by native C++ implementations in the `trino_parity` extension** (`src/string_functions.cpp`, ICU-backed). They are fully Trino-aligned now, in `trino_meta()` + `PUSHABLE_FUNCTIONS`, with no placeholder tag and no warn-on-emit. The `@placeholder` machinery and `PLACEHOLDER_TRINO_NAMES` are gone.
 
-- Placeholders ARE in `trino_meta()` and `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS` so the translator pushes them. This lets us measure pushdown performance and characterize the corner-case impact on real workloads.
-- `DuckDbExpressionTranslator` logs a one-shot WARN per placeholder name when emitting a pushdown call. `TrinoFunctionAliases` also logs a one-shot WARN at first attach naming all installed placeholders. Two signals, complementary scopes.
-- ASCII inputs are handled correctly by all placeholders today. Non-ASCII corner-case divergences are catalogued in [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md).
+The divergences the native versions fix (kept here as the rationale; the originating audit is [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md)):
+- `lower` / `upper` — DuckDB does *simple* case folding, Trino does *full*. `lower('İ')`: DuckDB → `'i'`, Trino → `'i' + U+0307`. `upper('ß')`: DuckDB → `'ẞ'` (U+1E9E), Trino → `'SS'`. Native impl uses ICU full case folding (root locale), matching Java.
+- `reverse` — DuckDB is grapheme-cluster-aware, Trino is code-point-only. Diverges on combining marks (`reverse('cafe' + U+0301)`) and ZWJ emoji families. Native impl reverses code points.
+- The trim family + `normalize/1` (NFC) are native for the same reason (vendored ICU; `normalize/2` stays unpushed because the bundled ICU snapshot only carries NFC data).
 
-Current placeholders:
-- `trino_lower(s)` — DuckDB does simple case folding; Trino does full case folding. `lower('İ')`: DuckDB → `'i'`, Trino → `'i' + U+0307`. Collations (NOCASE / NOACCENT / NFC / icu_*) do not change `lower()` output — verified empirically. Fix path: native extension exposing ICU `u_strFoldCase`.
-- `trino_upper(s)` — same root cause. `upper('ß')`: DuckDB → `'ẞ'` (U+1E9E), Trino → `'SS'`.
-- `trino_reverse(s)` — DuckDB reverse is grapheme-cluster-aware; Trino is code-point-only. Diverges on combining marks (`reverse('cafe' + U+0301)`) and ZWJ sequences (emoji families). Fix path: extension that calls `u_strReverse` on raw code points.
-
-To re-promote a placeholder to fully-aligned once the extension ships:
-1. Change the macro body in `trino-function-aliases.sql` to call the extension function.
-2. Remove the `-- @placeholder` tag (or keep it temporarily during the migration).
-3. Confirm `DuckDbExpressionTranslator.PLACEHOLDER_TRINO_NAMES` no longer contains the name (it's auto-derived from `@placeholder` lines, so removing the tag is enough).
-4. Add Trino-aligned semantic fixtures including the Unicode corpus that originally tripped the divergence — converts the audit-doc "documented divergences" into "regression tests".
+Pinned by `TestTrinoFunctionAliases#testUnicodeCaseFoldingMatchesTrinoSpec`, which asserts the formerly-divergent inputs now match Trino.
 
 ## When pushdown is allowed to fire (mixed-format tables)
 
@@ -104,7 +98,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Step 2 (numeric / comparison) — **partial**; comparisons + 25 numeric macros shipped (abs/ceil/floor/mod/power/sqrt/exp/ln/log2/log10 + sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/degrees/radians/cbrt/truncate); arithmetic operator translation (`$add`, `$subtract`, etc.) still deferred.
 - Step 3 (string basics) — **shipped**; 15 string macros + 3 regex macros + 7 encoding/distance macros, including:
   - Trim family with full Java whitespace set (round 4 fix).
-  - `lower/1`, `upper/1`, `reverse/1` shipped as **pushable placeholders** with one-shot warn-on-emit (round 4 — see [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md)). Native extension required for full Trino-equivalent semantics on non-ASCII input.
+  - `lower/1`, `upper/1`, `reverse/1` shipped as **native C++ in the extension**, fully Trino-aligned on non-ASCII input (ICU full case folding + code-point reverse). Initially shipped as ASCII-safe placeholders (round 4), then made native — see "Native-semantics functions (formerly placeholders)" above and [REPORT-string-unicode-audit.md](REPORT-string-unicode-audit.md).
   - `chr`, `url_encode/decode`, `to_hex/from_hex`, `to_base64/from_base64`, `levenshtein_distance`, `hamming_distance` (round 4).
   - Still deferred: `concat` (NULL-propagation differs), `position` (operator-form).
 - Step 4 (date / time) — **complete (chunks 1 + 2 + 3 + 3.5 + 4 shipped)**. Chunk 1 (round 6j) added the translator's argument-type-gate registry plus 12 new pushable entries (Tier A DATE-only, Tier B DATE or TIMESTAMP no-TZ). Chunk 2 added `TrinoTimeZoneNormaliser` and threaded Trino's session `TimeZoneKey` through the page-source / executor stack so `SET TimeZone` fires at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor`. Chunk 3 added the `pushdown_timestamp_with_timezone` session property (default off), threaded `ConnectorSession` through the translator's gates. Chunk 3.5 fixed `DucklakeArrowToPageConverter` to use the Arrow schema TZ instead of hardcoding `UTC_KEY` and promoted the full Tier C surface (`year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff`). Chunk 4 added `from_unixtime/1` and `with_timezone/2`; `at_timezone(WTZ, varchar)` was probed and confirmed **not pushable** through this connector (DuckDB's TIMESTAMPTZ has no per-value zone metadata, so the "rezone display" operation is fundamentally not expressible — documented). Year-boundary smoking gun confirmed end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through the full Trino stack. User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` now renders in session zone (matches Iceberg / Hive / Parquet `isAdjustedToUtc=true`) instead of UTC. Date-specific design docs archived to [archive/](archive/). Open follow-up: parquet-format read path uses Trino's standard parquet reader which hardcodes `UTC_KEY` (same fault mode as our Arrow path pre-3.5) — documented in the archived TODO; not blocking since function-shape pushdown doesn't fire on parquet splits today. **Default-on flip landed 2026-06-06: `pushdown_timestamp_with_timezone` now defaults to `true`** (set `false` to keep Tier C predicates above the scan).
@@ -115,7 +109,7 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 
 - 95 `trino_meta()` rows / ~79 function names across 8 categories (string, numeric, regex, encoding, distance, hash, date, conditional). Round 6j (step 4 chunk 1) added 12 date/time entries with the translator's first argument-type gate; step 4 chunk 4 added `from_unixtime/1` and `with_timezone/2` as Tier C extras; `at_timezone` is documented as not-pushable. Date-specific design docs are in [archive/](archive/).
 - Hash port shipped (2026-06-06): `sha512/1`, `xxhash64/1`, and `hmac_sha256/2` are **native C++ scalar functions** in the `trino_parity` extension (`src/hash_functions.cpp`), over vendored xxHash (BSD-2) + WjCryptLib SHA (public domain) in `third_party/hash/`. This replaced an interim macro layer that INSTALL/LOADed the `crypto`/`hashfuncs` *community* extensions best-effort — dropped to remove both the per-DuckDB-version availability lag and those extensions' load-time telemetry. `hmac_sha256` is pushable natively (raw-bytes HMAC) where the VARCHAR-only `crypto_hmac` macro route was not. `murmur3` deferred — see rounds 6b-ext/6c below.
-- 3 placeholders: `lower/1`, `upper/1`, `reverse/1`. Pushed for perf; warn-on-emit fires once per name per JVM.
+- `lower/1`, `upper/1`, `reverse/1` (+ trim family, `normalize/1`) are native C++ in the extension — fully Trino-aligned, no longer placeholders and no warn-on-emit.
 - Round 6a shipped: `sign/1`, `bit_length/1`, `pi/0`, `bitwise_xor/2`, `regexp_replace/{2,3}` (with `'g'` flag for Trino-aligned global default).
 - Round 6b-core shipped: `md5/1`, `sha1/1`, `sha256/1` (via `unhex(...)` wrap for VARBINARY return type).
 - Round 6f shipped (translator): arithmetic ops `$add/$subtract/$multiply/$divide/$modulo`, `$coalesce` (variadic), `$nullif`, `$identical` (IS NOT DISTINCT FROM).
@@ -253,8 +247,19 @@ Pick the simpler form (1+2) for round 6; revisit if production deploys need part
 
 ### Adding a new alias — checklist
 
-1. Add `CREATE OR REPLACE MACRO trino_<name>(...) AS <duckdb_body>;` to `resources/dev/brikk/ducklake/trino/plugin/trino-function-aliases.sql`.
-2. Add the matching `(name, arity, category)` row to `trino_meta()` in the same file.
-3. Add the matching `new NameArity(name, arity)` to `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`.
+Macros and `trino_meta()` live in the `trino_parity` extension repo
+([duckdb-trino-parity-extension](../../../duckdb-trino-parity-extension)), so
+steps 1–2 are edits there + a rebuild of the bundled binary.
+
+1. Add the entry to the extension's `src/macro_definitions.cpp`: a `DefaultMacro`
+   row (`{DEFAULT_SCHEMA, "trino_<name>", {args…, nullptr}, {{nullptr,nullptr}}, "<duckdb_body>"}`),
+   OR a native C++ scalar function (in `src/string_functions.cpp` /
+   `src/hash_functions.cpp`, registered in `trino_parity_extension.cpp`) when the
+   semantics can't be matched by a macro over DuckDB built-ins.
+2. Add the matching `('name', arity, 'category')` row to `trino_meta()` in
+   `src/macro_definitions.cpp`, then rebuild the host binary (`make`) — the
+   trino-ducklake gradle build re-bundles it.
+3. Add the matching `NameArity(name, arity)` to `DuckDbExpressionTranslator.PUSHABLE_FUNCTIONS`
+   (and a `TYPE_GATES` entry if the push must be restricted by argument type).
 4. Add one or more `c("...", name, arity, "SELECT trino_<name>(...)", expected)` fixtures in `TestTrinoFunctionAliases#semanticCases()` (expected value chosen to match Trino's documented behaviour, not DuckDB's).
-5. Run `:trino-ducklake:test` — the parity + coverage guards fail loudly if any of steps 1–4 are out of sync.
+5. Run `:trino-ducklake:test` — the parity + coverage guards (`testJavaPushableSetMatchesDuckDbMeta`, `testMetaMatchesFixtures`) fail loudly if any of steps 1–4 are out of sync.
