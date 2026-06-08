@@ -11,6 +11,8 @@
 
 `ducklake_data_file.file_format` is an opaque string; `'lance'` is a new value alongside `'parquet'` / `'duckdb'`, no spec change. Same cross-engine contract as our `'duckdb'` extension: opt-in per table, only readers that understand `'lance'` see those files. Worth proposing upstream alongside `'duckdb'`.
 
+**Platform gap (probed 2026-06-08, v1.5.3):** the `lance` DuckDB extension is published for **osx_arm64 + linux_amd64 only — it is 404 for osx_amd64** (the Intel dev box). So the in-process Route-A probe/read CANNOT run on this Intel machine; it must go through the **linux_amd64 quack container** (extension available there), or run on an arm64 / linux host. Vortex has no such gap (published for all three). Factor this into where Lance read tests run.
+
 **Lance is a dataset, not a file (the central risk).** `COPY … TO 'x.lance' (FORMAT lance)` produces a *directory* (manifest + data + index files), but `ducklake_data_file.path` is per-file. Resolve this BEFORE write work; it also shapes how `$path` / `add_files` behave. Options to evaluate in Phase 0:
 - record the dataset directory as the `path` and treat it as opaque (one catalog row per dataset version), or
 - record one row per Lance fragment file (closer to the per-file model but more catalog churn).

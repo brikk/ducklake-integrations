@@ -16,8 +16,19 @@ Same as Lance/duckdb: `ducklake_data_file.file_format = 'vortex'` is a new opaqu
 
 ---
 
-## Phase V0 — probe (de-risk first)
-- [ ] Write one `.vortex` file out-of-band via DuckDB (`INSTALL vortex; COPY … TO 'x.vortex' (FORMAT vortex)` — confirm the writer syntax against the extension docs), register it against a DuckLake table with `file_format='vortex'` (hand-seeded catalog row or `add_files` once it accepts a format arg), attempt a Trino read, record what blows up. Output: findings note appended here, including the exact scan syntax (`read_vortex('path')` vs `FROM 'path'` with the extension's replacement scan).
+## Phase V0 — probe (DONE 2026-06-08)
+
+Ran in-process via the DuckDB JDBC driver on this osx_amd64 box (vortex extension IS published for osx_amd64, unlike lance — see below). Findings:
+- [x] **Write:** `COPY t TO 'x.vortex' (FORMAT vortex)` works (`FORMAT 'vortex'` quoted also works). Single ~4 KB file for 3 rows. Single-file output confirmed (no dataset/directory complication).
+- [x] **Read:** all three forms work and return correct row counts:
+  - `SELECT … FROM read_vortex('path')`  ← **use this** (explicit, parameterizable)
+  - `SELECT … FROM 'path.vortex'`  (replacement scan on the extension)
+  - `SELECT … FROM vortex_scan('path')`
+- [x] **Types round-trip cleanly:** `(INTEGER, VARCHAR, DECIMAL(2,1))` came back exactly. No surprising encodings surfaced through Arrow for basic types (richer encodings still to test in V1).
+
+> **Platform availability (probed 2026-06-08, v1.5.3):** `vortex` extension is published for **osx_amd64, osx_arm64, linux_amd64** (all 200). So the in-process read path works on this Intel dev box AND the linux quack container. (Contrast: `lance` is 404 on osx_amd64 — see TODO-lance.md.)
+
+Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — it needs network for `INSTALL vortex`).
 
 ## Phase V1 — read dispatch (reuse Lance Route-A machinery)
 - [ ] **Depends on** the DuckDB executor's file-scan-target generalization from TODO-lance Phase A1. If that's landed, Vortex is mostly parameterization.
