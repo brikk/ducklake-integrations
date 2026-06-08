@@ -54,6 +54,7 @@ import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
+import io.trino.spi.block.RunLengthEncodedBlock
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.connector.ConnectorPageSourceProvider
@@ -71,6 +72,7 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.VarcharType.VARCHAR
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
 import io.trino.spi.type.Type
@@ -120,6 +122,8 @@ class DucklakePageSourceProvider @Inject constructor(
         }
 
         if (split is DucklakeInlinedSplit) {
+            // createInlinedPageSource materializes rows in memory, so it weaves virtuals per row
+            // directly (it needs per-row begin_snapshot for $snapshot_id anyway). No outer wrapper.
             return createInlinedPageSource(split, columns)
         }
 
@@ -140,6 +144,15 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
+        // Split the hidden virtuals: CONSTANT virtuals ($path, $snapshot_id) are injected by the
+        // outer wrapper below; POSITIONAL virtuals ($file_row_number, $row_id) stay in the column
+        // list passed to the readers so they are injected in-pipeline before delete filtering
+        // (alongside the MERGE $row_id handle, which is not a VirtualKind but is positional too).
+        val sourceColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { col ->
+            val kind: VirtualKind? = col.virtualKind()
+            kind != null && !kind.perRow
+        }
+
         log.debug("Creating page source for file: %s", ducklakeSplit.dataFilePath)
 
         try {
@@ -153,26 +166,28 @@ class DucklakePageSourceProvider @Inject constructor(
             // Dispatch on file format
             val format = ducklakeSplit.fileFormat
             if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
-                return createParquetPageSource(
+                val delegate: ConnectorPageSource = createParquetPageSource(
                         inputFile,
-                        ducklakeColumns,
+                        sourceColumns,
                         ducklakeSplit,
                         effectivePredicate,
                         fileSystem)
+                return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true)) {
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
                     table.pushedExpressions
                 else
                     emptyList()
-                return createDuckDbPageSource(
+                val delegate: ConnectorPageSource = createDuckDbPageSource(
                         dataFileLocation,
-                        ducklakeColumns,
+                        sourceColumns,
                         ducklakeSplit,
                         effectivePredicate,
                         pushedExpressions,
                         fileSystem,
                         session)
+                return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
         }
@@ -189,69 +204,71 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
-        // Get the full column metadata to know column names for the SQL query
+        // Real (catalog-resident) columns are read from the inlined table; virtuals are woven in
+        // per row below. Inlined data has no backing file, so $path / $file_row_number / $row_id
+        // are NULL; $snapshot_id is each row's own begin_snapshot (inlined rows are versioned
+        // catalog rows, each with its own begin_snapshot — so this is genuinely per-row).
+        val realColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { it.isVirtual() }
+        val needSnapshot: Boolean = ducklakeColumns.any { it.virtualKind() == VirtualKind.SNAPSHOT_ID }
+
+        val beginSnapshots: List<Long>? = if (needSnapshot)
+                catalog.readInlinedBeginSnapshots(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+            else null
+
+        // Read the real-column values (if any) and establish the row count.
         val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(
                 inlinedSplit.tableId, inlinedSplit.snapshotId)
+        val columnById: Map<Long, DucklakeColumn> = tableColumns.stream()
+                .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
+        val realQueryColumns: List<DucklakeColumn> = realColumns.map { handle ->
+                columnById[handle.columnId]
+                        ?: throw IllegalStateException("Column not found in table metadata: ${handle.columnName}")
+        }
 
-        // Handle empty projection (e.g., COUNT(*)) — we still need to know the row count.
-        // Query with at least one column to get the correct number of rows.
-        val emptyProjection: Boolean = ducklakeColumns.isEmpty()
-        val queryColumns: List<DucklakeColumn>
-        if (emptyProjection) {
-            // Use the first table column just to get row count
-            queryColumns = ImmutableList.of(tableColumns.first())
+        val convertedRealRows: List<List<Any?>>
+        val rowCount: Int
+        if (realQueryColumns.isNotEmpty()) {
+            val rawRows: List<List<Any?>> = catalog.readInlinedData(
+                    inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
+            val realTypes: List<Type> = realColumns.map { it.columnType }
+            convertedRealRows = rawRows.map { row ->
+                val converted: MutableList<Any?> = ArrayList(row.size)
+                for (i in row.indices) {
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], realTypes[i]))
+                }
+                converted
+            }
+            rowCount = convertedRealRows.size
+        }
+        else if (beginSnapshots != null) {
+            // No real columns, but $snapshot_id was requested → its row count + values suffice.
+            convertedRealRows = emptyList()
+            rowCount = beginSnapshots.size
         }
         else {
-            // Build ordered list of columns matching the requested projection
-            val columnById: Map<Long, DucklakeColumn> = tableColumns.stream()
-                    .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
-            queryColumns = ducklakeColumns.stream()
-                    .map { handle ->
-                        columnById[handle.columnId]
-                                ?: throw IllegalStateException("Column not found in table metadata: ${handle.columnName}")
-                    }
-                    .collect(toImmutableList())
+            // Only NULL virtuals (e.g. SELECT $path) or pure COUNT(*): query one column for the count.
+            val countRows: List<List<Any?>> = catalog.readInlinedData(
+                    inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId,
+                    ImmutableList.of(tableColumns.first()))
+            convertedRealRows = emptyList()
+            rowCount = countRows.size
         }
 
-        // Read inlined data from the metadata catalog
-        val rawRows: List<List<Any?>> = catalog.readInlinedData(
-                inlinedSplit.tableId,
-                inlinedSplit.schemaVersion,
-                inlinedSplit.snapshotId,
-                queryColumns)
-
-        if (emptyProjection) {
-            // Return empty-column rows — just the count matters
-            @Suppress("UNCHECKED_CAST")
-            val emptyRows: List<List<Any?>> = rawRows.stream()
-                    .map { _ -> ImmutableList.of<Any>() as List<Any?> }
-                    .collect(toImmutableList())
-            val recordSet = InMemoryRecordSet(ImmutableList.of(), emptyRows)
-            log.debug("Created inlined page source with %d rows (empty projection) for tableId=%d", rawRows.size, inlinedSplit.tableId)
-            return RecordPageSource(recordSet)
-        }
-
-        // Extract Trino types for each column
-        val types: List<Type> = ducklakeColumns.stream()
-                .map { it.columnType }
-                .collect(toImmutableList())
-
-        // Convert JDBC values to Trino-native values
-        // InMemoryRecordSet expects null for null values in the row lists
-        val convertedRows: List<List<Any?>> = rawRows.stream()
-                .map { row ->
-                    val converted: MutableList<Any?> = ArrayList(row.size)
-                    for (i in row.indices) {
-                        converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], types[i]))
-                    }
-                    converted as List<Any?>
+        // Assemble output rows in the requested column order, weaving virtuals per row.
+        val outputTypes: List<Type> = ducklakeColumns.map { it.columnType }
+        val outputRows: List<List<Any?>> = (0 until rowCount).map { r ->
+            var realIdx = 0
+            ducklakeColumns.map { col ->
+                when (col.virtualKind()) {
+                    null -> convertedRealRows[r][realIdx++]
+                    VirtualKind.SNAPSHOT_ID -> beginSnapshots!![r]
+                    else -> null  // PATH, FILE_ROW_NUMBER, ROW_ID are NULL on inlined data
                 }
-                .collect(toImmutableList())
+            }
+        }
 
-        log.debug("Created inlined page source with %d rows for tableId=%d", rawRows.size, inlinedSplit.tableId)
-
-        val recordSet = InMemoryRecordSet(types, convertedRows)
-        return RecordPageSource(recordSet)
+        log.debug("Created inlined page source with %d rows for tableId=%d", rowCount, inlinedSplit.tableId)
+        return RecordPageSource(InMemoryRecordSet(outputTypes, outputRows))
     }
 
     private fun createMetadataPageSource(metadataSplit: DucklakeMetadataSplit, columns: List<ColumnHandle>): ConnectorPageSource
@@ -384,7 +401,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val dataSourceId: ParquetDataSourceId = dataSource.id
             val descriptorsByPath: Map<List<String>, ColumnDescriptor> = getDescriptors(fileSchema, fileSchema)
             // B3b: when the split carries active position deletes, disable in-reader predicate
-            // pushdown (row-group pruning + page-level skipping). RowIdInjectingPageSource and
+            // pushdown (row-group pruning + page-level skipping). PositionalVirtualInjectingPageSource and
             // DeleteRowFilterTransform derive file positions from cumulative page sizes
             // (nextRowOffset += positionCount), which only matches true file positions when
             // pages stream contiguously from row 0. Pruning creates gaps and mis-aligns the
@@ -403,8 +420,16 @@ class DucklakePageSourceProvider @Inject constructor(
             // start=0 throughout), and getFilteredRowGroups below is called with start=0 /
             // length=split.fileSizeBytes(), so this invariant holds. Any change to split
             // granularity MUST re-derive position math (or do the performant fix above).
+            // Positions for $file_row_number / $row_id come from the cumulative page offset, which
+            // only matches true file positions when the reader streams contiguously from row 0.
+            // Predicate pushdown can prune row groups and break that, so disable it when a
+            // positional virtual is requested — same reasoning as the active-deletes case (B3b).
+            // Scoped to the queryable virtuals (perRow); the MERGE $row_id (-100) keeps its
+            // existing behavior (pushdown gated only by active deletes).
+            val requiresContiguousPositions: Boolean =
+                    splitHasActiveDeletes(split) || columns.any { it.virtualKind()?.perRow == true }
             val parquetTupleDomain: TupleDomain<ColumnDescriptor> =
-                    if (splitHasActiveDeletes(split)) TupleDomain.all()
+                    if (requiresContiguousPositions) TupleDomain.all()
                     else toParquetTupleDomain(descriptorsByPath, effectivePredicate)
             val parquetPredicate: TupleDomainParquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC)
             val rowGroups: List<RowGroupInfo> = getFilteredRowGroups(
@@ -419,12 +444,17 @@ class DucklakePageSourceProvider @Inject constructor(
                     Domain.DEFAULT_COMPACTION_THRESHOLD,
                     parquetReaderOptions)
 
-            // Separate out the synthetic $row_id column (used for DELETE/UPDATE/MERGE)
-            var rowIdOutputPosition = -1
+            // Separate out positional columns — the MERGE $row_id (-100, used for
+            // DELETE/UPDATE/MERGE) plus the queryable positional virtuals $row_id and
+            // $file_row_number — from file-resident columns. They are injected from cumulative
+            // file position after the reader returns rows, BEFORE delete filtering, so positions
+            // reflect original file positions.
+            val positionalInjections: MutableList<PositionalInjection> = mutableListOf()
             val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
             for (i in columns.indices) {
-                if (columns[i].isRowIdColumn()) {
-                    rowIdOutputPosition = i
+                val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
+                if (addRowIdStart != null) {
+                    positionalInjections.add(PositionalInjection(i, addRowIdStart))
                 }
                 else {
                     fileColumns.add(columns[i])
@@ -513,9 +543,10 @@ class DucklakePageSourceProvider @Inject constructor(
             var pageSource: ConnectorPageSource = ParquetPageSource(parquetReader)
             pageSource = transforms.build(pageSource)
 
-            // Inject $row_id column before delete filtering so row IDs reflect original file positions
-            if (rowIdOutputPosition >= 0) {
-                pageSource = RowIdInjectingPageSource(pageSource, fileColumns.size, rowIdOutputPosition, split.rowIdStart)
+            // Inject positional virtuals before delete filtering so they reflect original file positions
+            if (positionalInjections.isNotEmpty()) {
+                pageSource = PositionalVirtualInjectingPageSource(
+                        pageSource, fileColumns.size + positionalInjections.size, positionalInjections, split.rowIdStart)
             }
 
             pageSource = applyDeleteFile(fileSystem, split, pageSource)
@@ -562,19 +593,26 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             session: ConnectorSession): ConnectorPageSource
     {
-        // Separate $row_id from file-resident columns. The .db file does not store row IDs;
+        // Separate positional columns (MERGE $row_id + queryable $row_id / $file_row_number)
+        // from file-resident columns. The .db file does not store row IDs / file positions;
         // they are injected after the data page source returns its rows, exactly as on the
         // parquet path.
-        var rowIdOutputPosition = -1
+        val positionalInjections: MutableList<PositionalInjection> = mutableListOf()
         val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
         for (i in columns.indices) {
-            if (columns[i].isRowIdColumn()) {
-                rowIdOutputPosition = i
+            val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
+            if (addRowIdStart != null) {
+                positionalInjections.add(PositionalInjection(i, addRowIdStart))
             }
             else {
                 fileColumns.add(columns[i])
             }
         }
+
+        // See createParquetPageSource: disable predicate/expression pushdown when a positional
+        // virtual is requested so cumulative-offset positions stay aligned with the .db scan output.
+        val requiresContiguousPositions: Boolean =
+                splitHasActiveDeletes(split) || columns.any { it.virtualKind()?.perRow == true }
 
         // Empty projection (e.g. COUNT(*)) is handled inside DuckDbFilePageSource by
         // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
@@ -590,14 +628,14 @@ class DucklakePageSourceProvider @Inject constructor(
         // Restrict the pushed-down predicate to columns we actually project (filter
         // pipeline still applies any not-pushed-down or non-projected predicates above).
         // B3b: when the split carries active position deletes, drop the pushed predicate so
-        // DuckDB returns rows contiguously from row 0. RowIdInjectingPageSource's cumulative
+        // DuckDB returns rows contiguously from row 0. PositionalVirtualInjectingPageSource's cumulative
         // nextRowOffset assumes contiguous output; predicate-pushed DuckDB scans return only
         // matching rows, breaking the position math. Trino still filters above the page source.
         // Hash-set membership so the per-domain filter is O(predicateColumns) rather than
         // O(predicateColumns * fileColumns) — fileColumns is an ArrayList, so .contains is a
         // linear scan with record-based equals per probe.
         val fileColumnSet: Set<DucklakeColumnHandle> = fileColumns.toHashSet()
-        val filePredicate: TupleDomain<DucklakeColumnHandle> = if (splitHasActiveDeletes(split))
+        val filePredicate: TupleDomain<DucklakeColumnHandle> = if (requiresContiguousPositions)
                 TupleDomain.all()
             else
                 effectivePredicate.filter { col, _ -> fileColumnSet.contains(col) }
@@ -614,14 +652,15 @@ class DucklakePageSourceProvider @Inject constructor(
 
         // B3b: drop pushed complex expressions when the split has active deletes — same
         // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
-        // matching rows, breaking RowIdInjectingPageSource's cumulative-offset math.
-        val effectivePushedExpressions: List<String> = if (splitHasActiveDeletes(split)) emptyList() else pushedExpressions
+        // matching rows, breaking PositionalVirtualInjectingPageSource's cumulative-offset math.
+        val effectivePushedExpressions: List<String> = if (requiresContiguousPositions) emptyList() else pushedExpressions
         var pageSource: ConnectorPageSource = DuckDbFilePageSource(
                 executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
                 duckDbTimeZone)
 
-        if (rowIdOutputPosition >= 0) {
-            pageSource = RowIdInjectingPageSource(pageSource, fileColumns.size, rowIdOutputPosition, split.rowIdStart)
+        if (positionalInjections.isNotEmpty()) {
+            pageSource = PositionalVirtualInjectingPageSource(
+                    pageSource, fileColumns.size + positionalInjections.size, positionalInjections, split.rowIdStart)
         }
 
         pageSource = applyDeleteFile(fileSystem, split, pageSource)
@@ -770,7 +809,7 @@ class DucklakePageSourceProvider @Inject constructor(
          * <p>When this returns {@code true}, the page-source pipeline must NOT push the query
          * predicate down into the parquet reader or the DuckDB scan: doing so prunes row groups
          * / skips rows inside the underlying file, breaking the cumulative-offset math that
-         * {@link RowIdInjectingPageSource} and {@link DeleteRowFilterTransform} use to compute
+         * {@link PositionalVirtualInjectingPageSource} and {@link DeleteRowFilterTransform} use to compute
          * file-absolute positions for delete matching (B3b — see the bug trace and option-(B)
          * fix in {@code .ai/kotlin-port/BEFORE-RESUME.md}).
          */
@@ -825,6 +864,62 @@ class DucklakePageSourceProvider @Inject constructor(
                 return column.columnType.createNullBlock()
             }
         }
+
+        /**
+         * Classify a requested column as a positional injection, or not.
+         * Returns true  -> $row_id semantics (value = rowIdStart + file position): the MERGE
+         *                  row-id channel (-100) and the queryable $row_id virtual (-104).
+         * Returns false -> $file_row_number (value = file position, 0-based): the -103 virtual.
+         * Returns null  -> not positional (real column, or a constant virtual).
+         */
+        private fun positionalColumnKind(column: DucklakeColumnHandle): Boolean? {
+            if (column.isRowIdColumn()) {
+                return true
+            }
+            return when (column.virtualKind()) {
+                VirtualKind.ROW_ID -> true
+                VirtualKind.FILE_ROW_NUMBER -> false
+                else -> null
+            }
+        }
+
+        /**
+         * Single-position constant block for a virtual column on a file-backed split
+         * (parquet or duckdb): $path = the data file path, $snapshot_id = the file's
+         * begin_snapshot. The injecting page source RLE-expands it to each page.
+         */
+        private fun dataFileVirtualBlock(kind: VirtualKind, split: DucklakeSplit): Block = when (kind) {
+            VirtualKind.PATH -> io.trino.spi.type.TypeUtils.writeNativeValue(VARCHAR, Slices.utf8Slice(split.dataFilePath))
+            VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.beginSnapshot)
+            VirtualKind.FILE_SIZE_BYTES -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.fileSizeBytes)
+            else -> throw TrinoException(NOT_SUPPORTED, "Virtual column not yet supported on the read path: ${kind.columnName}")
+        }
+
+        /**
+         * Wrap [delegate] so the virtual columns selected by [wrapKind] are injected as constant
+         * RLE blocks at their requested output positions. Only those kinds are wrapped here; any
+         * other virtuals in [requestedColumns] are assumed to be produced by [delegate] (e.g. the
+         * positional virtuals injected in-pipeline on file-backed splits) and consume a delegate
+         * channel. The relative order of delegate-produced columns matches their order in
+         * [requestedColumns]. Returns the delegate unchanged when nothing needs wrapping.
+         */
+        private fun injectConstantVirtuals(
+                delegate: ConnectorPageSource,
+                requestedColumns: List<DucklakeColumnHandle>,
+                wrapKind: (VirtualKind) -> Boolean,
+                blockForKind: (VirtualKind) -> Block): ConnectorPageSource
+        {
+            val constantBlocks: Map<Int, Block> = requestedColumns.withIndex()
+                    .mapNotNull { (i, col) ->
+                        val kind: VirtualKind? = col.virtualKind()
+                        if (kind != null && wrapKind(kind)) i to blockForKind(kind) else null
+                    }
+                    .toMap()
+            if (constantBlocks.isEmpty()) {
+                return delegate
+            }
+            return VirtualColumnInjectingPageSource(delegate, requestedColumns.size, constantBlocks)
+        }
     }
 
     class DeleteRowFilterTransform : Function<SourcePage, SourcePage>
@@ -865,17 +960,23 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
+    /** One positional column to inject: its output channel index and whether to add rowIdStart. */
+    private class PositionalInjection(val outputPosition: Int, val addRowIdStart: Boolean)
+
     /**
-     * Wraps a ConnectorPageSource and injects a synthetic $row_id BIGINT column.
-     * The row ID is computed as rowIdStart + (cumulative file position).
-     * This must be applied BEFORE delete file filtering so the IDs match original file positions.
+     * Wraps a ConnectorPageSource and injects one or more synthetic positional BIGINT columns
+     * derived from the cumulative file position: the MERGE $row_id and the queryable $row_id
+     * (value = rowIdStart + position) and $file_row_number (value = position, 0-based). All
+     * share the same per-page running offset. Must be applied BEFORE delete-file filtering so
+     * the values match original file positions.
      */
-    private class RowIdInjectingPageSource(
+    private class PositionalVirtualInjectingPageSource(
         private val delegate: ConnectorPageSource,
-        private val delegateChannelCount: Int,
-        private val rowIdOutputPosition: Int,
+        private val totalChannels: Int,
+        injections: List<PositionalInjection>,
         private val rowIdStart: Long) : ConnectorPageSource
     {
+        private val injections: List<PositionalInjection> = injections.toList()
         private var nextRowOffset: Long = 0
 
         override fun getCompletedBytes(): Long = delegate.completedBytes
@@ -892,21 +993,85 @@ class DucklakePageSourceProvider @Inject constructor(
 
             val positionCount: Int = sourcePage.positionCount
 
-            // Build the row ID block
-            val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
-            for (i in 0 until positionCount) {
-                BIGINT.writeLong(blockBuilder, rowIdStart + nextRowOffset + i)
+            // Build each positional block from the running offset (all share the same offset).
+            val injectedBlocks: HashMap<Int, Block> = HashMap(injections.size * 2)
+            for (injection in injections) {
+                val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
+                if (injection.addRowIdStart) {
+                    for (i in 0 until positionCount) {
+                        BIGINT.writeLong(blockBuilder, rowIdStart + nextRowOffset + i)
+                    }
+                }
+                else {
+                    for (i in 0 until positionCount) {
+                        BIGINT.writeLong(blockBuilder, nextRowOffset + i)
+                    }
+                }
+                injectedBlocks[injection.outputPosition] = blockBuilder.build()
             }
             nextRowOffset += positionCount
-            val rowIdBlock: Block = blockBuilder.build()
 
-            // Build a new page with the row ID block inserted at the correct position
-            val totalChannels: Int = delegateChannelCount + 1
+            // Assemble the output page: injected blocks at their positions, delegate blocks elsewhere.
             val blocks = arrayOfNulls<Block>(totalChannels)
             var srcChannel = 0
             for (i in 0 until totalChannels) {
-                if (i == rowIdOutputPosition) {
-                    blocks[i] = rowIdBlock
+                val injected: Block? = injectedBlocks[i]
+                if (injected != null) {
+                    blocks[i] = injected
+                }
+                else {
+                    blocks[i] = sourcePage.getBlock(srcChannel)
+                    srcChannel++
+                }
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            return SourcePage.create(Page(positionCount, *(blocks as Array<Block>)))
+        }
+
+        override fun getMemoryUsage(): Long = delegate.memoryUsage
+
+        override fun getMetrics(): io.trino.spi.metrics.Metrics = delegate.metrics
+
+        override fun isBlocked(): java.util.concurrent.CompletableFuture<*> = delegate.isBlocked()
+
+        @Throws(IOException::class)
+        override fun close() = delegate.close()
+    }
+
+    /**
+     * Wraps a ConnectorPageSource and injects constant (per-split) virtual-column blocks at
+     * fixed output positions, RLE-expanded to each page's position count. The delegate supplies
+     * the non-virtual columns in order; [constantBlocks] maps an output channel index to its
+     * single-position constant block. Used for the constant virtuals ($path, $snapshot_id), and
+     * for ALL virtuals on inlined splits (where the file-bound ones are constant NULL). The
+     * row-varying virtuals on file-backed splits are handled in-pipeline by
+     * [PositionalVirtualInjectingPageSource] instead.
+     */
+    private class VirtualColumnInjectingPageSource(
+        private val delegate: ConnectorPageSource,
+        private val totalChannels: Int,
+        private val constantBlocks: Map<Int, Block>) : ConnectorPageSource
+    {
+        override fun getCompletedBytes(): Long = delegate.completedBytes
+
+        override fun getCompletedPositions(): OptionalLong = delegate.completedPositions
+
+        override fun getReadTimeNanos(): Long = delegate.readTimeNanos
+
+        override fun isFinished(): Boolean = delegate.isFinished
+
+        override fun getNextSourcePage(): SourcePage?
+        {
+            val sourcePage: SourcePage = delegate.nextSourcePage ?: return null
+            val positionCount: Int = sourcePage.positionCount
+
+            val blocks = arrayOfNulls<Block>(totalChannels)
+            var srcChannel = 0
+            for (i in 0 until totalChannels) {
+                val constant: Block? = constantBlocks[i]
+                if (constant != null) {
+                    blocks[i] = RunLengthEncodedBlock.create(constant, positionCount)
                 }
                 else {
                     blocks[i] = sourcePage.getBlock(srcChannel)

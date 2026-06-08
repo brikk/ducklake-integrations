@@ -1,8 +1,36 @@
 # DESIGN: Virtual Columns (`$path`, `$row_id`, `$snapshot_id`, `$file_row_number`)
 
-**Status:** Design sketch. No code yet.
+**Status:** IMPLEMENTED — all four columns ship on the read path (parquet, duckdb, inlined).
 **Scope:** trino-ducklake connector. Read path only.
 **Companion to:** [TODO-READ-MODE.md § Virtual Columns](TODO-READ-MODE.md#virtual-columns).
+
+> **Implementation notes (as built).**
+> - Handles use the sentinel-`columnId` pattern on `DucklakeColumnHandle`
+>   (not a separate type) — § 3.4. The `VirtualKind` enum is the source of
+>   truth; `virtualKind()` / `isVirtual()` are the helpers.
+> - Virtuals appear in BOTH `getColumnHandles` and `getTableMetadata`
+>   (`hidden=true`) — the hidden flag, not absence, excludes them from
+>   `SELECT *` / `DESCRIBE` (corrected from the original sketch — § 4.1).
+> - Constant virtuals (`$path`, `$snapshot_id`) are injected by an outer
+>   `VirtualColumnInjectingPageSource` (RLE blocks). Row-varying virtuals
+>   (`$file_row_number`, `$row_id`) are injected IN-pipeline before delete
+>   filtering by `PositionalVirtualInjectingPageSource` (a generalization of
+>   the old single-column row-id injector), so they reflect true file
+>   positions — § 4.2.
+> - `$snapshot_id` source is a new `beginSnapshot` field on `DucklakeSplit`
+>   (parquet/duckdb). When a positional virtual is requested, predicate
+>   pushdown is disabled (like the active-deletes case) so cumulative-offset
+>   positions stay aligned with the file.
+>
+> **Inlined `$snapshot_id` is per-row.** Inlined rows are versioned catalog
+> rows that each carry their own `begin_snapshot`, so `$snapshot_id` on inlined
+> data is genuinely per-row (not a single split value). `createInlinedPageSource`
+> reads it via `DucklakeCatalog.readInlinedBeginSnapshots` (ordered by `row_id`,
+> aligned with `readInlinedData`) and weaves it into the in-memory record set
+> alongside the NULL file-bound virtuals — no outer wrapper on the inlined path.
+>
+> **Note:** `$row_id` shares the name with the MERGE row-id channel (distinct
+> handles, ids -104 vs -100) — § 3.6; covered by the full merge/delete suite.
 
 ## 1. Goal
 
@@ -25,9 +53,11 @@ deferred.
 | `$file_row_number` | `BIGINT` | Parquet's positional metadata column | per row, 0-based |
 | `$row_id` | `BIGINT` | `DucklakeSplit.rowIdStart() + $file_row_number` | per row, globally unique within the table |
 
-**Deferred to v2:** `$file_index`, `$file_size_bytes`, `$filename`
-(unprefixed alias). The first two largely duplicate the `$files`
-metadata table; the third is a naming aesthetic.
+**Also shipped:** `$file_size_bytes` (`BIGINT`, the data file's size from
+`DucklakeSplit.fileSizeBytes`, constant per split, NULL on inlined data).
+
+**Intentionally NOT exposed** (evaluated, declined — see § 8):
+`$file_index` and `$filename`.
 
 ## 3. Key design decisions
 
@@ -67,24 +97,54 @@ ColumnMetadata.builder()
 Trino's hidden-column contract: not in `SELECT *`, not in `DESCRIBE`,
 queryable by explicit name. Iceberg's `$path` is the template.
 
-### 3.4 Handle representation: separate `DucklakeVirtualColumnHandle`
+### 3.4 Handle representation: reserved sentinel `columnId` on `DucklakeColumnHandle`
 
-```java
-public record DucklakeVirtualColumnHandle(VirtualKind kind) implements ColumnHandle {
-    public enum VirtualKind {
-        PATH,
-        SNAPSHOT_ID,
-        FILE_ROW_NUMBER,
-        ROW_ID
-    }
+**Decision (overrides the original sketch's separate-handle proposal).**
+Virtual columns reuse the existing `DucklakeColumnHandle` record,
+distinguished by a reserved **negative `columnId`** — the same pattern the
+MERGE `$row_id` handle already uses (`ROW_ID_COLUMN_ID = -100`). Real
+catalog columns always have non-negative ids, so the negative range is
+collision-free. A `VirtualKind` enum is the single source of truth for each
+virtual's reserved id, name, type, and value-source; a factory builds the
+handle from the kind.
+
+```kotlin
+enum class VirtualKind(val columnId: Long, val columnName: String, val columnType: Type) {
+    PATH(-101, "\$path", VARCHAR),
+    SNAPSHOT_ID(-102, "\$snapshot_id", BIGINT),
+    FILE_ROW_NUMBER(-103, "\$file_row_number", BIGINT),
+    ROW_ID(-104, "\$row_id", BIGINT),  // queryable; distinct id from the MERGE channel's -100
 }
 ```
 
-A distinct handle type (not a flag on `DucklakeColumnHandle`) because:
+**Why this over a separate `DucklakeVirtualColumnHandle` type:**
 
-- Write-path filtering is `instanceof` — trivial to reject
-- The enum is the natural source of truth for name + type + value-source
-- Existing column-handle consumers stay unchanged; smaller blast radius
+- Smaller blast radius — no `@JsonTypeInfo`/`@JsonSubTypes` polymorphism on
+  `DucklakeColumnHandle`, which is Jackson-serialized throughout the split path.
+- Matches the `$row_id` sentinel convention already in the code.
+
+**Accepted downside + required mitigation.** Virtual-ness is a magic-number
+convention, not a distinct type, so it is **not compiler-enforced**: a
+consumer that treats a handle as a real catalog column (catalog lookup,
+Parquet field id) will silently mishandle a virtual one if it forgets to
+check, and the write-path rejection (§ 4.4) fails *open* rather than at
+compile time. Mitigation is mandatory, not optional — centralize everything
+behind the enum plus helpers on `DucklakeColumnHandle`:
+
+- `fun virtualKind(): VirtualKind?` — non-null only for virtual handles
+- `fun isVirtual(): Boolean`
+
+and route the single write-path guard through `isVirtual()`. Keep the magic
+numbers only inside `VirtualKind`. **Escape hatch:** if this convention
+causes real bugs later, promote virtuals to a separate
+`DucklakeVirtualColumnHandle` type (the original proposal) — a localized
+refactor we can take then rather than pay for now.
+
+The queryable `$row_id` (id `-104`, via `getColumnHandles`) and the MERGE
+channel's `$row_id` (id `-100`, via `getMergeRowIdColumnHandle`) share the
+name and the `rowIdStart + position` encoding but flow through different SPI
+hooks; distinct ids keep them separate handles, honoring § 3.6's
+"don't conflate."
 
 ### 3.5 Inlined-data behavior: NULL for file-bound virtuals
 
@@ -111,13 +171,17 @@ that way in v1. Unifying them could happen later as a cleanup.
 
 ### 4.1 Surface (`DucklakeMetadata`)
 
-- `getColumnHandles(session, tableHandle)` — append the four virtual
-  handles to the existing column-handle map
-- `getColumnMetadata(session, tableHandle, columnHandle)` — when handle
-  is `DucklakeVirtualColumnHandle`, return `ColumnMetadata` with
-  `setHidden(true)` and the kind's name + type
-- `getTableMetadata` — must NOT include virtuals in the visible column
-  list; they only appear via `getColumnHandles` lookup
+- `getColumnHandles(session, tableHandle)` — append the virtual handles
+  (built via `VirtualKind.columnHandle()`) to the column-handle map
+- `getColumnMetadata(session, tableHandle, columnHandle)` — call
+  `setHidden(handle.isVirtual())` so virtuals are marked hidden
+- `getTableMetadata` — **must include** the virtuals, each with
+  `setHidden(true)`. CORRECTION to the original sketch: Trino resolves a
+  column reference against the table schema derived from `getTableMetadata`
+  (via the default `getTableSchema`), so a hidden column that is *absent*
+  here is "cannot be resolved". The `hidden` flag — not absence — is what
+  keeps a column out of `SELECT *` / `DESCRIBE` / `information_schema`.
+  Keep this list in lockstep with `getColumnHandles`.
 
 ### 4.2 Scan (`DucklakePageSourceProvider`)
 
@@ -192,14 +256,26 @@ structure, the degraded fallback is: count positions in the
 injecting page source (one add per page). Slower for huge files but
 correct, and the failure is local to one component.
 
-## 8. Out of scope (for v1)
+## 8. Out of scope (evaluated, declined)
 
-- `$file_index`, `$file_size_bytes`, `$filename` — see § 2
+- **`$file_index`** — DuckDB's `file_index` is the 0-based ordinal of a file
+  within the *current scan's* file list (`WHERE file_index=1` selects the 2nd
+  file read; see DuckDB's `parquet_virtual_columns.test`). That is a scan-local,
+  order-dependent value with no stable meaning in Trino's distributed, one-file-
+  per-split model — a split has no deterministic index among all splits. The
+  catalog's `file_order` is stable but is *different* semantics, so exposing it
+  under this name would mislead. Declined rather than ship a divergent column.
+- **`$filename`** — DuckDB's `filename` returns the full file path, which is
+  exactly our `$path`. Adding it would be a pure alias with no new information.
+  Declined; use `$path`.
 - DuckDB-name aliases (`rowid`, `filename`, etc.) — see § 3.1
 - Using `$row_id` as the merge row-id source — see § 3.6
 - Virtual columns on metadata tables (`$files`, `$snapshots`) — they
   already expose lineage via their own column set
-- Predicate pushdown on virtual columns (e.g. `WHERE $path = '...'`
-  pruning splits before scan) — a real follow-up, but the
-  user-visible feature works without it; pruning is a perf-only layer
-  on top
+
+**Done (was a follow-up):** Predicate pushdown on `$path` — `WHERE "$path" = …`
+/ IN-list prunes data files in `DucklakeSplitManager.pruneByPath` before the
+scan (evaluates each file's resolved path against the `$path` domain from the
+table handle's `unenforcedPredicate`). Purely an optimization; the engine
+re-applies the predicate above the scan, so results are correct regardless.
+Inlined splits aren't pruned (small/few) — left to the engine's filter.

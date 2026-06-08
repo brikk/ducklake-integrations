@@ -81,7 +81,13 @@ data class DucklakeSplit @JsonCreator constructor(
         // same key to the same worker(s) across queries via a consistent-hash ring,
         // enabling filesystem-cache warm reuse. Empty when caching is not enabled.
         @get:JvmName("affinityKey")
-        @param:JsonProperty("affinityKey") val affinityKey: Optional<String>)
+        @param:JsonProperty("affinityKey") val affinityKey: Optional<String>,
+        // begin_snapshot of the primary data file (ducklake_data_file.begin_snapshot) —
+        // the source for the $snapshot_id virtual column. The default applies only to the
+        // test-only convenience constructors below; production (DucklakeSplitManager.
+        // createMergedSplit) always passes the real value through the canonical constructor.
+        @get:JvmName("beginSnapshot")
+        @param:JsonProperty("beginSnapshot") val beginSnapshot: Long = 0L)
         : ConnectorSplit
 {
     // Convenience constructor without footer-size hints / partition values — used by

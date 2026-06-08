@@ -221,19 +221,29 @@ class DucklakeMetadata(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
 
-        val columnMetadata: List<ColumnMetadata> = columns.stream()
-                .map { column ->
-                    ColumnMetadata.builder()
-                            .setName(column.columnName)
-                            .setType(typeConverter.toTrinoType(column.columnType))
-                            .setNullable(column.nullsAllowed)
-                            .build()
-                }
-                .collect(toImmutableList())
+        val columnMetadata: ImmutableList.Builder<ColumnMetadata> = ImmutableList.builder()
+        for (column in columns) {
+            columnMetadata.add(ColumnMetadata.builder()
+                    .setName(column.columnName)
+                    .setType(typeConverter.toTrinoType(column.columnType))
+                    .setNullable(column.nullsAllowed)
+                    .build())
+        }
+        // Hidden virtual columns must be present here (with hidden=true) to be resolvable by
+        // name — the hidden flag is what keeps them out of SELECT * / DESCRIBE, not their
+        // absence. Keep this list in lockstep with getColumnHandles.
+        for (kind in EXPOSED_VIRTUAL_COLUMNS) {
+            columnMetadata.add(ColumnMetadata.builder()
+                    .setName(kind.columnName)
+                    .setType(kind.columnType)
+                    .setNullable(true)
+                    .setHidden(true)
+                    .build())
+        }
 
         return ConnectorTableMetadata(
                 ducklakeTableHandle.getSchemaTableName(),
-                columnMetadata)
+                columnMetadata.build())
     }
 
     override fun getTableProperties(session: ConnectorSession, table: ConnectorTableHandle): ConnectorTableProperties
@@ -320,6 +330,13 @@ class DucklakeMetadata(
                             typeConverter.toTrinoType(column.columnType),
                             column.nullsAllowed))
         }
+        // Append the hidden virtual columns. They are absent from getTableMetadata, so they
+        // stay out of SELECT * / DESCRIBE and are queryable by name only (getColumnMetadata
+        // marks them hidden). Day 1 exposes the constant-per-split pair; $file_row_number /
+        // $row_id (row-varying) are added in Day 2. See DESIGN-virtual-columns.md.
+        for (kind in EXPOSED_VIRTUAL_COLUMNS) {
+            columnHandles.put(kind.columnName, kind.columnHandle())
+        }
         return columnHandles.buildOrThrow()
     }
 
@@ -334,6 +351,7 @@ class DucklakeMetadata(
                 .setName(ducklakeColumnHandle.columnName)
                 .setType(ducklakeColumnHandle.columnType)
                 .setNullable(ducklakeColumnHandle.nullable)
+                .setHidden(ducklakeColumnHandle.isVirtual())
                 .build()
     }
 
@@ -715,6 +733,8 @@ class DucklakeMetadata(
     {
         val handle = tableHandle as DucklakeTableHandle
 
+        rejectVirtualColumnWrites(columns)
+
         val ducklakeColumns: List<DucklakeColumnHandle> = columns.stream()
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
@@ -911,6 +931,8 @@ class DucklakeMetadata(
             retryMode: RetryMode): ConnectorMergeTableHandle
     {
         val handle = tableHandle as DucklakeTableHandle
+
+        updateCaseColumns.values.forEach { rejectVirtualColumnWrites(it) }
 
         // Build insert handle for UPDATE support (delete+insert pattern)
         val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
@@ -1270,6 +1292,26 @@ class DucklakeMetadata(
     companion object {
         private val log: Logger = Logger.get(DucklakeMetadata::class.java)
         private const val METADATA_TABLE_SEPARATOR: String = "$"
+
+        // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
+        // Constant-per-split ($path, $snapshot_id) plus the row-varying lineage pair
+        // ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
+        private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> = VirtualKind.values().toList()
+
+        /**
+         * Reject any virtual column handle in a write column list with NOT_SUPPORTED.
+         * Routed through DucklakeColumnHandle.isVirtual() (the single sentinel check) so
+         * the guard can never drift from VirtualKind. The MERGE row-id handle (-100) is
+         * NOT virtual, so this never rejects it.
+         */
+        private fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
+        {
+            for (column in columns) {
+                if (column is DucklakeColumnHandle && column.isVirtual()) {
+                    throw TrinoException(NOT_SUPPORTED, "Virtual column cannot be written: ${column.columnName}")
+                }
+            }
+        }
         private val VIEW_CODEC: JsonCodec<ConnectorViewDefinition> = JsonCodecFactory().jsonCodec(ConnectorViewDefinition::class.java)
         // `trino/brikk` — base dialect is Trino SQL, `/brikk` marks that this row also carries
         // our plugin-specific JSON sidecar in `ducklake_view.column_aliases` (serialized
