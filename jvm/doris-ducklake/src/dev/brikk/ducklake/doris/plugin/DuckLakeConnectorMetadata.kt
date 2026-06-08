@@ -2,6 +2,8 @@ package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
+import dev.brikk.ducklake.catalog.DucklakePartitionField
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import org.apache.doris.connector.api.ConnectorColumn
@@ -233,53 +235,54 @@ internal class DuckLakeConnectorMetadata(
         if (bucketFields.isEmpty()) {
             return null
         }
-        val nameById = columns.associate { it.columnId to it.columnName }
         val equalities = equalityLiterals(filter)
+        val nameById = columns.associate { it.columnId to it.columnName }
         // partitionKeyIndex -> target bucket, for bucket fields with a usable `col = literal`.
-        val targetBuckets = HashMap<Int, Int>()
-        for (field in bucketFields) {
-            val colName = nameById[field.columnId] ?: continue
-            val arity = field.arity ?: continue
-            val literal = equalities[colName] ?: continue
-            val target = DuckLakeBucketTransform.bucket(literal, arity) ?: continue
-            targetBuckets[field.partitionKeyIndex] = target
-        }
+        val targetBuckets = bucketFields
+            .mapNotNull { field -> targetBucketFor(field, nameById, equalities) }
+            .toMap()
         if (targetBuckets.isEmpty()) {
             return null
         }
+        return catalog.getFilePartitionValues(handle.tableId, handle.snapshotId)
+            .filterValues { values -> fileMatchesBuckets(values, targetBuckets) }
+            .keys
+    }
 
-        val fileValues = catalog.getFilePartitionValues(handle.tableId, handle.snapshotId)
-        val kept = HashSet<Long>()
-        for ((fileId, values) in fileValues) {
-            val matches = targetBuckets.all { (keyIndex, target) ->
-                val pv = values.find { it.partitionKeyIndex == keyIndex }?.partitionValue
-                pv == null || pv.toIntOrNull() == target // null partition value → keep conservatively
-            }
-            if (matches) {
-                kept.add(fileId)
-            }
-        }
-        return kept
+    /** The `(partitionKeyIndex, bucket)` a BUCKET field resolves to under a `col = literal`, or null. */
+    private fun targetBucketFor(
+        field: DucklakePartitionField,
+        nameById: Map<Long, String>,
+        equalities: Map<String, Any>,
+    ): Pair<Int, Int>? {
+        val arity = field.arity ?: return null
+        val literal = nameById[field.columnId]?.let { equalities[it] } ?: return null
+        val target = DuckLakeBucketTransform.bucket(literal, arity) ?: return null
+        return field.partitionKeyIndex to target
+    }
+
+    /** A file survives bucket pruning if its stored bucket value matches every target (null = keep). */
+    private fun fileMatchesBuckets(
+        values: List<DucklakeFilePartitionValue>,
+        targetBuckets: Map<Int, Int>,
+    ): Boolean = targetBuckets.all { (keyIndex, target) ->
+        val pv = values.find { it.partitionKeyIndex == keyIndex }?.partitionValue
+        pv == null || pv.toIntOrNull() == target
     }
 
     /** `col = literal` equalities with their TYPED literal value (needed for bucket hashing). */
     private fun equalityLiterals(filter: ConnectorExpression): Map<String, Any> {
-        val conjuncts = when (filter) {
-            is ConnectorAnd -> filter.conjuncts
-            else -> listOf(filter)
+        val conjuncts = if (filter is ConnectorAnd) filter.conjuncts else listOf(filter)
+        return conjuncts.mapNotNull { asEqualityLiteral(it) }.toMap()
+    }
+
+    private fun asEqualityLiteral(expr: ConnectorExpression): Pair<String, Any>? {
+        if (expr !is ConnectorComparison || expr.operator != ConnectorComparison.Operator.EQ) {
+            return null
         }
-        val out = HashMap<String, Any>()
-        for (conjunct in conjuncts) {
-            if (conjunct is ConnectorComparison && conjunct.operator == ConnectorComparison.Operator.EQ) {
-                val col = conjunct.left as? ConnectorColumnRef
-                val lit = conjunct.right as? ConnectorLiteral
-                val value = lit?.value
-                if (col != null && lit != null && !lit.isNull && value != null) {
-                    out[col.columnName] = value
-                }
-            }
-        }
-        return out
+        val col = expr.left as? ConnectorColumnRef ?: return null
+        val value = (expr.right as? ConnectorLiteral)?.takeUnless { it.isNull }?.value ?: return null
+        return col.columnName to value
     }
 
     private fun intersectNullable(a: Set<Long>?, b: Set<Long>?): Set<Long>? = when {

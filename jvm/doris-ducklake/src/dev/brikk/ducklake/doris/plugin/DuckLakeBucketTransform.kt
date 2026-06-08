@@ -23,7 +23,7 @@ internal object DuckLakeBucketTransform {
     fun bucket(value: Any?, arity: Int): Int? {
         require(arity > 0) { "bucket arity must be positive, got $arity" }
         val bytes = encode(value) ?: return null
-        return (murmur3_32(bytes) and Int.MAX_VALUE) % arity
+        return (murmur3(bytes) and Int.MAX_VALUE) % arity
     }
 
     private fun encode(value: Any?): ByteArray? = when (value) {
@@ -45,7 +45,7 @@ internal object DuckLakeBucketTransform {
     }
 
     // Murmur3 x86 32-bit, seed 0 — matches Guava Hashing.murmur3_32_fixed() / Iceberg.
-    private fun murmur3_32(data: ByteArray): Int {
+    private fun murmur3(data: ByteArray): Int {
         val c1 = 0xcc9e2d51.toInt()
         val c2 = 0x1b873593
         var h1 = 0
