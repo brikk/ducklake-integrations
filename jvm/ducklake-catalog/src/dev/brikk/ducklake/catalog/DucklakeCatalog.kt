@@ -204,6 +204,15 @@ interface DucklakeCatalog {
     fun readInlinedData(tableId: Long, schemaVersion: Long, snapshotId: Long, columns: List<DucklakeColumn>): List<List<Any?>>
 
     /**
+     * Per-row `begin_snapshot` for the inlined rows live at [snapshotId], ordered by `row_id`
+     * — the SAME order [readInlinedData] returns, so the lists align positionally. Inlined rows
+     * are versioned catalog rows that each carry their own begin_snapshot, so this is the source
+     * for the `$snapshot_id` virtual column on inlined data. Returns empty when the inlined table
+     * is absent (never created / already flushed to Parquet).
+     */
+    fun readInlinedBeginSnapshots(tableId: Long, schemaVersion: Long, snapshotId: Long): List<Long>
+
+    /**
      * Get the base data path from ducklake_metadata
      */
     fun getDataPath(): String?

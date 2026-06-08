@@ -122,12 +122,9 @@ class DucklakePageSourceProvider @Inject constructor(
         }
 
         if (split is DucklakeInlinedSplit) {
-            // Inlined data has no backing file, so ALL virtuals are constant here (file-bound ones
-            // are NULL). The inner reader sees only real columns; the wrapper injects every virtual.
-            val requestedColumns: List<DucklakeColumnHandle> = columns.map(DucklakeColumnHandle::class.java::cast)
-            val sourceColumns: List<DucklakeColumnHandle> = requestedColumns.filterNot { it.isVirtual() }
-            val delegate: ConnectorPageSource = createInlinedPageSource(split, sourceColumns)
-            return injectConstantVirtuals(delegate, requestedColumns, { true }) { kind -> inlinedVirtualBlock(kind, split) }
+            // createInlinedPageSource materializes rows in memory, so it weaves virtuals per row
+            // directly (it needs per-row begin_snapshot for $snapshot_id anyway). No outer wrapper.
+            return createInlinedPageSource(split, columns)
         }
 
         val ducklakeSplit = split as DucklakeSplit
@@ -207,69 +204,71 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
-        // Get the full column metadata to know column names for the SQL query
+        // Real (catalog-resident) columns are read from the inlined table; virtuals are woven in
+        // per row below. Inlined data has no backing file, so $path / $file_row_number / $row_id
+        // are NULL; $snapshot_id is each row's own begin_snapshot (inlined rows are versioned
+        // catalog rows, each with its own begin_snapshot — so this is genuinely per-row).
+        val realColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { it.isVirtual() }
+        val needSnapshot: Boolean = ducklakeColumns.any { it.virtualKind() == VirtualKind.SNAPSHOT_ID }
+
+        val beginSnapshots: List<Long>? = if (needSnapshot)
+                catalog.readInlinedBeginSnapshots(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+            else null
+
+        // Read the real-column values (if any) and establish the row count.
         val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(
                 inlinedSplit.tableId, inlinedSplit.snapshotId)
+        val columnById: Map<Long, DucklakeColumn> = tableColumns.stream()
+                .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
+        val realQueryColumns: List<DucklakeColumn> = realColumns.map { handle ->
+                columnById[handle.columnId]
+                        ?: throw IllegalStateException("Column not found in table metadata: ${handle.columnName}")
+        }
 
-        // Handle empty projection (e.g., COUNT(*)) — we still need to know the row count.
-        // Query with at least one column to get the correct number of rows.
-        val emptyProjection: Boolean = ducklakeColumns.isEmpty()
-        val queryColumns: List<DucklakeColumn>
-        if (emptyProjection) {
-            // Use the first table column just to get row count
-            queryColumns = ImmutableList.of(tableColumns.first())
+        val convertedRealRows: List<List<Any?>>
+        val rowCount: Int
+        if (realQueryColumns.isNotEmpty()) {
+            val rawRows: List<List<Any?>> = catalog.readInlinedData(
+                    inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
+            val realTypes: List<Type> = realColumns.map { it.columnType }
+            convertedRealRows = rawRows.map { row ->
+                val converted: MutableList<Any?> = ArrayList(row.size)
+                for (i in row.indices) {
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], realTypes[i]))
+                }
+                converted
+            }
+            rowCount = convertedRealRows.size
+        }
+        else if (beginSnapshots != null) {
+            // No real columns, but $snapshot_id was requested → its row count + values suffice.
+            convertedRealRows = emptyList()
+            rowCount = beginSnapshots.size
         }
         else {
-            // Build ordered list of columns matching the requested projection
-            val columnById: Map<Long, DucklakeColumn> = tableColumns.stream()
-                    .collect(toImmutableMap(DucklakeColumn::columnId) { col -> col })
-            queryColumns = ducklakeColumns.stream()
-                    .map { handle ->
-                        columnById[handle.columnId]
-                                ?: throw IllegalStateException("Column not found in table metadata: ${handle.columnName}")
-                    }
-                    .collect(toImmutableList())
+            // Only NULL virtuals (e.g. SELECT $path) or pure COUNT(*): query one column for the count.
+            val countRows: List<List<Any?>> = catalog.readInlinedData(
+                    inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId,
+                    ImmutableList.of(tableColumns.first()))
+            convertedRealRows = emptyList()
+            rowCount = countRows.size
         }
 
-        // Read inlined data from the metadata catalog
-        val rawRows: List<List<Any?>> = catalog.readInlinedData(
-                inlinedSplit.tableId,
-                inlinedSplit.schemaVersion,
-                inlinedSplit.snapshotId,
-                queryColumns)
-
-        if (emptyProjection) {
-            // Return empty-column rows — just the count matters
-            @Suppress("UNCHECKED_CAST")
-            val emptyRows: List<List<Any?>> = rawRows.stream()
-                    .map { _ -> ImmutableList.of<Any>() as List<Any?> }
-                    .collect(toImmutableList())
-            val recordSet = InMemoryRecordSet(ImmutableList.of(), emptyRows)
-            log.debug("Created inlined page source with %d rows (empty projection) for tableId=%d", rawRows.size, inlinedSplit.tableId)
-            return RecordPageSource(recordSet)
-        }
-
-        // Extract Trino types for each column
-        val types: List<Type> = ducklakeColumns.stream()
-                .map { it.columnType }
-                .collect(toImmutableList())
-
-        // Convert JDBC values to Trino-native values
-        // InMemoryRecordSet expects null for null values in the row lists
-        val convertedRows: List<List<Any?>> = rawRows.stream()
-                .map { row ->
-                    val converted: MutableList<Any?> = ArrayList(row.size)
-                    for (i in row.indices) {
-                        converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], types[i]))
-                    }
-                    converted as List<Any?>
+        // Assemble output rows in the requested column order, weaving virtuals per row.
+        val outputTypes: List<Type> = ducklakeColumns.map { it.columnType }
+        val outputRows: List<List<Any?>> = (0 until rowCount).map { r ->
+            var realIdx = 0
+            ducklakeColumns.map { col ->
+                when (col.virtualKind()) {
+                    null -> convertedRealRows[r][realIdx++]
+                    VirtualKind.SNAPSHOT_ID -> beginSnapshots!![r]
+                    else -> null  // PATH, FILE_ROW_NUMBER, ROW_ID are NULL on inlined data
                 }
-                .collect(toImmutableList())
+            }
+        }
 
-        log.debug("Created inlined page source with %d rows for tableId=%d", rawRows.size, inlinedSplit.tableId)
-
-        val recordSet = InMemoryRecordSet(types, convertedRows)
-        return RecordPageSource(recordSet)
+        log.debug("Created inlined page source with %d rows for tableId=%d", rowCount, inlinedSplit.tableId)
+        return RecordPageSource(InMemoryRecordSet(outputTypes, outputRows))
     }
 
     private fun createMetadataPageSource(metadataSplit: DucklakeMetadataSplit, columns: List<ColumnHandle>): ConnectorPageSource
@@ -893,17 +892,6 @@ class DucklakePageSourceProvider @Inject constructor(
             VirtualKind.PATH -> io.trino.spi.type.TypeUtils.writeNativeValue(VARCHAR, Slices.utf8Slice(split.dataFilePath))
             VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.beginSnapshot)
             else -> throw TrinoException(NOT_SUPPORTED, "Virtual column not yet supported on the read path: ${kind.columnName}")
-        }
-
-        /**
-         * Single-position constant block for a virtual column on an inlined-data split.
-         * Inlined rows have no backing file, so file-bound $path is NULL; $snapshot_id is
-         * still meaningful (the inlined data's snapshot).
-         */
-        private fun inlinedVirtualBlock(kind: VirtualKind, split: DucklakeInlinedSplit): Block = when (kind) {
-            // File-bound virtuals are NULL on inlined data (no backing file / file positions).
-            VirtualKind.PATH, VirtualKind.FILE_ROW_NUMBER, VirtualKind.ROW_ID -> kind.columnType.createNullBlock()
-            VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.snapshotId)
         }
 
         /**

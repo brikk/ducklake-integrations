@@ -22,12 +22,15 @@
 >   pushdown is disabled (like the active-deletes case) so cumulative-offset
 >   positions stay aligned with the file.
 >
-> **Known caveats (follow-ups):**
-> - **Inlined `$snapshot_id`** uses the split's read snapshot, not the
->   inlined rows' true `begin_snapshot` — `DucklakeInlinedSplit` doesn't carry
->   it. Thread it through (like `DucklakeSplit.beginSnapshot`) to fix.
-> - **`$row_id` shares the name** with the MERGE row-id channel (distinct
->   handles, ids -104 vs -100) — § 3.6; covered by the full merge/delete suite.
+> **Inlined `$snapshot_id` is per-row.** Inlined rows are versioned catalog
+> rows that each carry their own `begin_snapshot`, so `$snapshot_id` on inlined
+> data is genuinely per-row (not a single split value). `createInlinedPageSource`
+> reads it via `DucklakeCatalog.readInlinedBeginSnapshots` (ordered by `row_id`,
+> aligned with `readInlinedData`) and weaves it into the in-memory record set
+> alongside the NULL file-bound virtuals — no outer wrapper on the inlined path.
+>
+> **Note:** `$row_id` shares the name with the MERGE row-id channel (distinct
+> handles, ids -104 vs -100) — § 3.6; covered by the full merge/delete suite.
 
 ## 1. Goal
 

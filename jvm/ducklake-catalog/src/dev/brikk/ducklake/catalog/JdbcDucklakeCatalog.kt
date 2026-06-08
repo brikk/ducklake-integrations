@@ -892,6 +892,32 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun readInlinedBeginSnapshots(
+        tableId: Long,
+        schemaVersion: Long,
+        snapshotId: Long,
+    ): List<Long> {
+        val inlined = InlinedDataTable.of(tableId, schemaVersion)
+        return try {
+            // Same filter + row_id ordering as readInlinedData, so the returned begin_snapshots
+            // line up positionally with that method's rows.
+            dsl.select(inlined.beginSnapshot)
+                .from(inlined.table)
+                .where(inlined.activeAt(snapshotId))
+                .orderBy(DSL.field(DSL.name("row_id")))
+                .fetch()
+                .map { it.get(inlined.beginSnapshot) }
+        }
+        catch (e: DataAccessException) {
+            log.log(
+                System.Logger.Level.DEBUG,
+                "Could not read inlined begin_snapshots from {0} (table may not exist): {1}",
+                inlined.name, e.message,
+            )
+            emptyList()
+        }
+    }
+
     private fun getSnapshotIdForSchemaVersion(tableId: Long, schemaVersion: Long, snapshotId: Long): Long? {
         // Prefer table-scoped schema version rows when available.
         // Some catalogs include ducklake_schema_versions.table_id (DuckDB behavior),

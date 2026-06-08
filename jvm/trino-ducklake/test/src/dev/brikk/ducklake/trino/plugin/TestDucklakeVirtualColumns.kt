@@ -166,6 +166,20 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
+    fun testInlinedSnapshotIdIsPerRowBeginSnapshot() {
+        // Inlined rows are versioned catalog rows, each with its own begin_snapshot, so
+        // $snapshot_id is per-row — a real, positive snapshot of the table (present in its
+        // $snapshots metadata), not the query's read snapshot.
+        val tableSnapshots = computeActual("SELECT snapshot_id FROM \"inlined_table\$snapshots\"").materializedRows
+                .map { (it.getField(0) as Number).toLong() }.toSet()
+        val rowSnapshots = computeActual("SELECT $SNAPSHOT FROM inlined_table").materializedRows
+                .map { (it.getField(0) as Number).toLong() }
+        assertThat(rowSnapshots).hasSize(3)
+        assertThat(rowSnapshots).allMatch { it > 0L }
+        assertThat(tableSnapshots).containsAll(rowSnapshots)
+    }
+
+    @Test
     fun testPositionalVirtualsReflectOriginalFilePositionsAfterDeletes() {
         // deleted_rows_table: 3 of 6 rows removed via merge-on-read deletes. Positions are computed
         // PRE-delete, so the 3 survivors keep their ORIGINAL file positions (not renumbered 0..2).
