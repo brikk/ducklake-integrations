@@ -404,8 +404,9 @@ open class TestDucklakeFileFormatPrecedence : AbstractDucklakeIntegrationTest() 
         // The validator only fires on explicit SET — null (unset) skips it. We pin
         // the validation behavior here so the null-default change in N1 doesn't
         // accidentally weaken the validator for explicit sets.
+        // 'orc' is a genuinely-unsupported format here (parquet/duckdb/vortex are the valid set).
         val badSession = Session.builder(session)
-                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, "vortex")
+                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, "orc")
                 .build()
         assertThatThrownBy {
             computeActual(badSession,

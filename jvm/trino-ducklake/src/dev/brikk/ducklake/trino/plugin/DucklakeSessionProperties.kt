@@ -153,12 +153,12 @@ open class DucklakeSessionProperties @Inject constructor() {
 
         private fun validateDataFileFormat(value: String) {
             // Validator only fires on explicit SET — null (unset) never reaches this method.
-            // NOTE: vortex is read-only for now (no writer wired), so it is deliberately NOT a
-            // valid *write* format here — reject it early rather than fail late in the page sink.
-            if (!FORMAT_PARQUET.equals(value, ignoreCase = true) && !FORMAT_DUCKDB.equals(value, ignoreCase = true)) {
+            if (!FORMAT_PARQUET.equals(value, ignoreCase = true) &&
+                    !FORMAT_DUCKDB.equals(value, ignoreCase = true) &&
+                    !FORMAT_VORTEX.equals(value, ignoreCase = true)) {
                 throw TrinoException(
                         INVALID_SESSION_PROPERTY,
-                    "$DATA_FILE_FORMAT must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB'"
+                    "$DATA_FILE_FORMAT must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB', '$FORMAT_VORTEX'"
                 )
             }
         }

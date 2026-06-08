@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.airlift.log.Logger
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
@@ -128,10 +129,18 @@ constructor(
     partitionValues: Map<Int, String?>,
     private val partitionId: OptionalLong,
     columns: List<DucklakeColumnHandle>,
-    localTempDir: Path) : DucklakeFileWriter {
+    localTempDir: Path,
+    // FORMAT_DUCKDB: INSERT the Arrow stream into an ATTACHed .db (the .db is the output, stats
+    // via SQL). FORMAT_VORTEX: COPY the stream straight to a .vortex file (no ATTACH/table; stats
+    // gathered inline from the same pages via [statsAccumulator]). Shared Arrow plumbing either way.
+    private val outputFormat: String = FORMAT_DUCKDB) : DucklakeFileWriter {
     private val partitionValues: Map<Int, String?> = partitionValues.toMap()
     private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.map { it.columnType }
+    private val isVortex: Boolean = FORMAT_VORTEX.equals(outputFormat, ignoreCase = true)
+    // Inline single-pass stats for the vortex path (no queryable table to MIN/MAX); null for duckdb.
+    private val statsAccumulator: DucklakeColumnStatsAccumulator? =
+            if (isVortex) DucklakeColumnStatsAccumulator(this.columns) else null
     private val localTempFile: Path
 
     private val connection: DuckDBConnection
@@ -150,7 +159,8 @@ constructor(
 
     init {
         Files.createDirectories(localTempDir)
-        this.localTempFile = localTempDir.resolve("ducklake-write-${UUID.randomUUID()}.db")
+        val extension = if (isVortex) "vortex" else "db"
+        this.localTempFile = localTempDir.resolve("ducklake-write-${UUID.randomUUID()}.$extension")
         this.streamName = "trino_in_${UUID.randomUUID().toString().replace('-', '_')}"
 
         var conn: DuckDBConnection? = null
@@ -160,9 +170,17 @@ constructor(
         try {
             conn = DriverManager.getConnection("jdbc:duckdb:") as DuckDBConnection
             conn.createStatement().use { stmt ->
-                stmt.execute(
-                        "ATTACH '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' AS $ATTACHED_DB (READ_WRITE)")
-                stmt.execute(buildCreateTableSql())
+                if (isVortex) {
+                    // No ATTACH/table: the consumer COPYs the stream straight to the .vortex file.
+                    // INSTALL may require network on first use.
+                    stmt.execute("INSTALL vortex")
+                    stmt.execute("LOAD vortex")
+                }
+                else {
+                    stmt.execute(
+                            "ATTACH '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' AS $ATTACHED_DB (READ_WRITE)")
+                    stmt.execute(buildCreateTableSql())
+                }
             }
 
             alloc = RootAllocator()
@@ -195,7 +213,12 @@ constructor(
     }
 
     private fun runInsert() {
-        val sql = "INSERT INTO $ATTACHED_DB.$ATTACHED_SCHEMA.$ATTACHED_TABLE SELECT * FROM $streamName"
+        val sql = if (isVortex) {
+            "COPY (SELECT * FROM $streamName) TO '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' (FORMAT vortex)"
+        }
+        else {
+            "INSERT INTO $ATTACHED_DB.$ATTACHED_SCHEMA.$ATTACHED_TABLE SELECT * FROM $streamName"
+        }
         try {
             connection.createStatement().use { stmt ->
                 stmt.execute(sql)
@@ -244,6 +267,9 @@ constructor(
         if (err != null) {
             throw IOException("Arrow-stream INSERT failed", err)
         }
+        // Gather stats inline on this (producer) thread before handing the page off. Pages are
+        // immutable, so reading them here while the consumer thread also reads them is safe.
+        statsAccumulator?.add(page)
         try {
             // Block on a bounded queue so we don't outrun the consumer.
             pageQueue.put(page)
@@ -289,18 +315,23 @@ constructor(
             throw IOException("Arrow-stream INSERT failed for $remoteLocation", err)
         }
 
-        // Stats: query the just-written table while still attached. Same shape as
-        // the Appender path's extractColumnStats.
+        // Stats. Vortex: the COPY already wrote the file and stats were gathered inline from the
+        // stream — no table to query, no DETACH. DuckDB: query the just-written attached table.
         val columnStats: List<DucklakeFileColumnStats>
         try {
-            columnStats = extractColumnStats()
-            connection.createStatement().use { stmt ->
-                stmt.execute("DETACH $ATTACHED_DB")
+            if (isVortex) {
+                columnStats = statsAccumulator!!.build()
+            }
+            else {
+                columnStats = extractColumnStats()
+                connection.createStatement().use { stmt ->
+                    stmt.execute("DETACH $ATTACHED_DB")
+                }
             }
         }
         catch (e: SQLException) {
             cleanupAfterFailure()
-            throw IOException("Failed to finalize Arrow-stream DuckDB file $remoteLocation", e)
+            throw IOException("Failed to finalize Arrow-stream $outputFormat file $remoteLocation", e)
         }
 
         // Release Arrow + DuckDB resources before uploading.
@@ -322,7 +353,7 @@ constructor(
 
         return DucklakeWriteFragment(
                 relativePath,
-                FORMAT_DUCKDB,
+                outputFormat,
                 fileSize,
                 0L,
                 rowCount,
