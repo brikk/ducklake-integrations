@@ -95,9 +95,14 @@ unit test and (where applicable) a live-FE smoke checkpoint.
 - [x] **Live result** (2026-05-19): `SELECT * FROM dl.tpch.orders LIMIT 5` returns 5 rows through the BE's iceberg+S3 parquet reader. Field-ids in DuckLake parquet are picked up by the existing iceberg reader path; no decoding regression.
 - [ ] Run the full smoke checklist (SHOW DATABASES with row counts, EXPLAIN VERBOSE, cross-engine round-trip with a fresh DuckDB write). Track as a v1 polish item.
 
-### Step 6 — (optional, after SELECT *) pushdown for performance
-- [ ] `DuckLakePredicateConverter` — free function: `ConnectorExpression` → library `ColumnRangePredicate`. Start with comparisons + AND; grow as features land.
-- [ ] `applyFilter` / `applyProjection` / `applyLimit` on metadata, returning partial-pushdown results. Each can return `Optional.empty()` to opt out per query; that's fine for v1.
+### Step 6 — pushdown (filters / projection / pruning) — mostly landed
+- [x] `DuckLakePredicateConverter` — maps `ConnectorExpression` conjuncts → `ColumnRangePredicate`s (`col <op> literal` comparisons + `BETWEEN`; functions / LIKE / IN / OR / NE skipped — **no function pushdown by design**).
+- [x] `applyProjection` (column pruning) + `applyFilter` (stats-based file pruning via `findDataFileIdsInRange`) on the metadata; `SUPPORTS_PROJECTION_PUSHDOWN` + `SUPPORTS_FILTER_PUSHDOWN` on. Pruning is best-effort file elimination — the BE re-evaluates the full predicate.
+- [x] **IDENTITY partition pruning** — works for free through `applyFilter`'s stats path: DuckLake records `file_column_stats` for partition columns, so a `region = 'us'` filter prunes non-matching partition files. Verified by `prunesFilesByPartitionEqualityFilter` against the `sales.by_region` fixture.
+- [ ] **Temporal / BUCKET partition pruning** — `year/month/day/hour(col)` and `bucket(N, col)` partitions need *transform-aware* matching (apply the transform to the predicate literal, then compare to the partition value). Stats pruning does NOT cover these (stats are on the source column; the partition value is the transformed bucket). Wire `getPartitionSpecs` + `getFilePartitionValues` + the transform.
+- [ ] **add_files-without-stats partition pruning** — files registered via `add_files` may lack `file_column_stats`; `findDataFileIdsInRange` inner-joins stats so it silently can't prune them. The `getFilePartitionValues` path would prune by recorded partition value regardless of stats. Edge case; revisit if/when add_files support lands.
+- [ ] `applyLimit` — the file-scan model gains nothing from limit pushdown; left off. Revisit only if a concrete use case appears.
+- ⛔️ **Function / expression pushdown** — out of scope: it would require the `trino_parity` DuckDB bridge, which doesn't fit Doris's BE-native Parquet read path. Do not attempt.
 
 ### Step 7 — Position deletes path (FE-side plumbing landed, BE-side blocked)
 - [x] Library: `DucklakeDataFile` already inlines the active delete file path/format via LEFT JOIN in `JdbcDucklakeCatalog#getDataFiles`; catalog enforces at-most-one active delete file per data file per snapshot (`checkDeleteFileOverlap`). No new catalog method needed.
