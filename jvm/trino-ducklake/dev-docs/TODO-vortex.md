@@ -30,14 +30,31 @@ Ran in-process via the DuckDB JDBC driver on this osx_amd64 box (vortex extensio
 
 Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — it needs network for `INSTALL vortex`).
 
-## Phase V1 — read dispatch (reuse Lance Route-A machinery)
-- [ ] **Depends on** the DuckDB executor's file-scan-target generalization from TODO-lance Phase A1. If that's landed, Vortex is mostly parameterization.
-- [ ] `DucklakeSessionProperties`: add `FORMAT_VORTEX = "vortex"`; accept in `validateDataFileFormat` (DucklakeSessionProperties.kt:151).
-- [ ] `DucklakeTableProperties`: accept `'vortex'` in `validateDataFileFormat` (DucklakeTableProperties.kt:81).
-- [ ] `DucklakePageSourceProvider.createPageSource` (≈:166): add a `FORMAT_VORTEX` branch routing to the generalized file-scan page source with the vortex read function.
-- [ ] DuckDB executor: render `FROM read_vortex('<path>')` (exact function name confirmed in V0) and `INSTALL vortex; LOAD vortex;` alongside the existing httpfs INSTALL/LOAD (`InProcessDuckDbExecutor.kt:189` + Quack equivalent). S3 reuses httpfs + secret setup.
-- [ ] Type mapping: Vortex → Arrow → Trino via the existing `DucklakeArrowToPageConverter`. Note any Vortex encodings that don't round-trip to a Trino type.
-- [ ] Tests: probe-style end-to-end read (gate on extension availability — same concern as Lance).
+## Phase V1 — read dispatch (IN PROGRESS, 2026-06-08)
+- [x] DuckDB executor file-scan-target generalization (the shared Route-A machinery): new
+  `DuckDbAttachTarget.FileScan(path, scanFunction, extension, s3Config?)` sealed variant;
+  `InProcessDuckDbExecutor.prepareSource` returns the FROM ref (`read_vortex('path')` for FileScan)
+  and INSTALL/LOADs the extension instead of ATTACHing. Commit `d9d9896`.
+- [x] `DucklakeSessionProperties`: `FORMAT_VORTEX` constant added. **Write validators left STRICT**
+  (vortex is read-only for now — `data_file_format='vortex'` rejected as a write format until V3).
+- [x] `DucklakePageSourceProvider.createPageSource`: routes `FORMAT_VORTEX` through the DuckDB
+  engine; `resolveDuckDbReadTarget` reuses the materialize-vs-httpfs decision and wraps it as a
+  FileScan. Positional virtuals + delete filtering reused unchanged.
+- [x] DuckDB executor renders `read_vortex('path')`; Quack rejects FileScan with a clear
+  NOT_SUPPORTED (RPC ATTACH-alias model doesn't cover table-function scans yet — in-process only).
+- [x] Executor-level end-to-end test (`TestDucklakeVortexFileScanRead`): write a `.vortex` file,
+  read it back via a FileScan target through the real in-process executor; network-gated
+  (`assumeTrue`) so offline/unsupported-platform CI skips. Passes on osx_amd64. Commit `ded8c9e`.
+- [ ] **Remaining: full SQL-level read through the catalog.** Needs a `file_format='vortex'` data
+  file registered in a DuckLake catalog so a `SELECT` exercises `createPageSource` dispatch
+  end-to-end. Blocked on either V3 (a vortex writer) or extending `add_files` to register an
+  external `.vortex` file with `file_format='vortex'`. **The `add_files` route is likely the cheaper
+  test enabler than a full writer** — needs add_files to accept a `file_format` arg, skip the
+  parquet-footer validation for non-parquet, and source row-count/path from the catalog/DuckDB.
+- [ ] Type mapping: probe confirmed INTEGER/VARCHAR/DECIMAL round-trip; audit richer Vortex
+  encodings through `DucklakeArrowToPageConverter` once the SQL-level read path is testable.
+- [ ] Quack-engine vortex (currently NOT_SUPPORTED) — server-side INSTALL/LOAD + `FROM read_vortex`
+  without an ATTACH alias; needs the linux quack container to test.
 
 ## Phase V2 — predicate pushdown
 - [ ] TupleDomain + function-shape pushdown via the existing `DuckDbWhereClauseTranslator` / `applyFilter`, same as the `.db` and lance paths — predicates render into the `read_vortex` query. Vortex's compression-cascade should make pushdown especially valuable (skip decompression of pruned columns/ranges); verify the extension honors pushed filters.
