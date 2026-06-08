@@ -2,14 +2,14 @@
 
 The complete set of predicates the connector pushes **server-side into DuckDB**
 when a query reads a **duckdb-format** data file (a `.db` split; see the
-[DuckDB-Format Data Files](../README.md#duckdb-format-data-files-experimental)
+[DuckDB-Format Data Files](README.md#duckdb-format-data-files-experimental)
 section of the README). This is a feature of the *duckdb file format read path*,
 not of the connector in general — parquet-format reads use Trino's standard
 Parquet reader and only get the TupleDomain + file-pruning layer (§1), never the
 expression/function layer (§2–§3).
 
 For the roadmap, history, and open items (steps 5–6, deferred functions) see
-[TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md). This doc is the *current
+[TODO-pushdown-duckdb.md](dev-docs/TODO-pushdown-duckdb.md). This doc is the *current
 surface*; that one is the *program tracker*.
 
 ## Discipline (non-negotiable)
@@ -25,7 +25,7 @@ emits a DuckDB SQL fragment per pushable conjunct; survivors are stored on the
 table handle and rendered into the `WHERE` clause by `DuckDbSelectSqlBuilder`
 (same shape for the in-process and Quack executors). Function-shape entries
 resolve to `trino_<name>(...)` macros / native scalar functions provided by the
-bundled [`trino_parity` DuckDB extension](../../../duckdb-trino-parity-extension),
+bundled [`trino_parity` DuckDB extension](../../duckdb-trino-parity-extension),
 `LOAD`ed on attach.
 
 **Mixed-format safety.** A DuckLake table can carry both parquet and duckdb
@@ -96,6 +96,6 @@ conditional 2.
 ## Adding an entry
 
 See the "Adding a new alias — checklist" in
-[TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) — macros/`trino_meta()` live in
+[TODO-pushdown-duckdb.md](dev-docs/TODO-pushdown-duckdb.md) — macros/`trino_meta()` live in
 the `trino_parity` extension repo; the connector side is `PUSHABLE_FUNCTIONS` +
 a `TestTrinoFunctionAliases` fixture, with lockstep guards that fail on drift.

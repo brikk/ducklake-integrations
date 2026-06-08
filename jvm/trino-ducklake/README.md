@@ -208,7 +208,7 @@ operators and functions are not available through Trino.
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
 | SELECT / table scans | Yes | |
-| Predicate pushdown (WHERE) | Yes | TupleDomain on all types (both formats); duckdb-format splits also get operator/`CAST`/`LIKE`/function pushdown into DuckDB — see [`dev-docs/REFERENCE-duckdb-pushdown.md`](dev-docs/REFERENCE-duckdb-pushdown.md) |
+| Predicate pushdown (WHERE) | Yes | TupleDomain on all types (both formats); duckdb-format splits also get operator/`CAST`/`LIKE`/function pushdown into DuckDB — see [`README-duckdb-format-pushdown-reference.md`](README-duckdb-format-pushdown-reference.md) |
 | File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files via `ducklake_file_column_stats` (top-level and nested-leaf rows). Trino predicates today land on top-level handles; the nested-leaf stats are emitted on write so DuckDB readers can prune subfield predicates against Trino-written tables. |
 | Partition pruning | Yes | Identity and temporal partitions |
 | Bucket partition pruning | Yes | Murmur3 hash; prunes files for equality predicates (ranges aren't pruned — bucketing scrambles ordering) |
@@ -306,7 +306,7 @@ catalogs; it should not be needed against any v1-conformant catalog.
 
 DuckLake's `ducklake_data_file.file_format` column enumerates the file format per data file; values today are `parquet` and `duckdb`. A duckdb-format split is one whose data lives in a single-table DuckDB database file (`.db`).
 
-**Predicate & function pushdown.** duckdb-format splits get an extra pushdown layer on top of the standard TupleDomain + file-pruning: the connector translates Trino predicates — standard operators, `CAST`, `LIKE`, `concat`, and ~95 catalogued functions (string, numeric, regex, encoding, distance, hash, date/time) — into DuckDB SQL and evaluates them server-side. Parquet splits use Trino's standard reader and don't get this layer. **Full reference (every operator, transform, and function):** [`dev-docs/REFERENCE-duckdb-pushdown.md`](dev-docs/REFERENCE-duckdb-pushdown.md). Roadmap/history: [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md).
+**Predicate & function pushdown.** duckdb-format splits get an extra pushdown layer on top of the standard TupleDomain + file-pruning: the connector translates Trino predicates — standard operators, `CAST`, `LIKE`, `concat`, and ~95 catalogued functions (string, numeric, regex, encoding, distance, hash, date/time) — into DuckDB SQL and evaluates them server-side. Parquet splits use Trino's standard reader and don't get this layer. **Full reference (every operator, transform, and function):** [`README-duckdb-format-pushdown-reference.md`](README-duckdb-format-pushdown-reference.md). Roadmap/history: [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md).
 
 **Read modes** (session property `duckdb_read_mode`, default `httpfs`):
 
@@ -532,7 +532,7 @@ research item.
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
 - [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
 - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
-- [Pushdown reference (DuckDB-format reads)](dev-docs/REFERENCE-duckdb-pushdown.md) — complete current surface: predicate/pruning, operators, transforms, all ~95 functions
+- [Pushdown reference (DuckDB-format reads)](README-duckdb-format-pushdown-reference.md) — complete current surface: predicate/pruning, operators, transforms, all ~95 functions
 - [TODO for pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
 - [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
 - [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail
