@@ -43,12 +43,15 @@ cd "$VENDOR_DIR"
 # keys configured. pg_ducklake is hosted by Rely Cloud; the others are
 # under github.com/duckdb or github.com/hotdata-dev.
 REPOS=(
-  "datafusion-ducklake	https://github.com/hotdata-dev/datafusion-ducklake.git"
+  "datafusion-ducklake	https://github.com/datafusion-contrib/datafusion-ducklake.git"
+  "duckdb	https://github.com/duckdb/duckdb.git"
+  "duckdb-quack	https://github.com/duckdb/duckdb-quack.git"
   "duckdb-web	https://github.com/duckdb/duckdb-web.git"
   "ducklake	https://github.com/duckdb/ducklake.git"
   "ducklake-web	https://github.com/duckdb/ducklake-web.git"
+  "lance-trino	https://github.com/lance-format/lance-trino.git"
   "pg_ducklake	https://github.com/relytcloud/pg_ducklake.git"
-  "duckdb-quack https://github.com/duckdb/duckdb-quack.git"
+  "docs.trino.io	https://github.com/trinodb/docs.trino.io.git"
 )
 
 clone_or_fetch() {

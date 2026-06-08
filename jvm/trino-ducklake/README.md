@@ -30,6 +30,12 @@ the DuckDB instance at attach time. The gradle build bundles every available pla
 `.duckdb_extension` binary into the plugin jar as classpath resources, and
 `TrinoParityExtensionResolver` extracts the matching one at runtime.
 
+> **The extension is a git submodule** (and it nests the `duckdb` and
+> `extension-ci-tools` submodules). If you cloned without `--recurse-submodules`,
+> initialise them from the repo root before building:
+> `git submodule update --init --recursive`. Full clone/build walkthrough:
+> [root README → Getting Started](../../README.md#getting-started).
+
 Build at least the host-platform binary before assembling the plugin:
 
 ```shell
