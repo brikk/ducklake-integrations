@@ -61,9 +61,17 @@ internal class DuckLakeScanPlanProvider(
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
 
         val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+        // Honour the file-level pruning applyFilter computed from column stats
+        // (null = no filter pushed, scan all files).
+        val prunedIds = dlHandle.prunedFileIds
+        val scanFiles = if (prunedIds != null) {
+            dataFiles.filter { it.dataFileId in prunedIds }
+        } else {
+            dataFiles
+        }
 
-        val ranges = ArrayList<ConnectorScanRange>(dataFiles.size)
-        for (file in dataFiles) {
+        val ranges = ArrayList<ConnectorScanRange>(scanFiles.size)
+        for (file in scanFiles) {
             val absolutePath = pathResolver.resolveFilePath(
                 file.path, file.pathIsRelative, tableDataPath,
             )

@@ -32,22 +32,20 @@ internal class DuckLakeConnectorCapabilitiesTest {
                     ConnectorCapability.SUPPORTS_PARTITION_PRUNING,
                     ConnectorCapability.SUPPORTS_STATISTICS,
                     ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
+                    ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
                 ),
             )
     }
 
     @Test
-    fun pushdownCapabilitiesStayOffUntilApplyMethodsLand() {
-        // Declaring without implementing crashes the planner — keep these
-        // off until Step 6 of the roadmap implements the apply* hooks.
+    fun limitPushdownStaysOffUntilApplyLimitLands() {
+        // Declaring a pushdown capability without the matching apply* method
+        // crashes the planner. Filter + projection are implemented; limit is not.
         val connector: Connector = DuckLakeConnector(
             emptyMap(),
             FakeConnectorContext("dl", 1L),
         )
         assertThat(connector.capabilities)
-            .doesNotContain(
-                ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
-                ConnectorCapability.SUPPORTS_LIMIT_PUSHDOWN,
-            )
+            .doesNotContain(ConnectorCapability.SUPPORTS_LIMIT_PUSHDOWN)
     }
 }

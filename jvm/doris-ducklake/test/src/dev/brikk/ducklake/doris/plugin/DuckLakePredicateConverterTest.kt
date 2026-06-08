@@ -1,0 +1,82 @@
+package dev.brikk.ducklake.doris.plugin
+
+import dev.brikk.ducklake.catalog.ColumnRangePredicate
+import org.apache.doris.connector.api.pushdown.ConnectorAnd
+import org.apache.doris.connector.api.pushdown.ConnectorBetween
+import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorComparison
+import org.apache.doris.connector.api.pushdown.ConnectorExpression
+import org.apache.doris.connector.api.pushdown.ConnectorFunctionCall
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+
+/**
+ * Pure-logic coverage of [DuckLakePredicateConverter] — the filter → file-stat
+ * range mapping that drives applyFilter's pruning. No catalog / FE needed.
+ */
+internal class DuckLakePredicateConverterTest {
+
+    private val ids = mapOf("id" to 1L, "total" to 2L)
+    private val type = DuckLakeTypeMapping.fromDucklakeType("int32")
+
+    private fun col(name: String) = ConnectorColumnRef(name, type)
+    private fun lit(v: Any) = ConnectorLiteral(type, v)
+    private fun cmp(op: ConnectorComparison.Operator, column: String, v: Any) =
+        ConnectorComparison(op, col(column), lit(v))
+
+    private fun convert(expr: ConnectorExpression) =
+        DuckLakePredicateConverter.toColumnRangePredicates(expr, ids)
+
+    @Test
+    fun equalityBecomesPointRange() {
+        assertThat(convert(cmp(ConnectorComparison.Operator.EQ, "id", 5)))
+            .containsExactly(ColumnRangePredicate(1L, "5", "5"))
+    }
+
+    @Test
+    fun inequalitiesBecomeOpenRangesAndStrictBoundsWidenInclusive() {
+        assertThat(convert(cmp(ConnectorComparison.Operator.GE, "id", 5)))
+            .containsExactly(ColumnRangePredicate(1L, "5", null))
+        assertThat(convert(cmp(ConnectorComparison.Operator.GT, "id", 5)))
+            .containsExactly(ColumnRangePredicate(1L, "5", null)) // strict > widened to >=
+        assertThat(convert(cmp(ConnectorComparison.Operator.LE, "id", 10)))
+            .containsExactly(ColumnRangePredicate(1L, null, "10"))
+        assertThat(convert(cmp(ConnectorComparison.Operator.LT, "id", 10)))
+            .containsExactly(ColumnRangePredicate(1L, null, "10")) // strict < widened to <=
+    }
+
+    @Test
+    fun betweenBecomesClosedRange() {
+        val between = ConnectorBetween(col("total"), lit(5), lit(10))
+        assertThat(convert(between)).containsExactly(ColumnRangePredicate(2L, "5", "10"))
+    }
+
+    @Test
+    fun andExtractsEveryConvertibleConjunct() {
+        val and = ConnectorAnd(
+            listOf(
+                cmp(ConnectorComparison.Operator.GE, "id", 5),
+                cmp(ConnectorComparison.Operator.LE, "total", 99),
+            ),
+        )
+        assertThat(convert(and)).containsExactlyInAnyOrder(
+            ColumnRangePredicate(1L, "5", null),
+            ColumnRangePredicate(2L, null, "99"),
+        )
+    }
+
+    @Test
+    fun skipsNonConvertiblePredicates() {
+        // NE can't be a single range.
+        assertThat(convert(cmp(ConnectorComparison.Operator.NE, "id", 5))).isEmpty()
+        // Unknown column.
+        assertThat(convert(cmp(ConnectorComparison.Operator.EQ, "ghost", 5))).isEmpty()
+        // Function call — never pushed (no function pushdown by design).
+        val fn = ConnectorFunctionCall("lower", type, listOf(col("id")))
+        assertThat(convert(fn)).isEmpty()
+        // A function buried in an AND is skipped; the sibling comparison still converts.
+        val mixed = ConnectorAnd(listOf(fn, cmp(ConnectorComparison.Operator.EQ, "id", 7)))
+        assertThat(convert(mixed)).containsExactly(ColumnRangePredicate(1L, "7", "7"))
+    }
+}

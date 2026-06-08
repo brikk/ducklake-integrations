@@ -14,6 +14,8 @@ import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
+import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.FilterApplicationResult
 import org.apache.doris.connector.api.pushdown.ProjectionApplicationResult
 import java.time.Instant
 import java.util.Optional
@@ -162,6 +164,43 @@ internal class DuckLakeConnectorMetadata(
         return Optional.of(
             ProjectionApplicationResult<ConnectorTableHandle>(newHandle, outProjections, outAssignments),
         )
+    }
+
+    // ---- Pushdown: filter (file-level statistics pruning) ----
+
+    override fun applyFilter(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        constraint: ConnectorFilterConstraint,
+    ): Optional<FilterApplicationResult<ConnectorTableHandle>> {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        // Already applied on a prior fixed-point iteration → stop the loop.
+        if (dlHandle.pushedFilter != null) {
+            return Optional.empty()
+        }
+        val filter = constraint.expression ?: return Optional.empty()
+
+        val columnIdByName = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
+            .associate { it.columnName to it.columnId }
+        val rangePredicates = DuckLakePredicateConverter.toColumnRangePredicates(filter, columnIdByName)
+        if (rangePredicates.isEmpty()) {
+            // Nothing convertible (e.g. only function / LIKE / OR predicates) → opt out.
+            return Optional.empty()
+        }
+
+        // A file survives only if its column stats overlap EVERY pushed predicate's
+        // range, so intersect the per-predicate surviving-file sets.
+        var kept: Set<Long>? = null
+        for (pred in rangePredicates) {
+            val ids = catalog.findDataFileIdsInRange(dlHandle.tableId, dlHandle.snapshotId, pred).toHashSet()
+            kept = kept?.intersect(ids) ?: ids
+        }
+        val prunedFileIds = kept ?: return Optional.empty()
+
+        val newHandle = dlHandle.copy(pushedFilter = filter, prunedFileIds = prunedFileIds)
+        // Conservative: the BE re-evaluates the full predicate, so report the whole
+        // expression as still-unenforced. File pruning is best-effort elimination.
+        return Optional.of(FilterApplicationResult<ConnectorTableHandle>(newHandle, filter, false))
     }
 
     // ---- MVCC snapshot pinning + time travel ----

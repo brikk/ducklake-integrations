@@ -58,11 +58,11 @@ class DuckLakeConnector internal constructor(
      * v1 capabilities (see `ducklake-doris-todo.md`): `SELECT *` with snapshot
      * pinning (MVCC), time travel, partition pruning, and statistics. The
      * P-series SPI dropped `SUPPORTS_POSITION_DELETE` — position deletes ride
-     * the scan range's delete-file list, not a capability flag. Projection
-     * pushdown is on ([DuckLakeConnectorMetadata.applyProjection]); filter
-     * pushdown turns on with `applyFilter`; limit stays off. Declaring a
-     * pushdown capability without the matching `apply*` method crashes the
-     * planner — keep them in lockstep.
+     * the scan range's delete-file list, not a capability flag. Projection +
+     * filter pushdown are on ([DuckLakeConnectorMetadata.applyProjection] /
+     * `applyFilter`); limit stays off (no `applyLimit`). Declaring a pushdown
+     * capability without the matching `apply*` method crashes the planner —
+     * keep them in lockstep.
      */
     override fun getCapabilities(): Set<ConnectorCapability> =
         EnumSet.of(
@@ -71,6 +71,7 @@ class DuckLakeConnector internal constructor(
             ConnectorCapability.SUPPORTS_PARTITION_PRUNING,
             ConnectorCapability.SUPPORTS_STATISTICS,
             ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
+            ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
         )
 
     private fun catalog(): JdbcDucklakeCatalog {

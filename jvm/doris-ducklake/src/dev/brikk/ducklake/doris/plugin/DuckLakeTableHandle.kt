@@ -1,6 +1,7 @@
 package dev.brikk.ducklake.doris.plugin
 
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
+import org.apache.doris.connector.api.pushdown.ConnectorExpression
 
 /**
  * Opaque DuckLake table handle. FE passes this back to us for every per-table
@@ -25,4 +26,11 @@ internal data class DuckLakeTableHandle(
     // applied state on the handle lets that loop terminate and lets planScan
     // honour projection / file-pruning without re-deriving them.
     val projectedColumnIds: List<Long>? = null,
+    // Non-null once applyFilter has run — the marker that stops the fixed-point
+    // loop. Kept for a future BE-conjunct-passing optimization; pruning today
+    // uses [prunedFileIds].
+    val pushedFilter: ConnectorExpression? = null,
+    // The data-file ids that survived stats/partition pruning, or `null` for
+    // "no pruning" (all files). planScan scans only these.
+    val prunedFileIds: Set<Long>? = null,
 ) : ConnectorTableHandle
