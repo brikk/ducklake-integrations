@@ -267,9 +267,9 @@ Covers: Trino table-function SPI for Lance, route A vs route B trade-offs
 the existing pushdown layer (translator + macro alias surface in
 `TODO-pushdown-duckdb.md`) would extend to Lance's expression syntax.
 
-Open at the epic level — no spike sized yet. When picked up, lift the
-sketch in RESEARCH-lance-and-pushdown.md into a `PLAN-lance.md` and chunk
-it the same way the date-time pushdown program was chunked.
+**Chunked plan: [TODO-lance.md](TODO-lance.md)** — both routes (A: via the
+DuckDB `lance` extension; B: direct via `lance-core` JNI / the vendored
+`lance-trino` plugin), phased, with the dataset-vs-file risk called out.
 
 ### Vortex file support
 
@@ -278,7 +278,9 @@ newer high-performance columnar storage layer (Spiral DB) with explicit
 compression-cascade encodings and lazy decompression; the target use case
 is analytic scans where Parquet's row-group encoding is a bottleneck.
 
-No design sketch yet. Scope when picked up:
+**Chunked plan: [TODO-vortex.md](TODO-vortex.md)** — read via the DuckDB
+`vortex` extension (no Trino-Vortex project exists to adopt); shares Route A's
+file-scan machinery with Lance. Scope summary:
 
 - **Reader path**: most likely route is a `VortexPageSource` paralleling
   the existing `DuckDbFilePageSource` / Trino's standard `ParquetPageSource`.
