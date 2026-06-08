@@ -53,9 +53,11 @@ deferred.
 | `$file_row_number` | `BIGINT` | Parquet's positional metadata column | per row, 0-based |
 | `$row_id` | `BIGINT` | `DucklakeSplit.rowIdStart() + $file_row_number` | per row, globally unique within the table |
 
-**Deferred to v2:** `$file_index`, `$file_size_bytes`, `$filename`
-(unprefixed alias). The first two largely duplicate the `$files`
-metadata table; the third is a naming aesthetic.
+**Also shipped:** `$file_size_bytes` (`BIGINT`, the data file's size from
+`DucklakeSplit.fileSizeBytes`, constant per split, NULL on inlined data).
+
+**Intentionally NOT exposed** (evaluated, declined — see § 8):
+`$file_index` and `$filename`.
 
 ## 3. Key design decisions
 
@@ -254,9 +256,18 @@ structure, the degraded fallback is: count positions in the
 injecting page source (one add per page). Slower for huge files but
 correct, and the failure is local to one component.
 
-## 8. Out of scope (for v1)
+## 8. Out of scope (evaluated, declined)
 
-- `$file_index`, `$file_size_bytes`, `$filename` — see § 2
+- **`$file_index`** — DuckDB's `file_index` is the 0-based ordinal of a file
+  within the *current scan's* file list (`WHERE file_index=1` selects the 2nd
+  file read; see DuckDB's `parquet_virtual_columns.test`). That is a scan-local,
+  order-dependent value with no stable meaning in Trino's distributed, one-file-
+  per-split model — a split has no deterministic index among all splits. The
+  catalog's `file_order` is stable but is *different* semantics, so exposing it
+  under this name would mislead. Declined rather than ship a divergent column.
+- **`$filename`** — DuckDB's `filename` returns the full file path, which is
+  exactly our `$path`. Adding it would be a pure alias with no new information.
+  Declined; use `$path`.
 - DuckDB-name aliases (`rowid`, `filename`, etc.) — see § 3.1
 - Using `$row_id` as the merge row-id source — see § 3.6
 - Virtual columns on metadata tables (`$files`, `$snapshots`) — they

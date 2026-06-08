@@ -891,6 +891,7 @@ class DucklakePageSourceProvider @Inject constructor(
         private fun dataFileVirtualBlock(kind: VirtualKind, split: DucklakeSplit): Block = when (kind) {
             VirtualKind.PATH -> io.trino.spi.type.TypeUtils.writeNativeValue(VARCHAR, Slices.utf8Slice(split.dataFilePath))
             VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.beginSnapshot)
+            VirtualKind.FILE_SIZE_BYTES -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.fileSizeBytes)
             else -> throw TrinoException(NOT_SUPPORTED, "Virtual column not yet supported on the read path: ${kind.columnName}")
         }
 

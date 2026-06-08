@@ -53,7 +53,7 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         val columns = computeActual("DESCRIBE simple_table").materializedRows
                 .map { it.getField(0).toString() }
         assertThat(columns).containsExactly("id", "name", "price", "active", "created_date")
-        assertThat(columns).doesNotContain(PATH_NAME, SNAPSHOT_NAME, FRN_NAME, ROW_ID_NAME)
+        assertThat(columns).doesNotContain(PATH_NAME, SNAPSHOT_NAME, FRN_NAME, ROW_ID_NAME, FILE_SIZE_NAME)
     }
 
     // ==================== $path ====================
@@ -80,6 +80,22 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         assertThat(fileCount).isGreaterThanOrEqualTo(1L)
         assertThat(computeScalar("SELECT count(DISTINCT $PATH) FROM multi_file_table") as Long)
                 .isEqualTo(fileCount)
+    }
+
+    // ==================== $file_size_bytes ====================
+
+    @Test
+    fun testFileSizeBytesMatchesFilesMetadata() {
+        // Constant per file, positive, and equal to the $files metadata's file_size_bytes.
+        // (simple_table is a single file, so DISTINCT yields one value.)
+        val fromVirtual = computeScalar("SELECT DISTINCT $FILE_SIZE FROM simple_table") as Long
+        val fromMetadata = computeScalar("SELECT file_size_bytes FROM \"simple_table\$files\" LIMIT 1") as Long
+        assertThat(fromVirtual).isPositive().isEqualTo(fromMetadata)
+    }
+
+    @Test
+    fun testFileSizeBytesNullOnInlinedData() {
+        assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $FILE_SIZE IS NULL") as Long).isEqualTo(3L)
     }
 
     // ==================== $snapshot_id ====================
@@ -230,9 +246,11 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         private const val SNAPSHOT_NAME: String = "\$snapshot_id"
         private const val FRN_NAME: String = "\$file_row_number"
         private const val ROW_ID_NAME: String = "\$row_id"
+        private const val FILE_SIZE_NAME: String = "\$file_size_bytes"
         private const val PATH: String = "\"\$path\""
         private const val SNAPSHOT: String = "\"\$snapshot_id\""
         private const val FRN: String = "\"\$file_row_number\""
         private const val ROW_ID: String = "\"\$row_id\""
+        private const val FILE_SIZE: String = "\"\$file_size_bytes\""
     }
 }

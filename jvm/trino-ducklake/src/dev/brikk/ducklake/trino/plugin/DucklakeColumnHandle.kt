@@ -105,7 +105,8 @@ enum class VirtualKind(
     PATH(-101L, "\$path", VARCHAR, false),
     SNAPSHOT_ID(-102L, "\$snapshot_id", BIGINT, false),
     FILE_ROW_NUMBER(-103L, "\$file_row_number", BIGINT, true),
-    ROW_ID(-104L, "\$row_id", BIGINT, true);
+    ROW_ID(-104L, "\$row_id", BIGINT, true),
+    FILE_SIZE_BYTES(-105L, "\$file_size_bytes", BIGINT, false);
 
     /**
      * The hidden column handle for this virtual. Marked nullable because the
