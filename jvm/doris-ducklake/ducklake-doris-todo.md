@@ -1,7 +1,13 @@
-# DuckLake-on-Doris — Working TODO
+# DuckLake-on-Doris — READ-path Working TODO
 
-Living checklist. Lead with the ordered roadmap to `SELECT *`; reference and
-historical sections follow.
+Living checklist for the **read path** (SELECT, pushdown, deletes-on-read,
+time travel, statistics). Sibling todo files hold the other tracks:
+- ✍️ [`ducklake-doris-todo-write.md`](./ducklake-doris-todo-write.md) — write path (INSERT/CTAS/DELETE/UPDATE/MERGE/DDL); post read-v1
+- 🔬 [`ducklake-doris-todo-research.md`](./ducklake-doris-todo-research.md) — research / feasibility / "remember this" ideas
+
+Lead with the ordered roadmap to `SELECT *`; reference and historical sections
+follow. The phased read-path *extension* plan (capability matrix vs trino-ducklake)
+lives in [`ducklake-doris-development-roadmap.md`](./ducklake-doris-development-roadmap.md).
 
 Cross-references:
 - ✅ [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md) — canonical plan (SPI mechanics, build, test)
