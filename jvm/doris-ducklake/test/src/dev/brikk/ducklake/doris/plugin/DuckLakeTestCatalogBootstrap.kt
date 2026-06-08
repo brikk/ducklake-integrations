@@ -81,6 +81,16 @@ object DuckLakeTestCatalogBootstrap {
                 statement.execute("INSERT INTO dl.sales.orders VALUES (1, 9.99), (2, 19.50)")
                 statement.execute("INSERT INTO dl.sales.orders VALUES (3, 5.25)")
 
+                // sales.by_region exercises IDENTITY partition pruning: two
+                // partition values ('us','eu') write to separate data files, so a
+                // `region = 'us'` filter must drop the 'eu' file(s).
+                statement.execute(
+                    "CREATE TABLE dl.sales.by_region (id INTEGER, region VARCHAR, amount DOUBLE)",
+                )
+                statement.execute("ALTER TABLE dl.sales.by_region SET PARTITIONED BY (region)")
+                statement.execute("INSERT INTO dl.sales.by_region VALUES (1, 'us', 10.0), (2, 'us', 20.0)")
+                statement.execute("INSERT INTO dl.sales.by_region VALUES (3, 'eu', 30.0), (4, 'eu', 40.0)")
+
                 statement.execute(
                     "INSERT INTO dl.sales.returns_inline " +
                         "VALUES (10, 1.00), (11, 2.00), (12, 3.00), (13, 4.00)",

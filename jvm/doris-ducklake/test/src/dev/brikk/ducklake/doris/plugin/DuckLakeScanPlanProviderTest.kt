@@ -3,6 +3,10 @@ package dev.brikk.ducklake.doris.plugin
 import java.util.Optional
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import dev.brikk.ducklake.doris.plugin.cache.FakeConnectorContext
+import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorComparison
+import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileRangeDesc
@@ -269,6 +273,40 @@ internal class DuckLakeScanPlanProviderTest {
                 assertThat(params.properties).allSatisfy { k, _ ->
                     assertThat(k).doesNotStartWith(DuckLakeScanPlanProvider.PROP_LOCATION_PREFIX)
                 }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByPartitionEqualityFilter() {
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                // Full scan sees both partitions' files ('us' + 'eu').
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(2)
+
+                // region = 'us' → applyFilter prunes the 'eu' file(s).
+                val region = metadata.getColumnHandles(null, handle)["region"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("region", region.columnType),
+                    ConnectorLiteral(region.columnType, "us"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                assertThat(applied.isPresent).isTrue()
+                val prunedHandle = applied.get().handle.asDuckLakeHandle<DuckLakeTableHandle>()
+                assertThat(prunedHandle.prunedFileIds).isNotNull()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                // The 'us' file survives; the 'eu' file(s) are pruned away.
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
             }
     }
 
