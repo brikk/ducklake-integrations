@@ -311,6 +311,43 @@ internal class DuckLakeScanPlanProviderTest {
     }
 
     @Test
+    @Throws(Exception::class)
+    fun prunesFilesByNumericRangeFilter() {
+        // Complements the partition-equality test: a numeric open range (GE) on a
+        // non-partition column, exercising findDataFileIdsInRange's typed comparison.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                // by_region keeps ≥2 files (one per partition; CHECKPOINT can't
+                // compact across partitions, unlike single-file `orders`). Its
+                // non-partition `id` column gives a clean numeric range to prune.
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                // Two partition files: 'us' (ids 1, 2) and 'eu' (ids 3, 4).
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(2)
+
+                // id >= 3 → the 'us' file is pruned by its id stats (max id 2 < 3).
+                val id = metadata.getColumnHandles(null, handle)["id"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.GE,
+                    ConnectorColumnRef("id", id.columnType),
+                    ConnectorLiteral(id.columnType, 3),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push id >= 3")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
     fun canonicalAwsAliasMapping() {
         // Pin the FE→BE key aliasing surface so a typo in the switch can't
         // silently drop credentials on the BE side at runtime.
