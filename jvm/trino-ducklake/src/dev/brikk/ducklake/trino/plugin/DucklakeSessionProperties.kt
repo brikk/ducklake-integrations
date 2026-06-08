@@ -88,6 +88,9 @@ open class DucklakeSessionProperties @Inject constructor() {
         const val FORMAT_PARQUET: String = "parquet"
         const val FORMAT_DUCKDB: String = "duckdb"
 
+        // Read-only via the DuckDB `vortex` extension (FileScan path). Writes not yet wired.
+        const val FORMAT_VORTEX: String = "vortex"
+
         const val DUCKDB_WRITER_MODE: String = "duckdb_writer_mode"
 
         const val WRITER_MODE_APPENDER: String = "appender"
@@ -150,6 +153,8 @@ open class DucklakeSessionProperties @Inject constructor() {
 
         private fun validateDataFileFormat(value: String) {
             // Validator only fires on explicit SET — null (unset) never reaches this method.
+            // NOTE: vortex is read-only for now (no writer wired), so it is deliberately NOT a
+            // valid *write* format here — reject it early rather than fail late in the page sink.
             if (!FORMAT_PARQUET.equals(value, ignoreCase = true) && !FORMAT_DUCKDB.equals(value, ignoreCase = true)) {
                 throw TrinoException(
                         INVALID_SESSION_PROPERTY,

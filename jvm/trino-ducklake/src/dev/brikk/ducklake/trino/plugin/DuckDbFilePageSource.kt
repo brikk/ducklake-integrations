@@ -130,6 +130,7 @@ class DuckDbFilePageSource(
     private fun describeAttachTarget(): String = when (val target = request.target()) {
         is DuckDbAttachTarget.LocalPath -> target.path.toString()
         is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
+        is DuckDbAttachTarget.FileScan -> target.path
     }
 
     override fun getMemoryUsage(): Long = executionContext?.memoryUsage() ?: 0L

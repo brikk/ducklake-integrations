@@ -174,7 +174,11 @@ class DucklakePageSourceProvider @Inject constructor(
                         fileSystem)
                 return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
-            if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true)) {
+            // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
+            // (vortex now; lance later). createDuckDbPageSource picks the source shape per
+            // split.fileFormat via resolveDuckDbReadTarget.
+            if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true) ||
+                    DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true)) {
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
                     table.pushedExpressions
                 else
@@ -618,7 +622,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
         // row count.
 
-        val attachTarget: DuckDbAttachTarget = resolveDuckDbAttachTarget(
+        val attachTarget: DuckDbAttachTarget = resolveDuckDbReadTarget(
                 session, dataFileLocation, fileSystem, split)
 
         val fileColumnTypes: List<Type> = fileColumns.stream()
@@ -668,6 +672,40 @@ class DucklakePageSourceProvider @Inject constructor(
         log.debug("Created DuckDB page source for %d columns from file: %s",
                 columns.size, split.dataFilePath)
         return pageSource
+    }
+
+    /**
+     * The read target for a DuckDB-engine split. For the {@code duckdb} (.db) format this is the
+     * ATTACH target from {@link #resolveDuckDbAttachTarget}. For file-scan formats ({@code vortex}
+     * now, {@code lance} later) the same materialize-vs-httpfs decision is reused, then wrapped as
+     * a {@link DuckDbAttachTarget.FileScan} carrying the scan function + extension so the executor
+     * reads via {@code read_vortex('path')} instead of ATTACHing a database.
+     */
+    private fun resolveDuckDbReadTarget(
+            session: ConnectorSession,
+            dataFileLocation: Location,
+            fileSystem: TrinoFileSystem,
+            split: DucklakeSplit): DuckDbAttachTarget
+    {
+        val base: DuckDbAttachTarget = resolveDuckDbAttachTarget(session, dataFileLocation, fileSystem, split)
+        if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(split.fileFormat, ignoreCase = true)) {
+            return base
+        }
+        val scanFunction: String
+        val extension: String
+        when {
+            DucklakeSessionProperties.FORMAT_VORTEX.equals(split.fileFormat, ignoreCase = true) -> {
+                scanFunction = "read_vortex"; extension = "vortex"
+            }
+            else -> throw TrinoException(NOT_SUPPORTED, "Unsupported DuckDB-engine file format: ${split.fileFormat}")
+        }
+        return when (base) {
+            is DuckDbAttachTarget.LocalPath ->
+                DuckDbAttachTarget.FileScan(base.path.toAbsolutePath().toString(), scanFunction, extension, Optional.empty())
+            is DuckDbAttachTarget.HttpfsS3 ->
+                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, Optional.of(base.s3Config))
+            is DuckDbAttachTarget.FileScan -> base
+        }
     }
 
     /**

@@ -65,12 +65,13 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
         var arrowReader: ArrowReader? = null
         try {
             TrinoFunctionAliases.loadInProcess(connection, parityExtensionPath)
-            connection.createStatement().use { attachStmt ->
+            val sourceRef: String = connection.createStatement().use { attachStmt ->
                 DuckDbTuningSql.applyDirect(attachStmt, tuning)
-                attachStmt.execute(buildAttachSql(request.target(), attachStmt))
+                val ref: String = prepareSource(request.target(), attachStmt)
                 applySessionTimeZone(attachStmt, request.duckDbTimeZone())
+                ref
             }
-            val selectSql = buildSelectSql(request)
+            val selectSql = DuckDbSelectSqlBuilder.buildSelectSql(sourceRef, request)
             statement = connection.createStatement()
             resultSet = statement.executeQuery(selectSql) as DuckDBResultSet
             allocator = RootAllocator()
@@ -174,37 +175,55 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
         private const val ATTACHED_DB: String = "ducklake_in"
         private const val ATTACHED_TABLE: String = "t"
 
+        /**
+         * Prepare the per-split DuckDB instance for [target] (run ATTACH or INSTALL/LOAD) and
+         * return the SQL FROM source — a `db.main.t` reference for attach targets, or a
+         * `scanFn('path')` table-function call for a [DuckDbAttachTarget.FileScan]. The caller
+         * passes the result to [DuckDbSelectSqlBuilder.buildSelectSql].
+         */
         @Throws(SQLException::class)
-        private fun buildAttachSql(target: DuckDbAttachTarget, stmtForSideEffects: Statement): String {
-            return when (target) {
-                is DuckDbAttachTarget.LocalPath -> format(
-                        "ATTACH '%s' AS %s (READ_ONLY)",
-                        target.path.toAbsolutePath().toString().replace("'", "''"),
-                        ATTACHED_DB)
+        private fun prepareSource(target: DuckDbAttachTarget, stmt: Statement): String =
+            when (target) {
+                is DuckDbAttachTarget.LocalPath -> {
+                    stmt.execute(format(
+                            "ATTACH '%s' AS %s (READ_ONLY)",
+                            target.path.toAbsolutePath().toString().replace("'", "''"),
+                            ATTACHED_DB))
+                    "$ATTACHED_DB.main.$ATTACHED_TABLE"
+                }
                 is DuckDbAttachTarget.HttpfsS3 -> {
                     // INSTALL is idempotent and cached on disk per-DuckDB-version. LOAD
                     // is required per-instance. CREATE SECRET supplies S3 credentials
                     // for the ATTACH that follows; fixed name means re-creation on a
                     // fresh in-memory instance always succeeds.
-                    stmtForSideEffects.execute("INSTALL httpfs")
-                    stmtForSideEffects.execute("LOAD httpfs")
-                    stmtForSideEffects.execute(target.s3Config.renderCreateSecretSql())
-                    format(
+                    stmt.execute("INSTALL httpfs")
+                    stmt.execute("LOAD httpfs")
+                    stmt.execute(target.s3Config.renderCreateSecretSql())
+                    stmt.execute(format(
                             "ATTACH '%s' AS %s (READ_ONLY)",
                             target.s3Url.replace("'", "''"),
-                            ATTACHED_DB)
+                            ATTACHED_DB))
+                    "$ATTACHED_DB.main.$ATTACHED_TABLE"
+                }
+                is DuckDbAttachTarget.FileScan -> {
+                    // No ATTACH: read the single file via the extension's table function.
+                    // extension/scanFunction are connector-controlled constants (not user input).
+                    stmt.execute("INSTALL ${target.extension}")
+                    stmt.execute("LOAD ${target.extension}")
+                    if (target.s3Config.isPresent) {
+                        stmt.execute("INSTALL httpfs")
+                        stmt.execute("LOAD httpfs")
+                        stmt.execute(target.s3Config.get().renderCreateSecretSql())
+                    }
+                    "${target.scanFunction}('${target.path.replace("'", "''")}')"
                 }
             }
-        }
-
-        private fun buildSelectSql(request: DucklakeDuckDbExecutor.ExecutionRequest): String =
-            DuckDbSelectSqlBuilder.buildSelectSql(
-                    "$ATTACHED_DB.main.$ATTACHED_TABLE", request)
 
         private fun describeAttachTarget(target: DuckDbAttachTarget): String =
             when (target) {
                 is DuckDbAttachTarget.LocalPath -> target.path.toString()
                 is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
+                is DuckDbAttachTarget.FileScan -> target.path
             }
 
         private fun closeQuietly(vararg resources: AutoCloseable?) {
