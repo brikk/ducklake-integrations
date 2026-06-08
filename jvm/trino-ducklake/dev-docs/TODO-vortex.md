@@ -59,8 +59,27 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
 ## Phase V2 — predicate pushdown
 - [ ] TupleDomain + function-shape pushdown via the existing `DuckDbWhereClauseTranslator` / `applyFilter`, same as the `.db` and lance paths — predicates render into the `read_vortex` query. Vortex's compression-cascade should make pushdown especially valuable (skip decompression of pruned columns/ranges); verify the extension honors pushed filters.
 
-## Phase V3 — write (optional, when a workload pushes)
-- [ ] `DucklakePageSink.openNewWriter` (≈:307): add a `FORMAT_VORTEX` writer branch using DuckDB `COPY … TO (FORMAT vortex)`. `resolveWriteFormat` already plumbs the format through. Single-file output → straightforward catalog rows (no dataset complication).
+## Phase V3 — write (DONE 2026-06-08)
+- [x] `DucklakePageSink.openVortexWriter` → `DuckDbArrowStreamFileWriter` parameterized with
+  `outputFormat=vortex`: streams Trino pages as an Arrow stream and the consumer thread runs
+  `COPY (SELECT * FROM <stream>) TO 'local.vortex' (FORMAT vortex)` — single pass, no scratch
+  table, reusing the exact `.db`-path Arrow machinery (one source of truth for the concurrency).
+- [x] **Inline stats** via the reusable `DucklakeColumnStatsAccumulator` (commit `fafd3b0`), fed
+  from the producer thread as pages flow — no read-back, no MIN/MAX SQL. Works for any
+  manually-written format (the user's point: future formats reuse it). VARCHAR min/max uses
+  UTF-8 byte order (Slice), NaN excluded, VARBINARY/UUID counts-only — unit-tested.
+- [x] **Local-temp-then-upload** via `TrinoFileSystem` (portable across all storage backends;
+  matches parquet/duckdb writers). Direct `COPY TO s3://` is a deliberate future opt-in perf
+  mode (S3-scoped), NOT the default — see the design discussion.
+- [x] Validators (session + table property) accept `'vortex'` as a write format.
+- [x] CTAS round-trip integration test (`TestDucklakeVortexFormat`): writes a vortex file,
+  catalog records `file_format='vortex'`, SELECT reads it back + predicate. Network-gated.
+- This **also closed the V1 "full SQL-level read through the catalog" gap** — the writer
+  produces the catalog row a `SELECT` needs, so the read dispatch is now exercised end-to-end.
+
+Follow-up (not blocking): a vortex arrow-stream writer is the only writer mode; the appender
+mode isn't wired for vortex (no need — the stream path is the production one). Direct-to-s3
+write mode + richer-encoding type audit remain open.
 
 ---
 
