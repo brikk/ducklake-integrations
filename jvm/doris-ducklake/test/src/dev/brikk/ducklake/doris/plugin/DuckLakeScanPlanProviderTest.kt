@@ -348,6 +348,43 @@ internal class DuckLakeScanPlanProviderTest {
     }
 
     @Test
+    @Throws(Exception::class)
+    fun prunesFilesByBucketEqualityFilter() {
+        // End-to-end BUCKET pruning. bucketPrune is intersected with stats pruning,
+        // so a wrong murmur3 hash would compute the wrong target bucket, the
+        // intersection would go empty, and isNotEmpty() below would fail — i.e. this
+        // can't silently keep the wrong file. (Hash itself is pinned in
+        // DuckLakeBucketTransformTest.)
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                // alice/bob/charlie hash to buckets 1/2/3 → three files.
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(3)
+
+                // name = 'alice' → only bucket 1's file survives.
+                val name = metadata.getColumnHandles(null, handle)["name"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("name", name.columnType),
+                    ConnectorLiteral(name.columnType, "alice"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push name = 'alice'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
     fun canonicalAwsAliasMapping() {
         // Pin the FE→BE key aliasing surface so a typo in the switch can't
         // silently drop credentials on the BE side at runtime.

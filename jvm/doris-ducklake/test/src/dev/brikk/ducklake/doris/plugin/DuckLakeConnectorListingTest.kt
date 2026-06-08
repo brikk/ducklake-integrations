@@ -84,7 +84,7 @@ internal class DuckLakeConnectorListingTest {
 
             assertThat(metadata.listTableNames(null, "sales"))
                 .containsExactlyInAnyOrder(
-                    "orders", "customers", "returns_file", "returns_inline", "by_region",
+                    "orders", "customers", "returns_file", "returns_inline", "by_region", "by_name_bucket",
                 )
             assertThat(metadata.listTableNames(null, "analytics"))
                 .containsExactly("events")

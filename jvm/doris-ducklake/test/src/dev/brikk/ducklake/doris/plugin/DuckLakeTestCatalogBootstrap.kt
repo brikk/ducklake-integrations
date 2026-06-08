@@ -91,6 +91,15 @@ object DuckLakeTestCatalogBootstrap {
                 statement.execute("INSERT INTO dl.sales.by_region VALUES (1, 'us', 10.0), (2, 'us', 20.0)")
                 statement.execute("INSERT INTO dl.sales.by_region VALUES (3, 'eu', 30.0), (4, 'eu', 40.0)")
 
+                // sales.by_name_bucket exercises BUCKET partition pruning. DuckLake's
+                // murmur3 bucket(4) sends alice→1, bob→2, charlie→3 — three distinct
+                // bucket files — so `name = 'alice'` must keep only bucket 1.
+                statement.execute("CREATE TABLE dl.sales.by_name_bucket (id INTEGER, name VARCHAR)")
+                statement.execute("ALTER TABLE dl.sales.by_name_bucket SET PARTITIONED BY (bucket(4, name))")
+                statement.execute(
+                    "INSERT INTO dl.sales.by_name_bucket VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')",
+                )
+
                 statement.execute(
                     "INSERT INTO dl.sales.returns_inline " +
                         "VALUES (10, 1.00), (11, 2.00), (12, 3.00), (13, 4.00)",

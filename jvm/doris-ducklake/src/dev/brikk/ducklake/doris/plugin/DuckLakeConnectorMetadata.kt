@@ -2,6 +2,7 @@ package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import org.apache.doris.connector.api.ConnectorColumn
 import org.apache.doris.connector.api.ConnectorDatabaseMetadata
@@ -12,10 +13,13 @@ import org.apache.doris.connector.api.ConnectorTableStatistics
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import org.apache.doris.connector.api.pushdown.ConnectorAnd
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.pushdown.FilterApplicationResult
 import org.apache.doris.connector.api.pushdown.ProjectionApplicationResult
 import java.time.Instant
@@ -181,27 +185,107 @@ internal class DuckLakeConnectorMetadata(
         }
         val filter = constraint.expression ?: return Optional.empty()
 
-        val columnIdByName = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
-            .associate { it.columnName to it.columnId }
-        val rangePredicates = DuckLakePredicateConverter.toColumnRangePredicates(filter, columnIdByName)
-        if (rangePredicates.isEmpty()) {
-            // Nothing convertible (e.g. only function / LIKE / OR predicates) → opt out.
-            return Optional.empty()
-        }
+        val columns = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
 
-        // A file survives only if its column stats overlap EVERY pushed predicate's
-        // range, so intersect the per-predicate surviving-file sets.
-        var kept: Set<Long>? = null
-        for (pred in rangePredicates) {
-            val ids = catalog.findDataFileIdsInRange(dlHandle.tableId, dlHandle.snapshotId, pred).toHashSet()
-            kept = kept?.intersect(ids) ?: ids
-        }
-        val prunedFileIds = kept ?: return Optional.empty()
+        // Two complementary prunings, intersected: column-stats ranges (cover
+        // non-partition columns + IDENTITY/temporal partitions, whose source column
+        // carries stats) and BUCKET-partition matching (which stats CAN'T do — each
+        // bucket file holds a scattered value range).
+        val statsKept = statsPrune(dlHandle, filter, columns.associate { it.columnName to it.columnId })
+        val bucketKept = bucketPrune(dlHandle, filter, columns)
+
+        val prunedFileIds = intersectNullable(statsKept, bucketKept)
+            ?: return Optional.empty() // nothing pushable (functions / LIKE / OR only)
 
         val newHandle = dlHandle.copy(pushedFilter = filter, prunedFileIds = prunedFileIds)
         // Conservative: the BE re-evaluates the full predicate, so report the whole
         // expression as still-unenforced. File pruning is best-effort elimination.
         return Optional.of(FilterApplicationResult<ConnectorTableHandle>(newHandle, filter, false))
+    }
+
+    /** Stats-range pruning: a file survives only if its column stats overlap every pushed range. */
+    private fun statsPrune(
+        handle: DuckLakeTableHandle,
+        filter: ConnectorExpression,
+        columnIdByName: Map<String, Long>,
+    ): Set<Long>? {
+        val rangePredicates = DuckLakePredicateConverter.toColumnRangePredicates(filter, columnIdByName)
+        if (rangePredicates.isEmpty()) {
+            return null
+        }
+        var kept: Set<Long>? = null
+        for (pred in rangePredicates) {
+            val ids = catalog.findDataFileIdsInRange(handle.tableId, handle.snapshotId, pred).toHashSet()
+            kept = kept?.intersect(ids) ?: ids
+        }
+        return kept
+    }
+
+    /** BUCKET-partition pruning: for `col = literal` on a bucket field, keep only files in bucket(literal). */
+    private fun bucketPrune(
+        handle: DuckLakeTableHandle,
+        filter: ConnectorExpression,
+        columns: List<DucklakeColumn>,
+    ): Set<Long>? {
+        val bucketFields = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
+            .flatMap { it.fields }
+            .filter { it.transform == DucklakePartitionTransform.BUCKET }
+        if (bucketFields.isEmpty()) {
+            return null
+        }
+        val nameById = columns.associate { it.columnId to it.columnName }
+        val equalities = equalityLiterals(filter)
+        // partitionKeyIndex -> target bucket, for bucket fields with a usable `col = literal`.
+        val targetBuckets = HashMap<Int, Int>()
+        for (field in bucketFields) {
+            val colName = nameById[field.columnId] ?: continue
+            val arity = field.arity ?: continue
+            val literal = equalities[colName] ?: continue
+            val target = DuckLakeBucketTransform.bucket(literal, arity) ?: continue
+            targetBuckets[field.partitionKeyIndex] = target
+        }
+        if (targetBuckets.isEmpty()) {
+            return null
+        }
+
+        val fileValues = catalog.getFilePartitionValues(handle.tableId, handle.snapshotId)
+        val kept = HashSet<Long>()
+        for ((fileId, values) in fileValues) {
+            val matches = targetBuckets.all { (keyIndex, target) ->
+                val pv = values.find { it.partitionKeyIndex == keyIndex }?.partitionValue
+                pv == null || pv.toIntOrNull() == target // null partition value → keep conservatively
+            }
+            if (matches) {
+                kept.add(fileId)
+            }
+        }
+        return kept
+    }
+
+    /** `col = literal` equalities with their TYPED literal value (needed for bucket hashing). */
+    private fun equalityLiterals(filter: ConnectorExpression): Map<String, Any> {
+        val conjuncts = when (filter) {
+            is ConnectorAnd -> filter.conjuncts
+            else -> listOf(filter)
+        }
+        val out = HashMap<String, Any>()
+        for (conjunct in conjuncts) {
+            if (conjunct is ConnectorComparison && conjunct.operator == ConnectorComparison.Operator.EQ) {
+                val col = conjunct.left as? ConnectorColumnRef
+                val lit = conjunct.right as? ConnectorLiteral
+                val value = lit?.value
+                if (col != null && lit != null && !lit.isNull && value != null) {
+                    out[col.columnName] = value
+                }
+            }
+        }
+        return out
+    }
+
+    private fun intersectNullable(a: Set<Long>?, b: Set<Long>?): Set<Long>? = when {
+        a == null -> b
+        b == null -> a
+        else -> a.intersect(b)
     }
 
     // ---- Statistics (planner cardinality) ----
