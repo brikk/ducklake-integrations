@@ -149,4 +149,21 @@ internal class DuckLakeConnectorListingTest {
                     .isFalse()
             }
     }
+
+    @Test
+    @Throws(Exception::class)
+    fun reportsTableStatistics() {
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val orders = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+                val stats = metadata.getTableStatistics(null, orders)
+                    .orFail("expected stats for sales.orders")
+                // sales.orders is seeded with 3 rows: (1, 2) then (3).
+                assertThat(stats.rowCount).isEqualTo(3L)
+                assertThat(stats.dataSize).isPositive()
+            }
+    }
 }

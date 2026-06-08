@@ -8,6 +8,7 @@ import org.apache.doris.connector.api.ConnectorDatabaseMetadata
 import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.ConnectorTableSchema
+import org.apache.doris.connector.api.ConnectorTableStatistics
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
@@ -201,6 +202,20 @@ internal class DuckLakeConnectorMetadata(
         // Conservative: the BE re-evaluates the full predicate, so report the whole
         // expression as still-unenforced. File pruning is best-effort elimination.
         return Optional.of(FilterApplicationResult<ConnectorTableHandle>(newHandle, filter, false))
+    }
+
+    // ---- Statistics (planner cardinality) ----
+
+    override fun getTableStatistics(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+    ): Optional<ConnectorTableStatistics> {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        // Table-level row count + on-disk size from ducklake_table_stats. v1 reports
+        // whole-table stats; refining to the pushed-filter / pruned-file subset is a
+        // later optimization (the planner applies filter selectivity on top).
+        val stats = catalog.getTableStats(dlHandle.tableId) ?: return Optional.empty()
+        return Optional.of(ConnectorTableStatistics(stats.recordCount, stats.fileSizeBytes))
     }
 
     // ---- MVCC snapshot pinning + time travel ----
