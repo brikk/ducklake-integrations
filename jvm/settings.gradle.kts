@@ -18,5 +18,9 @@ dependencyResolutionManagement {
 
 include(":ducklake-catalog")
 include(":trino-ducklake")
-include(":doris-ducklake")
+// :doris-ducklake is temporarily disabled: it depends on Apache Doris
+// fe-connector-api/spi/thrift 1.2-SNAPSHOT artifacts (PR #62767) that must be
+// installed into ~/.m2, and we're paused on this connector until the Doris SPI
+// is more widely available. Re-add the include below to bring it back.
+// include(":doris-ducklake")
 include(":jooq-custom-naming")
