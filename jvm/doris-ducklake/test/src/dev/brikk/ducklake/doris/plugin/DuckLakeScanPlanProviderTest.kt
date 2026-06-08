@@ -4,7 +4,6 @@ import java.util.Optional
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import dev.brikk.ducklake.doris.plugin.cache.FakeConnectorContext
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
-import org.apache.doris.connector.api.scan.ConnectorScanRequest
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileRangeDesc
 import org.apache.doris.thrift.TFileScanRangeParams
@@ -58,11 +57,7 @@ internal class DuckLakeScanPlanProviderTest {
             assertThat(plan).isNotNull()
             assertThat(plan.scanRangeType).isEqualTo(ConnectorScanRangeType.FILE_SCAN)
 
-            val req = ConnectorScanRequest.builder()
-                .table(handle)
-                .columns(listOf())
-                .build()
-            val ranges = plan.planScan(req)
+            val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
             // Bootstrap inserts rows into sales.orders. DuckLake's writer may
             // coalesce inserts into a single data file (no compaction needed) —
@@ -90,9 +85,7 @@ internal class DuckLakeScanPlanProviderTest {
             // Empty table emits no ranges.
             val customers = metadata.getTableHandle(null, "sales", "customers")
                 .orFail("expected sales.customers handle")
-            val emptyRanges = plan.planScan(
-                ConnectorScanRequest.builder().table(customers).columns(listOf()).build(),
-            )
+            val emptyRanges = plan.planScan(null, customers, listOf(), Optional.empty())
             assertThat(emptyRanges).isEmpty()
         }
     }
@@ -116,9 +109,7 @@ internal class DuckLakeScanPlanProviderTest {
                     .orFail("expected sales.returns_file handle")
 
                 val plan = connector.getScanPlanProvider()
-                val ranges = plan.planScan(
-                    ConnectorScanRequest.builder().table(handle).columns(listOf()).build(),
-                )
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
                 // returns_file has one INSERT batch → one active data file. That
                 // one data file carries one active position-delete file.
@@ -177,9 +168,7 @@ internal class DuckLakeScanPlanProviderTest {
                     .orFail("expected sales.returns_inline handle")
 
                 val plan = connector.getScanPlanProvider()
-                val ranges = plan.planScan(
-                    ConnectorScanRequest.builder().table(handle).columns(listOf()).build(),
-                )
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
                 assertThat(ranges).hasSize(1)
                 val range = ranges[0]

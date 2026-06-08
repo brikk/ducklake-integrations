@@ -2,6 +2,7 @@ package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import org.apache.doris.connector.api.ConnectorColumn
 import org.apache.doris.connector.api.ConnectorDatabaseMetadata
 import org.apache.doris.connector.api.ConnectorMetadata
@@ -9,6 +10,8 @@ import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.ConnectorTableSchema
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
+import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import java.time.Instant
 import java.util.Optional
 
 /**
@@ -119,6 +122,46 @@ internal class DuckLakeConnectorMetadata(
             )
         }
         return out
+    }
+
+    // ---- MVCC snapshot pinning + time travel ----
+    // Replaces the old FE→BE 24-byte snapshot codec: the P-series engine takes a
+    // ConnectorMvccSnapshot from these methods and serializes it itself.
+
+    override fun beginQuerySnapshot(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+    ): Optional<ConnectorMvccSnapshot> {
+        // Pin the query to the snapshot already resolved on the table handle.
+        val snapshotId = handle.asDuckLakeHandle<DuckLakeTableHandle>().snapshotId
+        return Optional.of(toMvccSnapshot(snapshotId, catalog.getSnapshot(snapshotId)))
+    }
+
+    override fun getSnapshotAt(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        timestampMillis: Long,
+    ): Optional<ConnectorMvccSnapshot> {
+        val snap = catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillis))
+            ?: return Optional.empty()
+        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+    }
+
+    override fun getSnapshotById(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        snapshotId: Long,
+    ): Optional<ConnectorMvccSnapshot> {
+        val snap = catalog.getSnapshot(snapshotId) ?: return Optional.empty()
+        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+    }
+
+    private fun toMvccSnapshot(snapshotId: Long, snap: DucklakeSnapshot?): ConnectorMvccSnapshot {
+        val builder = ConnectorMvccSnapshot.builder().snapshotId(snapshotId)
+        if (snap != null) {
+            builder.timestampMillis(snap.snapshotTime.toEpochMilli())
+        }
+        return builder.build()
     }
 
     private fun loadTopLevelColumns(handle: DuckLakeTableHandle): List<DucklakeColumn> {
