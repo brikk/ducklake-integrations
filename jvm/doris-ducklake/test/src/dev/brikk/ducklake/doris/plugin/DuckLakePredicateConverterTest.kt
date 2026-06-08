@@ -7,7 +7,9 @@ import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.pushdown.ConnectorFunctionCall
+import org.apache.doris.connector.api.pushdown.ConnectorIn
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
+import org.apache.doris.connector.api.pushdown.ConnectorOr
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
@@ -78,5 +80,63 @@ internal class DuckLakePredicateConverterTest {
         // A function buried in an AND is skipped; the sibling comparison still converts.
         val mixed = ConnectorAnd(listOf(fn, cmp(ConnectorComparison.Operator.EQ, "id", 7)))
         assertThat(convert(mixed)).containsExactly(ColumnRangePredicate(1L, "7", "7"))
+    }
+
+    @Test
+    fun inListBecomesTypedSpanRange() {
+        // The span must be computed in the values' TYPED order: 3..10, not the
+        // string span "10".."9". A regression to string ordering would yield an
+        // inverted/incorrect range here.
+        val inList = ConnectorIn(col("id"), listOf(lit(3), lit(10), lit(9)), false)
+        assertThat(convert(inList)).containsExactly(ColumnRangePredicate(1L, "3", "10"))
+    }
+
+    @Test
+    fun orOfSameColumnEqualitiesBecomesSpanRange() {
+        val or = ConnectorOr(
+            listOf(
+                cmp(ConnectorComparison.Operator.EQ, "id", 7),
+                cmp(ConnectorComparison.Operator.EQ, "id", 3),
+                cmp(ConnectorComparison.Operator.EQ, "id", 5),
+            ),
+        )
+        assertThat(convert(or)).containsExactly(ColumnRangePredicate(1L, "3", "7"))
+    }
+
+    @Test
+    fun membershipComposesAsAConjunctInsideAnd() {
+        // `total >= 5 AND id IN (1, 2)` → a range from each conjunct.
+        val and = ConnectorAnd(
+            listOf(
+                cmp(ConnectorComparison.Operator.GE, "total", 5),
+                ConnectorIn(col("id"), listOf(lit(1), lit(2)), false),
+            ),
+        )
+        assertThat(convert(and)).containsExactlyInAnyOrder(
+            ColumnRangePredicate(2L, "5", null),
+            ColumnRangePredicate(1L, "1", "2"),
+        )
+    }
+
+    @Test
+    fun skipsUnsafeMembership() {
+        // NOT IN is the unbounded complement — can't be a single range.
+        assertThat(convert(ConnectorIn(col("id"), listOf(lit(1), lit(2)), true))).isEmpty()
+        // OR across two columns can't collapse to one range per column.
+        val mixedColumnOr = ConnectorOr(
+            listOf(
+                cmp(ConnectorComparison.Operator.EQ, "id", 1),
+                cmp(ConnectorComparison.Operator.EQ, "total", 2),
+            ),
+        )
+        assertThat(convert(mixedColumnOr)).isEmpty()
+        // OR with a non-equality disjunct (a range) is not membership.
+        val rangeOr = ConnectorOr(
+            listOf(
+                cmp(ConnectorComparison.Operator.EQ, "id", 1),
+                cmp(ConnectorComparison.Operator.GT, "id", 9),
+            ),
+        )
+        assertThat(convert(rangeOr)).isEmpty()
     }
 }

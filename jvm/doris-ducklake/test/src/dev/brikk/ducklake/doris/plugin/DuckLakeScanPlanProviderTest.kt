@@ -6,7 +6,9 @@ import dev.brikk.ducklake.doris.plugin.cache.FakeConnectorContext
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.ConnectorIn
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
+import org.apache.doris.connector.api.pushdown.ConnectorOr
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileRangeDesc
@@ -376,6 +378,109 @@ internal class DuckLakeScanPlanProviderTest {
                 )
                 val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
                     .orFail("expected applyFilter to push name = 'alice'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByBucketInListFilter() {
+        // IN-list over a bucket column: `name IN ('alice','bob')` keeps buckets
+        // {1,2} and prunes charlie's bucket-3 file. Exercises the membership →
+        // {bucket(v)} set path that single-equality pruning can't cover.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(3)
+
+                val name = metadata.getColumnHandles(null, handle)["name"] as DuckLakeColumnHandle
+                val filter = ConnectorIn(
+                    ConnectorColumnRef("name", name.columnType),
+                    listOf(
+                        ConnectorLiteral(name.columnType, "alice"),
+                        ConnectorLiteral(name.columnType, "bob"),
+                    ),
+                    false,
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push name IN ('alice','bob')")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                // alice + bob survive (2 files); charlie's bucket-3 file is pruned.
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).hasSize(2)
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByOrOfEqualitiesFilter() {
+        // `name = 'alice' OR name = 'bob'` is membership on a single column and must
+        // prune identically to the IN-list above — proving the OR → IN normalization.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(3)
+
+                val name = metadata.getColumnHandles(null, handle)["name"] as DuckLakeColumnHandle
+                fun eq(value: String) = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("name", name.columnType),
+                    ConnectorLiteral(name.columnType, value),
+                )
+                val filter = ConnectorOr(listOf(eq("alice"), eq("bob")))
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push name = 'alice' OR name = 'bob'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).hasSize(2)
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByNumericInListFilter() {
+        // IN-list through the STATS path (not bucket): `id IN (3, 4)` spans 3..4, so
+        // by_region's 'us' file (ids 1,2) is pruned by its id stats while 'eu' (3,4)
+        // survives. Covers the typed-span pruning independent of partitioning.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(2)
+
+                val id = metadata.getColumnHandles(null, handle)["id"] as DuckLakeColumnHandle
+                val filter = ConnectorIn(
+                    ConnectorColumnRef("id", id.columnType),
+                    listOf(ConnectorLiteral(id.columnType, 3), ConnectorLiteral(id.columnType, 4)),
+                    false,
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push id IN (3, 4)")
                 val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
 
                 val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())

@@ -6,7 +6,9 @@ import org.apache.doris.connector.api.pushdown.ConnectorBetween
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
+import org.apache.doris.connector.api.pushdown.ConnectorIn
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
+import org.apache.doris.connector.api.pushdown.ConnectorOr
 
 /**
  * Converts the parts of a Doris [ConnectorExpression] filter that we can safely
@@ -15,11 +17,15 @@ import org.apache.doris.connector.api.pushdown.ConnectorLiteral
  * Deliberately conservative — this drives *file elimination*, not row-level
  * enforcement, so the BE always re-evaluates the full predicate. We only need to
  * never drop a file that could contain a matching row:
- * - Only top-level `AND` conjuncts are considered (an `OR` can't collapse to one
- *   range per column without union logic we don't need yet).
- * - Only `col <op> literal` comparisons and `col BETWEEN lo AND hi` are mapped.
- * - **Function calls, LIKE, IN, IS NULL, NOT, OR, and NE are skipped** — they
- *   stay in the remaining filter for the BE. (No function pushdown by design.)
+ * - Only top-level `AND` conjuncts are considered.
+ * - Mapped: `col <op> literal` comparisons, `col BETWEEN lo AND hi`, and
+ *   **membership** predicates (`col IN (…)`, `col = a OR col = b …`) — the latter
+ *   collapse to the inclusive `[min..max]` span of their values (see
+ *   [DuckLakeMembership]). A file outside that span can hold no matching row, so
+ *   spanning is safe; a file inside it is kept and re-checked by the BE.
+ * - **Function calls, LIKE, IS NULL, NOT, NOT IN, NE, and mixed-column / range
+ *   `OR`s are skipped** — they stay in the remaining filter for the BE. (No
+ *   function pushdown by design.)
  * - Strict `<`/`>` are widened to inclusive bounds (`ColumnRangePredicate` bounds
  *   are inclusive); widening can only keep extra files, never drop matching ones.
  */
@@ -41,8 +47,33 @@ internal object DuckLakePredicateConverter {
         when (expr) {
             is ConnectorComparison -> fromComparison(expr, ids)
             is ConnectorBetween -> fromBetween(expr, ids)
-            else -> null // ConnectorFunctionCall / Like / In / IsNull / Or / Not → skip
+            is ConnectorIn, is ConnectorOr -> fromMembership(expr, ids)
+            else -> null // ConnectorFunctionCall / Like / IsNull / Not → skip
         }
+
+    /** `col IN (…)` or `col = a OR col = b …` → the inclusive `[min..max]` span over its values. */
+    private fun fromMembership(expr: ConnectorExpression, ids: Map<String, Long>): ColumnRangePredicate? {
+        val (column, values) = DuckLakeMembership.of(expr) ?: return null
+        val columnId = ids[column] ?: return null
+        return spanRange(columnId, values)
+    }
+
+    /**
+     * The inclusive `[min..max]` span of [values], compared in the literals' own
+     * **typed** order — so `id IN (3, 10, 9)` spans `3..10`, not the string span
+     * `"10".."9"`. Returns null (don't prune this conjunct — keeps all files) if the
+     * literals aren't one mutually-comparable type.
+     */
+    private fun spanRange(columnId: Long, values: List<Any>): ColumnRangePredicate? {
+        val cls = values.first()::class
+        if (values.first() !is Comparable<*> || values.any { it::class != cls }) {
+            return null
+        }
+        @Suppress("UNCHECKED_CAST")
+        val byValue = Comparator<Any> { a, b -> (a as Comparable<Any>).compareTo(b) }
+        val sorted = values.sortedWith(byValue)
+        return ColumnRangePredicate(columnId, sorted.first().toString(), sorted.last().toString())
+    }
 
     private fun fromComparison(cmp: ConnectorComparison, ids: Map<String, Long>): ColumnRangePredicate? {
         val col = cmp.left as? ConnectorColumnRef ?: return null

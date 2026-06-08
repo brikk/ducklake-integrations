@@ -18,10 +18,8 @@ import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
 import org.apache.doris.connector.api.pushdown.ConnectorAnd
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
-import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
-import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.pushdown.FilterApplicationResult
 import org.apache.doris.connector.api.pushdown.ProjectionApplicationResult
 import java.time.Instant
@@ -223,7 +221,13 @@ internal class DuckLakeConnectorMetadata(
         return kept
     }
 
-    /** BUCKET-partition pruning: for `col = literal` on a bucket field, keep only files in bucket(literal). */
+    /**
+     * BUCKET-partition pruning: for a membership constraint (`col = x`, `col IN (…)`,
+     * or same-column `col = a OR col = b …`) on a bucket field, keep only files whose
+     * stored bucket is one of `{ bucket(v) : v ∈ candidates }`. Stats CAN'T do this —
+     * each bucket file holds a scattered value range — so this is the one prune that
+     * narrows bucket-partitioned scans.
+     */
     private fun bucketPrune(
         handle: DuckLakeTableHandle,
         filter: ConnectorExpression,
@@ -235,11 +239,11 @@ internal class DuckLakeConnectorMetadata(
         if (bucketFields.isEmpty()) {
             return null
         }
-        val equalities = equalityLiterals(filter)
+        val candidates = membershipCandidates(filter)
         val nameById = columns.associate { it.columnId to it.columnName }
-        // partitionKeyIndex -> target bucket, for bucket fields with a usable `col = literal`.
+        // partitionKeyIndex -> the set of buckets the candidate values hash to.
         val targetBuckets = bucketFields
-            .mapNotNull { field -> targetBucketFor(field, nameById, equalities) }
+            .mapNotNull { field -> targetBucketsFor(field, nameById, candidates) }
             .toMap()
         if (targetBuckets.isEmpty()) {
             return null
@@ -249,40 +253,44 @@ internal class DuckLakeConnectorMetadata(
             .keys
     }
 
-    /** The `(partitionKeyIndex, bucket)` a BUCKET field resolves to under a `col = literal`, or null. */
-    private fun targetBucketFor(
+    /**
+     * The `(partitionKeyIndex, target buckets)` a BUCKET field resolves to under its
+     * column's membership candidates, or null to skip the field. Skips (keeps all
+     * files) if any candidate can't be hashed — an unknown bucket means we can't
+     * safely exclude any bucket for that field.
+     */
+    private fun targetBucketsFor(
         field: DucklakePartitionField,
         nameById: Map<Long, String>,
-        equalities: Map<String, Any>,
-    ): Pair<Int, Int>? {
+        candidates: Map<String, List<Any>>,
+    ): Pair<Int, Set<Int>>? {
         val arity = field.arity ?: return null
-        val literal = nameById[field.columnId]?.let { equalities[it] } ?: return null
-        val target = DuckLakeBucketTransform.bucket(literal, arity) ?: return null
-        return field.partitionKeyIndex to target
+        val values = nameById[field.columnId]?.let { candidates[it] } ?: return null
+        val buckets = values.map { DuckLakeBucketTransform.bucket(it, arity) ?: return null }.toSet()
+        return field.partitionKeyIndex to buckets
     }
 
-    /** A file survives bucket pruning if its stored bucket value matches every target (null = keep). */
+    /** A file survives bucket pruning if, for every field, its stored bucket is a target (null = keep). */
     private fun fileMatchesBuckets(
         values: List<DucklakeFilePartitionValue>,
-        targetBuckets: Map<Int, Int>,
-    ): Boolean = targetBuckets.all { (keyIndex, target) ->
+        targetBuckets: Map<Int, Set<Int>>,
+    ): Boolean = targetBuckets.all { (keyIndex, targets) ->
         val pv = values.find { it.partitionKeyIndex == keyIndex }?.partitionValue
-        pv == null || pv.toIntOrNull() == target
+        pv == null || pv.toIntOrNull() in targets
     }
 
-    /** `col = literal` equalities with their TYPED literal value (needed for bucket hashing). */
-    private fun equalityLiterals(filter: ConnectorExpression): Map<String, Any> {
+    /**
+     * Per-column candidate values from every membership conjunct (`col = x`,
+     * `col IN (…)`, same-column `col = a OR col = b …`), unioned across conjuncts.
+     * Union stays safe: it can only widen a column's value set, never wrongly
+     * narrow it, so bucket pruning never drops a file that could match.
+     */
+    private fun membershipCandidates(filter: ConnectorExpression): Map<String, List<Any>> {
         val conjuncts = if (filter is ConnectorAnd) filter.conjuncts else listOf(filter)
-        return conjuncts.mapNotNull { asEqualityLiteral(it) }.toMap()
-    }
-
-    private fun asEqualityLiteral(expr: ConnectorExpression): Pair<String, Any>? {
-        if (expr !is ConnectorComparison || expr.operator != ConnectorComparison.Operator.EQ) {
-            return null
-        }
-        val col = expr.left as? ConnectorColumnRef ?: return null
-        val value = (expr.right as? ConnectorLiteral)?.takeUnless { it.isNull }?.value ?: return null
-        return col.columnName to value
+        val byColumn = LinkedHashMap<String, MutableList<Any>>()
+        conjuncts.mapNotNull { DuckLakeMembership.of(it) }
+            .forEach { (column, values) -> byColumn.getOrPut(column) { ArrayList() }.addAll(values) }
+        return byColumn.mapValues { (_, values) -> values.distinct() }
     }
 
     private fun intersectNullable(a: Set<Long>?, b: Set<Long>?): Set<Long>? = when {
