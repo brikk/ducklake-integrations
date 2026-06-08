@@ -19,68 +19,108 @@ unit / metadata-integration / live-FE levels. DuckLake semantics
 legacy main plan — read those sections for background, but ignore its
 architecture recommendations.
 
-This plan targets **Apache Doris PR
-[#62767](https://github.com/apache/doris/pull/62767)** ("M0: Lock the plugin
-SPI surface"), which establishes the `fe-connector` plugin SPI. DuckLake
-ships as a sibling connector module under that PR's structure.
+This plan now targets the **P-series connector-SPI migration** on branch
+**`branch-catalog-spi`** (morningman/doris fork) — the incremental, mergeable
+restart of the connector SPI. It **supersedes** the original target, PR
+[#62767](https://github.com/apache/doris/pull/62767) ("M0: Lock the plugin SPI
+surface" — the *M-series*), which is now kept as a design reference only. See
+the dated update directly below; §1 has been rewritten to match.
 
-## 1. Reference branch & local build
+---
 
-The PR head is in morningman's fork. Pull it as a worktree to keep `master`
-clean:
+## Targeting & Build Update — 2026-06-08
+
+> Supersedes the original PR #62767 (M-series) targeting. The §1.4 `~/.m2`
+> artifact coordinates (still `1.2-SNAPSHOT`) remain valid and unchanged.
+
+### Which SPI to target — lineage resolved
+
+| Thing | What it is | Status |
+|---|---|---|
+| **PR #62183** | "fe-connector SPI framework + migrate JDBC/ES" | ✅ **MERGED** 2026-04-18 — the shared foundation both efforts descend from. |
+| **PR #62767** (branch `spi-mega`) | "M0: lock plugin SPI surface" — the **M-series** | ⚠️ **OPEN, never merged.** Went too deep (all connectors, read+write). **Mine it, don't target it.** Local: `~/DEV/OSS/db/doris-spi-mega` @ `32f1c22`. |
+| **`branch-catalog-spi`** | The **P-series**: incremental, risk-ordered, mergeable strangler-fig migration | ✅ **LIVE TARGET.** Local: `~/DEV/OSS/db/doris` @ `5c240dc`. |
+
+The P-series is a re-staged reboot of the same idea — **not** built on #62767's commits.
+
+**Phase roadmap:** P0/P1 infra ✅ · P2 trino ✅ (#64096) · **P3 hudi ✅ (#64143 — frontier, merged 2026-06-06)** · P4 maxcompute → P5 paimon → P6 iceberg ⏳ (each ~2–5 wks; **P6 is months out — don't block on it**).
+
+**Templates:** copy the **P2 trino connector plugin** (the SPI-consumption skeleton — `ConnectorProvider`/`Connector`/`ConnectorMetadata`/`ScanPlanProvider`/`Properties`/`PredicateConverter`/`TypeMapping`). **Hudi (P3)** is the closest lakehouse analog. The **M-series** (`doris-spi-mega`) stays the richest iceberg/write-path reference — treat as provisional, ratify against P6 when it lands.
+
+### Does the new SPI remove the old enum/whitelist workarounds? — MOSTLY YES
+
+**Eliminated** — generic `PLUGIN` mechanisms replace the per-type enums we edited last time: `InitCatalogLog.Type.PLUGIN` (was `…DUCKLAKE`), `TableType.PLUGIN_EXTERNAL_TABLE` (was `DUCKLAKE_EXTERNAL_TABLE`), no `CatalogFactory` `switch` case, no `instanceof` in `PhysicalPlanTranslator`, no `TableFormatType.DUCKLAKE`. The catalog type is now a **free-form property string** via `PluginDrivenExternalCatalog.getType()`.
+
+**Residual — two intentional points** (detailed in the rewritten §1.5): add `"ducklake"` to `SPI_READY_TYPES`, and drop the plugin into `connector_plugin_root`. The whitelist disappears in P8.
+
+## 1. Reference repos & local FE build
+
+**Live target (P-series):** `~/DEV/OSS/db/doris` on branch `branch-catalog-spi`.
+**M-series reference:** `~/DEV/OSS/db/doris-spi-mega` on branch `spi-mega`.
+Doris is on the **4.1 series**. No worktree/PR-checkout needed — both are
+already cloned locally.
+
+### 1.1 Prerequisites — macOS/Intel (verified 2026-06-08)
+
+The FE is pure Java (JDK 17), but Doris's `build.sh` is Linux-shaped and trips
+on three macOS gaps — all fixed with Homebrew. `env.sh` auto-generates
+`custom_env_mac.sh` that prepends the brew tool bins to `PATH`, so once
+installed they're picked up automatically.
+
+| Need | Why it's required | Install |
+|---|---|---|
+| **JDK 17** | FE pins `maven.compiler=17`; the default JDK (25) is rejected | `JAVA_HOME=~/.sdkman/candidates/java/17.0.2-open` |
+| **Maven** | `build.sh` invokes `mvn` | `brew install maven` |
+| **gnu-getopt** | macOS BSD `getopt` can't parse `--fe` → the build **silently no-ops** (`BUILD_FE=0`, fake "Successfully build Doris", no `output/fe`) | `brew install gnu-getopt` |
+| **coreutils** | `build.sh:276` calls Linux-only `nproc` | `brew install coreutils` |
+| **Prebuilt thirdparty** | `gensrc` needs `thrift 0.16.0` + `protoc`; the prebuilt bundle avoids the multi-hour source build | see below |
+| **node 18 + pnpm 9** | *only* if building the web UI (off by default here — see §1.2) | asdf `nodejs 18.20.8`; pnpm 9 (10/11 need Node 20+) |
+
+**Prebuilt thirdparty (darwin-x86_64):**
 
 ```bash
-# from /Users/jminard/DEV/OSS/db/doris (existing checkout):
-git worktree add ../doris-pr-62767
-cd ../doris-pr-62767
-gh pr checkout 62767
+cd ~/DEV/OSS/db/doris/thirdparty
+./download-prebuild-thirdparty.sh master   # 4.1 trunk → 'automation' tag, ~292 MB, download-only
+tar -xJf doris-thirdparty-prebuilt-darwin-x86_64.tar.xz   # extracts installed/
 ```
 
-### 1.1 Prerequisites (one-time)
+The arg (`master`/`4.0`/`3.1`/…) selects the Doris branch line, not the thrift
+version. The sentinel `installed/lib/libbrotlienc.a` satisfies the
+`build.sh:458` check so it won't try to rebuild thirdparty.
 
-- **JDK 17.** Doris pins to 17; the build script rejects anything else. Set
-  `JAVA_HOME` (and `JDK_17` if your `java` default isn't 17).
-- **Thirdparty toolchain.** `fe-thrift` requires `thirdparty/installed/bin/thrift`
-  (Apache Thrift 0.16.0) and `gensrc` needs `protoc`. Brew thrift is the wrong
-  version; use the prebuilt bundle:
-
-  ```bash
-  cd thirdparty
-  sh download-prebuild-thirdparty.sh master   # ~490 MB on darwin-arm64
-  tar -xJf doris-thirdparty-prebuilt-darwin-arm64.tar.xz
-  ```
-
-  The argument (`master`/`4.0`/`3.1`/`3.0`/`2.1`) selects the Doris branch, not
-  the thrift version — the bundle pins all native build deps.
-
-### 1.2 Build
+### 1.2 Build the FE
 
 ```bash
-# from repo root
-JAVA_HOME=/path/to/jdk17 JDK_17=/path/to/jdk17 sh generated-source.sh
+cd ~/DEV/OSS/db/doris
+export JAVA_HOME="$HOME/.sdkman/candidates/java/17.0.2-open"
+export PATH="/usr/local/opt/gnu-getopt/bin:/usr/local/opt/coreutils/libexec/gnubin:$JAVA_HOME/bin:/usr/local/bin:$PATH"
+export DISABLE_BUILD_UI=ON          # else the FE builds the React/webpack-4 console (needs npm)
+./build.sh --fe                     # → output/fe/ : doris-fe.jar, start_fe.sh, fe-connector-api/spi jars
+```
 
-# full FE install (publishes everything to ~/.m2):
+- **FE-only skips BE submodules** (clucene/orc/faiss are gated behind `--be`).
+  Do **not** run `git submodule update` — those are BE and hit access errors.
+  (Full build only: `git submodule update --init --recursive`.)
+- This produces a runnable FE in `output/fe/` but does **not** publish to `~/.m2`.
+
+**For the plugin's compile classpath**, publish the SPI jars to `~/.m2`
+(restrict the reactor to skip fe-core's long compile):
+
+```bash
 cd fe
-JAVA_HOME=/path/to/jdk17 \
-DORIS_THIRDPARTY=/path/to/doris-pr-62767/thirdparty \
-mvn install -DskipTests -Dskip.doc=true -T 1C
+DORIS_THIRDPARTY="$HOME/DEV/OSS/db/doris/thirdparty" \
+mvn install -DskipTests -Dskip.doc=true -pl '!fe-core,!hive-udf,!be-java-extensions' -T 1C
 ```
 
-If you only need the API/SPI jars (skips fe-core's ~7-min compile), restrict
-the reactor to the connector aggregator and its prereqs:
+### 1.3 Dep-trip fallback
+
+The 2026-06-08 build did **not** hit these, but if a later refresh fails on
+fastutil/jakarta deps, cherry-pick the two unpushed `catalog-spi-04` fixes:
 
 ```bash
-mvn install -DskipTests -Dskip.doc=true \
-    -pl '!fe-core,!hive-udf,!be-java-extensions' -T 1C
-```
-
-### 1.3 Refreshing against new PR commits
-
-```bash
-cd doris-pr-62767
-git fetch origin pull/62767/head:pr-62767-fresh && git reset --hard pr-62767-fresh
-cd fe
-mvn install -DskipTests -Dskip.doc=true -T 1C
+git -C ~/DEV/OSS/db/doris fetch morningman catalog-spi-04
+git -C ~/DEV/OSS/db/doris cherry-pick 0f9b6645b00   # hive-catalog-shade → 3.1.2-SNAPSHOT (fastutil)
+git -C ~/DEV/OSS/db/doris cherry-pick f46bb7eae11   # pin jakarta.servlet-api 6.1.0 (Jetty 12.0.34)
 ```
 
 Any diff in `fe-connector-api/` or `fe-connector-spi/` is a potential
@@ -88,8 +128,9 @@ break-the-plugin change (see §6).
 
 ### 1.4 Published artifacts (`~/.m2/repository/org/apache/doris/`)
 
-Current version: **`1.2-SNAPSHOT`** (PR #62767 head). Will change when the PR
-merges and the Doris release line revs.
+Current version: **`1.2-SNAPSHOT`** (on `branch-catalog-spi`; same coordinate
+the old M-series used). Will rev when the P-series merges and the Doris release
+line advances.
 
 For your plugin's compile classpath:
 
@@ -130,27 +171,34 @@ Other artifacts in `~/.m2` you may want:
 | Coordinate | Use |
 |------------|-----|
 | `org.apache.doris:fe-extension-spi:1.2-SNAPSHOT` | Cache / extension hooks the SPI calls into. Sometimes needed transitively. |
-| `org.apache.doris:fe-connector-iceberg:1.2-SNAPSHOT` | Closest reference plugin. Pull the `-sources.jar` to read alongside your own code. |
+| `org.apache.doris:fe-connector-trino-connector:1.2-SNAPSHOT` | The P2 template plugin — structural skeleton to copy. Pull the `-sources.jar` to read alongside your own code. *(exact artifactId pending agent verification)* |
 | `org.apache.doris:fe-core:1.2-SNAPSHOT` | The whole FE (19 MB). Needed only if you run a live FE locally for §5.3 smoke tests. |
 
-### 1.5 fe-core whitelist (required, today)
+### 1.5 fe-core wiring — two points (on `branch-catalog-spi`)
 
-`CatalogFactory.java` gates SPI dispatch behind a hardcoded whitelist:
+**(1) `SPI_READY_TYPES` whitelist.** `CatalogFactory.java` gates SPI dispatch
+behind a hardcoded set (~line 52 on this branch):
 
 ```java
-private static final Set<String> SPI_READY_TYPES = ImmutableSet.of("jdbc", "es", "iceberg");
+private static final Set<String> SPI_READY_TYPES = ImmutableSet.of("jdbc", "es", "trino-connector");
 ```
 
-A `ConnectorProvider` whose `getType()` is not in this set is **silently
-ignored** — the factory falls through to the legacy `switch` and throws
-`Unknown catalog type: ducklake`. So shipping the DuckLake plugin requires a
-one-line edit to add `"ducklake"` to that set. This worktree already carries
-the edit; rebase against PR head before each refresh and re-apply if it gets
-clobbered.
+A `ConnectorProvider` whose type is not in this set is **silently ignored** —
+the factory falls through to the legacy `switch` and throws `Unknown catalog
+type: ducklake`. Shipping DuckLake needs a one-line edit adding `"ducklake"`.
+The gate intentionally lets connectors land dormant and is **removed entirely
+in P8**, leaving pure ServiceLoader discovery.
 
-This whitelist is a transition mechanism, not the final SPI design. Push back
-to the Doris team for "any registered `ConnectorProvider` wins" once the SPI
-stabilizes.
+**(2) `connector_plugin_root`.** Install the `fe-connector-ducklake` plugin
+(shipping `META-INF/services/org.apache.doris.connector.spi.ConnectorProvider`)
+under `${DORIS_HOME}/plugins/connector` (`Config.connector_plugin_root`), where
+`ConnectorPluginManager` discovers it via `ServiceLoader`. Without it,
+`CatalogFactory` throws *"No connector plugin loaded for catalog type
+'ducklake'"*.
+
+> ⚠️ Exact `SPI_READY_TYPES` contents and line number are pending confirmation
+> against `branch-catalog-spi` HEAD (the research note records `"trino-connector"`
+> replacing the old `"iceberg"`; a mapping pass is verifying file:line refs).
 
 ## 2. Plugin module layout
 
@@ -404,33 +452,30 @@ What v1 should cover:
 Fixture data can be generated by the trino-ducklake compose stack, or by a
 small Java/Kotlin seed script that uses the shared library directly.
 
-## 6. Tracking PR churn
+## 6. Tracking SPI churn
 
-The PR description claims the API surface is locked at M0, but reviewer
-pushback may force tweaks before merge. Track changes by:
+The P-series SPI is still evolving phase-by-phase, so the API surface can shift
+under us. Track changes by following `branch-catalog-spi`:
 
 ```bash
-# in the worktree:
-git fetch origin pull/62767/head:pr-62767-fresh
-git diff pr-62767-fresh -- fe/fe-connector/fe-connector-api fe/fe-connector/fe-connector-spi
+# in ~/DEV/OSS/db/doris:
+git fetch morningman branch-catalog-spi
+git diff HEAD..morningman/branch-catalog-spi -- fe/fe-connector
 ```
 
 Any diff in `fe-connector-api/` or `fe-connector-spi/` is a potential
-break-the-plugin change. Diffs elsewhere (tests, in-tree connector
-implementations) are informative but don't affect a downstream plugin's
-compile.
-
-`gh pr view 62767 --comments` shows reviewer feedback; flagged comments on
-`*Provider`, `Connector*`, `*Capability`, or `*Ops` types are the highest-
-risk areas for plugin authors.
+break-the-plugin change. Diffs in the in-tree connectors (trino, hudi, …) are
+informative — they show how the SPI is meant to be consumed — but don't affect
+a downstream plugin's compile. Watch the P4→P6 PRs as they land; the **P6
+iceberg PR** will be the golden lakehouse sample.
 
 ## 7. Hand-off checklist
 
 For the agent picking up implementation:
 
-- [ ] Worktree pulled at PR #62767 head; SPI artifacts in `~/.m2`
-- [ ] Plugin module skeleton (`fe-connector-ducklake/`) created by copying
-      `fe-connector-iceberg/` and renaming
+- [ ] FE built from `branch-catalog-spi`; SPI artifacts published to `~/.m2`
+- [ ] Plugin module skeleton (`fe-connector-ducklake/`) created by copying the
+      **P2 trino connector plugin** (closest current template) and renaming
 - [ ] `META-INF/services/...ConnectorProvider` registered
 - [ ] Module added to `fe/fe-connector/pom.xml` aggregator
 - [ ] Library dependency wired (Kotlin lib, Java 17 ABI)
@@ -449,10 +494,15 @@ unlocks one regression-test file at a time.
 
 - Main plan: `docs/ducklake-doris-integration-plan.md` (DuckLake semantics,
   library architecture, scope, open questions)
-- Reference PR: <https://github.com/apache/doris/pull/62767>
-- Reference plugin (Iceberg, the closest analogue):
-  `fe/fe-connector/fe-connector-iceberg/` at PR #62767's head
-- SPI handbook: `fe/fe-connector/README.md` at PR #62767's head (1094 lines)
+- **Live target:** branch `branch-catalog-spi` (morningman/doris) at
+  `~/DEV/OSS/db/doris` — see the Targeting Update at the top of this doc
+- **Template plugin:** the P2 trino connector (#64096) on `branch-catalog-spi`;
+  hudi (P3, #64143) is the closest lakehouse analogue
+- **M-series reference (design only):** PR
+  <https://github.com/apache/doris/pull/62767>, branch `spi-mega` at
+  `~/DEV/OSS/db/doris-spi-mega` — richest iceberg/write-path shapes
+- SPI handbook: `fe/fe-connector/README.md` on `branch-catalog-spi`
+  *(exact path pending agent verification)*
 - Shared library: `~/DEV/brikk/repos/ducklake-integrations/jvm/ducklake-catalog/`
 - Trino reference adapter:
   `~/DEV/brikk/repos/ducklake-integrations/jvm/trino-ducklake/`
