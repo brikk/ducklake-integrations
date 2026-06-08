@@ -152,13 +152,17 @@ that way in v1. Unifying them could happen later as a cleanup.
 
 ### 4.1 Surface (`DucklakeMetadata`)
 
-- `getColumnHandles(session, tableHandle)` — append the four virtual
-  handles to the existing column-handle map
-- `getColumnMetadata(session, tableHandle, columnHandle)` — when handle
-  is `DucklakeVirtualColumnHandle`, return `ColumnMetadata` with
-  `setHidden(true)` and the kind's name + type
-- `getTableMetadata` — must NOT include virtuals in the visible column
-  list; they only appear via `getColumnHandles` lookup
+- `getColumnHandles(session, tableHandle)` — append the virtual handles
+  (built via `VirtualKind.columnHandle()`) to the column-handle map
+- `getColumnMetadata(session, tableHandle, columnHandle)` — call
+  `setHidden(handle.isVirtual())` so virtuals are marked hidden
+- `getTableMetadata` — **must include** the virtuals, each with
+  `setHidden(true)`. CORRECTION to the original sketch: Trino resolves a
+  column reference against the table schema derived from `getTableMetadata`
+  (via the default `getTableSchema`), so a hidden column that is *absent*
+  here is "cannot be resolved". The `hidden` flag — not absence — is what
+  keeps a column out of `SELECT *` / `DESCRIBE` / `information_schema`.
+  Keep this list in lockstep with `getColumnHandles`.
 
 ### 4.2 Scan (`DucklakePageSourceProvider`)
 

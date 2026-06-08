@@ -221,19 +221,29 @@ class DucklakeMetadata(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
 
-        val columnMetadata: List<ColumnMetadata> = columns.stream()
-                .map { column ->
-                    ColumnMetadata.builder()
-                            .setName(column.columnName)
-                            .setType(typeConverter.toTrinoType(column.columnType))
-                            .setNullable(column.nullsAllowed)
-                            .build()
-                }
-                .collect(toImmutableList())
+        val columnMetadata: ImmutableList.Builder<ColumnMetadata> = ImmutableList.builder()
+        for (column in columns) {
+            columnMetadata.add(ColumnMetadata.builder()
+                    .setName(column.columnName)
+                    .setType(typeConverter.toTrinoType(column.columnType))
+                    .setNullable(column.nullsAllowed)
+                    .build())
+        }
+        // Hidden virtual columns must be present here (with hidden=true) to be resolvable by
+        // name — the hidden flag is what keeps them out of SELECT * / DESCRIBE, not their
+        // absence. Keep this list in lockstep with getColumnHandles.
+        for (kind in EXPOSED_VIRTUAL_COLUMNS) {
+            columnMetadata.add(ColumnMetadata.builder()
+                    .setName(kind.columnName)
+                    .setType(kind.columnType)
+                    .setNullable(true)
+                    .setHidden(true)
+                    .build())
+        }
 
         return ConnectorTableMetadata(
                 ducklakeTableHandle.getSchemaTableName(),
-                columnMetadata)
+                columnMetadata.build())
     }
 
     override fun getTableProperties(session: ConnectorSession, table: ConnectorTableHandle): ConnectorTableProperties
