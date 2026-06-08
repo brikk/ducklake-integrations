@@ -209,6 +209,31 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         assertThat(violations).isEqualTo(0L)
     }
 
+    // ==================== $path predicate pushdown (split pruning) ====================
+
+    @Test
+    fun testPathEqualityReturnsOnlyThatFilesRows() {
+        // simple_table is a single file → equality on its path returns all rows; a non-matching
+        // path prunes every file. (Pruning is an optimization, but a broken path comparison would
+        // wrongly drop matching files, so the row counts catch it.)
+        val onePath = computeScalar("SELECT $PATH FROM simple_table LIMIT 1") as String
+        assertThat(computeScalar("SELECT count(*) FROM simple_table WHERE $PATH = '$onePath'") as Long).isEqualTo(5L)
+        assertThat(computeScalar("SELECT count(*) FROM simple_table WHERE $PATH = '/no/such/file.parquet'") as Long)
+                .isEqualTo(0L)
+    }
+
+    @Test
+    fun testPathFilteringPartitionsRowsAcrossFiles() {
+        // Summing per-file counts under $path equality must equal the whole table — pruning must
+        // not lose or duplicate rows, whatever the file count.
+        val paths = computeActual("SELECT DISTINCT $PATH FROM multi_file_table").materializedRows
+                .map { it.getField(0) as String }
+        val perFileTotal = paths.sumOf { p ->
+            computeScalar("SELECT count(*) FROM multi_file_table WHERE $PATH = '$p'") as Long
+        }
+        assertThat(perFileTotal).isEqualTo(computeScalar("SELECT count(*) FROM multi_file_table") as Long)
+    }
+
     // ==================== Sentinel-path regression (merge row-id channel) ====================
 
     @Test

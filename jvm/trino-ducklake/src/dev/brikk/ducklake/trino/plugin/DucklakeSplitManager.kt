@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList.toImmutableList
 import com.google.common.collect.ImmutableMap
 import com.google.inject.Inject
 import io.airlift.log.Logger
+import io.airlift.slice.Slices
 import dev.brikk.ducklake.catalog.ColumnRangePredicate
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeDataFile
@@ -120,6 +121,7 @@ class DucklakeSplitManager @Inject constructor(
                     .intersect(tableHandle.unenforcedPredicate)
             dataFiles = pruneDataFiles(dataFiles, tableHandle, constraint)
             dataFiles = pruneByPartitionValues(dataFiles, tableHandle)
+            dataFiles = pruneByPath(dataFiles, tableHandle, tableDataPath)
 
             // Pre-fetch partition spec + file partition values for the splits we're about
             // to build. The page source uses these to constant-fill partition columns
@@ -352,6 +354,33 @@ class DucklakeSplitManager @Inject constructor(
             return LocalDate.ofEpochDay(value).toString()
         }
         return value.toString()
+    }
+
+    /**
+     * Prune data files by a predicate on the `$path` virtual column (e.g. `WHERE "$path" = '…'`
+     * or an IN-list). `$path` is not a partition column, so its domain lands in
+     * [DucklakeTableHandle.unenforcedPredicate]; we evaluate each file's RESOLVED path (the same
+     * value the `$path` virtual exposes) against that domain. Purely an optimization — the engine
+     * re-applies the predicate above the scan (it's unenforced), so a missed file is still correct.
+     *
+     * Only parquet/duckdb data files are pruned here; inlined splits (whose `$path` is NULL) are
+     * left to the engine's filter — they are small and few, so pruning them isn't worth the code.
+     */
+    private fun pruneByPath(
+            dataFiles: List<DucklakeDataFile>,
+            tableHandle: DucklakeTableHandle,
+            tableDataPath: String): List<DucklakeDataFile> {
+        val pathDomain: Domain = tableHandle.unenforcedPredicate.domains.orElse(emptyMap()).entries
+                .firstOrNull { it.key.virtualKind() == VirtualKind.PATH }
+                ?.value
+                ?: return dataFiles
+        if (pathDomain.isAll) {
+            return dataFiles
+        }
+        return dataFiles.filter { df ->
+            val resolvedPath: String = pathResolver.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)
+            pathDomain.includesNullableValue(Slices.utf8Slice(resolvedPath))
+        }
     }
 
     private fun pruneByPartitionValues(

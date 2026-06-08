@@ -272,7 +272,10 @@ correct, and the failure is local to one component.
 - Using `$row_id` as the merge row-id source — see § 3.6
 - Virtual columns on metadata tables (`$files`, `$snapshots`) — they
   already expose lineage via their own column set
-- Predicate pushdown on virtual columns (e.g. `WHERE $path = '...'`
-  pruning splits before scan) — a real follow-up, but the
-  user-visible feature works without it; pruning is a perf-only layer
-  on top
+
+**Done (was a follow-up):** Predicate pushdown on `$path` — `WHERE "$path" = …`
+/ IN-list prunes data files in `DucklakeSplitManager.pruneByPath` before the
+scan (evaluates each file's resolved path against the `$path` domain from the
+table handle's `unenforcedPredicate`). Purely an optimization; the engine
+re-applies the predicate above the scan, so results are correct regardless.
+Inlined splits aren't pruned (small/few) — left to the engine's filter.
