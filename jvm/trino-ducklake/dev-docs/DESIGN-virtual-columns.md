@@ -1,8 +1,19 @@
 # DESIGN: Virtual Columns (`$path`, `$row_id`, `$snapshot_id`, `$file_row_number`)
 
-**Status:** Design sketch. No code yet.
+**Status:** Design reconciled with the ported Kotlin code; approach decided, no code yet.
 **Scope:** trino-ducklake connector. Read path only.
 **Companion to:** [TODO-READ-MODE.md § Virtual Columns](TODO-READ-MODE.md#virtual-columns).
+
+> **Reconciliation note (post-port).** This doc was sketched against a
+> Java-flavored design. Verified against the current Kotlin module, three
+> things changed (details inline): (a) handles use the existing
+> sentinel-`columnId` pattern on `DucklakeColumnHandle`, **not** a separate
+> handle type — see § 3.4; (b) `$snapshot_id`'s source `DucklakeDataFile`
+> doesn't exist — the value is added as a `beginSnapshot` field on
+> `DucklakeSplit` at split creation — see § 3.5 / § 4.2; (c) the row-varying
+> injection reuses the existing `RowIdInjectingPageSource` (generalized to
+> `VirtualColumnInjectingPageSource`), which already computes
+> `rowIdStart + position` — see § 4.2.
 
 ## 1. Goal
 
@@ -67,24 +78,54 @@ ColumnMetadata.builder()
 Trino's hidden-column contract: not in `SELECT *`, not in `DESCRIBE`,
 queryable by explicit name. Iceberg's `$path` is the template.
 
-### 3.4 Handle representation: separate `DucklakeVirtualColumnHandle`
+### 3.4 Handle representation: reserved sentinel `columnId` on `DucklakeColumnHandle`
 
-```java
-public record DucklakeVirtualColumnHandle(VirtualKind kind) implements ColumnHandle {
-    public enum VirtualKind {
-        PATH,
-        SNAPSHOT_ID,
-        FILE_ROW_NUMBER,
-        ROW_ID
-    }
+**Decision (overrides the original sketch's separate-handle proposal).**
+Virtual columns reuse the existing `DucklakeColumnHandle` record,
+distinguished by a reserved **negative `columnId`** — the same pattern the
+MERGE `$row_id` handle already uses (`ROW_ID_COLUMN_ID = -100`). Real
+catalog columns always have non-negative ids, so the negative range is
+collision-free. A `VirtualKind` enum is the single source of truth for each
+virtual's reserved id, name, type, and value-source; a factory builds the
+handle from the kind.
+
+```kotlin
+enum class VirtualKind(val columnId: Long, val columnName: String, val columnType: Type) {
+    PATH(-101, "\$path", VARCHAR),
+    SNAPSHOT_ID(-102, "\$snapshot_id", BIGINT),
+    FILE_ROW_NUMBER(-103, "\$file_row_number", BIGINT),
+    ROW_ID(-104, "\$row_id", BIGINT),  // queryable; distinct id from the MERGE channel's -100
 }
 ```
 
-A distinct handle type (not a flag on `DucklakeColumnHandle`) because:
+**Why this over a separate `DucklakeVirtualColumnHandle` type:**
 
-- Write-path filtering is `instanceof` — trivial to reject
-- The enum is the natural source of truth for name + type + value-source
-- Existing column-handle consumers stay unchanged; smaller blast radius
+- Smaller blast radius — no `@JsonTypeInfo`/`@JsonSubTypes` polymorphism on
+  `DucklakeColumnHandle`, which is Jackson-serialized throughout the split path.
+- Matches the `$row_id` sentinel convention already in the code.
+
+**Accepted downside + required mitigation.** Virtual-ness is a magic-number
+convention, not a distinct type, so it is **not compiler-enforced**: a
+consumer that treats a handle as a real catalog column (catalog lookup,
+Parquet field id) will silently mishandle a virtual one if it forgets to
+check, and the write-path rejection (§ 4.4) fails *open* rather than at
+compile time. Mitigation is mandatory, not optional — centralize everything
+behind the enum plus helpers on `DucklakeColumnHandle`:
+
+- `fun virtualKind(): VirtualKind?` — non-null only for virtual handles
+- `fun isVirtual(): Boolean`
+
+and route the single write-path guard through `isVirtual()`. Keep the magic
+numbers only inside `VirtualKind`. **Escape hatch:** if this convention
+causes real bugs later, promote virtuals to a separate
+`DucklakeVirtualColumnHandle` type (the original proposal) — a localized
+refactor we can take then rather than pay for now.
+
+The queryable `$row_id` (id `-104`, via `getColumnHandles`) and the MERGE
+channel's `$row_id` (id `-100`, via `getMergeRowIdColumnHandle`) share the
+name and the `rowIdStart + position` encoding but flow through different SPI
+hooks; distinct ids keep them separate handles, honoring § 3.6's
+"don't conflate."
 
 ### 3.5 Inlined-data behavior: NULL for file-bound virtuals
 

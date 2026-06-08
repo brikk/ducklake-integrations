@@ -54,6 +54,7 @@ import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
+import io.trino.spi.block.RunLengthEncodedBlock
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.connector.ConnectorPageSourceProvider
@@ -71,6 +72,7 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.VarcharType.VARCHAR
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
 import io.trino.spi.type.Type
@@ -120,7 +122,10 @@ class DucklakePageSourceProvider @Inject constructor(
         }
 
         if (split is DucklakeInlinedSplit) {
-            return createInlinedPageSource(split, columns)
+            val requestedColumns: List<DucklakeColumnHandle> = columns.map(DucklakeColumnHandle::class.java::cast)
+            val sourceColumns: List<DucklakeColumnHandle> = requestedColumns.filterNot { it.isVirtual() }
+            val delegate: ConnectorPageSource = createInlinedPageSource(split, sourceColumns)
+            return injectConstantVirtuals(delegate, requestedColumns) { kind -> inlinedVirtualBlock(kind, split) }
         }
 
         val ducklakeSplit = split as DucklakeSplit
@@ -140,6 +145,12 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
+        // Split off the hidden virtual columns; the parquet/duckdb readers only see real
+        // (file-resident or partition) columns. Virtuals are injected afterward as constant
+        // RLE blocks at their requested output positions. The MERGE $row_id handle (-100) is
+        // NOT virtual, so it stays in sourceColumns and is handled inside the parquet reader.
+        val sourceColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { it.isVirtual() }
+
         log.debug("Creating page source for file: %s", ducklakeSplit.dataFilePath)
 
         try {
@@ -153,26 +164,28 @@ class DucklakePageSourceProvider @Inject constructor(
             // Dispatch on file format
             val format = ducklakeSplit.fileFormat
             if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
-                return createParquetPageSource(
+                val delegate: ConnectorPageSource = createParquetPageSource(
                         inputFile,
-                        ducklakeColumns,
+                        sourceColumns,
                         ducklakeSplit,
                         effectivePredicate,
                         fileSystem)
+                return injectConstantVirtuals(delegate, ducklakeColumns) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true)) {
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
                     table.pushedExpressions
                 else
                     emptyList()
-                return createDuckDbPageSource(
+                val delegate: ConnectorPageSource = createDuckDbPageSource(
                         dataFileLocation,
-                        ducklakeColumns,
+                        sourceColumns,
                         ducklakeSplit,
                         effectivePredicate,
                         pushedExpressions,
                         fileSystem,
                         session)
+                return injectConstantVirtuals(delegate, ducklakeColumns) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
         }
@@ -825,6 +838,48 @@ class DucklakePageSourceProvider @Inject constructor(
                 return column.columnType.createNullBlock()
             }
         }
+
+        /**
+         * Single-position constant block for a virtual column on a file-backed split
+         * (parquet or duckdb): $path = the data file path, $snapshot_id = the file's
+         * begin_snapshot. The injecting page source RLE-expands it to each page.
+         */
+        private fun dataFileVirtualBlock(kind: VirtualKind, split: DucklakeSplit): Block = when (kind) {
+            VirtualKind.PATH -> io.trino.spi.type.TypeUtils.writeNativeValue(VARCHAR, Slices.utf8Slice(split.dataFilePath))
+            VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.beginSnapshot)
+            else -> throw TrinoException(NOT_SUPPORTED, "Virtual column not yet supported on the read path: ${kind.columnName}")
+        }
+
+        /**
+         * Single-position constant block for a virtual column on an inlined-data split.
+         * Inlined rows have no backing file, so file-bound $path is NULL; $snapshot_id is
+         * still meaningful (the inlined data's snapshot).
+         */
+        private fun inlinedVirtualBlock(kind: VirtualKind, split: DucklakeInlinedSplit): Block = when (kind) {
+            VirtualKind.PATH -> kind.columnType.createNullBlock()
+            VirtualKind.SNAPSHOT_ID -> io.trino.spi.type.TypeUtils.writeNativeValue(BIGINT, split.snapshotId)
+            else -> throw TrinoException(NOT_SUPPORTED, "Virtual column not yet supported on the read path: ${kind.columnName}")
+        }
+
+        /**
+         * Wrap [delegate] so the hidden virtual columns present in [requestedColumns] are
+         * injected as constant RLE blocks at their requested output positions. [delegate]
+         * supplies only the non-virtual columns, in their requested relative order. Returns
+         * the delegate unchanged when no virtuals were requested.
+         */
+        private fun injectConstantVirtuals(
+                delegate: ConnectorPageSource,
+                requestedColumns: List<DucklakeColumnHandle>,
+                blockForKind: (VirtualKind) -> Block): ConnectorPageSource
+        {
+            val constantBlocks: Map<Int, Block> = requestedColumns.withIndex()
+                    .mapNotNull { (i, col) -> col.virtualKind()?.let { kind -> i to blockForKind(kind) } }
+                    .toMap()
+            if (constantBlocks.isEmpty()) {
+                return delegate
+            }
+            return VirtualColumnInjectingPageSource(delegate, requestedColumns.size, constantBlocks)
+        }
     }
 
     class DeleteRowFilterTransform : Function<SourcePage, SourcePage>
@@ -907,6 +962,59 @@ class DucklakePageSourceProvider @Inject constructor(
             for (i in 0 until totalChannels) {
                 if (i == rowIdOutputPosition) {
                     blocks[i] = rowIdBlock
+                }
+                else {
+                    blocks[i] = sourcePage.getBlock(srcChannel)
+                    srcChannel++
+                }
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            return SourcePage.create(Page(positionCount, *(blocks as Array<Block>)))
+        }
+
+        override fun getMemoryUsage(): Long = delegate.memoryUsage
+
+        override fun getMetrics(): io.trino.spi.metrics.Metrics = delegate.metrics
+
+        override fun isBlocked(): java.util.concurrent.CompletableFuture<*> = delegate.isBlocked()
+
+        @Throws(IOException::class)
+        override fun close() = delegate.close()
+    }
+
+    /**
+     * Wraps a ConnectorPageSource and injects constant (per-split) virtual-column blocks at
+     * fixed output positions, RLE-expanded to each page's position count. The delegate
+     * supplies the non-virtual columns in order; [constantBlocks] maps an output channel
+     * index to its single-position constant block. Generalizes [RowIdInjectingPageSource]
+     * to multiple injected positions — the row-varying virtuals ($file_row_number, $row_id)
+     * will extend this in Day 2.
+     */
+    private class VirtualColumnInjectingPageSource(
+        private val delegate: ConnectorPageSource,
+        private val totalChannels: Int,
+        private val constantBlocks: Map<Int, Block>) : ConnectorPageSource
+    {
+        override fun getCompletedBytes(): Long = delegate.completedBytes
+
+        override fun getCompletedPositions(): OptionalLong = delegate.completedPositions
+
+        override fun getReadTimeNanos(): Long = delegate.readTimeNanos
+
+        override fun isFinished(): Boolean = delegate.isFinished
+
+        override fun getNextSourcePage(): SourcePage?
+        {
+            val sourcePage: SourcePage = delegate.nextSourcePage ?: return null
+            val positionCount: Int = sourcePage.positionCount
+
+            val blocks = arrayOfNulls<Block>(totalChannels)
+            var srcChannel = 0
+            for (i in 0 until totalChannels) {
+                val constant: Block? = constantBlocks[i]
+                if (constant != null) {
+                    blocks[i] = RunLengthEncodedBlock.create(constant, positionCount)
                 }
                 else {
                     blocks[i] = sourcePage.getBlock(srcChannel)

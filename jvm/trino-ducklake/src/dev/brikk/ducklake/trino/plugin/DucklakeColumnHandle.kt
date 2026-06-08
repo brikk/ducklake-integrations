@@ -21,6 +21,7 @@ import io.trino.spi.type.Type
 import io.airlift.slice.SizeOf.estimatedSizeOf
 import io.airlift.slice.SizeOf.instanceSize
 import io.trino.spi.type.BigintType.BIGINT
+import io.trino.spi.type.VarcharType.VARCHAR
 
 /**
  * Handle for a Ducklake column.
@@ -41,6 +42,17 @@ data class DucklakeColumnHandle @JsonCreator constructor(
     {
         return columnId == ROW_ID_COLUMN_ID
     }
+
+    /**
+     * The virtual-column kind this handle represents, or null for a real catalog
+     * column (and for the MERGE row-id channel handle, which is NOT a queryable
+     * virtual — see [VirtualKind]). Centralizes the reserved-sentinel-id convention
+     * so callers never test magic numbers directly.
+     */
+    fun virtualKind(): VirtualKind? = VirtualKind.fromColumnId(columnId)
+
+    /** Whether this handle is one of the queryable hidden virtual columns. */
+    fun isVirtual(): Boolean = virtualKind() != null
 
     override fun toString(): String
     {
@@ -64,5 +76,45 @@ data class DucklakeColumnHandle @JsonCreator constructor(
         {
             return DucklakeColumnHandle(ROW_ID_COLUMN_ID, ROW_ID_COLUMN_NAME, BIGINT, false)
         }
+    }
+}
+
+/**
+ * The DuckLake "virtual" (hidden) columns the connector exposes on the read path,
+ * matching Trino's Iceberg/Delta `$`-prefixed convention. This enum is the single
+ * source of truth for each virtual's reserved (negative) `columnId`, hidden name, and
+ * Trino type — keep the magic numbers here and nowhere else.
+ *
+ * Real catalog columns always have non-negative ids, so the negative range is
+ * collision-free. The MERGE row-id channel keeps its own distinct id
+ * ([DucklakeColumnHandle.ROW_ID_COLUMN_ID] = -100) and flows through
+ * `getMergeRowIdColumnHandle`, not `getColumnHandles`; these queryable virtuals start
+ * at -101. The `$row_id` virtual (-104) shares the name and `rowIdStart + position`
+ * encoding with the MERGE channel but is a distinct handle — see
+ * dev-docs/DESIGN-virtual-columns.md § 3.4 / § 3.6.
+ */
+enum class VirtualKind(
+        @get:JvmName("columnId") val columnId: Long,
+        @get:JvmName("columnName") val columnName: String,
+        @get:JvmName("columnType") val columnType: Type)
+{
+    PATH(-101L, "\$path", VARCHAR),
+    SNAPSHOT_ID(-102L, "\$snapshot_id", BIGINT),
+    FILE_ROW_NUMBER(-103L, "\$file_row_number", BIGINT),
+    ROW_ID(-104L, "\$row_id", BIGINT);
+
+    /**
+     * The hidden column handle for this virtual. Marked nullable because the
+     * file-bound virtuals ($path, $file_row_number, $row_id) are NULL on inlined-data
+     * splits; $snapshot_id is never null but marking it nullable is harmless.
+     */
+    fun columnHandle(): DucklakeColumnHandle =
+            DucklakeColumnHandle(columnId, columnName, columnType, true)
+
+    companion object {
+        private val BY_COLUMN_ID: Map<Long, VirtualKind> =
+                values().associateBy(VirtualKind::columnId)
+
+        fun fromColumnId(columnId: Long): VirtualKind? = BY_COLUMN_ID[columnId]
     }
 }

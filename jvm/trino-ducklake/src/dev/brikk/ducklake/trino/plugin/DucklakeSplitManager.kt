@@ -542,7 +542,8 @@ class DucklakeSplitManager @Inject constructor(
                 partitionValuesByColumnId,
                 fieldIdToParquetSourceName,
                 inlinedDeletedRowPositions,
-                affinityKey)
+                affinityKey,
+                primary.beginSnapshot)
     }
 
     private data class PredicateBounds(val minValue: String?, val maxValue: String?)
