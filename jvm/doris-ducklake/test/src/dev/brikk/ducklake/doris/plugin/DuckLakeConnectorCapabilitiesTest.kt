@@ -31,6 +31,7 @@ internal class DuckLakeConnectorCapabilitiesTest {
                     ConnectorCapability.SUPPORTS_TIME_TRAVEL,
                     ConnectorCapability.SUPPORTS_PARTITION_PRUNING,
                     ConnectorCapability.SUPPORTS_STATISTICS,
+                    ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
                 ),
             )
     }
@@ -46,7 +47,6 @@ internal class DuckLakeConnectorCapabilitiesTest {
         assertThat(connector.capabilities)
             .doesNotContain(
                 ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
-                ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
                 ConnectorCapability.SUPPORTS_LIMIT_PUSHDOWN,
             )
     }

@@ -118,4 +118,35 @@ internal class DuckLakeConnectorListingTest {
                 .containsExactly("DATETIMEV2", "STRING")
         }
     }
+
+    @Test
+    @Throws(Exception::class)
+    fun appliesProjectionPushdown() {
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val orders = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+                val total = metadata.getColumnHandles(null, orders)["total"]
+                    ?: error("expected a 'total' column handle")
+
+                // Projecting a subset returns a result whose handle records the
+                // projected column ids (used to stop the engine's fixed-point loop).
+                val result = metadata.applyProjection(null, orders, listOf(total))
+                assertThat(result.isPresent).isTrue()
+                val applied = result.get()
+                assertThat(applied.assignments).hasSize(1)
+                val newHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+                assertThat(newHandle.projectedColumnIds)
+                    .containsExactly((total as DuckLakeColumnHandle).columnId)
+
+                // Idempotent: re-applying the same projection opts out.
+                assertThat(metadata.applyProjection(null, newHandle, listOf(total)).isPresent)
+                    .isFalse()
+                // Empty projection list opts out.
+                assertThat(metadata.applyProjection(null, orders, emptyList()).isPresent)
+                    .isFalse()
+            }
+    }
 }

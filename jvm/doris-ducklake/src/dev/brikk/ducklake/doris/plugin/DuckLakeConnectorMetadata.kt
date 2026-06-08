@@ -11,6 +11,10 @@ import org.apache.doris.connector.api.ConnectorTableSchema
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
+import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorExpression
+import org.apache.doris.connector.api.pushdown.ProjectionApplicationResult
 import java.time.Instant
 import java.util.Optional
 
@@ -122,6 +126,42 @@ internal class DuckLakeConnectorMetadata(
             )
         }
         return out
+    }
+
+    // ---- Pushdown: projection (column pruning) ----
+
+    override fun applyProjection(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        projections: List<ConnectorColumnHandle>,
+    ): Optional<ProjectionApplicationResult<ConnectorTableHandle>> {
+        if (projections.isEmpty()) {
+            return Optional.empty()
+        }
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        val projectedIds = projections.mapNotNull { (it as? DuckLakeColumnHandle)?.columnId }
+        if (projectedIds.size != projections.size) {
+            // Some handle wasn't one of ours — opt out rather than guess.
+            return Optional.empty()
+        }
+        // Already projected to exactly this set: return empty so the engine's
+        // fixed-point apply* loop terminates instead of re-applying forever.
+        if (dlHandle.projectedColumnIds == projectedIds) {
+            return Optional.empty()
+        }
+
+        val outProjections = ArrayList<ConnectorExpression>(projections.size)
+        val outAssignments = ArrayList<ConnectorColumnAssignment>(projections.size)
+        for (col in projections) {
+            val ch = col as DuckLakeColumnHandle
+            val ref = ConnectorColumnRef(ch.columnName, ch.columnType)
+            outProjections.add(ref)
+            outAssignments.add(ConnectorColumnAssignment(col, ref))
+        }
+        val newHandle = dlHandle.copy(projectedColumnIds = projectedIds)
+        return Optional.of(
+            ProjectionApplicationResult<ConnectorTableHandle>(newHandle, outProjections, outAssignments),
+        )
     }
 
     // ---- MVCC snapshot pinning + time travel ----

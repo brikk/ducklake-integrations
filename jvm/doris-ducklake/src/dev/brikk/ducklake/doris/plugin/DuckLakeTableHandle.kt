@@ -20,4 +20,9 @@ internal data class DuckLakeTableHandle(
     val schemaId: Long,
     val tableId: Long,
     val snapshotId: Long,
+    // Pushdown state layered on by applyProjection / applyFilter; `null` = not
+    // applied yet. The engine drives a fixed-point apply* loop, so carrying the
+    // applied state on the handle lets that loop terminate and lets planScan
+    // honour projection / file-pruning without re-deriving them.
+    val projectedColumnIds: List<Long>? = null,
 ) : ConnectorTableHandle
