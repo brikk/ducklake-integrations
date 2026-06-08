@@ -2,13 +2,29 @@ package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
+import dev.brikk.ducklake.catalog.DucklakePartitionField
+import dev.brikk.ducklake.catalog.DucklakePartitionTransform
+import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import org.apache.doris.connector.api.ConnectorColumn
 import org.apache.doris.connector.api.ConnectorDatabaseMetadata
 import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.ConnectorTableSchema
+import org.apache.doris.connector.api.ConnectorTableStatistics
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
+import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import org.apache.doris.connector.api.pushdown.ConnectorAnd
+import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
+import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorComparison
+import org.apache.doris.connector.api.pushdown.ConnectorExpression
+import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral
+import org.apache.doris.connector.api.pushdown.FilterApplicationResult
+import org.apache.doris.connector.api.pushdown.ProjectionApplicationResult
+import java.time.Instant
 import java.util.Optional
 
 /**
@@ -119,6 +135,214 @@ internal class DuckLakeConnectorMetadata(
             )
         }
         return out
+    }
+
+    // ---- Pushdown: projection (column pruning) ----
+
+    override fun applyProjection(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        projections: List<ConnectorColumnHandle>,
+    ): Optional<ProjectionApplicationResult<ConnectorTableHandle>> {
+        if (projections.isEmpty()) {
+            return Optional.empty()
+        }
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        val projectedIds = projections.mapNotNull { (it as? DuckLakeColumnHandle)?.columnId }
+        if (projectedIds.size != projections.size) {
+            // Some handle wasn't one of ours — opt out rather than guess.
+            return Optional.empty()
+        }
+        // Already projected to exactly this set: return empty so the engine's
+        // fixed-point apply* loop terminates instead of re-applying forever.
+        if (dlHandle.projectedColumnIds == projectedIds) {
+            return Optional.empty()
+        }
+
+        val outProjections = ArrayList<ConnectorExpression>(projections.size)
+        val outAssignments = ArrayList<ConnectorColumnAssignment>(projections.size)
+        for (col in projections) {
+            val ch = col as DuckLakeColumnHandle
+            val ref = ConnectorColumnRef(ch.columnName, ch.columnType)
+            outProjections.add(ref)
+            outAssignments.add(ConnectorColumnAssignment(col, ref))
+        }
+        val newHandle = dlHandle.copy(projectedColumnIds = projectedIds)
+        return Optional.of(
+            ProjectionApplicationResult<ConnectorTableHandle>(newHandle, outProjections, outAssignments),
+        )
+    }
+
+    // ---- Pushdown: filter (file-level statistics pruning) ----
+
+    override fun applyFilter(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        constraint: ConnectorFilterConstraint,
+    ): Optional<FilterApplicationResult<ConnectorTableHandle>> {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        // Already applied on a prior fixed-point iteration → stop the loop.
+        if (dlHandle.pushedFilter != null) {
+            return Optional.empty()
+        }
+        val filter = constraint.expression ?: return Optional.empty()
+
+        val columns = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
+
+        // Two complementary prunings, intersected: column-stats ranges (cover
+        // non-partition columns + IDENTITY/temporal partitions, whose source column
+        // carries stats) and BUCKET-partition matching (which stats CAN'T do — each
+        // bucket file holds a scattered value range).
+        val statsKept = statsPrune(dlHandle, filter, columns.associate { it.columnName to it.columnId })
+        val bucketKept = bucketPrune(dlHandle, filter, columns)
+
+        val prunedFileIds = intersectNullable(statsKept, bucketKept)
+            ?: return Optional.empty() // nothing pushable (functions / LIKE / OR only)
+
+        val newHandle = dlHandle.copy(pushedFilter = filter, prunedFileIds = prunedFileIds)
+        // Conservative: the BE re-evaluates the full predicate, so report the whole
+        // expression as still-unenforced. File pruning is best-effort elimination.
+        return Optional.of(FilterApplicationResult<ConnectorTableHandle>(newHandle, filter, false))
+    }
+
+    /** Stats-range pruning: a file survives only if its column stats overlap every pushed range. */
+    private fun statsPrune(
+        handle: DuckLakeTableHandle,
+        filter: ConnectorExpression,
+        columnIdByName: Map<String, Long>,
+    ): Set<Long>? {
+        val rangePredicates = DuckLakePredicateConverter.toColumnRangePredicates(filter, columnIdByName)
+        if (rangePredicates.isEmpty()) {
+            return null
+        }
+        var kept: Set<Long>? = null
+        for (pred in rangePredicates) {
+            val ids = catalog.findDataFileIdsInRange(handle.tableId, handle.snapshotId, pred).toHashSet()
+            kept = kept?.intersect(ids) ?: ids
+        }
+        return kept
+    }
+
+    /** BUCKET-partition pruning: for `col = literal` on a bucket field, keep only files in bucket(literal). */
+    private fun bucketPrune(
+        handle: DuckLakeTableHandle,
+        filter: ConnectorExpression,
+        columns: List<DucklakeColumn>,
+    ): Set<Long>? {
+        val bucketFields = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
+            .flatMap { it.fields }
+            .filter { it.transform == DucklakePartitionTransform.BUCKET }
+        if (bucketFields.isEmpty()) {
+            return null
+        }
+        val equalities = equalityLiterals(filter)
+        val nameById = columns.associate { it.columnId to it.columnName }
+        // partitionKeyIndex -> target bucket, for bucket fields with a usable `col = literal`.
+        val targetBuckets = bucketFields
+            .mapNotNull { field -> targetBucketFor(field, nameById, equalities) }
+            .toMap()
+        if (targetBuckets.isEmpty()) {
+            return null
+        }
+        return catalog.getFilePartitionValues(handle.tableId, handle.snapshotId)
+            .filterValues { values -> fileMatchesBuckets(values, targetBuckets) }
+            .keys
+    }
+
+    /** The `(partitionKeyIndex, bucket)` a BUCKET field resolves to under a `col = literal`, or null. */
+    private fun targetBucketFor(
+        field: DucklakePartitionField,
+        nameById: Map<Long, String>,
+        equalities: Map<String, Any>,
+    ): Pair<Int, Int>? {
+        val arity = field.arity ?: return null
+        val literal = nameById[field.columnId]?.let { equalities[it] } ?: return null
+        val target = DuckLakeBucketTransform.bucket(literal, arity) ?: return null
+        return field.partitionKeyIndex to target
+    }
+
+    /** A file survives bucket pruning if its stored bucket value matches every target (null = keep). */
+    private fun fileMatchesBuckets(
+        values: List<DucklakeFilePartitionValue>,
+        targetBuckets: Map<Int, Int>,
+    ): Boolean = targetBuckets.all { (keyIndex, target) ->
+        val pv = values.find { it.partitionKeyIndex == keyIndex }?.partitionValue
+        pv == null || pv.toIntOrNull() == target
+    }
+
+    /** `col = literal` equalities with their TYPED literal value (needed for bucket hashing). */
+    private fun equalityLiterals(filter: ConnectorExpression): Map<String, Any> {
+        val conjuncts = if (filter is ConnectorAnd) filter.conjuncts else listOf(filter)
+        return conjuncts.mapNotNull { asEqualityLiteral(it) }.toMap()
+    }
+
+    private fun asEqualityLiteral(expr: ConnectorExpression): Pair<String, Any>? {
+        if (expr !is ConnectorComparison || expr.operator != ConnectorComparison.Operator.EQ) {
+            return null
+        }
+        val col = expr.left as? ConnectorColumnRef ?: return null
+        val value = (expr.right as? ConnectorLiteral)?.takeUnless { it.isNull }?.value ?: return null
+        return col.columnName to value
+    }
+
+    private fun intersectNullable(a: Set<Long>?, b: Set<Long>?): Set<Long>? = when {
+        a == null -> b
+        b == null -> a
+        else -> a.intersect(b)
+    }
+
+    // ---- Statistics (planner cardinality) ----
+
+    override fun getTableStatistics(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+    ): Optional<ConnectorTableStatistics> {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        // Table-level row count + on-disk size from ducklake_table_stats. v1 reports
+        // whole-table stats; refining to the pushed-filter / pruned-file subset is a
+        // later optimization (the planner applies filter selectivity on top).
+        val stats = catalog.getTableStats(dlHandle.tableId) ?: return Optional.empty()
+        return Optional.of(ConnectorTableStatistics(stats.recordCount, stats.fileSizeBytes))
+    }
+
+    // ---- MVCC snapshot pinning + time travel ----
+    // Replaces the old FE→BE 24-byte snapshot codec: the P-series engine takes a
+    // ConnectorMvccSnapshot from these methods and serializes it itself.
+
+    override fun beginQuerySnapshot(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+    ): Optional<ConnectorMvccSnapshot> {
+        // Pin the query to the snapshot already resolved on the table handle.
+        val snapshotId = handle.asDuckLakeHandle<DuckLakeTableHandle>().snapshotId
+        return Optional.of(toMvccSnapshot(snapshotId, catalog.getSnapshot(snapshotId)))
+    }
+
+    override fun getSnapshotAt(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        timestampMillis: Long,
+    ): Optional<ConnectorMvccSnapshot> {
+        val snap = catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillis))
+            ?: return Optional.empty()
+        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+    }
+
+    override fun getSnapshotById(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        snapshotId: Long,
+    ): Optional<ConnectorMvccSnapshot> {
+        val snap = catalog.getSnapshot(snapshotId) ?: return Optional.empty()
+        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+    }
+
+    private fun toMvccSnapshot(snapshotId: Long, snap: DucklakeSnapshot?): ConnectorMvccSnapshot {
+        val builder = ConnectorMvccSnapshot.builder().snapshotId(snapshotId)
+        if (snap != null) {
+            builder.timestampMillis(snap.snapshotTime.toEpochMilli())
+        }
+        return builder.build()
     }
 
     private fun loadTopLevelColumns(handle: DuckLakeTableHandle): List<DucklakeColumn> {

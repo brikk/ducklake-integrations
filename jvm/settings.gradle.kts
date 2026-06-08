@@ -18,5 +18,8 @@ dependencyResolutionManagement {
 
 include(":ducklake-catalog")
 include(":trino-ducklake")
+// :doris-ducklake depends on Apache Doris fe-connector-api/spi/thrift
+// 1.2-SNAPSHOT, published to ~/.m2 from the branch-catalog-spi P-series FE
+// build (see jvm/doris-ducklake/ducklake-doris-development-roadmap.md, Phase 0).
 include(":doris-ducklake")
 include(":jooq-custom-naming")

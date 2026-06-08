@@ -10,3 +10,9 @@
 # are never committed; only the clone script and any of our own docs at
 # the top level of vendor/ are tracked.
 /vendor/*/
+
+# Claude Code local state. The shared workflow scripts under .claude/workflows/
+# stay tracked; everything else (local settings.local.json, worktrees, agent
+# state) is per-developer and ignored.
+/.claude/*
+!/.claude/workflows/

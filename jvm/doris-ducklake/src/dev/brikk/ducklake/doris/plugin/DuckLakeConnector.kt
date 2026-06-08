@@ -9,7 +9,6 @@ import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import org.apache.doris.connector.api.Connector
 import org.apache.doris.connector.api.ConnectorCapability
 import org.apache.doris.connector.api.ConnectorMetadata
-import org.apache.doris.connector.api.ConnectorPropertyMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.scan.ConnectorScanPlanProvider
 import org.apache.doris.connector.spi.ConnectorContext
@@ -56,21 +55,23 @@ class DuckLakeConnector internal constructor(
     }
 
     /**
-     * v1 capabilities, sized to the roadmap "Step 2" of
-     * `ducklake-doris-todo.md`: enough for `SELECT *` with
-     * snapshot pinning, position deletes, time travel, partition pruning,
-     * and statistics. Filter / projection / limit pushdown stay off until
-     * the corresponding `apply*` methods land on
-     * [DuckLakeConnectorMetadata] — declaring without implementing
-     * crashes the planner.
+     * v1 capabilities (see `ducklake-doris-todo.md`): `SELECT *` with snapshot
+     * pinning (MVCC), time travel, partition pruning, and statistics. The
+     * P-series SPI dropped `SUPPORTS_POSITION_DELETE` — position deletes ride
+     * the scan range's delete-file list, not a capability flag. Projection +
+     * filter pushdown are on ([DuckLakeConnectorMetadata.applyProjection] /
+     * `applyFilter`); limit stays off (no `applyLimit`). Declaring a pushdown
+     * capability without the matching `apply*` method crashes the planner —
+     * keep them in lockstep.
      */
     override fun getCapabilities(): Set<ConnectorCapability> =
         EnumSet.of(
             ConnectorCapability.SUPPORTS_MVCC_SNAPSHOT,
-            ConnectorCapability.SUPPORTS_POSITION_DELETE,
             ConnectorCapability.SUPPORTS_TIME_TRAVEL,
             ConnectorCapability.SUPPORTS_PARTITION_PRUNING,
             ConnectorCapability.SUPPORTS_STATISTICS,
+            ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
+            ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
         )
 
     private fun catalog(): JdbcDucklakeCatalog {
@@ -115,9 +116,6 @@ class DuckLakeConnector internal constructor(
         }
         return JdbcDucklakeCatalog(config)
     }
-
-    override fun getCatalogProperties(): List<ConnectorPropertyMetadata<*>> =
-        DuckLakeConnectorProperties.catalogProperties()
 
     @Throws(IOException::class)
     override fun close() {

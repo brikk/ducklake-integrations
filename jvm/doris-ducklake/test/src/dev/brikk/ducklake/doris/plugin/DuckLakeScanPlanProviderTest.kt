@@ -3,8 +3,11 @@ package dev.brikk.ducklake.doris.plugin
 import java.util.Optional
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import dev.brikk.ducklake.doris.plugin.cache.FakeConnectorContext
+import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
+import org.apache.doris.connector.api.pushdown.ConnectorComparison
+import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
+import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
-import org.apache.doris.connector.api.scan.ConnectorScanRequest
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileRangeDesc
 import org.apache.doris.thrift.TFileScanRangeParams
@@ -58,11 +61,7 @@ internal class DuckLakeScanPlanProviderTest {
             assertThat(plan).isNotNull()
             assertThat(plan.scanRangeType).isEqualTo(ConnectorScanRangeType.FILE_SCAN)
 
-            val req = ConnectorScanRequest.builder()
-                .table(handle)
-                .columns(listOf())
-                .build()
-            val ranges = plan.planScan(req)
+            val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
             // Bootstrap inserts rows into sales.orders. DuckLake's writer may
             // coalesce inserts into a single data file (no compaction needed) —
@@ -90,9 +89,7 @@ internal class DuckLakeScanPlanProviderTest {
             // Empty table emits no ranges.
             val customers = metadata.getTableHandle(null, "sales", "customers")
                 .orFail("expected sales.customers handle")
-            val emptyRanges = plan.planScan(
-                ConnectorScanRequest.builder().table(customers).columns(listOf()).build(),
-            )
+            val emptyRanges = plan.planScan(null, customers, listOf(), Optional.empty())
             assertThat(emptyRanges).isEmpty()
         }
     }
@@ -116,9 +113,7 @@ internal class DuckLakeScanPlanProviderTest {
                     .orFail("expected sales.returns_file handle")
 
                 val plan = connector.getScanPlanProvider()
-                val ranges = plan.planScan(
-                    ConnectorScanRequest.builder().table(handle).columns(listOf()).build(),
-                )
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
                 // returns_file has one INSERT batch → one active data file. That
                 // one data file carries one active position-delete file.
@@ -177,9 +172,7 @@ internal class DuckLakeScanPlanProviderTest {
                     .orFail("expected sales.returns_inline handle")
 
                 val plan = connector.getScanPlanProvider()
-                val ranges = plan.planScan(
-                    ConnectorScanRequest.builder().table(handle).columns(listOf()).build(),
-                )
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
 
                 assertThat(ranges).hasSize(1)
                 val range = ranges[0]
@@ -280,6 +273,114 @@ internal class DuckLakeScanPlanProviderTest {
                 assertThat(params.properties).allSatisfy { k, _ ->
                     assertThat(k).doesNotStartWith(DuckLakeScanPlanProvider.PROP_LOCATION_PREFIX)
                 }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByPartitionEqualityFilter() {
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                // Full scan sees both partitions' files ('us' + 'eu').
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(2)
+
+                // region = 'us' → applyFilter prunes the 'eu' file(s).
+                val region = metadata.getColumnHandles(null, handle)["region"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("region", region.columnType),
+                    ConnectorLiteral(region.columnType, "us"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                assertThat(applied.isPresent).isTrue()
+                val prunedHandle = applied.get().handle.asDuckLakeHandle<DuckLakeTableHandle>()
+                assertThat(prunedHandle.prunedFileIds).isNotNull()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                // The 'us' file survives; the 'eu' file(s) are pruned away.
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByNumericRangeFilter() {
+        // Complements the partition-equality test: a numeric open range (GE) on a
+        // non-partition column, exercising findDataFileIdsInRange's typed comparison.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                // by_region keeps ≥2 files (one per partition; CHECKPOINT can't
+                // compact across partitions, unlike single-file `orders`). Its
+                // non-partition `id` column gives a clean numeric range to prune.
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                // Two partition files: 'us' (ids 1, 2) and 'eu' (ids 3, 4).
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(2)
+
+                // id >= 3 → the 'us' file is pruned by its id stats (max id 2 < 3).
+                val id = metadata.getColumnHandles(null, handle)["id"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.GE,
+                    ConnectorColumnRef("id", id.columnType),
+                    ConnectorLiteral(id.columnType, 3),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push id >= 3")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByBucketEqualityFilter() {
+        // End-to-end BUCKET pruning. bucketPrune is intersected with stats pruning,
+        // so a wrong murmur3 hash would compute the wrong target bucket, the
+        // intersection would go empty, and isNotEmpty() below would fail — i.e. this
+        // can't silently keep the wrong file. (Hash itself is pinned in
+        // DuckLakeBucketTransformTest.)
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                // alice/bob/charlie hash to buckets 1/2/3 → three files.
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(3)
+
+                // name = 'alice' → only bucket 1's file survives.
+                val name = metadata.getColumnHandles(null, handle)["name"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("name", name.columnType),
+                    ConnectorLiteral(name.columnType, "alice"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push name = 'alice'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
             }
     }
 

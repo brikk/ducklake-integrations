@@ -13,7 +13,6 @@ import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.scan.ConnectorScanPlanProvider
 import org.apache.doris.connector.api.scan.ConnectorScanRange
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
-import org.apache.doris.connector.api.scan.ConnectorScanRequest
 import org.apache.doris.thrift.TFileScanRangeParams
 
 /**
@@ -37,27 +36,42 @@ internal class DuckLakeScanPlanProvider(
 
     override fun getScanRangeType(): ConnectorScanRangeType = ConnectorScanRangeType.FILE_SCAN
 
-    override fun planScan(req: ConnectorScanRequest): List<ConnectorScanRange> {
-        Objects.requireNonNull(req, "req")
-        val handle = req.table.asDuckLakeHandle<DuckLakeTableHandle>()
+    override fun planScan(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        columns: List<ConnectorColumnHandle>,
+        filter: Optional<ConnectorExpression>,
+    ): List<ConnectorScanRange> {
+        // v1: full scan. Column projection and `filter` pushdown layer on top
+        // later (READ todo Step 6); the snapshot is already pinned on the handle
+        // at getTableHandle time, so reads stay version-consistent.
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
 
-        val schema = catalog.getSchema(handle.database, handle.snapshotId)
+        val schema = catalog.getSchema(dlHandle.database, dlHandle.snapshotId)
             ?: throw IllegalStateException(
-                "Schema metadata missing for '" + handle.database + "' at snapshot " +
-                    handle.snapshotId,
+                "Schema metadata missing for '" + dlHandle.database + "' at snapshot " +
+                    dlHandle.snapshotId,
             )
-        val table = catalog.getTableById(handle.tableId, handle.snapshotId)
+        val table = catalog.getTableById(dlHandle.tableId, dlHandle.snapshotId)
             ?: throw IllegalStateException(
-                "Table metadata missing for tableId=" + handle.tableId +
-                    " at snapshot " + handle.snapshotId,
+                "Table metadata missing for tableId=" + dlHandle.tableId +
+                    " at snapshot " + dlHandle.snapshotId,
             )
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
 
-        val dataFiles = catalog.getDataFiles(handle.tableId, handle.snapshotId)
+        val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+        // Honour the file-level pruning applyFilter computed from column stats
+        // (null = no filter pushed, scan all files).
+        val prunedIds = dlHandle.prunedFileIds
+        val scanFiles = if (prunedIds != null) {
+            dataFiles.filter { it.dataFileId in prunedIds }
+        } else {
+            dataFiles
+        }
 
-        val ranges = ArrayList<ConnectorScanRange>(dataFiles.size)
-        for (file in dataFiles) {
+        val ranges = ArrayList<ConnectorScanRange>(scanFiles.size)
+        for (file in scanFiles) {
             val absolutePath = pathResolver.resolveFilePath(
                 file.path, file.pathIsRelative, tableDataPath,
             )

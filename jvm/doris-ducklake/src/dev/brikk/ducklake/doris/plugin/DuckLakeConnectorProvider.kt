@@ -1,8 +1,6 @@
 package dev.brikk.ducklake.doris.plugin
 
-import java.util.Optional
 import org.apache.doris.connector.api.Connector
-import org.apache.doris.connector.api.timetravel.ConnectorMvccSnapshot
 import org.apache.doris.connector.spi.ConnectorContext
 import org.apache.doris.connector.spi.ConnectorProvider
 
@@ -30,14 +28,6 @@ class DuckLakeConnectorProvider : ConnectorProvider {
 
     override fun create(properties: Map<String, String>, context: ConnectorContext): Connector =
         DuckLakeConnector(properties, context)
-
-    /**
-     * DuckLake supports MVCC snapshot pinning; the codec round-trips a
-     * [DuckLakeConnectorMvccSnapshot] via a fixed 24-byte binary frame.
-     * The engine uses this codec to ferry the snapshot across FE&rarr;BE.
-     */
-    override fun getMvccSnapshotCodec(): Optional<ConnectorMvccSnapshot.Codec> =
-        Optional.of(DuckLakeConnectorMvccSnapshot.Codec())
 
     companion object {
         const val TYPE: String = "ducklake"
