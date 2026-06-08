@@ -1,19 +1,33 @@
 # DESIGN: Virtual Columns (`$path`, `$row_id`, `$snapshot_id`, `$file_row_number`)
 
-**Status:** Design reconciled with the ported Kotlin code; approach decided, no code yet.
+**Status:** IMPLEMENTED — all four columns ship on the read path (parquet, duckdb, inlined).
 **Scope:** trino-ducklake connector. Read path only.
 **Companion to:** [TODO-READ-MODE.md § Virtual Columns](TODO-READ-MODE.md#virtual-columns).
 
-> **Reconciliation note (post-port).** This doc was sketched against a
-> Java-flavored design. Verified against the current Kotlin module, three
-> things changed (details inline): (a) handles use the existing
-> sentinel-`columnId` pattern on `DucklakeColumnHandle`, **not** a separate
-> handle type — see § 3.4; (b) `$snapshot_id`'s source `DucklakeDataFile`
-> doesn't exist — the value is added as a `beginSnapshot` field on
-> `DucklakeSplit` at split creation — see § 3.5 / § 4.2; (c) the row-varying
-> injection reuses the existing `RowIdInjectingPageSource` (generalized to
-> `VirtualColumnInjectingPageSource`), which already computes
-> `rowIdStart + position` — see § 4.2.
+> **Implementation notes (as built).**
+> - Handles use the sentinel-`columnId` pattern on `DucklakeColumnHandle`
+>   (not a separate type) — § 3.4. The `VirtualKind` enum is the source of
+>   truth; `virtualKind()` / `isVirtual()` are the helpers.
+> - Virtuals appear in BOTH `getColumnHandles` and `getTableMetadata`
+>   (`hidden=true`) — the hidden flag, not absence, excludes them from
+>   `SELECT *` / `DESCRIBE` (corrected from the original sketch — § 4.1).
+> - Constant virtuals (`$path`, `$snapshot_id`) are injected by an outer
+>   `VirtualColumnInjectingPageSource` (RLE blocks). Row-varying virtuals
+>   (`$file_row_number`, `$row_id`) are injected IN-pipeline before delete
+>   filtering by `PositionalVirtualInjectingPageSource` (a generalization of
+>   the old single-column row-id injector), so they reflect true file
+>   positions — § 4.2.
+> - `$snapshot_id` source is a new `beginSnapshot` field on `DucklakeSplit`
+>   (parquet/duckdb). When a positional virtual is requested, predicate
+>   pushdown is disabled (like the active-deletes case) so cumulative-offset
+>   positions stay aligned with the file.
+>
+> **Known caveats (follow-ups):**
+> - **Inlined `$snapshot_id`** uses the split's read snapshot, not the
+>   inlined rows' true `begin_snapshot` — `DucklakeInlinedSplit` doesn't carry
+>   it. Thread it through (like `DucklakeSplit.beginSnapshot`) to fix.
+> - **`$row_id` shares the name** with the MERGE row-id channel (distinct
+>   handles, ids -104 vs -100) — § 3.6; covered by the full merge/delete suite.
 
 ## 1. Goal
 

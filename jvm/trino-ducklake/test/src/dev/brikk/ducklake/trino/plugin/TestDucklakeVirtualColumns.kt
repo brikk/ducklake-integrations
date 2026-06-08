@@ -53,7 +53,7 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         val columns = computeActual("DESCRIBE simple_table").materializedRows
                 .map { it.getField(0).toString() }
         assertThat(columns).containsExactly("id", "name", "price", "active", "created_date")
-        assertThat(columns).doesNotContain(PATH_NAME, SNAPSHOT_NAME)
+        assertThat(columns).doesNotContain(PATH_NAME, SNAPSHOT_NAME, FRN_NAME, ROW_ID_NAME)
     }
 
     // ==================== $path ====================
@@ -137,6 +137,48 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
                 .hasSize(fileCount.toInt())
     }
 
+    // ==================== $file_row_number / $row_id (row-varying) ====================
+
+    @Test
+    fun testFileRowNumberIsZeroBasedAndDense() {
+        // simple_table is a single data file with 5 rows and no deletes → file row numbers 0..4.
+        val frns = computeActual("SELECT $FRN FROM simple_table ORDER BY $FRN").materializedRows
+                .map { (it.getField(0) as Number).toLong() }
+        assertThat(frns).containsExactly(0L, 1L, 2L, 3L, 4L)
+    }
+
+    @Test
+    fun testRowIdEqualsRowIdStartPlusFileRowNumber() {
+        // The defining relationship, cross-checked against the file's row_id_start from $files.
+        // (simple_table is a single file, so one row_id_start applies to every row.)
+        val violations = computeScalar(
+                "SELECT count(*) FROM simple_table " +
+                "WHERE $ROW_ID <> (SELECT row_id_start FROM \"simple_table\$files\" LIMIT 1) + $FRN") as Long
+        assertThat(violations).isEqualTo(0L)
+        // Dense + unique across the table.
+        assertThat(computeScalar("SELECT count(DISTINCT $ROW_ID) FROM simple_table") as Long).isEqualTo(5L)
+    }
+
+    @Test
+    fun testPositionalVirtualsNullOnInlinedData() {
+        assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $FRN IS NULL") as Long).isEqualTo(3L)
+        assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $ROW_ID IS NULL") as Long).isEqualTo(3L)
+    }
+
+    @Test
+    fun testPositionalVirtualsReflectOriginalFilePositionsAfterDeletes() {
+        // deleted_rows_table: 3 of 6 rows removed via merge-on-read deletes. Positions are computed
+        // PRE-delete, so the 3 survivors keep their ORIGINAL file positions (not renumbered 0..2).
+        // The row_id = row_id_start + file_row_number relationship must still hold for live rows,
+        // and the survivors' $row_id values must be distinct — proving positional injection runs
+        // before delete filtering and composes with it.
+        assertThat(computeScalar("SELECT count(DISTINCT $ROW_ID) FROM deleted_rows_table") as Long).isEqualTo(3L)
+        val violations = computeScalar(
+                "SELECT count(*) FROM deleted_rows_table " +
+                "WHERE $ROW_ID <> (SELECT row_id_start FROM \"deleted_rows_table\$files\" LIMIT 1) + $FRN") as Long
+        assertThat(violations).isEqualTo(0L)
+    }
+
     // ==================== Sentinel-path regression (merge row-id channel) ====================
 
     @Test
@@ -172,7 +214,11 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         // The SQL identifiers for the hidden columns; the leading `$` must be quoted.
         private const val PATH_NAME: String = "\$path"
         private const val SNAPSHOT_NAME: String = "\$snapshot_id"
+        private const val FRN_NAME: String = "\$file_row_number"
+        private const val ROW_ID_NAME: String = "\$row_id"
         private const val PATH: String = "\"\$path\""
         private const val SNAPSHOT: String = "\"\$snapshot_id\""
+        private const val FRN: String = "\"\$file_row_number\""
+        private const val ROW_ID: String = "\"\$row_id\""
     }
 }

@@ -96,12 +96,16 @@ data class DucklakeColumnHandle @JsonCreator constructor(
 enum class VirtualKind(
         @get:JvmName("columnId") val columnId: Long,
         @get:JvmName("columnName") val columnName: String,
-        @get:JvmName("columnType") val columnType: Type)
+        @get:JvmName("columnType") val columnType: Type,
+        // perRow=true: the value varies per row (file position based) and must be injected
+        // inside the read pipeline before delete-filtering — see DucklakePageSourceProvider's
+        // positional injector. perRow=false: constant per split (RLE block in the outer wrapper).
+        @get:JvmName("perRow") val perRow: Boolean)
 {
-    PATH(-101L, "\$path", VARCHAR),
-    SNAPSHOT_ID(-102L, "\$snapshot_id", BIGINT),
-    FILE_ROW_NUMBER(-103L, "\$file_row_number", BIGINT),
-    ROW_ID(-104L, "\$row_id", BIGINT);
+    PATH(-101L, "\$path", VARCHAR, false),
+    SNAPSHOT_ID(-102L, "\$snapshot_id", BIGINT, false),
+    FILE_ROW_NUMBER(-103L, "\$file_row_number", BIGINT, true),
+    ROW_ID(-104L, "\$row_id", BIGINT, true);
 
     /**
      * The hidden column handle for this virtual. Marked nullable because the

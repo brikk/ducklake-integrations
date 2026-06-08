@@ -1293,11 +1293,10 @@ class DucklakeMetadata(
         private val log: Logger = Logger.get(DucklakeMetadata::class.java)
         private const val METADATA_TABLE_SEPARATOR: String = "$"
 
-        // The virtual (hidden) columns exposed via getColumnHandles. Day 1: the
-        // constant-per-split pair. Day 2 adds VirtualKind.FILE_ROW_NUMBER and ROW_ID
-        // once the row-varying page-source injection lands.
-        private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> =
-                listOf(VirtualKind.PATH, VirtualKind.SNAPSHOT_ID)
+        // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
+        // Constant-per-split ($path, $snapshot_id) plus the row-varying lineage pair
+        // ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
+        private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> = VirtualKind.values().toList()
 
         /**
          * Reject any virtual column handle in a write column list with NOT_SUPPORTED.
