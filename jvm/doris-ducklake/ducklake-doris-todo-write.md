@@ -89,39 +89,26 @@ Built with independent oracles:
 - [x] `DuckLakeIcebergSchema` (schema_json), `DuckLakeWritePlanProvider` (sink),
   metadata write methods, `getWritePlanProvider`, `SUPPORTS_INSERT`, gate flipped.
 
-### W2b — run the compose smoke (the actual end-to-end validation)
-**The smoke is built**: `compose/smoke.sh` now has a W2 step + `compose/w2-insert.py`
-(create empty `tpch.doris_w` via DuckDB → `INSERT` via Doris → read back via Doris
-AND DuckDB+DuckLake → catalog cross-check). Run `compose/smoke.sh` (needs the FE to
-carry `"ducklake"` in `SPI_READY_TYPES`). Then confirm/fix:
-- [ ] **Parquet field-ids**: does the BE Iceberg writer stamp `field_id ==
-  DuckLake column_id`? If it assigns its own ids, the file won't read back in
-  DuckLake ("cannot resolve columns") — fall back to a `nameMap` on the fragment.
-- [ ] **footer_size**: `TIcebergCommitData` carries none → we pass `0` (catalog
-  stores NULL). Does the DuckDB/DuckLake reader tolerate a NULL footer size? If it
-  crashes ("invalid footer length"), the BE must report it.
-- [ ] **min/max format**: confirm bounds are Iceberg single-value spec (so our
-  LE-int/UTF-8 decode is right), then **extend the decoder** to
-  `date`/`float64`/`decimal`/`timestamp` once each type's *DuckLake stat-string*
-  form is pinned.
-- [ ] **path**: relative vs absolute from the BE; relativize in the commit mapper if
-  the BE returns absolute (`DucklakeWriteFragment.pathIsRelative`).
-- [ ] **sink-prep caps**: if the smoke shows column-order corruption, add
-  `SINK_REQUIRE_FULL_SCHEMA_ORDER` (and `SUPPORTS_PARALLEL_WRITE` for multi-file).
-- [ ] **Parquet field-ids**: confirm the BE Iceberg writer stamps `field_id ==
-  DuckLake column_id`. If it assigns its own ids, the written file won't read back
-  in DuckLake (columns "cannot be resolved") — fall back to a `nameMap` (the
-  `commitAddFiles` mechanism) on the fragment.
-- [ ] **footer_size**: `TIcebergCommitData` carries none → we pass `0` (catalog
-  stores NULL). Verify the DuckDB/DuckLake reader tolerates a NULL footer size; if
-  it crashes ("invalid footer length"), the BE must be extended to report it.
-- [ ] **min/max format**: confirm the BE encodes bounds per Iceberg single-value
-  spec (so our LE-int/UTF-8 decode is right), then **extend the decoder** to
-  `date`/`float64`/`decimal`/`timestamp` — but only once each type's *DuckLake
-  stat-string* format is pinned (DuckLake stores stats as strings the catalog
-  parses; getting the string form wrong corrupts pruning).
-- [ ] **path**: relative vs absolute from the BE; relativize against the data dir if
-  the BE returns absolute (`DucklakeWriteFragment.pathIsRelative`).
+### W2b — end-to-end smoke ✅ VALIDATED GREEN (2026-06-09, live FE+BE)
+Ran `compose/smoke.sh` end-to-end on a real cluster: Doris `INSERT INTO
+dl.tpch.doris_w VALUES (…)` → BE Iceberg sink wrote Parquet → connector committed a
+DuckLake snapshot → **read back 3 rows through Doris AND through DuckDB+DuckLake**
+(cross-engine). Every worried-about unknown held:
+- [x] **Parquet field-ids** — DuckDB read it back, so the BE stamps `field_id ==
+  column_id`. No `nameMap` needed.
+- [x] **footer_size** — passing `0` (→ NULL) is tolerated by the reader.
+- [x] **path** — the BE returns an absolute `s3://` path; `DuckLakeIcebergCommitMapper`
+  now relativizes it against the table data dir (fixed the "doubled path" failure).
+- [x] **compression** — set `ZSTD` (the BE rejects `UNKNOWN`).
+- [x] **sink-prep caps** — `SUPPORTS_INSERT` alone sufficed; no schema-order issue.
+- [ ] **min/max stat decode** — still `int8/16/32/64` + `varchar` only; extend to
+  `date`/`float64`/`decimal`/`timestamp` once each type's DuckLake stat-string form
+  is pinned (only affects write-side *pruning* coverage, not correctness).
+
+**Standing the remote smoke up** (an Apple-Silicon dev box differs): see the
+`doris-compose-smoke-remote` memory — FE built from P-series + `SPI_READY_TYPES +=
+"ducklake"`, imaged via `docker/runtime/doris-fe-overlay`, BE forced amd64
+(`DORIS_BE_PLATFORM`), `docker`→`podman` shim.
 
 ### W2c — partitioned / BUCKET writes
 - [ ] Verify the BE's Iceberg partition transforms match DuckLake's — esp. that the
@@ -133,16 +120,18 @@ carry `"ducklake"` in `SPI_READY_TYPES`). Then confirm/fix:
 
 - [ ] **W1 — DDL** (`CREATE/DROP SCHEMA`, `CREATE/DROP TABLE`): pure catalog
   metadata, no BE. Likely the cheapest first *live* write (no fragment round-trip).
-- [~] **W2 — INSERT (append):** commit path + sink + engine wiring ✅ built (FE path
-  complete, gate flipped, `compose/smoke.sh` W2 step ready); **W2b run-the-smoke +
-  fixes + W2c partition remain.**
+- [x] **W2 — INSERT (append, unpartitioned):** ✅ **VALIDATED GREEN end-to-end** on a
+  live FE+BE — Doris writes a DuckLake Parquet file, reads back through Doris +
+  DuckDB. W2c (partitioned/BUCKET) + the date/decimal/float stat-decode extension
+  remain.
 - [ ] **W3 — CTAS** = W1 DDL + W2 INSERT composed.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
   `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker
   (READ todo Step 7, BE OPTIONAL-column position-delete rejection).
 - [ ] **W5 — MERGE:** full upsert via the delete+insert fragment path.
-- [ ] **Cross-engine round-trip:** Doris-written table read back by DuckDB (and
-  vice-versa) on the same metadata DB — the integrity check.
+- [x] **Cross-engine round-trip:** ✅ Doris-written `tpch.doris_w` read back by
+  DuckDB+DuckLake on the same metadata DB (W2 smoke). The reverse (DuckDB-written
+  read by Doris) is the existing read smoke.
 
 ## Reference
 
