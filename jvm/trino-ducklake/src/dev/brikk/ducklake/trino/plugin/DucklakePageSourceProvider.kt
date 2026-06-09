@@ -175,10 +175,11 @@ class DucklakePageSourceProvider @Inject constructor(
                 return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
-            // (vortex now; lance later). createDuckDbPageSource picks the source shape per
+            // (vortex + lance). createDuckDbPageSource picks the source shape per
             // split.fileFormat via resolveDuckDbReadTarget.
             if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true) ||
-                    DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true)) {
+                    DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true) ||
+                    DucklakeSessionProperties.FORMAT_LANCE.equals(format, ignoreCase = true)) {
                 val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
                     table.pushedExpressions
                 else
@@ -676,10 +677,11 @@ class DucklakePageSourceProvider @Inject constructor(
 
     /**
      * The read target for a DuckDB-engine split. For the {@code duckdb} (.db) format this is the
-     * ATTACH target from {@link #resolveDuckDbAttachTarget}. For file-scan formats ({@code vortex}
-     * now, {@code lance} later) the same materialize-vs-httpfs decision is reused, then wrapped as
-     * a {@link DuckDbAttachTarget.FileScan} carrying the scan function + extension so the executor
-     * reads via {@code read_vortex('path')} instead of ATTACHing a database.
+     * ATTACH target from {@link #resolveDuckDbAttachTarget}. For the single-file scan format
+     * ({@code vortex}) the same materialize-vs-httpfs decision is reused, then wrapped as a
+     * {@link DuckDbAttachTarget.FileScan} carrying the scan function + extension so the executor
+     * reads via {@code read_vortex('path')} instead of ATTACHing a database. {@code lance} is a
+     * dataset *directory* and bypasses the materialize cache entirely (see below).
      */
     private fun resolveDuckDbReadTarget(
             session: ConnectorSession,
@@ -687,6 +689,21 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             split: DucklakeSplit): DuckDbAttachTarget
     {
+        // Lance is a *dataset directory*, not a single file: `lance_scan('<dir>')` reads the
+        // whole dataset (manifest + data + index files). It must NOT route through
+        // resolveDuckDbAttachTarget's materialize cache, which copies a single file to local tmp
+        // — that would pull one file out of the directory and hand DuckDB a broken path. Instead
+        // hand the catalog path straight to lance_scan. For s3 we pass the DuckDbS3Config so the
+        // executor sets up httpfs + a secret; whether the lance extension's object_store actually
+        // consumes a DuckDB secret (vs. its own storageOptions) is an open item to confirm on the
+        // arm64 box — see dev-docs/HANDOFF-lance-route-a.md.
+        if (DucklakeSessionProperties.FORMAT_LANCE.equals(split.fileFormat, ignoreCase = true)) {
+            val url: String = dataFileLocation.toString()
+            val isS3: Boolean = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
+            return DuckDbAttachTarget.FileScan(
+                    url, "lance_scan", "lance",
+                    if (isS3) Optional.of(duckDbS3Config) else Optional.empty())
+        }
         val base: DuckDbAttachTarget = resolveDuckDbAttachTarget(session, dataFileLocation, fileSystem, split)
         if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(split.fileFormat, ignoreCase = true)) {
             return base

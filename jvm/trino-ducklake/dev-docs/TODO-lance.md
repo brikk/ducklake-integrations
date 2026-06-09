@@ -4,6 +4,7 @@
 **Scope:** trino-ducklake connector — read first, then write. Two implementation routes (A: via the DuckDB `lance` extension; B: direct via `lance-core` JNI / the vendored `lance-trino` plugin). Both are tracked here; they are not mutually exclusive.
 **Design basis:** [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md) (deep design — Trino pushdown SPI surface, table-function shape for vector/FTS, route A vs B trade-offs, `ScanOptions` surface). This file is the actionable, chunked plan; that file is the rationale.
 **Sibling:** [TODO-vortex.md](TODO-vortex.md) shares Route A's "scan a file via a DuckDB format table-function" machinery.
+**▶ Pick-up doc:** [HANDOFF-lance-route-a.md](HANDOFF-lance-route-a.md) — read-dispatch wiring (Phase A1) is **done** on branch `worktree-trino-ducklake`; its probe test **skips on the Intel box** (lance ext 404 on osx_amd64) and must be run on an arm64/linux host. The handoff is the step-by-step to resume there.
 
 ---
 
@@ -57,13 +58,21 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 ### Phase A0 — probe (de-risk first)
 - [ ] Write one `.lance` dataset out-of-band via DuckDB (`INSTALL lance; COPY … TO 'x.lance' (FORMAT lance)`), register it against a DuckLake table with `file_format='lance'` (via `add_files` once that accepts a format arg, or a hand-seeded catalog row), attempt a Trino read, record what blows up. Captures the dataset-vs-file shape and the `lance_scan` projection/column-mapping behavior. Output: a short findings note appended here.
 
-### Phase A1 — read dispatch + executor scan-source generalization
-- [ ] `DucklakeSessionProperties`: add `FORMAT_LANCE = "lance"`; accept it in `validateDataFileFormat` (DucklakeSessionProperties.kt:151).
-- [ ] `DucklakeTableProperties`: accept `'lance'` in `validateDataFileFormat` (DucklakeTableProperties.kt:81).
-- [ ] `DucklakePageSourceProvider.createPageSource` (≈:166): add a `FORMAT_LANCE` branch routing to a new `createLanceViaDuckDbPageSource` (or a generalized `createFileScanPageSource(format)`), wrapped by `injectConstantVirtuals` like the others.
-- [ ] DuckDB executor: generalize the source. Today `DuckDbFilePageSource` + `buildAttachSql` assume an ATTACH target. Add a "file-scan target" that renders `FROM lance_scan('<path>')` and issues `INSTALL lance; LOAD lance;` (hook alongside the httpfs INSTALL/LOAD in `InProcessDuckDbExecutor.kt:189` and the Quack equivalent). S3 path reuses the existing httpfs + secret setup.
-- [ ] Column projection + type mapping: Lance → Arrow → Trino reuses the existing `DucklakeArrowToPageConverter`. Verify embedding columns (`FixedSizeList<float>`) land as `ARRAY(REAL)` (see RESEARCH §5 "Embedding column types").
-- [ ] Tests: probe-style end-to-end read of a small lance dataset (gate on extension availability — see Risks).
+### Phase A1 — read dispatch + executor scan-source generalization (DONE — wiring; probe gated)
+- [x] `DucklakeSessionProperties`: added `FORMAT_LANCE = "lance"`. **Validators left STRICT**
+  (lance write rejected; read-only, mirroring vortex V1 — reads dispatch on the catalog
+  `file_format`, not the write validators).
+- [ ] ~~`DucklakeTableProperties`: accept `'lance'`~~ — deferred to A4 (write). Read doesn't need it.
+- [x] `DucklakePageSourceProvider.createPageSource`: `FORMAT_LANCE` routes through
+  `createDuckDbPageSource` (with duckdb + vortex), wrapped by `injectConstantVirtuals`.
+- [x] DuckDB executor source already generalized (vortex did this). Lance reuses
+  `DuckDbAttachTarget.FileScan(path, "lance_scan", "lance", s3Config?)`. **Dataset-dir quirk:**
+  `resolveDuckDbReadTarget` gives lance an early return that **bypasses the single-file
+  materialize cache** (lance is a directory; `lance_scan` reads the whole dir).
+- [ ] Column projection + type mapping audit — **run on arm64** (HANDOFF Step 3). Embedding
+  columns (`FixedSizeList<float>` → `ARRAY(REAL)`) the key risk.
+- [x] Probe test `TestDucklakeLanceFileScanRead` — executor-level FileScan read; **skips on
+  osx_amd64** (404), runs on arm64/linux. This IS the Phase A0 probe; just needs a capable box.
 
 ### Phase A2 — predicate pushdown (standard)
 - [ ] TupleDomain + function-shape pushdown flows through the existing `DuckDbWhereClauseTranslator` / `applyFilter` exactly as the `.db` path does — `WHERE`-clause predicates render into the `lance_scan` query. Confirm the translator works over a `lance_scan` source (no ATTACH alias).
