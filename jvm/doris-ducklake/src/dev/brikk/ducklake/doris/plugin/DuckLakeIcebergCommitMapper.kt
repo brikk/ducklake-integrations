@@ -39,12 +39,20 @@ import java.nio.charset.StandardCharsets
  */
 internal object DuckLakeIcebergCommitMapper {
 
-    /** Map one BE commit fragment to a DuckLake write fragment, using the table's `columnId -> type`. */
-    fun toWriteFragment(data: TIcebergCommitData, typeByColumnId: Map<Long, String>): DucklakeWriteFragment {
+    /**
+     * Map one BE commit fragment to a DuckLake write fragment, using the table's
+     * `columnId -> type` and the table data dir to relativize the BE's path.
+     */
+    fun toWriteFragment(
+        data: TIcebergCommitData,
+        typeByColumnId: Map<Long, String>,
+        tableDataDir: String? = null,
+    ): DucklakeWriteFragment {
         val recordCount = if (data.isSetRowCount) data.rowCount else 0L
+        val (path, pathIsRelative) = resolvePath(if (data.isSetFilePath) data.filePath else "", tableDataDir)
         return DucklakeWriteFragment(
-            path = data.filePath,
-            pathIsRelative = true, // INSERT convention: files live under the table data dir
+            path = path,
+            pathIsRelative = pathIsRelative,
             fileFormat = "parquet",
             fileSizeBytes = if (data.isSetFileSize) data.fileSize else 0L,
             footerSize = 0L, // not in TIcebergCommitData → catalog stores NULL (see class doc)
@@ -54,6 +62,24 @@ internal object DuckLakeIcebergCommitMapper {
             partitionId = null, // see class doc — not derivable from Iceberg spec id
             nameMap = null, // default field-id projection (Parquet field_id == column_id)
         )
+    }
+
+    /**
+     * The BE reports an **absolute** file path; DuckLake records INSERT files
+     * **relative** to the table data dir. Strip the dir prefix → relative. If the
+     * path is outside the dir (or no dir is known), keep it absolute so DuckLake
+     * reads it as-is rather than (wrongly) joining it under the table dir — the
+     * "doubled path" bug that breaks read-back.
+     */
+    private fun resolvePath(filePath: String, tableDataDir: String?): Pair<String, Boolean> {
+        if (tableDataDir != null) {
+            val dir = tableDataDir.trimEnd('/')
+            if (filePath.startsWith(dir)) {
+                return filePath.removePrefix(dir).trimStart('/') to true
+            }
+        }
+        val absolute = filePath.contains("://") || filePath.startsWith("/")
+        return filePath to !absolute
     }
 
     private fun toColumnStats(

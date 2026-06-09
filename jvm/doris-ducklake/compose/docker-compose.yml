@@ -55,7 +55,10 @@ services:
     image: apache/doris:be-4.1.0
     container_name: doris-ducklake-be
     hostname: doris-be
-    platform: linux/arm64
+    # Host-overridable: defaults to arm64 (Apple Silicon dev box); set
+    # DORIS_BE_PLATFORM=linux/amd64 on an x86_64 host (the BE image is multi-arch,
+    # and running the wrong arch under emulation crashes its ELF symbol-index init).
+    platform: ${DORIS_BE_PLATFORM:-linux/arm64}
     depends_on:
       doris-fe:
         condition: service_healthy

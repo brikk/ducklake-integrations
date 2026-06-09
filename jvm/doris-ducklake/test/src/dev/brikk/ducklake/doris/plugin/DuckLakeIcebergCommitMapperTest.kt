@@ -145,4 +145,33 @@ internal class DuckLakeIcebergCommitMapperTest {
             mapOf(0 to "us", 1 to "3"),
         )
     }
+
+    @Test
+    fun relativizesAbsoluteBePathAgainstTableDataDir() {
+        // The BE reports an absolute s3:// path under the table dir (with a stray
+        // double slash). It must be stored relative, else DuckLake joins it under
+        // the table dir again → the doubled-path read-back failure.
+        val data = TIcebergCommitData().apply {
+            filePath = "s3://ducklake/data/tpch/doris_w//abc-0.zstd.parquet"
+            rowCount = 1
+        }
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
+            data, emptyMap(), "s3://ducklake/data/tpch/doris_w",
+        )
+        assertThat(fragment.path).isEqualTo("abc-0.zstd.parquet")
+        assertThat(fragment.pathIsRelative).isTrue()
+    }
+
+    @Test
+    fun keepsPathAbsoluteWhenOutsideTheTableDataDir() {
+        val data = TIcebergCommitData().apply {
+            filePath = "s3://other-bucket/x.parquet"
+            rowCount = 1
+        }
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
+            data, emptyMap(), "s3://ducklake/data/tpch/doris_w",
+        )
+        assertThat(fragment.path).isEqualTo("s3://other-bucket/x.parquet")
+        assertThat(fragment.pathIsRelative).isFalse()
+    }
 }

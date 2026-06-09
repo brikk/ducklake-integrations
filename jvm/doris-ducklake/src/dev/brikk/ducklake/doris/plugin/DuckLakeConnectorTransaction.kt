@@ -32,16 +32,20 @@ internal class DuckLakeConnectorTransaction(
     private val catalog: DucklakeCatalog,
 ) : ConnectorTransaction {
 
-    private data class Target(val tableId: Long, val snapshotId: Long)
+    private data class Target(val tableId: Long, val snapshotId: Long, val tableDataDir: String?)
 
     private val commitData = ArrayList<TIcebergCommitData>()
 
     @Volatile
     private var target: Target? = null
 
-    /** Bind the resolved target table; called by [DuckLakeWritePlanProvider.planWrite]. */
-    fun bindTarget(tableId: Long, snapshotId: Long) {
-        target = Target(tableId, snapshotId)
+    /**
+     * Bind the resolved target table + its data dir; called by
+     * [DuckLakeWritePlanProvider.planWrite]. The data dir relativizes the BE's
+     * absolute file paths at commit time.
+     */
+    fun bindTarget(tableId: Long, snapshotId: Long, tableDataDir: String? = null) {
+        target = Target(tableId, snapshotId, tableDataDir)
     }
 
     override fun getTransactionId(): Long = transactionId
@@ -66,7 +70,7 @@ internal class DuckLakeConnectorTransaction(
         val typeByColumnId = catalog.getTableColumns(bound.tableId, bound.snapshotId)
             .associate { it.columnId to it.columnType }
         val fragments = synchronized(this) {
-            commitData.map { DuckLakeIcebergCommitMapper.toWriteFragment(it, typeByColumnId) }
+            commitData.map { DuckLakeIcebergCommitMapper.toWriteFragment(it, typeByColumnId, bound.tableDataDir) }
         }
         if (fragments.isNotEmpty()) {
             catalog.commitInsert(bound.tableId, fragments)

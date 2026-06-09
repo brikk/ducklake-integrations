@@ -8,6 +8,7 @@ import org.apache.doris.connector.api.write.ConnectorSinkPlan
 import org.apache.doris.connector.api.write.ConnectorWritePlanProvider
 import org.apache.doris.thrift.TDataSink
 import org.apache.doris.thrift.TDataSinkType
+import org.apache.doris.thrift.TFileCompressType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileType
 import org.apache.doris.thrift.TIcebergTableSink
@@ -38,30 +39,37 @@ internal class DuckLakeWritePlanProvider(
 
     override fun planWrite(session: ConnectorSession, handle: ConnectorWriteHandle): ConnectorSinkPlan {
         val tableHandle = handle.tableHandle.asDuckLakeHandle<DuckLakeTableHandle>()
-        bindTransaction(session, tableHandle)
-        val sink = buildSink(tableHandle, handle.isOverwrite)
+        val outputPath = resolveOutputPath(tableHandle)
+        bindTransaction(session, tableHandle, outputPath)
+        val sink = buildSink(tableHandle, outputPath, handle.isOverwrite)
         return ConnectorSinkPlan(TDataSink(TDataSinkType.ICEBERG_TABLE_SINK).setIcebergTableSink(sink))
     }
 
-    /** Bind the resolved target onto the transaction the engine opened via `beginTransaction`. */
-    private fun bindTransaction(session: ConnectorSession, handle: DuckLakeTableHandle) {
+    /**
+     * Bind the resolved target + its data dir onto the transaction the engine
+     * opened via `beginTransaction`. The data dir relativizes the BE's absolute
+     * file paths when the transaction commits.
+     */
+    private fun bindTransaction(session: ConnectorSession, handle: DuckLakeTableHandle, tableDataDir: String) {
         val transaction = session.currentTransaction.orElseThrow {
             DorisConnectorException("DuckLake INSERT requires an active connector transaction on the session")
         }
         val duckLakeTransaction = transaction as? DuckLakeConnectorTransaction
             ?: throw DorisConnectorException("unexpected transaction type: ${transaction.javaClass.name}")
-        duckLakeTransaction.bindTarget(handle.tableId, handle.snapshotId)
+        duckLakeTransaction.bindTarget(handle.tableId, handle.snapshotId, tableDataDir)
     }
 
-    private fun buildSink(handle: DuckLakeTableHandle, overwrite: Boolean): TIcebergTableSink {
+    private fun buildSink(handle: DuckLakeTableHandle, outputPath: String, overwrite: Boolean): TIcebergTableSink {
         val columns = catalog.getTableColumns(handle.tableId, handle.snapshotId)
         val schemaJson = SchemaParser.toJson(DuckLakeIcebergSchema.of(columns))
-        val outputPath = resolveOutputPath(handle)
         return TIcebergTableSink().apply {
             setDbName(handle.database)
             setTbName(handle.table)
             setSchemaJson(schemaJson)
             setFileFormat(TFileFormatType.FORMAT_PARQUET)
+            // Without a compression type the BE rejects the write ("Unsupported
+            // compress type UNKNOWN with parquet"). ZSTD is standard + DuckLake-readable.
+            setCompressionType(TFileCompressType.ZSTD)
             setOutputPath(outputPath)
             setOriginalOutputPath(outputPath)
             setFileType(fileTypeFor(outputPath))

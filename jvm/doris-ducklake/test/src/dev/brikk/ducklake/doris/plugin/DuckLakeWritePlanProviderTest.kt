@@ -10,6 +10,7 @@ import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.handle.ConnectorTransaction
 import org.apache.doris.connector.api.handle.ConnectorWriteHandle
 import org.apache.doris.thrift.TDataSinkType
+import org.apache.doris.thrift.TFileCompressType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileType
 import org.apache.iceberg.SchemaParser
@@ -96,6 +97,7 @@ internal class DuckLakeWritePlanProviderTest {
             assertThat(sink.dbName).isEqualTo("sales")
             assertThat(sink.tbName).isEqualTo("orders")
             assertThat(sink.fileFormat).isEqualTo(TFileFormatType.FORMAT_PARQUET)
+            assertThat(sink.compressionType).isEqualTo(TFileCompressType.ZSTD) // BE rejects UNKNOWN
             assertThat(sink.isOverwrite).isFalse()
             // output path is the resolved table data dir (under the warehouse); local FS in tests.
             assertThat(sink.outputPath).startsWith(isolated.dataDir().toAbsolutePath().toString())
