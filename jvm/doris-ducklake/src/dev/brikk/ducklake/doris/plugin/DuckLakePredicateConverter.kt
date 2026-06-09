@@ -7,6 +7,7 @@ import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.pushdown.ConnectorIn
+import org.apache.doris.connector.api.pushdown.ConnectorLike
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.pushdown.ConnectorOr
 
@@ -18,18 +19,27 @@ import org.apache.doris.connector.api.pushdown.ConnectorOr
  * enforcement, so the BE always re-evaluates the full predicate. We only need to
  * never drop a file that could contain a matching row:
  * - Only top-level `AND` conjuncts are considered.
- * - Mapped: `col <op> literal` comparisons, `col BETWEEN lo AND hi`, and
- *   **membership** predicates (`col IN (…)`, `col = a OR col = b …`) — the latter
- *   collapse to the inclusive `[min..max]` span of their values (see
- *   [DuckLakeMembership]). A file outside that span can hold no matching row, so
- *   spanning is safe; a file inside it is kept and re-checked by the BE.
- * - **Function calls, LIKE, IS NULL, NOT, NOT IN, NE, and mixed-column / range
- *   `OR`s are skipped** — they stay in the remaining filter for the BE. (No
- *   function pushdown by design.)
+ * - Mapped: `col <op> literal` comparisons, `col BETWEEN lo AND hi`, **membership**
+ *   predicates (`col IN (…)`, `col = a OR col = b …`) collapsed to the inclusive
+ *   `[min..max]` span of their values (see [DuckLakeMembership]), and **prefix
+ *   `LIKE`** (`col LIKE 'abc%'`) → `[abc, abd)` — which is exactly `col >= 'abc'
+ *   AND col < 'abd'`, the same range trust as `>`/`BETWEEN`. A file outside the
+ *   range can hold no matching row, so it's safe; a file inside is kept and
+ *   re-checked by the BE.
+ * - **Function calls, REGEXP, non-prefix / escaped / `_`-wildcard LIKE, IS NULL,
+ *   NOT, NOT IN, NE, and mixed-column / range `OR`s are skipped** — they stay in
+ *   the remaining filter for the BE. (No function pushdown by design.)
  * - Strict `<`/`>` are widened to inclusive bounds (`ColumnRangePredicate` bounds
  *   are inclusive); widening can only keep extra files, never drop matching ones.
+ *
+ * String ranges (incl. `LIKE`) assume the column's **codepoint/binary collation**
+ * — DuckDB's VARCHAR default. The same assumption already underlies `>`/`<`/
+ * `BETWEEN` string pruning here; `LIKE` adds no new exposure.
  */
 internal object DuckLakePredicateConverter {
+
+    /** LIKE metacharacters (`%`, `_`) and the escape (`\`) — their presence in a prefix means "not a clean prefix". */
+    private const val LIKE_SPECIAL_CHARS = "%_\\"
 
     /** One [ColumnRangePredicate] per convertible conjunct; unconvertible parts are dropped. */
     fun toColumnRangePredicates(
@@ -48,8 +58,47 @@ internal object DuckLakePredicateConverter {
             is ConnectorComparison -> fromComparison(expr, ids)
             is ConnectorBetween -> fromBetween(expr, ids)
             is ConnectorIn, is ConnectorOr -> fromMembership(expr, ids)
-            else -> null // ConnectorFunctionCall / Like / IsNull / Not → skip
+            is ConnectorLike -> fromLike(expr, ids)
+            else -> null // ConnectorFunctionCall / IsNull / Not → skip
         }
+
+    /**
+     * Prefix `col LIKE 'abc%'` → `[abc, abd)` (`abd` = the prefix's codepoint
+     * successor). Only a clean prefix followed by a single trailing `%` qualifies:
+     * patterns with `_`, an escape `\`, an interior/leading `%`, or `REGEXP` are
+     * skipped (null). If the prefix has no finite successor (all chars `0xFFFF`),
+     * the upper bound is left open — still a safe superset.
+     */
+    private fun fromLike(like: ConnectorLike, ids: Map<String, Long>): ColumnRangePredicate? {
+        if (like.operator != ConnectorLike.Operator.LIKE) return null // REGEXP — not a prefix range
+        val col = like.value as? ConnectorColumnRef ?: return null
+        val pattern = (like.pattern as? ConnectorLiteral)?.takeUnless { it.isNull }?.value as? String ?: return null
+        val prefix = prefixOf(pattern) ?: return null
+        val columnId = ids[col.columnName] ?: return null
+        return ColumnRangePredicate(columnId, prefix, prefixUpperBound(prefix))
+    }
+
+    /** The literal prefix of a `'<prefix>%'` pattern, or null unless it's a clean prefix + one trailing `%`. */
+    private fun prefixOf(pattern: String): String? {
+        // Require: 1+ literal chars (no %, _, or escape \), then exactly one trailing %.
+        if (!pattern.endsWith('%')) return null
+        val prefix = pattern.dropLast(1)
+        if (prefix.isEmpty() || prefix.any { it in LIKE_SPECIAL_CHARS }) return null
+        return prefix
+    }
+
+    /** Smallest string strictly greater than every string with [prefix] (codepoint successor), or null if none. */
+    private fun prefixUpperBound(prefix: String): String? {
+        val chars = prefix.toCharArray()
+        var i = chars.size - 1
+        while (i >= 0 && chars[i] == Char.MAX_VALUE) {
+            i--
+        }
+        if (i < 0) return null // all chars 0xFFFF — no finite successor; leave upper bound open
+        val bumped = chars.copyOf(i + 1)
+        bumped[i] = bumped[i] + 1
+        return String(bumped)
+    }
 
     /** `col IN (…)` or `col = a OR col = b …` → the inclusive `[min..max]` span over its values. */
     private fun fromMembership(expr: ConnectorExpression, ids: Map<String, Long>): ColumnRangePredicate? {

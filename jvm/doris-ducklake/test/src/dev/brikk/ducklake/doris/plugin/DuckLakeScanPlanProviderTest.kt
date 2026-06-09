@@ -7,6 +7,7 @@ import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
 import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorFilterConstraint
 import org.apache.doris.connector.api.pushdown.ConnectorIn
+import org.apache.doris.connector.api.pushdown.ConnectorLike
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.pushdown.ConnectorOr
 import org.apache.doris.connector.api.scan.ConnectorScanRangeType
@@ -485,6 +486,41 @@ internal class DuckLakeScanPlanProviderTest {
 
                 val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
                 assertThat(prunedRanges).isNotEmpty()
+                assertThat(prunedRanges.size).isLessThan(allRanges.size)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun prunesFilesByPrefixLikeFilter() {
+        // `name LIKE 'a%'` → stats range [a, b): alice's file survives, bob/charlie
+        // (both > 'b') are pruned by their name stats. LIKE feeds only the stats
+        // path (not bucket — a prefix scatters across buckets), so this isolates the
+        // prefix → range conversion end-to-end.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                val allRanges = plan.planScan(null, handle, listOf(), java.util.Optional.empty())
+                assertThat(allRanges.size).isGreaterThanOrEqualTo(3)
+
+                val name = metadata.getColumnHandles(null, handle)["name"] as DuckLakeColumnHandle
+                val filter = ConnectorLike(
+                    ConnectorLike.Operator.LIKE,
+                    ConnectorColumnRef("name", name.columnType),
+                    ConnectorLiteral(name.columnType, "a%"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push name LIKE 'a%'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+
+                // Only alice's file matches the 'a' prefix.
+                val prunedRanges = plan.planScan(null, prunedHandle, listOf(), java.util.Optional.empty())
+                assertThat(prunedRanges).hasSize(1)
                 assertThat(prunedRanges.size).isLessThan(allRanges.size)
             }
     }

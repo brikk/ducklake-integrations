@@ -8,6 +8,7 @@ import org.apache.doris.connector.api.pushdown.ConnectorComparison
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
 import org.apache.doris.connector.api.pushdown.ConnectorFunctionCall
 import org.apache.doris.connector.api.pushdown.ConnectorIn
+import org.apache.doris.connector.api.pushdown.ConnectorLike
 import org.apache.doris.connector.api.pushdown.ConnectorLiteral
 import org.apache.doris.connector.api.pushdown.ConnectorOr
 import org.assertj.core.api.Assertions.assertThat
@@ -26,6 +27,8 @@ internal class DuckLakePredicateConverterTest {
     private fun lit(v: Any) = ConnectorLiteral(type, v)
     private fun cmp(op: ConnectorComparison.Operator, column: String, v: Any) =
         ConnectorComparison(op, col(column), lit(v))
+    private fun like(column: String, pattern: String, op: ConnectorLike.Operator = ConnectorLike.Operator.LIKE) =
+        ConnectorLike(op, col(column), lit(pattern))
 
     private fun convert(expr: ConnectorExpression) =
         DuckLakePredicateConverter.toColumnRangePredicates(expr, ids)
@@ -116,6 +119,32 @@ internal class DuckLakePredicateConverterTest {
             ColumnRangePredicate(2L, "5", null),
             ColumnRangePredicate(1L, "1", "2"),
         )
+    }
+
+    @Test
+    fun prefixLikeBecomesCodepointRange() {
+        // 'abc%' matches exactly the strings in [abc, abd) — abd = codepoint successor.
+        assertThat(convert(like("id", "abc%")))
+            .containsExactly(ColumnRangePredicate(1L, "abc", "abd"))
+        // single-char prefix: 'a%' → [a, b)
+        assertThat(convert(like("id", "a%")))
+            .containsExactly(ColumnRangePredicate(1L, "a", "b"))
+    }
+
+    @Test
+    fun skipsNonPrefixLike() {
+        // Leading wildcard — no usable prefix.
+        assertThat(convert(like("id", "%abc"))).isEmpty()
+        // `_` single-char wildcard inside the prefix.
+        assertThat(convert(like("id", "a_c%"))).isEmpty()
+        // No trailing `%` — an exact match, left to the BE / equality path.
+        assertThat(convert(like("id", "abc"))).isEmpty()
+        // Escape char in the prefix — semantics we don't decode.
+        assertThat(convert(like("id", "a\\%b%"))).isEmpty()
+        // REGEXP is not a prefix range.
+        assertThat(convert(like("id", "abc.*", ConnectorLike.Operator.REGEXP))).isEmpty()
+        // Unknown column.
+        assertThat(convert(like("ghost", "abc%"))).isEmpty()
     }
 
     @Test
