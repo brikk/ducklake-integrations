@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Live-FE smoke driver: rebuilds the plugin zip, drops it into the bind mount,
 # brings the substrate + Doris cluster up, waits for BE registration, and runs
-# the SHOW CATALOGS / SHOW DATABASES / SHOW TABLES smoke SQL.
+# the read smoke (SHOW/DESC/SELECT *), the Step-7 delete exercise, and the W2
+# INSERT end-to-end (Doris writes a DuckLake table; read back via Doris + DuckDB).
 #
 # Usage:
 #   ./smoke.sh             # one-shot: build → drop plugin → up → drive
@@ -270,6 +271,94 @@ else
         log "Step 7 unexpected error from Doris:"
         echo "$output" | tail -10
         exit 1
+    fi
+fi
+
+# 10. W2 (INSERT) end-to-end: Doris writes to a DuckLake table via the BE Iceberg
+# sink (DuckLakeWritePlanProvider → TIcebergTableSink), the connector commits the
+# file (DuckLakeConnectorTransaction → catalog.commitInsert), then we read it back
+# BOTH through Doris and through DuckDB+DuckLake — the cross-engine check that
+# proves Doris wrote DuckLake-compatible Parquet (field_id == column_id, footer ok).
+#
+# Requires the FE to carry "ducklake" in CatalogFactory.SPI_READY_TYPES, else INSERT
+# is rejected as unsupported. Doris can't CREATE TABLE on a plugin catalog yet (W1),
+# so the empty target is created via DuckDB first.
+w2_helper() {  # $1 = MODE (create|verify)
+    docker run --rm \
+        --network trino-ducklake-dev_default \
+        -v "${HERE}/w2-insert.py:/script.py:ro" \
+        -e MODE="$1" \
+        -e PG_HOST=trino-ducklake-postgres -e PG_DB=ducklake \
+        -e PG_USER=ducklake -e PG_PASSWORD=ducklake \
+        -e S3_ENDPOINT=trino-ducklake-minio:9000 \
+        -e S3_KEY_ID=minioadmin -e S3_SECRET=minioadmin \
+        -e DATA_PATH=s3://ducklake/data/ \
+        python:3.12-slim sh -c '
+            set -e
+            pip install --quiet --no-cache-dir "duckdb==1.5.2"
+            python /script.py
+        ' 2>&1 | sed "s/^/  [duckdb] /"
+}
+
+refresh_dl_catalog() {  # DROP+CREATE so Doris re-resolves the latest snapshot/schema
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        DROP CATALOG IF EXISTS dl;
+        CREATE CATALOG dl PROPERTIES (
+            'type'              = 'ducklake',
+            'metadata.url'      = 'jdbc:postgresql://trino-ducklake-postgres:5432/ducklake',
+            'metadata.user'     = 'ducklake',
+            'metadata.password' = 'ducklake',
+            'storage.warehouse' = 's3://ducklake/data/',
+            's3.endpoint'       = 'http://trino-ducklake-minio:9000',
+            's3.region'         = 'us-east-1',
+            's3.access_key'     = 'minioadmin',
+            's3.secret_key'     = 'minioadmin',
+            'use_path_style'    = 'true'
+        );
+    " 2>&1 | tail -3
+}
+
+log "W2: creating empty target lake.tpch.doris_w via DuckDB…"
+w2_helper create
+log "W2: refreshing Doris catalog so it sees tpch.doris_w…"
+refresh_dl_catalog
+
+log "W2: INSERT INTO dl.tpch.doris_w via Doris (BE Iceberg sink writes the Parquet)…"
+set +e
+insert_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    INSERT INTO dl.tpch.doris_w VALUES (1,'alice'),(2,'bob'),(3,'charlie');
+" 2>&1)
+insert_status=$?
+set -e
+echo "$insert_out" | tail -8
+
+if [[ $insert_status -ne 0 ]]; then
+    if echo "$insert_out" | grep -qiE "does not support|not ready|SPI_READY|no.*write"; then
+        log "W2 BLOCKED: INSERT not routed — FE is missing \"ducklake\" in CatalogFactory.SPI_READY_TYPES."
+        log "  Add it to the FE build (see doris-fe-build-macos memory + ducklake-doris-todo-write.md), rebuild, rerun."
+    else
+        log "W2 ERROR: INSERT failed at the FE/BE. See the output above + fe.log/be.log for the sink/commit error."
+    fi
+else
+    log "W2: INSERT accepted — reading back through Doris…"
+    doris_rows=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+        SELECT COUNT(*) FROM dl.tpch.doris_w;
+    " 2>&1 | tail -1)
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        SELECT * FROM dl.tpch.doris_w ORDER BY id;
+    " 2>&1
+    log "W2: cross-engine read-back via DuckDB+DuckLake (proves the Parquet is DuckLake-readable)…"
+    w2_helper verify
+    log "W2: catalog cross-check — active data files for doris_w…"
+    docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+        SELECT COUNT(*) FROM ducklake_data_file f
+        JOIN ducklake_table t ON t.table_id = f.table_id
+        WHERE t.table_name = 'doris_w' AND f.end_snapshot IS NULL;
+    " 2>&1 | tail -1 | sed 's/^/  active data files: /'
+    if [[ "${doris_rows:-0}" == "3" ]]; then
+        log "W2 GREEN: Doris INSERT wrote a DuckLake file and read back 3 rows end-to-end. 🎉"
+    else
+        log "W2 PARTIAL: Doris read back ${doris_rows:-?} rows (expected 3) — inspect the cross-engine output above."
     fi
 fi
 
