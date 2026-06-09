@@ -13,6 +13,7 @@ import org.apache.doris.thrift.TDataSinkType
 import org.apache.doris.thrift.TFileCompressType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileType
+import org.apache.iceberg.PartitionSpecParser
 import org.apache.iceberg.SchemaParser
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -77,9 +78,18 @@ internal class DuckLakeWritePlanProviderTest {
         )
     }
 
+    private fun handleFor(catalog: JdbcDucklakeCatalog, schema: String, table: String): ConnectorTableHandle =
+        DuckLakeConnectorMetadata(catalog).getTableHandle(null, schema, table)
+            .orFail("expected $schema.$table handle")
+
     private fun ordersHandle(catalog: JdbcDucklakeCatalog): ConnectorTableHandle =
-        DuckLakeConnectorMetadata(catalog).getTableHandle(null, "sales", "orders")
-            .orFail("expected sales.orders handle")
+        handleFor(catalog, "sales", "orders")
+
+    /** Drive planWrite for [schema].[table] with a fresh bound transaction; return the sink. */
+    private fun sinkFor(catalog: JdbcDucklakeCatalog, schema: String, table: String) =
+        provider(catalog)
+            .planWrite(FakeSession(DuckLakeConnectorTransaction(99L, catalog)), FakeWriteHandle(handleFor(catalog, schema, table), overwrite = false))
+            .dataSink.icebergTableSink
 
     @Test
     @Throws(Exception::class)
@@ -106,6 +116,40 @@ internal class DuckLakeWritePlanProviderTest {
             // carrying the table's columns.
             val schema = SchemaParser.fromJson(sink.schemaJson)
             assertThat(schema.columns().map { it.name() }).contains("id", "total")
+            // orders is unpartitioned → no partition spec on the sink.
+            assertThat(sink.isSetPartitionSpecId).isFalse()
+            assertThat(sink.partitionSpecsJson).isNull()
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun planWriteSetsIdentityPartitionSpecForByRegion() {
+        withCatalog { catalog ->
+            val sink = sinkFor(catalog, "sales", "by_region") // PARTITIONED BY (region)
+
+            assertThat(sink.isSetPartitionSpecId).isTrue()
+            assertThat(sink.partitionSpecId).isEqualTo(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID)
+            // partition_specs_json is keyed by spec id and parses (iceberg's own oracle) to
+            // a single IDENTITY field on `region`.
+            val json = sink.partitionSpecsJson.getValue(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID)
+            val spec = PartitionSpecParser.fromJson(SchemaParser.fromJson(sink.schemaJson), json)
+            assertThat(spec.fields()).singleElement()
+                .satisfies({ assertThat(it.transform().toString()).isEqualTo("identity") })
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun planWriteSetsBucketPartitionSpecForByNameBucket() {
+        withCatalog { catalog ->
+            val sink = sinkFor(catalog, "sales", "by_name_bucket") // PARTITIONED BY (bucket(4, name))
+
+            assertThat(sink.partitionSpecId).isEqualTo(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID)
+            val json = sink.partitionSpecsJson.getValue(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID)
+            val spec = PartitionSpecParser.fromJson(SchemaParser.fromJson(sink.schemaJson), json)
+            // bucket[4] is the murmur3 % 4 transform the BE must match DuckLake on (smoke-validated).
+            assertThat(spec.fields().single().transform().toString()).isEqualTo("bucket[4]")
         }
     }
 

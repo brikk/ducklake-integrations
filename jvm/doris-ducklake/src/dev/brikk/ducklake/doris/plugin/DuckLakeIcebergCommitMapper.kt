@@ -32,21 +32,24 @@ import java.nio.charset.StandardCharsets
  *   a NULL footer size, or the BE must be extended to report it.
  * - **path**: assumed relative to the table data dir (`pathIsRelative = true`, the
  *   INSERT convention); if the BE returns an absolute path it must be relativized.
- * - **partition_values / partition_id**: positional list → `partitionKeyIndex`
- *   assumes the BE orders values by DuckLake's partition-key index; `partitionId`
- *   (DuckLake spec id) is not derivable from the Iceberg `partition_spec_id`.
- *   Unpartitioned writes (the tested path) are unaffected.
+ * - **partition_values**: positional list → `partitionKeyIndex` assumes the BE orders
+ *   values by DuckLake's partition-key index (the order [DuckLakeIcebergPartitionSpec]
+ *   added the fields in). `partitionId` (the DuckLake spec id) isn't derivable from
+ *   the Iceberg `partition_spec_id`, so it's passed in from the FE-bound spec.
  */
 internal object DuckLakeIcebergCommitMapper {
 
     /**
      * Map one BE commit fragment to a DuckLake write fragment, using the table's
      * `columnId -> type` and the table data dir to relativize the BE's path.
+     * [partitionId] is the active DuckLake partition spec id (null for unpartitioned
+     * tables), bound onto the transaction by the write plan.
      */
     fun toWriteFragment(
         data: TIcebergCommitData,
         typeByColumnId: Map<Long, String>,
         tableDataDir: String? = null,
+        partitionId: Long? = null,
     ): DucklakeWriteFragment {
         val recordCount = if (data.isSetRowCount) data.rowCount else 0L
         val (path, pathIsRelative) = resolvePath(if (data.isSetFilePath) data.filePath else "", tableDataDir)
@@ -59,7 +62,7 @@ internal object DuckLakeIcebergCommitMapper {
             recordCount = recordCount,
             columnStats = toColumnStats(data, recordCount, typeByColumnId),
             partitionValues = partitionValues(data),
-            partitionId = null, // see class doc — not derivable from Iceberg spec id
+            partitionId = partitionId, // active DuckLake spec id, bound by the write plan (null = unpartitioned)
             nameMap = null, // default field-id projection (Parquet field_id == column_id)
         )
     }

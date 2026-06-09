@@ -110,11 +110,25 @@ DuckLake snapshot → **read back 3 rows through Doris AND through DuckDB+DuckLa
 "ducklake"`, imaged via `docker/runtime/doris-fe-overlay`, BE forced amd64
 (`DORIS_BE_PLATFORM`), `docker`→`podman` shim.
 
-### W2c — partitioned / BUCKET writes
-- [ ] Verify the BE's Iceberg partition transforms match DuckLake's — esp. that the
-  BE bucket (Iceberg `murmur3 % N`) equals `DuckLakeBucketTransform`, and that
-  `partition_values` (positional) + `partition_spec_id` map to DuckLake's
-  `partition_key_index` + `partition_id`. Unpartitioned INSERT is unaffected.
+### W2c — partitioned / BUCKET writes — FE side ✅ BUILT + headless-tested
+The FE half is complete and unit-tested against independent oracles; only the live
+BE bucket-equivalence remains (smoke).
+- [x] **`DuckLakeIcebergPartitionSpec`** — the table's active DuckLake partition spec
+  → `org.apache.iceberg.PartitionSpec` (IDENTITY / YEAR / MONTH / DAY / HOUR /
+  BUCKET(arity); fields added in `partition_key_index` order; source columns named by
+  `column_id == field_id`). *Oracle: iceberg's own `PartitionSpecParser` round-trip.*
+- [x] **Sink wiring** — `DuckLakeWritePlanProvider` sets `partition_specs_json`
+  (`{specId: PartitionSpecParser.toJson}`) + `partition_spec_id` for partitioned
+  tables, unset for unpartitioned — exactly like native `IcebergTableSink`. Tested
+  against the real catalog's `by_region` (IDENTITY) and `by_name_bucket` (BUCKET(4)).
+- [x] **Commit side** — the FE binds the DuckLake `partition_id` onto the txn;
+  `DuckLakeIcebergCommitMapper` stamps it on each fragment and maps the BE's
+  positional `partition_values` → `partition_key_index`. A partitioned commit to the
+  real catalog (`by_region`) is exercised end-to-end (headless).
+- [ ] **LIVE-ONLY unknown** — does the BE's Iceberg `bucket` (murmur3 % N) assign the
+  *same* bucket as DuckLake's writer / `DuckLakeBucketTransform`? Spec-identical on
+  paper; only the compose smoke proves it on a real BE (IDENTITY/temporal carry no
+  such risk). Close it by running the smoke against a bucketed target.
 
 ## Phased plan
 
@@ -122,8 +136,10 @@ DuckLake snapshot → **read back 3 rows through Doris AND through DuckDB+DuckLa
   metadata, no BE. Likely the cheapest first *live* write (no fragment round-trip).
 - [x] **W2 — INSERT (append, unpartitioned):** ✅ **VALIDATED GREEN end-to-end** on a
   live FE+BE — Doris writes a DuckLake Parquet file, reads back through Doris +
-  DuckDB. W2c (partitioned/BUCKET) + the date/decimal/float stat-decode extension
-  remain.
+  DuckDB. **W2c partitioned/BUCKET — FE side built + headless-tested** (iceberg
+  PartitionSpec → sink `partition_specs_json`/`partition_spec_id`; `partition_id`
+  threaded to the commit fragment); only the live BE bucket-equivalence + the
+  date/decimal/float stat-decode extension remain.
 - [ ] **W3 — CTAS** = W1 DDL + W2 INSERT composed.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
   `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker

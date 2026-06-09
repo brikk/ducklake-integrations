@@ -1,6 +1,7 @@
 package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.DorisConnectorException
 import org.apache.doris.connector.api.handle.ConnectorWriteHandle
@@ -12,6 +13,7 @@ import org.apache.doris.thrift.TFileCompressType
 import org.apache.doris.thrift.TFileFormatType
 import org.apache.doris.thrift.TFileType
 import org.apache.doris.thrift.TIcebergTableSink
+import org.apache.iceberg.PartitionSpecParser
 import org.apache.iceberg.SchemaParser
 
 /**
@@ -26,10 +28,16 @@ import org.apache.iceberg.SchemaParser
  * target table is bound onto the current transaction here, so its `commit()`
  * knows where to write — same seam as `MaxComputeWritePlanProvider`.
  *
+ * Partitioned tables additionally carry `partition_specs_json` + `partition_spec_id`
+ * (built from the table's active DuckLake partition spec by [DuckLakeIcebergPartitionSpec],
+ * same as native `IcebergTableSink`); unpartitioned tables leave both unset. The
+ * DuckLake partition id is bound onto the transaction so `commit()` can stamp it on
+ * each file's fragment.
+ *
  * **End-to-end validation is the compose smoke** (real FE+BE), not a headless
  * test: `output_path`/`hadoop_config`/`file_type` formats are BE-defined and have
- * no headless oracle. Unpartitioned, full-row INSERT for v1 (no
- * `partition_specs_json`; partial-column INSERT uses the full table schema).
+ * no headless oracle, and the BE's bucket-transform equivalence to DuckLake is only
+ * provable live. (Partial-column INSERT still uses the full table schema.)
  */
 internal class DuckLakeWritePlanProvider(
     private val catalog: DucklakeCatalog,
@@ -40,32 +48,46 @@ internal class DuckLakeWritePlanProvider(
     override fun planWrite(session: ConnectorSession, handle: ConnectorWriteHandle): ConnectorSinkPlan {
         val tableHandle = handle.tableHandle.asDuckLakeHandle<DuckLakeTableHandle>()
         val outputPath = resolveOutputPath(tableHandle)
-        bindTransaction(session, tableHandle, outputPath)
-        val sink = buildSink(tableHandle, outputPath, handle.isOverwrite)
+        // At most one partition spec is active at a snapshot (the catalog filters by
+        // `activeAt`); null for unpartitioned tables.
+        val partitionSpec = catalog.getPartitionSpecs(tableHandle.tableId, tableHandle.snapshotId).firstOrNull()
+        bindTransaction(session, tableHandle, outputPath, partitionSpec?.partitionId)
+        val sink = buildSink(tableHandle, outputPath, handle.isOverwrite, partitionSpec)
         return ConnectorSinkPlan(TDataSink(TDataSinkType.ICEBERG_TABLE_SINK).setIcebergTableSink(sink))
     }
 
     /**
-     * Bind the resolved target + its data dir onto the transaction the engine
-     * opened via `beginTransaction`. The data dir relativizes the BE's absolute
-     * file paths when the transaction commits.
+     * Bind the resolved target + its data dir (+ the DuckLake partition id, if any)
+     * onto the transaction the engine opened via `beginTransaction`. The data dir
+     * relativizes the BE's absolute file paths, and the partition id is stamped on
+     * each committed file's fragment.
      */
-    private fun bindTransaction(session: ConnectorSession, handle: DuckLakeTableHandle, tableDataDir: String) {
+    private fun bindTransaction(
+        session: ConnectorSession,
+        handle: DuckLakeTableHandle,
+        tableDataDir: String,
+        partitionId: Long?,
+    ) {
         val transaction = session.currentTransaction.orElseThrow {
             DorisConnectorException("DuckLake INSERT requires an active connector transaction on the session")
         }
         val duckLakeTransaction = transaction as? DuckLakeConnectorTransaction
             ?: throw DorisConnectorException("unexpected transaction type: ${transaction.javaClass.name}")
-        duckLakeTransaction.bindTarget(handle.tableId, handle.snapshotId, tableDataDir)
+        duckLakeTransaction.bindTarget(handle.tableId, handle.snapshotId, tableDataDir, partitionId)
     }
 
-    private fun buildSink(handle: DuckLakeTableHandle, outputPath: String, overwrite: Boolean): TIcebergTableSink {
+    private fun buildSink(
+        handle: DuckLakeTableHandle,
+        outputPath: String,
+        overwrite: Boolean,
+        partitionSpec: DucklakePartitionSpec?,
+    ): TIcebergTableSink {
         val columns = catalog.getTableColumns(handle.tableId, handle.snapshotId)
-        val schemaJson = SchemaParser.toJson(DuckLakeIcebergSchema.of(columns))
+        val schema = DuckLakeIcebergSchema.of(columns)
         return TIcebergTableSink().apply {
             setDbName(handle.database)
             setTbName(handle.table)
-            setSchemaJson(schemaJson)
+            setSchemaJson(SchemaParser.toJson(schema))
             setFileFormat(TFileFormatType.FORMAT_PARQUET)
             // Without a compression type the BE rejects the write ("Unsupported
             // compress type UNKNOWN with parquet"). ZSTD is standard + DuckLake-readable.
@@ -75,6 +97,12 @@ internal class DuckLakeWritePlanProvider(
             setFileType(fileTypeFor(outputPath))
             setHadoopConfig(storageConfig())
             setOverwrite(overwrite)
+            if (partitionSpec != null) {
+                val nameById = columns.associate { it.columnId to it.columnName }
+                val icebergSpec = DuckLakeIcebergPartitionSpec.of(partitionSpec, schema, nameById)
+                setPartitionSpecsJson(mapOf(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID to PartitionSpecParser.toJson(icebergSpec)))
+                setPartitionSpecId(DuckLakeIcebergPartitionSpec.SINK_SPEC_ID)
+            }
         }
     }
 

@@ -22,10 +22,10 @@ import java.nio.ByteOrder
  * (what the BE's Iceberg sink would report), commit, and assert the catalog grew a
  * new snapshot whose data file + decoded column stats are visible to the read path.
  *
- * This is the validated core of write support; the BE-coupled remainder (the
- * [DuckLakeWritePlanProvider] sink, Parquet field-ids, footer size) is gated off
- * (`supportsInsert=false`) until a live-cluster smoke test — see
- * `ducklake-doris-todo-write.md`.
+ * This is the validated core of write support (`supportsInsert=true`); the BE-coupled
+ * half — the [DuckLakeWritePlanProvider] sink, Parquet field-ids, footer size — was
+ * confirmed on a live cluster (W2 smoke). This headless test remains the independent
+ * oracle for the commit mapping — see `ducklake-doris-todo-write.md`.
  */
 internal class DuckLakeConnectorTransactionTest {
 
@@ -137,6 +137,42 @@ internal class DuckLakeConnectorTransactionTest {
                     tableId, snap1, ColumnRangePredicate(idColumn.columnId, "5000", "6000"),
                 ),
             ).isEmpty()
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun commitsPartitionedFileWithBoundPartitionId() {
+        // The partitioned-INSERT shape: the plan binds the table's active DuckLake
+        // partition id, and the BE reports positional partition_values per file. Prove
+        // the real catalog accepts a partitioned fragment end-to-end (it throws if the
+        // partition data is malformed).
+        withCatalog { catalog ->
+            val snap0 = catalog.currentSnapshotId
+            val tableId = requireNotNull(catalog.getTable("sales", "by_region", snap0)) {
+                "expected sales.by_region"
+            }.tableId
+            // IDENTITY-on-region spec; one active spec per snapshot.
+            val spec = catalog.getPartitionSpecs(tableId, snap0).first()
+            val recordsBefore = requireNotNull(catalog.getTableStats(tableId)).recordCount
+
+            val commit = TIcebergCommitData().apply {
+                filePath = "inserted-us.parquet"
+                rowCount = 2
+                partitionValues = listOf("us") // positional: key index 0 == region
+            }
+
+            val transaction = DuckLakeConnectorTransaction(4L, catalog)
+            transaction.addCommitData(serialize(commit))
+            transaction.bindTarget(tableId, snap0, null, spec.partitionId)
+            transaction.commit()
+
+            val snap1 = catalog.currentSnapshotId
+            assertThat(snap1).isGreaterThan(snap0)
+            assertThat(requireNotNull(catalog.getTableStats(tableId)).recordCount)
+                .isEqualTo(recordsBefore + 2)
+            // The new file is recorded under a partition (its partition values are tracked).
+            assertThat(catalog.getFilePartitionValues(tableId, snap1)).isNotEmpty()
         }
     }
 

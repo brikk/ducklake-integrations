@@ -21,18 +21,22 @@ import org.apache.thrift.protocol.TBinaryProtocol
  * [addCommitData] by P4's `CommitDataSerializer`. Each fragment maps to a
  * `DucklakeWriteFragment` via [DuckLakeIcebergCommitMapper].
  *
- * **Gate-closed / dormant** — like the MaxCompute template was before its cutover.
- * `DuckLakeConnectorMetadata.supportsInsert()` stays `false` until a live BE
- * validates the [DuckLakeWritePlanProvider] sink + Parquet field-id / footer-size
- * round-trip, so nothing routes a real INSERT here yet. The commit path below is
- * exercised directly by tests (synthetic fragments → real catalog commit).
+ * **Live** — `DuckLakeConnectorMetadata.supportsInsert()` is `true`; unpartitioned
+ * INSERT is validated end-to-end on a real FE+BE (compose smoke, W2). The commit
+ * path is also exercised directly by tests (synthetic fragments → real catalog
+ * commit), which is the independent headless oracle for the mapping.
  */
 internal class DuckLakeConnectorTransaction(
     private val transactionId: Long,
     private val catalog: DucklakeCatalog,
 ) : ConnectorTransaction {
 
-    private data class Target(val tableId: Long, val snapshotId: Long, val tableDataDir: String?)
+    private data class Target(
+        val tableId: Long,
+        val snapshotId: Long,
+        val tableDataDir: String?,
+        val partitionId: Long?,
+    )
 
     private val commitData = ArrayList<TIcebergCommitData>()
 
@@ -40,12 +44,13 @@ internal class DuckLakeConnectorTransaction(
     private var target: Target? = null
 
     /**
-     * Bind the resolved target table + its data dir; called by
-     * [DuckLakeWritePlanProvider.planWrite]. The data dir relativizes the BE's
-     * absolute file paths at commit time.
+     * Bind the resolved target table + its data dir (+ the active DuckLake partition
+     * id, if the table is partitioned); called by [DuckLakeWritePlanProvider.planWrite].
+     * The data dir relativizes the BE's absolute file paths at commit time, and the
+     * partition id is stamped on each committed file's fragment.
      */
-    fun bindTarget(tableId: Long, snapshotId: Long, tableDataDir: String? = null) {
-        target = Target(tableId, snapshotId, tableDataDir)
+    fun bindTarget(tableId: Long, snapshotId: Long, tableDataDir: String? = null, partitionId: Long? = null) {
+        target = Target(tableId, snapshotId, tableDataDir, partitionId)
     }
 
     override fun getTransactionId(): Long = transactionId
@@ -70,7 +75,9 @@ internal class DuckLakeConnectorTransaction(
         val typeByColumnId = catalog.getTableColumns(bound.tableId, bound.snapshotId)
             .associate { it.columnId to it.columnType }
         val fragments = synchronized(this) {
-            commitData.map { DuckLakeIcebergCommitMapper.toWriteFragment(it, typeByColumnId, bound.tableDataDir) }
+            commitData.map {
+                DuckLakeIcebergCommitMapper.toWriteFragment(it, typeByColumnId, bound.tableDataDir, bound.partitionId)
+            }
         }
         if (fragments.isNotEmpty()) {
             catalog.commitInsert(bound.tableId, fragments)

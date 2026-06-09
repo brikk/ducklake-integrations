@@ -147,6 +147,34 @@ internal class DuckLakeIcebergCommitMapperTest {
     }
 
     @Test
+    fun stampsBoundPartitionIdOnPartitionedFile() {
+        // For a partitioned write the FE binds the active DuckLake spec id; it isn't
+        // derivable from the fragment, so the mapper takes it as a parameter.
+        val data = TIcebergCommitData().apply {
+            filePath = "sales/by_region/region=eu/part-0.parquet"
+            rowCount = 2
+            partitionValues = listOf("eu")
+        }
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
+            data, emptyMap(), "sales/by_region", partitionId = 55L,
+        )
+        assertThat(fragment.partitionId).isEqualTo(55L)
+        assertThat(fragment.partitionValues).containsExactlyInAnyOrderEntriesOf(mapOf(0 to "eu"))
+    }
+
+    @Test
+    fun partitionIdNullForUnpartitionedFile() {
+        val data = TIcebergCommitData().apply {
+            filePath = "t/f.parquet"
+            rowCount = 1
+        }
+        // No partitionId argument → unpartitioned default.
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(data, emptyMap())
+        assertThat(fragment.partitionId).isNull()
+        assertThat(fragment.partitionValues).isEmpty()
+    }
+
+    @Test
     fun relativizesAbsoluteBePathAgainstTableDataDir() {
         // The BE reports an absolute s3:// path under the table dir (with a stray
         // double slash). It must be stored relative, else DuckLake joins it under
