@@ -11,6 +11,7 @@ import org.apache.doris.connector.api.ConnectorCapability
 import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.scan.ConnectorScanPlanProvider
+import org.apache.doris.connector.api.write.ConnectorWritePlanProvider
 import org.apache.doris.connector.spi.ConnectorContext
 
 /**
@@ -28,6 +29,9 @@ class DuckLakeConnector internal constructor(
 
     @Volatile
     private var scanPlanProvider: DuckLakeScanPlanProvider? = null
+
+    @Volatile
+    private var writePlanProvider: DuckLakeWritePlanProvider? = null
 
     override fun getMetadata(session: ConnectorSession?): ConnectorMetadata =
         DuckLakeConnectorMetadata(catalog())
@@ -54,6 +58,28 @@ class DuckLakeConnector internal constructor(
         return local!!
     }
 
+    override fun getWritePlanProvider(): ConnectorWritePlanProvider {
+        var local = writePlanProvider
+        if (local == null) {
+            synchronized(this) {
+                local = writePlanProvider
+                if (local == null) {
+                    val cat = catalog()
+                    val warehouse = DuckLakeConnectorProperties.requireString(
+                        properties, DuckLakeConnectorProperties.STORAGE_WAREHOUSE,
+                    )
+                    local = DuckLakeWritePlanProvider(
+                        cat,
+                        DuckLakePathResolver(cat, warehouse),
+                        properties,
+                    )
+                    writePlanProvider = local
+                }
+            }
+        }
+        return local!!
+    }
+
     /**
      * v1 capabilities (see `ducklake-doris-todo.md`): `SELECT *` with snapshot
      * pinning (MVCC), time travel, partition pruning, and statistics. The
@@ -63,6 +89,12 @@ class DuckLakeConnector internal constructor(
      * `applyFilter`); limit stays off (no `applyLimit`). Declaring a pushdown
      * capability without the matching `apply*` method crashes the planner —
      * keep them in lockstep.
+     *
+     * `SUPPORTS_INSERT` pairs with [DuckLakeConnectorMetadata.supportsInsert] +
+     * [getWritePlanProvider]. The actual INSERT only routes here once fe-core's
+     * `CatalogFactory.SPI_READY_TYPES` includes "ducklake" — and is validated by
+     * the compose smoke. Sink-prep hints (`SINK_REQUIRE_FULL_SCHEMA_ORDER`,
+     * `SUPPORTS_PARALLEL_WRITE`) are left off until the smoke shows they're needed.
      */
     override fun getCapabilities(): Set<ConnectorCapability> =
         EnumSet.of(
@@ -72,6 +104,7 @@ class DuckLakeConnector internal constructor(
             ConnectorCapability.SUPPORTS_STATISTICS,
             ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
             ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
+            ConnectorCapability.SUPPORTS_INSERT,
         )
 
     private fun catalog(): JdbcDucklakeCatalog {

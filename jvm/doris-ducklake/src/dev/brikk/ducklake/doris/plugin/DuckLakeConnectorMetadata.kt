@@ -14,6 +14,7 @@ import org.apache.doris.connector.api.ConnectorTableSchema
 import org.apache.doris.connector.api.ConnectorTableStatistics
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
+import org.apache.doris.connector.api.handle.ConnectorTransaction
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
 import org.apache.doris.connector.api.pushdown.ConnectorAnd
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
@@ -351,6 +352,24 @@ internal class DuckLakeConnectorMetadata(
             builder.timestampMillis(snap.snapshotTime.toEpochMilli())
         }
         return builder.build()
+    }
+
+    // ---- Write: INSERT via the connector-transaction model (P4 MaxCompute template) ----
+    // The engine opens beginTransaction(), binds the resulting transaction to the
+    // session, then DuckLakeWritePlanProvider.planWrite emits a TIcebergTableSink and
+    // binds the target table onto the transaction; the BE writes Parquet and reports
+    // TIcebergCommitData, which the transaction maps + commits. End-to-end validation
+    // is the compose smoke (real BE), gated by fe-core's SPI_READY_TYPES + "ducklake".
+
+    override fun supportsInsert(): Boolean = true
+
+    override fun usesConnectorTransaction(): Boolean = true
+
+    override fun beginTransaction(session: ConnectorSession?): ConnectorTransaction {
+        val transactionId = requireNotNull(session) {
+            "beginTransaction requires a session to allocate the transaction id"
+        }.allocateTransactionId()
+        return DuckLakeConnectorTransaction(transactionId, catalog)
     }
 
     private fun loadTopLevelColumns(handle: DuckLakeTableHandle): List<DucklakeColumn> {

@@ -33,6 +33,9 @@ internal class DuckLakeConnectorCapabilitiesTest {
                     ConnectorCapability.SUPPORTS_STATISTICS,
                     ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
                     ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
+                    // INSERT: pairs with supportsInsert()/getWritePlanProvider(); the real
+                    // route is still gated by fe-core SPI_READY_TYPES + the compose smoke.
+                    ConnectorCapability.SUPPORTS_INSERT,
                 ),
             )
     }
