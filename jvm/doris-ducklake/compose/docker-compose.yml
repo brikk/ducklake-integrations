@@ -27,8 +27,11 @@ services:
       # fit on a typical Docker Desktop memory ceiling. Doris's start_fe.sh
       # sources fe.conf for JAVA_OPTS_FOR_JDK_17, so env-var override doesn't
       # work — must replace the file.
-      # init_fe.sh appends `priority_networks` at boot, so the file must be writable.
-      - ./fe.conf:/opt/apache-doris/fe/conf/fe.conf
+      # NOTE: init_fe.sh APPENDS `priority_networks` to this file at every boot, so
+      # it must be writable AND must not be the tracked file (else each run pollutes
+      # it with another line that gets committed). smoke.sh stages a gitignored
+      # runtime copy `.fe.conf.runtime` from the pristine tracked fe.conf before `up`.
+      - ./.fe.conf.runtime:/opt/apache-doris/fe/conf/fe.conf
       # Plugin contents (unzipped). Lives in a named volume rather than a host
       # bind mount because Podman's macOS bind mounts don't reliably propagate
       # file contents from the host into the VM. The smoke script populates

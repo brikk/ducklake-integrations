@@ -32,6 +32,12 @@ done
 
 log() { printf '\033[1;36m[smoke]\033[0m %s\n' "$*"; }
 
+# Doris's init_fe.sh appends `priority_networks` to fe.conf at every boot. The
+# compose mounts a gitignored runtime copy (not the tracked file) so those appends
+# never pollute the repo. Stage it fresh from the pristine tracked fe.conf here, so
+# both the `up` and `--down` compose calls below find the mount source present.
+cp "${HERE}/fe.conf" "${HERE}/.fe.conf.runtime"
+
 if [[ $DOWN -eq 1 ]]; then
     log "Tearing down doris-ducklake stack…"
     docker compose -f "${HERE}/docker-compose.yml" down -v
