@@ -20,6 +20,34 @@ Read-only probing can sidestep this by registering an externally-written dataset
 
 ---
 
+## Verification & maintenance status (2026-06-09)
+
+Checked `lance-format/lance-duckdb` (Route A extension) and the maintenance of both:
+
+- **Route A surface is real + tested + actively maintained.** Extension `0.5.1` (semver), Lance
+  Rust core pinned to stable `v2.0.0`, **last commit 2026-06-09**, automated dependency bumps on
+  new Lance releases. Tests exercise the full surface: `lance_vector_search` / `lance_fts` /
+  `lance_hybrid_search` (with `k`, `prefilter`, input validation), scan + predicate pushdown
+  (`pushdown_filter_ir_types`, `pushdown_regex`, TPCH-Q1), DML (truncate, `merge_returning`,
+  alter/schema-evolution), maintenance (cleanup/metrics), namespace (`ATTACH … TYPE LANCE`, REST),
+  S3/MinIO, write via `COPY … (FORMAT lance, mode 'overwrite'|'append')` incl. direct `s3://`.
+  `prefilter=true` forces filter pushdown (errors if it can't); `prefilter=false` is best-effort
+  with DuckDB fallback. **Vector/FTS/hybrid are available TODAY.**
+- **Route B (lance-trino) is also being maintained** (lance-core bumps + incremental work) — so
+  "let it bake" is viable.
+
+**Decision lean: when Lance happens, do Route A; let Route B bake.** Rationale:
+- Route A needs no code absorption — DuckDB owns the dataset internals; we hand `lance_scan` /
+  `lance_vector_search` a **path**. The dataset-vs-file friction is soft: record the dataset
+  directory as the `data_file.path` (one catalog row per dataset). Wiring = the vortex-style
+  `FileScan` read + three `ConnectorTableFunction`s (vector/FTS/hybrid). Vectors land with modest
+  effort, riding a daily-shipping extension.
+- Route B is the "absorb-and-rework a dataset-focused plugin" burden (a fork). Since it's actively
+  maintained, don't fork now — revisit only if they add vectors, grow a file-focused mode, or
+  DuckDB indirection proves a measured bottleneck.
+- Caveat unchanged: Route A is `linux_amd64`/`arm64` + `osx_arm64` only (no Intel Mac) → container
+  or Apple-Silicon to run.
+
 ## Route A — via the DuckDB `lance` extension (recommended first)
 
 Leans on DuckDB as the single execution engine for non-parquet formats, exactly like the `.db` path. `lance` is a **core** DuckDB 1.5.3 extension (plain `INSTALL lance; LOAD lance;`, verified 2026-06-06). Lower risk, shares machinery with Vortex.
