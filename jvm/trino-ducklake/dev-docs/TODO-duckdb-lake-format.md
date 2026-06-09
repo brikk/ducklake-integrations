@@ -85,6 +85,22 @@ handling per type. Excludes complex types (ROW/ARRAY/MAP — separate epic).
 T4 is the most likely to surface another UUID-shaped silent bug, so probably
 worth doing first.
 
+**Coverage audit (2026-06-08) — check before sweeping; some already exists:**
+- **T4 — mostly DONE.** `TestDucklakeCrossEngineTypeAudit` + `TestDucklakeCrossEngineRoundTrip`
+  already cover scalar types, NULLs, wide-ints (HUGEINT/UHUGEINT), and the inlined
+  scalar path on the DuckDB-write→Trino-read direction. Remaining gap: a *systematic*
+  per-type × {arrow_stream, appender} × {CTAS, INSERT-into-preexisting} matrix.
+- **T1 — PARTIAL.** UPDATE (`TestDucklakeFileFormatPrecedence`) and DELETE
+  (`TestDucklakeCrossEngineCatalogMetadata`) have incidental coverage; **MERGE on
+  duckdb-format is uncovered**, and neither asserts both writer modes systematically.
+- **T2 — PARTIAL.** ADD COLUMN is covered (incl. the inlined→parquet flush boundary in
+  the type audit); **DROP / RENAME COLUMN on duckdb-format are uncovered.**
+- **T3 — LARGELY UNCOVERED** (biggest gap): no duckdb-format-specific tests for
+  `FOR VERSION AS OF`, `$snapshots` / `$partitions` system tables, or partition pruning
+  over duckdb (or mixed parquet+duckdb) files.
+- Suggested order given the above: **T3 (most gap) → finish T1 MERGE + DROP/RENAME in
+  T2 → backfill the T4 matrix** (T4's risk is largely already retired).
+
 ### N3. Out-of-process DuckDB workers via Swanlake (Arrow Flight)
 
 **Why.** Move DuckDB out of the Trino JVM into separately-supervised

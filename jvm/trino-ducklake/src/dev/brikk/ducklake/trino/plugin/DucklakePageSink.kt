@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList.toImmutableList
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.airlift.json.JsonCodec
 import io.airlift.log.Logger
 import io.airlift.slice.Slice
@@ -311,7 +312,34 @@ class DucklakePageSink(
         if (FORMAT_DUCKDB.equals(fileFormat, ignoreCase = true)) {
             return openDuckDbWriter(partitionValues)
         }
+        if (FORMAT_VORTEX.equals(fileFormat, ignoreCase = true)) {
+            return openVortexWriter(partitionValues)
+        }
         throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
+    }
+
+    /**
+     * Vortex writer: streams Trino pages through the Arrow-stream writer, which COPYs them
+     * straight to a local `.vortex` file (then uploads it) and gathers column stats inline from
+     * the same pages — see [DuckDbArrowStreamFileWriter] with FORMAT_VORTEX. No scratch `.db`,
+     * no read-back. Always uses the arrow-stream path regardless of duckdb_writer_mode.
+     */
+    @Throws(IOException::class)
+    private fun openVortexWriter(partitionValues: Map<Int, String?>): DucklakeFileWriter {
+        val fileName = "ducklake-${UUID.randomUUID()}.vortex"
+        val relativePath = buildRelativePath(partitionValues, fileName)
+        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
+        writtenFilePaths.add(filePath)
+        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        return DuckDbArrowStreamFileWriter(
+                fileSystem,
+                filePath,
+                relativePath,
+                partitionValues,
+                partitionId,
+                handle.columns,
+                duckDbLocalTempDir(),
+                FORMAT_VORTEX)
     }
 
     @Throws(IOException::class)
