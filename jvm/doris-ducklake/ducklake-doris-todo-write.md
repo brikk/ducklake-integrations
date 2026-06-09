@@ -46,40 +46,55 @@ INSERT into a plugin-catalog table flows:
 5. **Commit** — `commit()` maps the accumulated fragments to
    `DucklakeWriteFragment`s and calls `catalog.commitInsert` (new snapshot).
 
-## Built + tested this session (commit path — steps 4 & 5) — GATE-CLOSED
+## Built + tested this session — GATE-CLOSED
 
+**Testing reality (from the connector-SPI migration's own tests, RFC §15):** the
+write path is almost entirely **headless FE-unit-testable** — txn open + global
+registration, fragment routing, the commit-fragment `TBinaryProtocol` golden, and
+**even the `TIcebergTableSink` field population** (built FE-side in `planWrite`,
+asserted with `getXxx()`, no BE). Only the SQL `INSERT` round-trip through a real
+backend needs a cluster (gated `regression-test` + a skip-by-default live test).
+So the build principle here: **build (with tests) whatever has an independent
+oracle headless; defer what only the BE can validate.**
+
+Built with independent oracles:
 - [x] **`DuckLakeConnectorTransaction`** (`ConnectorTransaction`): `addCommitData`
   decodes `TIcebergCommitData` (TBinaryProtocol); `commit()` maps + calls
   `catalog.commitInsert`; `getUpdateCnt`/`rollback`/`close`. Mirrors
-  `MaxComputeConnectorTransaction`.
+  `MaxComputeConnectorTransaction`. *Oracle: the real Postgres catalog.*
 - [x] **`DuckLakeIcebergCommitMapper`**: `TIcebergCommitData` → `DucklakeWriteFragment`.
   Stats keyed by field-id (== DuckLake `column_id`); `value_count` = Iceberg
   total − null; **min/max decoded only for spec-locked types** — `int8/16/32/64`
   (LE) and `varchar` (UTF-8), `null` otherwise (a wrong bound could wrongly prune a
   file → correctness bug; a null bound is safe).
-- [x] **Tests (+7)**: mapper unit (decode + count math + unknown-column drop +
-  partition values) and an integration test committing a synthetic fragment to the
-  real Postgres catalog, proving the new snapshot's decoded stats drive **read-path
-  pruning** end-to-end (`findDataFileIdsInRange`).
+- [x] **`DuckLakeIcebergSchema`**: DuckLake columns → `org.apache.iceberg.Schema`
+  with `field_id == column_id` → `schema_json` for the sink. Scalar types only;
+  nested/lossy types throw. *Oracle: iceberg's own `SchemaParser` round-trip.*
+- [x] **Tests (+10)**: commit-mapper unit, the commit→catalog integration test
+  (proves decoded stats drive read-path pruning end-to-end), a multi-fragment
+  commit, and the schema round-trip.
 - **GATE:** `DuckLakeConnectorMetadata.supportsInsert()` stays **false** — nothing
   routes a real INSERT here yet (exactly how Doris staged MaxCompute pre-cutover).
 
 ## Remaining for INSERT — needs a live BE + FE to validate
 
-### W2a — the sink + engine wiring (codeable now, but un-runnable without a BE)
-- [ ] **`DuckLakeWritePlanProvider`** (`ConnectorWritePlanProvider.planWrite`): build
-  the `TIcebergTableSink`. The crux is `schema_json` — Doris's native
-  `IcebergTableSink` does `SchemaParser.toJson(icebergTable.schema())`, i.e. it needs
-  an `org.apache.iceberg.Schema`. We must **construct an `org.apache.iceberg.Schema`
-  from the DuckLake columns with `field_id == column_id`** (and matching nested
-  ids), then `SchemaParser.toJson`. Also set `db_name`/`tb_name`, `output_path` =
-  resolved table data dir (`DuckLakePathResolver`), `file_format=parquet`,
-  `overwrite`, `partition_specs_json`/`partition_spec_id`. Mirror
-  `fe/fe-core/.../planner/IcebergTableSink.java`. (Check whether `org.apache.iceberg`
-  is on the plugin classpath; if not, add it or hand-serialize the schema JSON.)
+### W2a — the sink + engine wiring
+- [x] **`schema_json`** — `DuckLakeIcebergSchema` (built + tested; see above).
+- [ ] **`DuckLakeWritePlanProvider`** (`ConnectorWritePlanProvider.planWrite`):
+  assemble the `TIcebergTableSink` around the schema — `db_name`/`tb_name`,
+  `setSchemaJson(SchemaParser.toJson(DuckLakeIcebergSchema.of(cols)))`,
+  `file_format=parquet`, `overwrite`, `output_path` = resolved table data dir
+  (`DuckLakePathResolver`), `hadoop_config` = storage creds (mirror the read path's
+  `getScanNodeProperties` location handling), `file_type` (S3 vs local), and bind
+  the target onto the txn via `session.getCurrentTransaction()`. Mirror
+  `fe/.../planner/IcebergTableSink.java:115-194`. **No independent headless oracle**
+  for `output_path`/`hadoop_config`/`file_type` (their format is BE-defined) — so
+  this is deferred to build alongside the W2b smoke rather than self-asserted blind.
+  (`org.apache.iceberg` is on the classpath now — added compileOnly.)
 - [ ] Wire `DuckLakeConnector.getWritePlanProvider()` + metadata `beginTransaction`
-  / `usesConnectorTransaction` / **flip `supportsInsert()=true`** — all behind the
-  smoke-test gate below.
+  (`= DuckLakeConnectorTransaction(session.allocateTransactionId(), catalog)`) /
+  `usesConnectorTransaction=true` / **flip `supportsInsert()=true`** — behind the
+  W2b gate.
 
 ### W2b — BE round-trip smoke (the actual validation; needs a running cluster)
 - [ ] **Parquet field-ids**: confirm the BE Iceberg writer stamps `field_id ==
