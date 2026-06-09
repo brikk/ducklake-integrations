@@ -149,10 +149,36 @@ the same ones).
   catalog-backed DDL lifecycle (CREATE DATABASE → CREATE TABLE with typed columns →
   DROP TABLE → DROP DATABASE), plus partitioned-CREATE-TABLE + unsupported-type
   rejection. Doris suite 79→87 green.
-- [ ] **W1b — partitioned CREATE TABLE** (map `ConnectorPartitionSpec`/`ConnectorBucketSpec`
-  → catalog `PartitionFieldSpec`); currently rejected with a clear error. Plus the
-  **live route**: same `SPI_READY_TYPES` gate as INSERT — validate via a smoke step
-  (Doris `CREATE TABLE` → DuckDB reads it; removes the smoke's DuckDB-create crutch).
+#### W1b — partitioned CREATE TABLE + live DDL smoke (TURNKEY: shapes pre-discovered)
+
+**(a) Partitioned CREATE TABLE — connector mapping.** Today `DuckLakeConnectorMetadata.createTable`
+(rejection at ~line 400) throws if `partitionSpec`/`bucketSpec` is present. Replace that with a
+map → `catalog.createTable(db, table, columns, partitionFields, null)`:
+- `request.bucketSpec` (`ConnectorBucketSpec`: `getColumns(): List<String>`, `getNumBuckets(): Int`,
+  `getAlgorithm(): String`) → one `PartitionFieldSpec(col, DucklakePartitionTransform.BUCKET, numBuckets)`
+  per column. (DuckLake bucket == iceberg murmur3 — W2c proved the BE matches; reject a non-murmur3
+  `algorithm` to be safe.)
+- `request.partitionSpec` (`ConnectorPartitionSpec`: `getStyle()` ∈ {IDENTITY, TRANSFORM, LIST, RANGE},
+  `getFields(): List<ConnectorPartitionField>` where each has `getColumnName()`, `getTransform(): String`,
+  `getTransformArgs(): List<Integer>`) → `PartitionFieldSpec(col, transform, arity)`. Map IDENTITY→IDENTITY;
+  TRANSFORM→parse `getTransform()` ("year"/"month"/"day"/"hour"/"bucket") to `DucklakePartitionTransform`
+  (arity = `getTransformArgs()[0]` for bucket). **Reject LIST/RANGE** — DuckLake only has Iceberg-style
+  transforms (conservative-throw, like the type mapper). `PartitionFieldSpec(columnName, transform, arity?)`
+  is in `PartitionSpecTypes.kt`; `DuckLakeIcebergPartitionSpec.kt` is the reference for transform handling.
+- *Headless oracle:* CREATE TABLE with bucket/identity/temporal specs → assert `catalog.getPartitionSpecs`
+  returns the expected `DucklakePartitionField`s (extend `DuckLakeDdlTest`).
+
+**(b) Live DDL smoke — validate the route + drop the DuckDB-create crutch.** Add a step to
+`compose/smoke.sh`: Doris `CREATE DATABASE`/`CREATE TABLE dl.tpch.doris_ddl (...)` → verify via
+DuckDB+DuckLake the table exists with the right columns → (compose W1+W2) INSERT into it → DROP.
+Same `SPI_READY_TYPES` gate as INSERT (already set in the smoke FE). `w2-insert.py create` mode can
+then be replaced by a Doris `CREATE TABLE`.
+
+**Env recipe (so a fresh agent is turnkey):** all compose images are cached → cluster bring-up ~2–3 min.
+- *Headless tests:* `PATH=/opt/podman/bin:$PATH DOCKER_HOST=unix:///var/run/docker.sock
+  TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :doris-ducklake:test` (Testcontainers Postgres).
+- *Smoke:* `/tmp/dockershim/docker` → podman shim, `DORIS_BE_PLATFORM=linux/amd64` (the arm-under-emulation
+  BE crash), then `./smoke.sh`. See [[doris-compose-smoke-remote]] + `compose/README.md`.
 
 ## Phased plan
 
