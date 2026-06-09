@@ -289,11 +289,13 @@ fi
 # Requires the FE to carry "ducklake" in CatalogFactory.SPI_READY_TYPES, else INSERT
 # is rejected as unsupported. Doris can't CREATE TABLE on a plugin catalog yet (W1),
 # so the empty target is created via DuckDB first.
-w2_helper() {  # $1 = MODE (create|verify)
+w2_helper() {  # $1 = MODE (create|verify), $2 = TABLE (default doris_w), $3 = PARTITION_BY (optional)
     docker run --rm \
         --network trino-ducklake-dev_default \
         -v "${HERE}/w2-insert.py:/script.py:ro" \
         -e MODE="$1" \
+        -e TABLE="${2:-doris_w}" \
+        -e PARTITION_BY="${3:-}" \
         -e PG_HOST=trino-ducklake-postgres -e PG_DB=ducklake \
         -e PG_USER=ducklake -e PG_PASSWORD=ducklake \
         -e S3_ENDPOINT=trino-ducklake-minio:9000 \
@@ -365,6 +367,62 @@ else
         log "W2 GREEN: Doris INSERT wrote a DuckLake file and read back 3 rows end-to-end. 🎉"
     else
         log "W2 PARTIAL: Doris read back ${doris_rows:-?} rows (expected 3) — inspect the cross-engine output above."
+    fi
+fi
+
+# 11. W2c (partitioned / BUCKET INSERT) — the one thing the headless tests can't prove:
+# does the BE's Iceberg bucket transform (murmur3 % N) assign the SAME bucket as
+# DuckLake's writer / our DuckLakeBucketTransform? We create a `bucket(4, name)` table,
+# INSERT alice/bob/charlie via Doris (the FE now sets partition_specs_json +
+# partition_spec_id, so the BE writes partitioned + reports per-file partition_values),
+# then read the bucket numbers the BE tagged each file with straight from the catalog.
+# DuckLake's own murmur3 sends alice→1, bob→2, charlie→3 (the DuckLakeBucketTransform
+# reference + bootstrap by_name_bucket), so the recorded buckets MUST be exactly
+# {1,2,3}. A different/colliding set means the BE hash differs from DuckLake's.
+log "W2c: creating bucketed target lake.tpch.doris_wb (bucket(4, name)) via DuckDB…"
+w2_helper create doris_wb "bucket(4, name)"
+log "W2c: refreshing Doris catalog so it sees tpch.doris_wb…"
+refresh_dl_catalog
+
+log "W2c: INSERT alice/bob/charlie INTO dl.tpch.doris_wb via Doris (BE buckets + writes partitioned)…"
+set +e
+wb_insert=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    INSERT INTO dl.tpch.doris_wb VALUES (1,'alice'),(2,'bob'),(3,'charlie');
+" 2>&1)
+wb_status=$?
+set -e
+echo "$wb_insert" | tail -8
+
+if [[ $wb_status -ne 0 ]]; then
+    if echo "$wb_insert" | grep -qiE "does not support|not ready|SPI_READY|no.*write"; then
+        log "W2c BLOCKED: INSERT not routed — FE missing \"ducklake\" in SPI_READY_TYPES (same gate as W2)."
+    else
+        log "W2c ERROR: partitioned INSERT failed at the FE/BE. See output above + fe.log/be.log."
+    fi
+else
+    wb_rows=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+        SELECT COUNT(*) FROM dl.tpch.doris_wb;
+    " 2>&1 | tail -1)
+    log "W2c: cross-engine read-back via DuckDB+DuckLake…"
+    w2_helper verify doris_wb
+    log "W2c: BUCKET-equivalence — bucket each file was tagged with in the catalog (must be 1,2,3)…"
+    buckets=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+        SELECT pv.partition_value
+        FROM ducklake_file_partition_value pv
+        JOIN ducklake_table t ON t.table_id = pv.table_id
+        JOIN ducklake_data_file f ON f.data_file_id = pv.data_file_id
+        WHERE t.table_name = 'doris_wb' AND f.end_snapshot IS NULL
+        ORDER BY pv.partition_value;
+    " 2>&1 | paste -sd, -)
+    log "  recorded buckets: [$buckets]  (DuckLake murmur3: alice→1, bob→2, charlie→3)"
+    # Prove Doris's own read-side bucket pruning agrees with what it just wrote.
+    alice_rows=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+        SELECT COUNT(*) FROM dl.tpch.doris_wb WHERE name='alice';
+    " 2>&1 | tail -1)
+    if [[ "$buckets" == "1,2,3" && "${wb_rows:-0}" == "3" && "${alice_rows:-0}" == "1" ]]; then
+        log "W2c GREEN: BE bucket(4,name) == DuckLake murmur3; partitioned INSERT round-trips cross-engine. 🎉"
+    else
+        log "W2c CHECK: rows=${wb_rows:-?} (exp 3), buckets=[$buckets] (exp 1,2,3), alice-prune=${alice_rows:-?} (exp 1) — inspect above."
     fi
 fi
 

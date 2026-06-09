@@ -9,6 +9,10 @@ substrate (Postgres + MinIO + seeded TPC-H) and exercises the plugin end-to-end:
   parquet-nullability gap)
 - **W2 INSERT** — `INSERT INTO dl.tpch.doris_w VALUES (…)` via Doris, then reads it
   back through **both Doris and DuckDB+DuckLake** (cross-engine). ✅ GREEN 2026-06-09.
+- **W2c BUCKET INSERT** — `INSERT … INTO dl.tpch.doris_wb` (a `bucket(4, name)` table)
+  via Doris, then asserts the bucket each file was tagged with in the catalog is exactly
+  `{1,2,3}` — i.e. the BE's Iceberg murmur3 matches DuckLake's (alice→1, bob→2,
+  charlie→3). ✅ GREEN 2026-06-09.
 
 ## Quick start
 
