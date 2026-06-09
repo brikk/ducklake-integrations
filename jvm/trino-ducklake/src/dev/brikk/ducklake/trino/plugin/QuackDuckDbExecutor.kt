@@ -16,8 +16,6 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.trino.plugin.DucklakeDuckDbExecutor.ExecutionContext
 import dev.brikk.ducklake.trino.plugin.DucklakeDuckDbExecutor.ExecutionRequest
 import io.airlift.log.Logger
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
-import io.trino.spi.TrinoException
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
@@ -112,7 +110,9 @@ internal class QuackDuckDbExecutor(
                     drainWrappedQuery(init, serverInitStatement)
                 }
                 val attachServerSide = buildServerSideAttachSql(request.target(), serverAlias!!)
-                drainWrappedQuery(init, attachServerSide)
+                if (attachServerSide.isNotEmpty()) {
+                    drainWrappedQuery(init, attachServerSide)
+                }
                 applyServerSideTimeZone(init, request.duckDbTimeZone())
             }
             val selectSql = wrapAsSelect(buildInnerSelectSql(request, serverAlias!!))
@@ -148,7 +148,10 @@ internal class QuackDuckDbExecutor(
             "ATTACH IF NOT EXISTS '${target.path.toAbsolutePath().toString().replace("'", "''")}' AS $serverAlias (READ_ONLY)"
         is DuckDbAttachTarget.HttpfsS3 ->
             "ATTACH IF NOT EXISTS '${target.s3Url.replace("'", "''")}' AS $serverAlias (READ_ONLY)"
-        is DuckDbAttachTarget.FileScan -> throw TrinoException(NOT_SUPPORTED, FILESCAN_UNSUPPORTED_VIA_QUACK)
+        // No ATTACH for a file-scan format — the file is read via its scan table-function in
+        // buildInnerSelectSql; the extension is INSTALL/LOADed in serverInitStatementsFor. Empty
+        // string → execute() skips the attach drain.
+        is DuckDbAttachTarget.FileScan -> ""
     }
 
     /**
@@ -169,12 +172,28 @@ internal class QuackDuckDbExecutor(
                 // shared across concurrent clients on this Quack server. Same
                 // credentials from any client (same Trino catalog) → safe race.
                 target.s3Config.renderCreateSecretSql())
-        is DuckDbAttachTarget.FileScan -> throw TrinoException(NOT_SUPPORTED, FILESCAN_UNSUPPORTED_VIA_QUACK)
+        // Server-side INSTALL/LOAD of the scan extension (vortex/lance); + httpfs/secret when
+        // the path is s3://. The SELECT then reads via scanFunction('path') (no ATTACH).
+        is DuckDbAttachTarget.FileScan -> buildList {
+            add("INSTALL ${target.extension}")
+            add("LOAD ${target.extension}")
+            if (target.s3Config.isPresent) {
+                add("INSTALL httpfs")
+                add("LOAD httpfs")
+                add(target.s3Config.get().renderCreateSecretSql())
+            }
+        }
     }
 
-    private fun buildInnerSelectSql(request: ExecutionRequest, serverAlias: String): String =
-        DuckDbSelectSqlBuilder.buildSelectSql(
-                "$serverAlias.main.$ATTACHED_TABLE", request)
+    private fun buildInnerSelectSql(request: ExecutionRequest, serverAlias: String): String {
+        val source: String = when (val target = request.target()) {
+            // File-scan formats read via the extension's table function — no attached db/table.
+            is DuckDbAttachTarget.FileScan ->
+                "${target.scanFunction}('${target.path.replace("'", "''")}')"
+            else -> "$serverAlias.main.$ATTACHED_TABLE"
+        }
+        return DuckDbSelectSqlBuilder.buildSelectSql(source, request)
+    }
 
     private class QuackExecutionContext(
             private val connection: DuckDBConnection,
@@ -221,11 +240,6 @@ internal class QuackDuckDbExecutor(
         private const val ENGINE_CATALOG: String = "engine"
         private const val ATTACHED_TABLE: String = "t"
 
-        // FileScan formats (vortex/lance) read via a table function with no server-side ATTACH;
-        // the Quack RPC path doesn't model that yet. Reject clearly; the in-process engine works.
-        private const val FILESCAN_UNSUPPORTED_VIA_QUACK: String =
-                "Vortex/Lance (file-scan) formats are not yet supported via the Quack DuckDB engine; " +
-                "use the in-process engine (ducklake.duckdb.execution-engine=duckdb_local)"
 
         /**
          * Execute the given inner SQL via the {@code quack_query_by_name} wrapper
@@ -267,7 +281,9 @@ internal class QuackDuckDbExecutor(
             val key: String = when (target) {
                 is DuckDbAttachTarget.LocalPath -> target.path.toAbsolutePath().toString()
                 is DuckDbAttachTarget.HttpfsS3 -> target.s3Url
-                is DuckDbAttachTarget.FileScan -> throw TrinoException(NOT_SUPPORTED, FILESCAN_UNSUPPORTED_VIA_QUACK)
+                // FileScan needs no attach alias (read via table-function); key on the path anyway
+                // so the per-target server-setup cache stays correctly keyed.
+                is DuckDbAttachTarget.FileScan -> target.path
             }
             try {
                 val md = MessageDigest.getInstance("SHA-256")
