@@ -132,10 +132,33 @@ bucket-equivalence is now confirmed** on a real cluster.
   bucket-prune found the row. Repeatable via the `smoke.sh` **W2c** step (bucketed
   INSERT + catalog `ducklake_file_partition_value` assertion).
 
+### W1 — DDL (CREATE/DROP DATABASE + TABLE) — connector side ✅ BUILT + headless-tested
+Pure catalog metadata, no BE. The SPI exposes DDL as `ConnectorSchemaOps` /
+`ConnectorTableOps` default methods, the FE routes them via `PluginDrivenExternalCatalog`
+(resolving `IF [NOT] EXISTS` before the call), and the catalog already has the
+`createSchema`/`dropSchema`/`createTable`/`dropTable` primitives (trino-ducklake drives
+the same ones).
+- [x] **`DuckLakeConnectorMetadata`** overrides `supportsCreateDatabase`/`createDatabase`/
+  `dropDatabase`/`createTable(ConnectorCreateTableRequest)`/`dropTable` → catalog
+  primitives; `SUPPORTS_CREATE_TABLE` capability added.
+- [x] **`DuckLakeCreateTableMapper`** — Doris `ConnectorType` → DuckLake type string (the
+  write-side inverse of `DuckLakeTypeMapping`; conservative — unsupported/nested types
+  throw). *Oracle: round-trip against `DuckLakeTypeMapping.fromDucklakeType`.* Caught a
+  real bug: DATETIMEV2's fractional-second resolution rides in `precision`, not `scale`.
+- [x] **Tests (+8)** — type-mapper (forward + round-trip + unsupported-throws) and a
+  catalog-backed DDL lifecycle (CREATE DATABASE → CREATE TABLE with typed columns →
+  DROP TABLE → DROP DATABASE), plus partitioned-CREATE-TABLE + unsupported-type
+  rejection. Doris suite 79→87 green.
+- [ ] **W1b — partitioned CREATE TABLE** (map `ConnectorPartitionSpec`/`ConnectorBucketSpec`
+  → catalog `PartitionFieldSpec`); currently rejected with a clear error. Plus the
+  **live route**: same `SPI_READY_TYPES` gate as INSERT — validate via a smoke step
+  (Doris `CREATE TABLE` → DuckDB reads it; removes the smoke's DuckDB-create crutch).
+
 ## Phased plan
 
-- [ ] **W1 — DDL** (`CREATE/DROP SCHEMA`, `CREATE/DROP TABLE`): pure catalog
-  metadata, no BE. Likely the cheapest first *live* write (no fragment round-trip).
+- [x] **W1 — DDL** (`CREATE/DROP DATABASE/TABLE`): connector side built + headless-tested
+  (CREATE/DROP DATABASE, CREATE/DROP TABLE unpartitioned, scalar columns). Partitioned
+  CREATE TABLE + the live route (gated like INSERT) remain (W1b).
 - [x] **W2 — INSERT (append, unpartitioned):** ✅ **VALIDATED GREEN end-to-end** on a
   live FE+BE — Doris writes a DuckLake Parquet file, reads back through Doris + DuckDB.
 - [x] **W2c — INSERT (partitioned / BUCKET):** ✅ **VALIDATED GREEN end-to-end** — iceberg

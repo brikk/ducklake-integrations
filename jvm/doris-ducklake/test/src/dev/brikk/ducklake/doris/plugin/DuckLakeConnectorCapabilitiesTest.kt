@@ -36,6 +36,9 @@ internal class DuckLakeConnectorCapabilitiesTest {
                     // INSERT: pairs with supportsInsert()/getWritePlanProvider(); the real
                     // route is still gated by fe-core SPI_READY_TYPES + the compose smoke.
                     ConnectorCapability.SUPPORTS_INSERT,
+                    // CREATE TABLE: pairs with the DDL methods (createDatabase/createTable/
+                    // dropTable); headless against the catalog, same gate for the live route.
+                    ConnectorCapability.SUPPORTS_CREATE_TABLE,
                 ),
             )
     }

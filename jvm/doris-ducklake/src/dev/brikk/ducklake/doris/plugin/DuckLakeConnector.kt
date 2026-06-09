@@ -95,6 +95,11 @@ class DuckLakeConnector internal constructor(
      * `CatalogFactory.SPI_READY_TYPES` includes "ducklake" — and is validated by
      * the compose smoke. Sink-prep hints (`SINK_REQUIRE_FULL_SCHEMA_ORDER`,
      * `SUPPORTS_PARALLEL_WRITE`) are left off until the smoke shows they're needed.
+     *
+     * `SUPPORTS_CREATE_TABLE` pairs with the DDL methods on
+     * [DuckLakeConnectorMetadata] (createDatabase/dropDatabase/createTable/dropTable,
+     * pure catalog metadata). The DDL is exercised headless against the real catalog;
+     * the live route is the same `SPI_READY_TYPES` gate as INSERT (W1b).
      */
     override fun getCapabilities(): Set<ConnectorCapability> =
         EnumSet.of(
@@ -105,6 +110,7 @@ class DuckLakeConnector internal constructor(
             ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
             ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
             ConnectorCapability.SUPPORTS_INSERT,
+            ConnectorCapability.SUPPORTS_CREATE_TABLE,
         )
 
     private fun catalog(): JdbcDucklakeCatalog {

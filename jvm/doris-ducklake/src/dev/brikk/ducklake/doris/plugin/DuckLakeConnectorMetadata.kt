@@ -6,12 +6,15 @@ import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
 import dev.brikk.ducklake.catalog.DucklakePartitionField
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
+import dev.brikk.ducklake.catalog.TableColumnSpec
 import org.apache.doris.connector.api.ConnectorColumn
 import org.apache.doris.connector.api.ConnectorDatabaseMetadata
 import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.ConnectorTableSchema
 import org.apache.doris.connector.api.ConnectorTableStatistics
+import org.apache.doris.connector.api.DorisConnectorException
+import org.apache.doris.connector.api.ddl.ConnectorCreateTableRequest
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.handle.ConnectorTransaction
@@ -370,6 +373,48 @@ internal class DuckLakeConnectorMetadata(
             "beginTransaction requires a session to allocate the transaction id"
         }.allocateTransactionId()
         return DuckLakeConnectorTransaction(transactionId, catalog)
+    }
+
+    // ---- DDL: CREATE/DROP DATABASE + TABLE (pure catalog metadata, no BE) ----
+    // The FE (PluginDrivenExternalCatalog) resolves IF [NOT] EXISTS before calling these,
+    // so they act unconditionally and let the catalog throw on a real conflict. Each
+    // catalog op is its own atomic snapshot — the same primitives trino-ducklake drives.
+
+    override fun supportsCreateDatabase(): Boolean = true
+
+    override fun createDatabase(session: ConnectorSession?, database: String, properties: Map<String, String>?) {
+        catalog.createSchema(database)
+    }
+
+    override fun dropDatabase(session: ConnectorSession?, database: String, ifExists: Boolean) {
+        if (ifExists && catalog.getSchema(database, catalog.currentSnapshotId) == null) {
+            return
+        }
+        // No CASCADE: the catalog refuses to drop a schema that still has tables.
+        catalog.dropSchema(database)
+    }
+
+    override fun createTable(session: ConnectorSession?, request: ConnectorCreateTableRequest) {
+        if (request.partitionSpec?.fields?.isNotEmpty() == true || request.bucketSpec?.columns?.isNotEmpty() == true) {
+            throw DorisConnectorException(
+                "partitioned/bucketed CREATE TABLE is not supported yet for DuckLake (W1b) — " +
+                    "create the table unpartitioned for now",
+            )
+        }
+        val columns = request.columns.map { column ->
+            TableColumnSpec(
+                column.name,
+                DuckLakeCreateTableMapper.toDucklakeType(column.type),
+                column.isNullable,
+                emptyList(), // scalar columns only in v1 (the type mapper rejects nested types)
+            )
+        }
+        catalog.createTable(request.dbName, request.tableName, columns, null, null)
+    }
+
+    override fun dropTable(session: ConnectorSession?, tableHandle: ConnectorTableHandle) {
+        val handle = tableHandle.asDuckLakeHandle<DuckLakeTableHandle>()
+        catalog.dropTable(handle.database, handle.table)
     }
 
     private fun loadTopLevelColumns(handle: DuckLakeTableHandle): List<DucklakeColumn> {
