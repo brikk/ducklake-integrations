@@ -159,4 +159,52 @@ internal class DuckLakeConnectorTransactionTest {
             assertThat(catalog.currentSnapshotId).isEqualTo(snap0)
         }
     }
+
+    @Test
+    @Throws(Exception::class)
+    fun commitsMultipleFragmentsInOneSnapshot() {
+        // The realistic INSERT shape: the BE reports several files for one statement.
+        withCatalog { catalog ->
+            val snap0 = catalog.currentSnapshotId
+            val tableId = requireNotNull(catalog.getTable("sales", "orders", snap0)).tableId
+            val idColumn = catalog.getTableColumns(tableId, snap0).first { it.columnName == "id" }
+            val recordsBefore = requireNotNull(catalog.getTableStats(tableId)).recordCount
+
+            fun fileWithIdRange(name: String, rows: Long, lo: Int, hi: Int) =
+                TIcebergCommitData().apply {
+                    filePath = name
+                    rowCount = rows
+                    columnStats = TIcebergColumnStats().apply {
+                        valueCounts = mapOf(idColumn.columnId.toInt() to rows)
+                        nullValueCounts = mapOf(idColumn.columnId.toInt() to 0L)
+                        lowerBounds = mapOf(idColumn.columnId.toInt() to leInt(lo))
+                        upperBounds = mapOf(idColumn.columnId.toInt() to leInt(hi))
+                    }
+                }
+
+            val transaction = DuckLakeConnectorTransaction(3L, catalog)
+            transaction.addCommitData(serialize(fileWithIdRange("sales/orders/a.parquet", 2, 3000, 3100)))
+            transaction.addCommitData(serialize(fileWithIdRange("sales/orders/b.parquet", 4, 4000, 4100)))
+            transaction.bindTarget(tableId, snap0)
+            assertThat(transaction.getUpdateCnt()).isEqualTo(6) // 2 + 4 rows across both files
+
+            transaction.commit()
+
+            val snap1 = catalog.currentSnapshotId
+            assertThat(snap1).isGreaterThan(snap0)
+            assertThat(requireNotNull(catalog.getTableStats(tableId)).recordCount)
+                .isEqualTo(recordsBefore + 6)
+            // Both files committed in the one snapshot, each with its own queryable stats.
+            assertThat(
+                catalog.findDataFileIdsInRange(
+                    tableId, snap1, ColumnRangePredicate(idColumn.columnId, "3050", "3050"),
+                ),
+            ).isNotEmpty()
+            assertThat(
+                catalog.findDataFileIdsInRange(
+                    tableId, snap1, ColumnRangePredicate(idColumn.columnId, "4050", "4050"),
+                ),
+            ).isNotEmpty()
+        }
+    }
 }
