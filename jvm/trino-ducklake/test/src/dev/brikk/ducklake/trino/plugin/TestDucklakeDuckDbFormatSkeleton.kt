@@ -53,8 +53,9 @@ class TestDucklakeDuckDbFormatSkeleton : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testInvalidFormatRejected() {
+        // 'orc' is a genuinely-unsupported format here (parquet/duckdb/vortex are the valid set).
         val badSession = Session.builder(session)
-                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, "vortex")
+                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, "orc")
                 .build()
         assertThatThrownBy {
             computeActual(

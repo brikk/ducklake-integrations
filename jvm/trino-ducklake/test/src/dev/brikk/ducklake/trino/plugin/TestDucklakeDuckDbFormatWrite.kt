@@ -340,7 +340,7 @@ open class TestDucklakeDuckDbFormatWrite : AbstractDucklakeIntegrationTest() {
     fun testInvalidTablePropertyRejected() {
         assertThatThrownBy {
             computeActual(
-                    "CREATE TABLE test_schema.tp_bad WITH (data_file_format = 'vortex') AS SELECT 1 AS id")
+                    "CREATE TABLE test_schema.tp_bad WITH (data_file_format = 'orc') AS SELECT 1 AS id")
         }
                 .hasMessageContaining("data_file_format must be one of")
         tryDropTable("test_schema.tp_bad")
