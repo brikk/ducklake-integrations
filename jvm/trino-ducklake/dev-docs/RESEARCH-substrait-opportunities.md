@@ -115,6 +115,29 @@ engines, layered *under* (not replacing) the engine-specific deep-function trans
    translator for the long tail.
 3. Build the per-backend Substrait-function parity matrix before trusting it for pruning.
 
+## 6a. Builder deep-dive (2026-06-08) — reuse verdict: LIGHT-ADAPT (~75% liftable)
+
+Line-by-line review of `SubstraitExpressionBuilder.java` on eight axes. It lifts cleanly in
+shape but carries two correctness bugs and one robustness gap to fix on the way out.
+
+| Axis | Finding |
+|---|---|
+| **Type/literal coverage** | Handles BOOLEAN, all ints, REAL/DOUBLE, VARCHAR, VARBINARY, DATE, TIMESTAMP, TIMESTAMP_TZ. **No DECIMAL / ARRAY / ROW / UUID**, and the literal path (`toLiteral`, ~:470) **throws `UnsupportedOperationException`** on the gap instead of declining to push. The *expression* path is graceful (unmapped → `Optional.empty` → remainder); the *TupleDomain/literal* path is NOT — a `decimal > 5` domain could fail the query. VARCHAR length not carried. |
+| **Function mapping** | Hardcoded Substrait anchors (`equal:any_any`, `gt/gte/lt/lte:any_any`, `like:str_str`, `and/or/not:bool`, `is_null:any`) against `DefaultExtensionCatalog` via `SimpleExtension.loadDefaults()` (fixed set, no dynamic registration). Unmapped Trino function → remainder. Small, frozen set. |
+| **`remainingExpression`** | **Generic and reusable verbatim.** Pure Trino-expression-tree recursion (`extractExpressionsRecursive`), zero Lance assumptions, rebuilds `AND` from surviving conjuncts. Swap the inner emit for a DuckDB target and it works. |
+| **TupleDomain × ConnectorExpression** | **No dedup.** Same predicate can be pushed from both the domain and the expression and AND'd (`(x>5) AND (x>5)`). Idempotent (correct) but redundant — a real perf cost on large `IN`-lists / complex predicates. |
+| **NULL semantics** | `IS NULL`/`IS NOT NULL` explicit; null literal → `typedNull`; `IN`/`NOT` rely on Substrait's three-valued logic — **not verified in code** (esp. `NOT IN (…, NULL)`). |
+| **LIKE** | 🔴 **ESCAPE silently dropped** — parses the 3-arg `LIKE … ESCAPE` but passes only column+pattern to Substrait; `LIKE 'a\_%' ESCAPE '\'` misbehaves. Only constant patterns push (dynamic correctly filtered out). |
+| **Timestamp/TZ** | DATE (days) and TIMESTAMP (micros + precision) clean. 🔴 **TIMESTAMP_TZ** unpacks `millisUtc → micros` and **assumes UTC, passes no zone** — same naive-TZ class that bit the DuckDB date-time pushdown; needs a per-consumer parity check. |
+| **Coupling** | Imports are pure `io.trino.spi.*` + `io.substrait.*`; only Lance dep is `LanceColumnHandle` via `.name()`/`.fieldId()`/`.trinoType()`. `final` class, static methods, no runtime state → clean lift. |
+
+**Must-fix when extracting:** (a) make the literal/type path graceful (unsupported → remainder,
+not throw); (b) honor `LIKE ESCAPE`; (c) verify/handle `TIMESTAMP_TZ` semantics per target
+engine; (d) extend types (DECIMAL at minimum); (e) optionally dedup domain-vs-expression.
+**Top correctness risks: LIKE ESCAPE (HIGH), TIMESTAMP_TZ UTC assumption (HIGH).** These are the
+same kinds of silent-wrong-results bugs our DuckDB parity work already had to chase — i.e. a
+Substrait lift inherits the parity-audit burden, it doesn't skip it.
+
 ## 7. References
 
 - Lance builder: `vendor/lance-trino/plugin/trino-lance/src/main/java/io/trino/plugin/lance/SubstraitExpressionBuilder.java`
