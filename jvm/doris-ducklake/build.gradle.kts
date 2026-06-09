@@ -53,6 +53,11 @@ dependencies {
     // build TIcebergFileDesc per sanity-check §2.1 Option A. Stays compileOnly
     // so the plugin jar does NOT ship a second copy of the thrift classes.
     compileOnly("org.apache.doris:fe-thrift:$dorisVersion")
+    // Iceberg schema serialization for the write-sink schema_json (SchemaParser,
+    // mirroring native IcebergTableSink). FE-supplied at runtime via the iceberg
+    // connector libs (like fe-thrift) — compileOnly, version-matched to FE (1.10.1).
+    compileOnly("org.apache.iceberg:iceberg-api:1.10.1")
+    compileOnly("org.apache.iceberg:iceberg-core:1.10.1")
 
     implementation(project(":ducklake-catalog"))
 
@@ -66,6 +71,10 @@ dependencies {
     // Parity test serializes TFileRangeDesc with TSerializer, so thrift classes
     // must be on the test runtime classpath.
     testImplementation("org.apache.doris:fe-thrift:$dorisVersion")
+    // Write-sink schema tests round-trip schema_json through iceberg's own
+    // SchemaParser (the independent oracle), so iceberg is needed at test runtime.
+    testImplementation("org.apache.iceberg:iceberg-api:1.10.1")
+    testImplementation("org.apache.iceberg:iceberg-core:1.10.1")
 
     // Shared Testcontainer fixture lives in the catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
