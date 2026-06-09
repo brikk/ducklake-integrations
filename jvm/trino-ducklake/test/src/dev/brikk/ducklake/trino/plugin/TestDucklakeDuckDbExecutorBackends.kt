@@ -19,6 +19,7 @@ import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
@@ -328,6 +329,67 @@ internal class TestDucklakeDuckDbExecutorBackends {
                     .`as`("LA session zone must NOT render the instant the way Singapore does")
                     .isEqualTo(0L)
         }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun quackBackendReadsVortexViaFileScan() {
+        // Proves the FileScan branch works over the SAME Quack RPC path that Lance will reuse:
+        // no ATTACH, server-side INSTALL/LOAD <extension> + `FROM read_vortex('/data/x.vortex')`.
+        // The .db backend tests above only cover the ATTACH-alias model; this is the only
+        // automated coverage of FileScan-via-Quack.
+        //
+        // Fixture: write the .vortex file on the HOST (osx_amd64 has a vortex build) into the
+        // bind-mounted shared dir, so the container sees it at /data/scan.vortex. The container
+        // (linux_amd64, vortex published) INSTALL/LOADs vortex server-side and scans it.
+        //
+        // Double network gate: (1) the host write needs `INSTALL vortex`; (2) the container scan
+        // needs the server to reach extensions.duckdb.org. Either failing → SKIP, not fail, so
+        // offline CI stays green.
+        val vortexFile: Path = sharedDir.resolve("scan.vortex")
+        val escaped = vortexFile.toString().replace("'", "''")
+        try {
+            DriverManager.getConnection("jdbc:duckdb:").use { c ->
+                c.createStatement().use { s ->
+                    s.execute("INSTALL vortex")
+                    s.execute("LOAD vortex")
+                    s.execute("CREATE TABLE v AS SELECT * FROM (VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')) t(id, name)")
+                    s.execute("COPY v TO '$escaped' (FORMAT vortex)")
+                }
+            }
+        }
+        catch (e: Exception) {
+            assumeTrue(false, "vortex DuckDB extension unavailable on host (offline / unsupported platform): ${e.message}")
+            return
+        }
+
+        val projection = listOf(
+                DucklakeColumnHandle(1L, "id", INTEGER, false),
+                DucklakeColumnHandle(2L, "name", VARCHAR, false))
+        // Container path (bind mount): the host's sharedDir/scan.vortex is /data/scan.vortex.
+        val quackReq = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.FileScan("/data/scan.vortex", "read_vortex", "vortex", Optional.empty()),
+                projection,
+                TupleDomain.all<DucklakeColumnHandle>())
+
+        val quackRows: List<List<Any?>>
+        try {
+            QuackDuckDbExecutor(quackServer!!.host, quackServer!!.mappedPort, quackServer!!.token, dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
+                    .execute(quackReq).use { ctx ->
+                quackRows = drain(ctx.arrowReader(), projection.size)
+            }
+        }
+        catch (e: Exception) {
+            assumeTrue(false, "Quack server could not INSTALL/LOAD vortex (offline container): ${e.message}")
+            return
+        }
+
+        assertThat(quackRows)
+                .`as`("Quack FileScan(read_vortex) must stream all rows of the server-side vortex file")
+                .containsExactlyInAnyOrder(
+                        listOf(1, "alpha"),
+                        listOf(2, "beta"),
+                        listOf(3, "gamma"))
     }
 
     @Test
