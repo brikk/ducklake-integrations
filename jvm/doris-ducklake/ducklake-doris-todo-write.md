@@ -73,30 +73,41 @@ Built with independent oracles:
 - [x] **Tests (+10)**: commit-mapper unit, the commit→catalog integration test
   (proves decoded stats drive read-path pruning end-to-end), a multi-fragment
   commit, and the schema round-trip.
-- **GATE:** `DuckLakeConnectorMetadata.supportsInsert()` stays **false** — nothing
-  routes a real INSERT here yet (exactly how Doris staged MaxCompute pre-cutover).
+- [x] **`DuckLakeWritePlanProvider`** + metadata `beginTransaction` /
+  `usesConnectorTransaction` / `supportsInsert=true` + `getWritePlanProvider` +
+  `SUPPORTS_INSERT` cap — the full FE INSERT path is wired and the gate is flipped.
+  planWrite builds the `TIcebergTableSink` (schema_json + db/table/parquet/output_path/
+  hadoop_config/file_type/overwrite) and binds the target onto the txn. FE-tested
+  (sink fields + schema round-trip); **end-to-end is the compose smoke**.
+- **GATE now:** the real INSERT route requires fe-core's
+  `CatalogFactory.SPI_READY_TYPES` to include `"ducklake"` (FE-build change, not ours)
+  — see [[doris-fe-build-macos]]. The connector side is complete.
 
-## Remaining for INSERT — needs a live BE + FE to validate
+## Remaining for INSERT — run the smoke, then fix what it surfaces
 
-### W2a — the sink + engine wiring
-- [x] **`schema_json`** — `DuckLakeIcebergSchema` (built + tested; see above).
-- [ ] **`DuckLakeWritePlanProvider`** (`ConnectorWritePlanProvider.planWrite`):
-  assemble the `TIcebergTableSink` around the schema — `db_name`/`tb_name`,
-  `setSchemaJson(SchemaParser.toJson(DuckLakeIcebergSchema.of(cols)))`,
-  `file_format=parquet`, `overwrite`, `output_path` = resolved table data dir
-  (`DuckLakePathResolver`), `hadoop_config` = storage creds (mirror the read path's
-  `getScanNodeProperties` location handling), `file_type` (S3 vs local), and bind
-  the target onto the txn via `session.getCurrentTransaction()`. Mirror
-  `fe/.../planner/IcebergTableSink.java:115-194`. **No independent headless oracle**
-  for `output_path`/`hadoop_config`/`file_type` (their format is BE-defined) — so
-  this is deferred to build alongside the W2b smoke rather than self-asserted blind.
-  (`org.apache.iceberg` is on the classpath now — added compileOnly.)
-- [ ] Wire `DuckLakeConnector.getWritePlanProvider()` + metadata `beginTransaction`
-  (`= DuckLakeConnectorTransaction(session.allocateTransactionId(), catalog)`) /
-  `usesConnectorTransaction=true` / **flip `supportsInsert()=true`** — behind the
-  W2b gate.
+### W2a — the sink + engine wiring ✅ DONE
+- [x] `DuckLakeIcebergSchema` (schema_json), `DuckLakeWritePlanProvider` (sink),
+  metadata write methods, `getWritePlanProvider`, `SUPPORTS_INSERT`, gate flipped.
 
-### W2b — BE round-trip smoke (the actual validation; needs a running cluster)
+### W2b — run the compose smoke (the actual end-to-end validation)
+**The smoke is built**: `compose/smoke.sh` now has a W2 step + `compose/w2-insert.py`
+(create empty `tpch.doris_w` via DuckDB → `INSERT` via Doris → read back via Doris
+AND DuckDB+DuckLake → catalog cross-check). Run `compose/smoke.sh` (needs the FE to
+carry `"ducklake"` in `SPI_READY_TYPES`). Then confirm/fix:
+- [ ] **Parquet field-ids**: does the BE Iceberg writer stamp `field_id ==
+  DuckLake column_id`? If it assigns its own ids, the file won't read back in
+  DuckLake ("cannot resolve columns") — fall back to a `nameMap` on the fragment.
+- [ ] **footer_size**: `TIcebergCommitData` carries none → we pass `0` (catalog
+  stores NULL). Does the DuckDB/DuckLake reader tolerate a NULL footer size? If it
+  crashes ("invalid footer length"), the BE must report it.
+- [ ] **min/max format**: confirm bounds are Iceberg single-value spec (so our
+  LE-int/UTF-8 decode is right), then **extend the decoder** to
+  `date`/`float64`/`decimal`/`timestamp` once each type's *DuckLake stat-string*
+  form is pinned.
+- [ ] **path**: relative vs absolute from the BE; relativize in the commit mapper if
+  the BE returns absolute (`DucklakeWriteFragment.pathIsRelative`).
+- [ ] **sink-prep caps**: if the smoke shows column-order corruption, add
+  `SINK_REQUIRE_FULL_SCHEMA_ORDER` (and `SUPPORTS_PARALLEL_WRITE` for multi-file).
 - [ ] **Parquet field-ids**: confirm the BE Iceberg writer stamps `field_id ==
   DuckLake column_id`. If it assigns its own ids, the written file won't read back
   in DuckLake (columns "cannot be resolved") — fall back to a `nameMap` (the
@@ -122,8 +133,9 @@ Built with independent oracles:
 
 - [ ] **W1 — DDL** (`CREATE/DROP SCHEMA`, `CREATE/DROP TABLE`): pure catalog
   metadata, no BE. Likely the cheapest first *live* write (no fragment round-trip).
-- [~] **W2 — INSERT (append):** commit path ✅ built+tested; **W2a sink + W2b/W2c
-  smoke remain.**
+- [~] **W2 — INSERT (append):** commit path + sink + engine wiring ✅ built (FE path
+  complete, gate flipped, `compose/smoke.sh` W2 step ready); **W2b run-the-smoke +
+  fixes + W2c partition remain.**
 - [ ] **W3 — CTAS** = W1 DDL + W2 INSERT composed.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
   `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker
