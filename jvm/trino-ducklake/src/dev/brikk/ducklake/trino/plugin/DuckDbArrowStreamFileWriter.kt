@@ -345,10 +345,7 @@ constructor(
         }
 
         // Release Arrow + DuckDB resources before uploading.
-        closeQuietly(arrayStream)
-        closeQuietly(reader)
-        closeQuietly(allocator)
-        closeQuietly(connection)
+        releaseEngineResources()
 
         val fileSize: Long
         try {
@@ -497,11 +494,16 @@ constructor(
         catch (ignored: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+        releaseEngineResources()
+        cleanupLocalFile()
+    }
+
+    /** Closes the Arrow C-stream, reader, allocator, and DuckDB connection (best-effort). */
+    private fun releaseEngineResources() {
         closeQuietly(arrayStream)
         closeQuietly(reader)
         closeQuietly(allocator)
         closeQuietly(connection)
-        cleanupLocalFile()
     }
 
     private fun cleanupLocalFile() {

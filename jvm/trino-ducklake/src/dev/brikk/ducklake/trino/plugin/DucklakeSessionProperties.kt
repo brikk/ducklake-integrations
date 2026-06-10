@@ -91,12 +91,15 @@ open class DucklakeSessionProperties @Inject constructor() {
         // Read-only via the DuckDB `vortex` extension (FileScan path). Writes not yet wired.
         const val FORMAT_VORTEX: String = "vortex"
 
-        // Read-only via the DuckDB `lance` extension (FileScan path, __lance_scan). Lance is a
-        // *dataset directory*, not a single file — see resolveDuckDbReadTarget. Writes (Phase A4)
-        // and the write validators are deliberately NOT wired yet (dataset-vs-file decision
-        // pending the arm64 probe). Reads dispatch on the catalog's file_format='lance', so this
-        // constant is read-path-only until A4. See dev-docs/TODO-lance.md + HANDOFF-lance-route-a.md.
+        // Read + write via the DuckDB `lance` extension. Reads use the FileScan __lance_scan path;
+        // writes go through the Arrow-stream writer (COPY … FORMAT lance) — see
+        // resolveDuckDbReadTarget / DuckDbArrowStreamFileWriter. Lance is a *dataset directory*, not
+        // a single file. See dev-docs/TODO-lance.md + HANDOFF-lance-route-a.md.
         const val FORMAT_LANCE: String = "lance"
+
+        /** Accepted `data_file_format` values (lowercase) — single source of truth for the validators. */
+        val SUPPORTED_DATA_FILE_FORMATS: Set<String> =
+                setOf(FORMAT_PARQUET, FORMAT_DUCKDB, FORMAT_VORTEX, FORMAT_LANCE)
 
         const val DUCKDB_WRITER_MODE: String = "duckdb_writer_mode"
 
@@ -160,13 +163,10 @@ open class DucklakeSessionProperties @Inject constructor() {
 
         private fun validateDataFileFormat(value: String) {
             // Validator only fires on explicit SET — null (unset) never reaches this method.
-            if (!FORMAT_PARQUET.equals(value, ignoreCase = true) &&
-                    !FORMAT_DUCKDB.equals(value, ignoreCase = true) &&
-                    !FORMAT_VORTEX.equals(value, ignoreCase = true) &&
-                    !FORMAT_LANCE.equals(value, ignoreCase = true)) {
+            if (value.lowercase() !in SUPPORTED_DATA_FILE_FORMATS) {
                 throw TrinoException(
                         INVALID_SESSION_PROPERTY,
-                    "$DATA_FILE_FORMAT must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB', '$FORMAT_VORTEX', '$FORMAT_LANCE'"
+                    "$DATA_FILE_FORMAT must be one of: ${SUPPORTED_DATA_FILE_FORMATS.joinToString(", ") { "'$it'" }}"
                 )
             }
         }

@@ -310,6 +310,16 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                 return
             }
             when {
+                type is DecimalType -> appendDecimalElement(type, vector as DecimalVector, i, builder)
+                type is ArrayType -> appendArrayEntry(type, vector, i, builder as ArrayBlockBuilder)
+                else -> appendScalarElement(type, vector, i, builder)
+            }
+        }
+
+        /** Appends one (non-null) scalar element value. Split from [appendArrayElement] to keep each
+         * dispatch's cyclomatic complexity in check. */
+        private fun appendScalarElement(type: Type, vector: FieldVector, i: Int, builder: BlockBuilder) {
+            when {
                 type == BOOLEAN -> BOOLEAN.writeBoolean(builder, (vector as BitVector).get(i) != 0)
                 type == TINYINT -> TINYINT.writeLong(builder, (vector as TinyIntVector).get(i).toLong())
                 type == SMALLINT -> SMALLINT.writeLong(builder, (vector as SmallIntVector).get(i).toLong())
@@ -320,19 +330,20 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                 type == DATE -> DATE.writeLong(builder, (vector as DateDayVector).get(i).toLong())
                 type == VARBINARY -> VARBINARY.writeSlice(builder, Slices.wrappedBuffer(*(vector as VarBinaryVector).get(i)))
                 type is VarcharType -> type.writeSlice(builder, Slices.wrappedBuffer(*(vector as VarCharVector).get(i)))
-                type is DecimalType -> {
-                    val value = (vector as DecimalVector).getObject(i)
-                    if (type.isShort) {
-                        type.writeLong(builder, value.unscaledValue().longValueExact())
-                    }
-                    else {
-                        type.writeObject(builder, Int128.valueOf(value.unscaledValue()))
-                    }
-                }
-                type is ArrayType -> appendArrayEntry(type, vector, i, builder as ArrayBlockBuilder)
                 else -> throw TrinoException(
                         NOT_SUPPORTED,
                         "DuckDB-format reader does not yet support ARRAY element type: $type")
+            }
+        }
+
+        /** Appends one (non-null) decimal element, short or long form. */
+        private fun appendDecimalElement(type: DecimalType, vector: DecimalVector, i: Int, builder: BlockBuilder) {
+            val value = vector.getObject(i)
+            if (type.isShort) {
+                type.writeLong(builder, value.unscaledValue().longValueExact())
+            }
+            else {
+                type.writeObject(builder, Int128.valueOf(value.unscaledValue()))
             }
         }
 

@@ -152,6 +152,33 @@ internal class TestDucklakeDuckDbExecutorBackends {
             return total
         }
 
+        /**
+         * Skips the calling test unless the Quack testcontainer can actually LOAD the bundled
+         * trino_parity extension. The host bundles the extension by *host* arch, but the container's
+         * duckdb may be a different platform (notably: arm64 host + amd64 container on Apple
+         * Silicon), in which case the LOAD fails with a platform-mismatch error. Mirrors the
+         * graceful skip already used by `quackBackendReadsVortexViaFileScan`, so these
+         * in-process-vs-Quack parity tests skip cleanly off-platform instead of hard-failing (full
+         * coverage still runs on a matching-arch host / CI). See the task note in
+         * dev-docs/HANDOFF-lance-route-a.md (env caveat).
+         */
+        private fun assumeQuackParityExtensionLoadable() {
+            val probe = DucklakeDuckDbExecutor.ExecutionRequest(
+                    DuckDbAttachTarget.LocalPath(Path.of("/data/cache.db")),
+                    listOf(DucklakeColumnHandle(1L, "id", INTEGER, false)),
+                    TupleDomain.all<DucklakeColumnHandle>())
+            try {
+                QuackDuckDbExecutor(quackServer!!.host, quackServer!!.mappedPort, quackServer!!.token,
+                        dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
+                        .execute(probe).use { ctx -> ctx.arrowReader().loadNextBatch() }
+            }
+            catch (e: Exception) {
+                assumeTrue(false, "Quack container cannot LOAD the trino_parity extension — host/container "
+                        + "platform mismatch (e.g. arm64 host bundling a linux-arm64 extension into an amd64 "
+                        + "container). Skipping the in-process-vs-Quack parity check: ${e.message}")
+            }
+        }
+
         @Throws(IOException::class)
         private fun deleteRecursively(dir: Path) {
             if (!Files.exists(dir)) {
@@ -172,6 +199,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
     @Test
     @Throws(Exception::class)
     fun inProcessAndQuackBackendsReturnIdenticalRows() {
+        assumeQuackParityExtensionLoadable()
         // Inside the container the file is reachable at /data/cache.db (bind mount).
         // Inside the JVM the file is reachable at sharedDir/cache.db (same inode).
         // The in-process executor reads from the host path; the Quack executor
@@ -217,6 +245,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
     @Test
     @Throws(Exception::class)
     fun bothBackendsHonourEmptyProjection() {
+        assumeQuackParityExtensionLoadable()
         // Empty projection (COUNT(*) shape) — both backends must emit row-count-only
         // batches so downstream operators count correctly. We assert position count
         // matches the file's row count.
@@ -246,6 +275,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
     @Test
     @Throws(Exception::class)
     fun sessionTimeZonePropagatesToBothBackends() {
+        assumeQuackParityExtensionLoadable()
         // End-to-end proof that ExecutionRequest.duckDbTimeZone causes both
         // executors to issue `SET TimeZone = '<zone>'` server-side after attach.
         //

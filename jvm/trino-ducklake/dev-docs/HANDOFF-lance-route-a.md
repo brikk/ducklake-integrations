@@ -48,12 +48,21 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   the path string, never a `TrinoInputFile`). `__lance_scan` accepts bare / trailing-slash / `file://`
   path forms (verified), so the catalog's directory URI is fine for the scan. Targeted regression batch
   (parquet/vortex/duckdb reads + parquet add_files) stays green.
-- **Environment caveat (NOT lance):** the full `:trino-ducklake:test` suite is green here EXCEPT 3
-  `TestDucklakeDuckDbExecutorBackends` parity tests that hard-fail because the Quack testcontainer's
-  duckdb is **amd64** while the host bundles the **arm64** `trino_parity.duckdb_extension`
-  (`os.arch`-based selection in the test's `@BeforeAll`). The container rejects the arm64 extension at
-  `LOAD`. Their vortex sibling skips this gracefully via `assumeTrue`; these 3 predate that guard.
-  Pre-existing, exposed by moving to Apple Silicon — orthogonal to lance. Flagged as a separate task.
+- **Environment caveat (NOT lance) — RESOLVED with graceful skip.** 3 `TestDucklakeDuckDbExecutorBackends`
+  parity tests used to hard-fail on Apple Silicon: the Quack testcontainer's duckdb is **amd64** while
+  the host bundles the **arm64** `trino_parity.duckdb_extension` (`os.arch`-based selection in the
+  test's `@BeforeAll`), so the container rejects the arm64 extension at `LOAD`. Added a shared
+  `assumeQuackParityExtensionLoadable()` guard (mirrors the vortex sibling's existing skip) so the 3
+  now **skip cleanly** off-platform instead of failing — full `:trino-ducklake:test` is green on arm64,
+  and full parity coverage still runs on a matching-arch host / CI. The deeper fix (make the bundled
+  extension match the *container* platform, not the JVM host arch — option 1 in the task note) remains
+  a follow-up. Pre-existing, orthogonal to lance.
+- **Quality gates:** detekt gate (`:trino-ducklake:detekt`) is green for all the above changes —
+  validators de-duped via `SUPPORTED_DATA_FILE_FORMATS`, the array-element dispatch split into
+  `appendArrayElement`/`appendScalarElement`, `finishAndBuildFragment` trimmed via
+  `releaseEngineResources()`, and `countLanceRows` catches `SQLException`/`IOException` specifically.
+  Two pre-existing `DucklakeColumnStatsAccumulator` complexity findings (from commit `fafd3b0`, not
+  these changes) were added to `detekt-baseline.xml` to restore a green gate.
 - **Step 6 (writer A4) — DONE, green.** `DucklakePageSink.openNewWriter` gets a `FORMAT_LANCE` branch
   reusing the Arrow-stream writer with **local-temp-then-upload** (the decided approach). In
   `DuckDbArrowStreamFileWriter`, `isVortex` generalized to `usesCopy = isVortex || isLance`: both

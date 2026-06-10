@@ -51,6 +51,7 @@ import java.io.IOException
 import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
+import java.sql.SQLException
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -378,7 +379,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 }
             }
         }
-        catch (e: Exception) {
+        catch (e: SQLException) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read lance dataset: $url", e)
+        }
+        catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read lance dataset: $url", e)
         }
         return count

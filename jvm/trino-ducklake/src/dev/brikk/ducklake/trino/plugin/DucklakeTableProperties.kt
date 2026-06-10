@@ -18,10 +18,6 @@ import com.google.inject.Inject
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.PartitionFieldSpec
 import dev.brikk.ducklake.catalog.TableLocationSpec
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_LANCE
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY
 import io.trino.spi.TrinoException
 import io.trino.spi.session.PropertyMetadata
@@ -84,13 +80,11 @@ open class DucklakeTableProperties @Inject constructor() {
             if (value == null) {
                 return
             }
-            if (!FORMAT_PARQUET.equals(value, ignoreCase = true) &&
-                    !FORMAT_DUCKDB.equals(value, ignoreCase = true) &&
-                    !FORMAT_VORTEX.equals(value, ignoreCase = true) &&
-                    !FORMAT_LANCE.equals(value, ignoreCase = true)) {
+            if (value.lowercase() !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
                 throw TrinoException(
                         INVALID_TABLE_PROPERTY,
-                        "$DATA_FILE_FORMAT_PROPERTY must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB', '$FORMAT_VORTEX', '$FORMAT_LANCE'")
+                        "$DATA_FILE_FORMAT_PROPERTY must be one of: "
+                                + DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS.joinToString(", ") { "'$it'" })
             }
         }
 
