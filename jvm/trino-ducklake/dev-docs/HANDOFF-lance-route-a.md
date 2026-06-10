@@ -270,11 +270,29 @@ and RESEARCH §2. Stretch: `applyTopN` so `ORDER BY <distance> LIMIT k` synthesi
 
 ## Open questions to resolve on the capable box
 
-- **O1 — s3 creds for lance.** The read wiring passes `DuckDbS3Config` (DuckDB httpfs secret) for
-  `s3://` lance paths. But lance's object_store may want its **own `storageOptions`** map, not a
-  DuckDB secret (this is the Route-B two-cred-paths problem leaking into Route A). **Test an
-  `s3://` lance read** and confirm whether the DuckDB secret is honored by `lance_scan`. If not,
-  the FileScan target needs a lance-specific cred channel. (Local-path reads sidestep this.)
+- **O1 — s3 creds for lance — ANSWERED (2026-06-10, arm64 + MinIO): lance does NOT honor the DuckDB
+  secret. It uses object_store's own `AWS_*` env-var channel.** Probed against MinIO with the exact
+  connector setup (INSTALL/LOAD lance + httpfs + `CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3,
+  ENDPOINT 'localhost:9000', KEY_ID/SECRET, URL_STYLE 'path', USE_SSL false)`), then `COPY t TO
+  's3://…' (FORMAT lance)` + `__lance_scan('s3://…')`:
+  - **With the DuckDB secret only (no AWS_* env): FAILED.** Both write and read ignored the secret and
+    hit **`https://s3.eu-west-1.amazonaws.com`** (real AWS, https, wrong region) → 403. lance's Rust
+    object_store does its OWN credential/endpoint resolution; the DuckDB httpfs secret is invisible to it.
+  - **With object_store env (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT`/
+    `AWS_ENDPOINT_URL`, `AWS_ALLOW_HTTP=true`, `AWS_REGION`), same secret present: SUCCEEDED** — write
+    and read both worked against MinIO (count=3).
+  **Implication:** `DucklakePageSourceProvider.resolveDuckDbReadTarget` passing `DuckDbS3Config` →
+  `CREATE SECRET` is a **no-op for lance s3 paths** (works for `.db`/vortex httpfs, not lance). The
+  lance path needs a **separate cred channel that feeds object_store's `AWS_*` env**. Hard part: env
+  vars are **process-global** and can't be set per-query safely in the in-process executor (would
+  collide with Trino's own parquet s3 config and other sessions). Design options for the fix:
+  (a) **Quack sidecar path** — set `AWS_*` in the container env at launch; natural fit since it's a
+  separate process. (b) In-process — set `AWS_*` once at JVM/plugin startup from catalog config
+  (global; only viable for a single s3 identity). (c) Check whether lance-duckdb exposes a storage-
+  options channel (a lance-specific secret TYPE, a `SET`, or named params) — `__lance_scan` itself
+  takes only `(path, explain_verbose)`, so none via the scan function. Compare with
+  [[project_doris_be_aws_keys]] — the codebase already aliases `s3.*` → `AWS_*` for a native s3 client
+  (Doris BE); lance is the same shape. **Local-path lance reads/writes are unaffected** (no creds).
 - **O2 — `prefilter` pushdown** into the table functions (Phase A3) — needs expression pushdown on
   a table-function input; verify the Trino SPI surface.
 - **O3 — extension version pinning.** lance-duckdb ships ~daily; pin a version and watch for
