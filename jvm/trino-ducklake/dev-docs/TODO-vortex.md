@@ -40,8 +40,12 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
 - [x] `DucklakePageSourceProvider.createPageSource`: routes `FORMAT_VORTEX` through the DuckDB
   engine; `resolveDuckDbReadTarget` reuses the materialize-vs-httpfs decision and wraps it as a
   FileScan. Positional virtuals + delete filtering reused unchanged.
-- [x] DuckDB executor renders `read_vortex('path')`; Quack rejects FileScan with a clear
-  NOT_SUPPORTED (RPC ATTACH-alias model doesn't cover table-function scans yet — in-process only).
+- [x] DuckDB executor renders `read_vortex('path')`. **Quack FileScan now supported** (commit
+  `68fd99b`): server-side `INSTALL/LOAD vortex` + `FROM read_vortex('/data/x.vortex')`, no ATTACH
+  alias. Verified end-to-end against the linux quack container by
+  `TestDucklakeDuckDbExecutorBackends.quackBackendReadsVortexViaFileScan` (host writes the
+  `.vortex` into the bind-mounted shared dir; container scans `/data/scan.vortex`). This is the
+  exact FileScan-via-Quack mechanism Lance Route A reuses.
 - [x] Executor-level end-to-end test (`TestDucklakeVortexFileScanRead`): write a `.vortex` file,
   read it back via a FileScan target through the real in-process executor; network-gated
   (`assumeTrue`) so offline/unsupported-platform CI skips. Passes on osx_amd64. Commit `ded8c9e`.
@@ -53,8 +57,8 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
   parquet-footer validation for non-parquet, and source row-count/path from the catalog/DuckDB.
 - [ ] Type mapping: probe confirmed INTEGER/VARCHAR/DECIMAL round-trip; audit richer Vortex
   encodings through `DucklakeArrowToPageConverter` once the SQL-level read path is testable.
-- [ ] Quack-engine vortex (currently NOT_SUPPORTED) — server-side INSTALL/LOAD + `FROM read_vortex`
-  without an ATTACH alias; needs the linux quack container to test.
+- [x] Quack-engine vortex — server-side INSTALL/LOAD + `FROM read_vortex` without an ATTACH alias;
+  verified against the linux quack container (see above).
 
 ## Phase V2 — predicate pushdown
 - [ ] TupleDomain + function-shape pushdown via the existing `DuckDbWhereClauseTranslator` / `applyFilter`, same as the `.db` and lance paths — predicates render into the `read_vortex` query. Vortex's compression-cascade should make pushdown especially valuable (skip decompression of pruned columns/ranges); verify the extension honors pushed filters.

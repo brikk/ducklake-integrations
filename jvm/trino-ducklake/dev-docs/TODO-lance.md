@@ -4,6 +4,7 @@
 **Scope:** trino-ducklake connector — read first, then write. Two implementation routes (A: via the DuckDB `lance` extension; B: direct via `lance-core` JNI / the vendored `lance-trino` plugin). Both are tracked here; they are not mutually exclusive.
 **Design basis:** [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md) (deep design — Trino pushdown SPI surface, table-function shape for vector/FTS, route A vs B trade-offs, `ScanOptions` surface). This file is the actionable, chunked plan; that file is the rationale.
 **Sibling:** [TODO-vortex.md](TODO-vortex.md) shares Route A's "scan a file via a DuckDB format table-function" machinery.
+**▶ Pick-up doc:** [HANDOFF-lance-route-a.md](HANDOFF-lance-route-a.md) — read-dispatch wiring (Phase A1) is **done** on branch `worktree-trino-ducklake`; its probe test **skips on the Intel box** (lance ext 404 on osx_amd64) and must be run on an arm64/linux host. The handoff is the step-by-step to resume there.
 
 ---
 
@@ -18,7 +19,37 @@
 - record one row per Lance fragment file (closer to the per-file model but more catalog churn).
 Read-only probing can sidestep this by registering an externally-written dataset via `add_files` with the directory path.
 
+**RESOLVED — option A (2026-06-09, arm64):** `__lance_scan('<dir>')` accepts the dataset directory directly; one catalog row per dataset version, `path` = dir, opaque. `add_files(..., file_format => 'lance')` now registers such a directory (skips parquet footer, sources `record_count` by scanning via `__lance_scan`, no stats, read-by-name). The SQL-level read works end-to-end (`TestDucklakeLanceAddFiles`). One read-path fix was needed: `createPageSource` must NOT `newInputFile()` a lance directory (trailing-slash location) — only the parquet branch opens a `TrinoInputFile`; the DuckDB-engine branch reads via the path string. The lance writer (Phase A4) will own the dataset-write side; **decided: local-temp-then-upload, mirroring vortex.**
+
 ---
+
+## Verification & maintenance status (2026-06-09)
+
+Checked `lance-format/lance-duckdb` (Route A extension) and the maintenance of both:
+
+- **Route A surface is real + tested + actively maintained.** Extension `0.5.1` (semver), Lance
+  Rust core pinned to stable `v2.0.0`, **last commit 2026-06-09**, automated dependency bumps on
+  new Lance releases. Tests exercise the full surface: `lance_vector_search` / `lance_fts` /
+  `lance_hybrid_search` (with `k`, `prefilter`, input validation), scan + predicate pushdown
+  (`pushdown_filter_ir_types`, `pushdown_regex`, TPCH-Q1), DML (truncate, `merge_returning`,
+  alter/schema-evolution), maintenance (cleanup/metrics), namespace (`ATTACH … TYPE LANCE`, REST),
+  S3/MinIO, write via `COPY … (FORMAT lance, mode 'overwrite'|'append')` incl. direct `s3://`.
+  `prefilter=true` forces filter pushdown (errors if it can't); `prefilter=false` is best-effort
+  with DuckDB fallback. **Vector/FTS/hybrid are available TODAY.**
+- **Route B (lance-trino) is also being maintained** (lance-core bumps + incremental work) — so
+  "let it bake" is viable.
+
+**Decision lean: when Lance happens, do Route A; let Route B bake.** Rationale:
+- Route A needs no code absorption — DuckDB owns the dataset internals; we hand `lance_scan` /
+  `lance_vector_search` a **path**. The dataset-vs-file friction is soft: record the dataset
+  directory as the `data_file.path` (one catalog row per dataset). Wiring = the vortex-style
+  `FileScan` read + three `ConnectorTableFunction`s (vector/FTS/hybrid). Vectors land with modest
+  effort, riding a daily-shipping extension.
+- Route B is the "absorb-and-rework a dataset-focused plugin" burden (a fork). Since it's actively
+  maintained, don't fork now — revisit only if they add vectors, grow a file-focused mode, or
+  DuckDB indirection proves a measured bottleneck.
+- Caveat unchanged: Route A is `linux_amd64`/`arm64` + `osx_arm64` only (no Intel Mac) → container
+  or Apple-Silicon to run.
 
 ## Route A — via the DuckDB `lance` extension (recommended first)
 
@@ -27,26 +58,58 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 **Key difference from the `.db` read path:** `.db` files are read by ATTACHing a database (`createDuckDbPageSource` → `DuckDbFilePageSource` over an attach target). Lance is read by a **table function over a path** — `SELECT <cols> FROM lance_scan('<resolved path>')` — NOT an ATTACH. So Route A's core work is generalizing the DuckDB executor's *source* from "ATTACH a db file" to "scan a file via a format-specific table function." This generalization is shared with Vortex.
 
 ### Phase A0 — probe (de-risk first)
-- [ ] Write one `.lance` dataset out-of-band via DuckDB (`INSTALL lance; COPY … TO 'x.lance' (FORMAT lance)`), register it against a DuckLake table with `file_format='lance'` (via `add_files` once that accepts a format arg, or a hand-seeded catalog row), attempt a Trino read, record what blows up. Captures the dataset-vs-file shape and the `lance_scan` projection/column-mapping behavior. Output: a short findings note appended here.
+- [x] Write one `.lance` dataset out-of-band via DuckDB (`INSTALL lance; COPY … TO 'x.lance' (FORMAT lance)`), register it against a DuckLake table with `file_format='lance'` (via `add_files` once that accepts a format arg, or a hand-seeded catalog row), attempt a Trino read, record what blows up. Captures the dataset-vs-file shape and the `lance_scan` projection/column-mapping behavior. Output: a short findings note appended here.
 
-### Phase A1 — read dispatch + executor scan-source generalization
-- [ ] `DucklakeSessionProperties`: add `FORMAT_LANCE = "lance"`; accept it in `validateDataFileFormat` (DucklakeSessionProperties.kt:151).
-- [ ] `DucklakeTableProperties`: accept `'lance'` in `validateDataFileFormat` (DucklakeTableProperties.kt:81).
-- [ ] `DucklakePageSourceProvider.createPageSource` (≈:166): add a `FORMAT_LANCE` branch routing to a new `createLanceViaDuckDbPageSource` (or a generalized `createFileScanPageSource(format)`), wrapped by `injectConstantVirtuals` like the others.
-- [ ] DuckDB executor: generalize the source. Today `DuckDbFilePageSource` + `buildAttachSql` assume an ATTACH target. Add a "file-scan target" that renders `FROM lance_scan('<path>')` and issues `INSTALL lance; LOAD lance;` (hook alongside the httpfs INSTALL/LOAD in `InProcessDuckDbExecutor.kt:189` and the Quack equivalent). S3 path reuses the existing httpfs + secret setup.
-- [ ] Column projection + type mapping: Lance → Arrow → Trino reuses the existing `DucklakeArrowToPageConverter`. Verify embedding columns (`FixedSizeList<float>`) land as `ARRAY(REAL)` (see RESEARCH §5 "Embedding column types").
-- [ ] Tests: probe-style end-to-end read of a small lance dataset (gate on extension availability — see Risks).
+**Phase A0 findings — run on arm64 (M1 Max, osx_arm64), 2026-06-09, duckdb_jdbc 1.5.3.0:**
+1. **Scan function is `__lance_scan`, NOT `lance_scan`.** The probe initially failed with
+   `Catalog Error: Table Function with name lance_scan does not exist! Did you mean "lance_fts"?`.
+   The shipped extension exposes the dataset scan as `__lance_scan('<dir>', explain_verbose := false)`
+   (double-underscore). Read wiring + probe test corrected `lance_scan` → `__lance_scan`; probe is now
+   **green (skipped=0, failures=0)**. (HANDOFF O3 / version churn — the old docs said `lance_scan`.)
+2. **Dataset-vs-file (Step 2): decision A confirmed.** `__lance_scan('<dataset-dir>')` accepts the
+   directory path directly and streams all rows — no per-fragment registration needed. Proceed with
+   **one catalog row per dataset version, `path` = the dataset directory, treated as opaque.**
+3. **Type audit (Step 3):** round-tripped a rich source table through `COPY (FORMAT lance)` +
+   `__lance_scan`. **Scalars all round-trip cleanly** — INTEGER, `DECIMAL(18,3)`, DATE, TIMESTAMP,
+   STRUCT, and variable `INTEGER[]` come back with identical DuckDB types. **The embedding column is
+   the one transform:** a source `FLOAT[]` is stored and returned by lance as **`FLOAT[3]` — a
+   fixed-size list (`FixedSizeList<float>`)**, exactly the RESEARCH §5 prediction → must map to
+   Trino `ARRAY(REAL)`. **Converter gap found:** `DucklakeArrowToPageConverter` is scalar-only (no
+   `ArrayType`/`RowType`/`MapType`) — any nested column currently throws `NOT_SUPPORTED`. Addressed
+   below by adding `ARRAY` support (fixed + variable list of scalar elements); ROW/MAP still deferred.
+4. Other lance table functions confirmed present for Phase A3: `lance_fts`, `lance_vector_search`
+   (FLOAT[]/DOUBLE[] overloads), `lance_hybrid_search`. Maintenance helpers are `__`-prefixed too.
+
+### Phase A1 — read dispatch + executor scan-source generalization (DONE — wiring; probe gated)
+- [x] `DucklakeSessionProperties`: added `FORMAT_LANCE = "lance"`. **Validators left STRICT**
+  (lance write rejected; read-only, mirroring vortex V1 — reads dispatch on the catalog
+  `file_format`, not the write validators).
+- [ ] ~~`DucklakeTableProperties`: accept `'lance'`~~ — deferred to A4 (write). Read doesn't need it.
+- [x] `DucklakePageSourceProvider.createPageSource`: `FORMAT_LANCE` routes through
+  `createDuckDbPageSource` (with duckdb + vortex), wrapped by `injectConstantVirtuals`.
+- [x] DuckDB executor source already generalized (vortex did this). Lance reuses
+  `DuckDbAttachTarget.FileScan(path, "lance_scan", "lance", s3Config?)`. **Dataset-dir quirk:**
+  `resolveDuckDbReadTarget` gives lance an early return that **bypasses the single-file
+  materialize cache** (lance is a directory; `lance_scan` reads the whole dir).
+- [x] Column projection + type mapping audit — **done on arm64** (HANDOFF Step 3). Scalars all
+  round-trip; embedding `FLOAT[]` → Arrow `FixedSizeList<float>` (`FLOAT[N]`) → `ARRAY(REAL)`.
+  `DucklakeArrowToPageConverter` was scalar-only → added `ARRAY` support (fixed + variable list of
+  scalar/nested-array elements; ROW/MAP + timestamp/uuid elements still NOT_SUPPORTED). Verified
+  end-to-end by `TestDucklakeLanceFileScanRead.fileScanReadsLanceEmbeddingColumnAsArrayOfReal`.
+- [x] Probe test `TestDucklakeLanceFileScanRead` — executor-level FileScan read; **skips on
+  osx_amd64** (404), runs on arm64/linux. This IS the Phase A0 probe; just needs a capable box.
 
 ### Phase A2 — predicate pushdown (standard)
-- [ ] TupleDomain + function-shape pushdown flows through the existing `DuckDbWhereClauseTranslator` / `applyFilter` exactly as the `.db` path does — `WHERE`-clause predicates render into the `lance_scan` query. Confirm the translator works over a `lance_scan` source (no ATTACH alias).
+- [x] TupleDomain pushdown flows through the existing `DuckDbWhereClauseTranslator` / `DuckDbSelectSqlBuilder` exactly as the `.db` path does — a `WHERE`-clause predicate renders into the `__lance_scan(...)` query (no ATTACH alias) and reaches DuckDB; verified on arm64 by `TestDucklakeLanceFileScanRead.fileScanPushesPredicateIntoLanceScan` (pushed `id=2` returns only that row). Function-shape (`pushedExpressions`) uses the same channel; lance `prefilter` semantics still matter for the Phase A3 table functions.
 
 ### Phase A3 — vector / FTS / hybrid table functions
 - [ ] Add `ConnectorTableFunction`s: `lance_vector_search`, `lance_fts`, `lance_hybrid_search` under `my_catalog.system.*` (parallel to `add_files`). Each resolves Lance files from the catalog, emits splits carrying `(path, column, query_vec, k, prefilter)`, and the page source runs the corresponding `lance_*` DuckDB function. This is the novel SPI work — we have no table functions today (`add_files` is a procedure, different shape). See RESEARCH §2.
 - [ ] (Stretch) `applyTopN` so a Trino-side `ORDER BY <distance> LIMIT k` synthesizes the function's `k`.
 
-### Phase A4 — write (after the dataset-vs-file decision in Phase 0)
-- [ ] `DucklakePageSink.openNewWriter` (≈:307): add a `FORMAT_LANCE` writer branch using DuckDB `COPY … TO (FORMAT lance)`.
-- [ ] Catalog rows for the produced dataset per the Phase-0 decision. `resolveWriteFormat` already plumbs the session/catalog format through.
+### Phase A4 — write (DONE — 2026-06-09, arm64)
+- [x] `DucklakePageSink.openNewWriter`: added a `FORMAT_LANCE` branch (`openLanceWriter`) reusing the Arrow-stream writer. **Local-temp-then-upload** (decided): `COPY (SELECT * FROM <arrow-stream>) TO '<localtmp>.lance' (FORMAT lance)`, then walk the dataset dir and upload every file under the remote location. In `DuckDbArrowStreamFileWriter`, `isVortex` → `usesCopy = isVortex || isLance` (shared COPY + inline `DucklakeColumnStatsAccumulator`, no ATTACH); lance adds directory-aware size/upload/cleanup + `deleteDirectory` on abort. Both `validateDataFileFormat` validators now accept `'lance'`.
+- [x] Catalog rows: the writer emits a `DucklakeWriteFragment(relativePath, "lance", …)` per the Phase-0 dataset model (one row, dir path, relative). Round-trip verified by `TestDucklakeLanceFormat` (CTAS + INSERT + SELECT/predicate).
+- [ ] **Scalar columns only.** The Arrow-stream writer's `toArrowType`/`populateVector` are scalar-only, so embedding/ARRAY *writes* fail fast — register embedding datasets via `add_files(file_format => 'lance')` instead. Follow-up: add ARRAY support to the writer to enable embedding CTAS.
 
 ---
 

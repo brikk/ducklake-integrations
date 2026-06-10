@@ -25,6 +25,7 @@
     <ID>CyclomaticComplexMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesTypeChecker.kt:DucklakeAddFilesTypeChecker.Companion$private fun isCompatible: Boolean</ID>
+    <ID>CyclomaticComplexMethod:DucklakeColumnStatsAccumulator.kt:DucklakeColumnStatsAccumulator.Companion$@Suppress("UNCHECKED_CAST") private fun extractComparable: Comparable&lt;Any&gt;?</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun convertColumn: Block</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampColumn</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampTzColumn</ID>
@@ -75,6 +76,7 @@
     <ID>LongMethod:TestTrinoFunctionAliases.kt:TestTrinoFunctionAliases.Companion$@JvmStatic fun semanticCases: List&lt;SemanticCase&gt;</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$for</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeBucketPartitionMatcher.kt:DucklakeBucketPartitionMatcher$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DucklakeColumnStatsAccumulator.kt:DucklakeColumnStatsAccumulator$for</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$for</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$while</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeMetadata.kt:DucklakeMetadata$for</ID>
