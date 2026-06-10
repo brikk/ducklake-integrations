@@ -13,7 +13,6 @@ import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.ConnectorTableSchema
 import org.apache.doris.connector.api.ConnectorTableStatistics
-import org.apache.doris.connector.api.DorisConnectorException
 import org.apache.doris.connector.api.ddl.ConnectorCreateTableRequest
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
@@ -395,12 +394,13 @@ internal class DuckLakeConnectorMetadata(
     }
 
     override fun createTable(session: ConnectorSession?, request: ConnectorCreateTableRequest) {
-        if (request.partitionSpec?.fields?.isNotEmpty() == true || request.bucketSpec?.columns?.isNotEmpty() == true) {
-            throw DorisConnectorException(
-                "partitioned/bucketed CREATE TABLE is not supported yet for DuckLake (W1b) — " +
-                    "create the table unpartitioned for now",
-            )
-        }
+        // Iceberg-style PARTITIONED BY (...) → DuckLake partition fields. A Doris
+        // DISTRIBUTED BY clause (CRC32 hash, not murmur3) is rejected here rather than
+        // mis-mapped — see DuckLakeCreatePartitionMapper.
+        val partitionFields = DuckLakeCreatePartitionMapper.toPartitionFields(
+            request.partitionSpec,
+            request.bucketSpec,
+        )
         val columns = request.columns.map { column ->
             TableColumnSpec(
                 column.name,
@@ -409,7 +409,7 @@ internal class DuckLakeConnectorMetadata(
                 emptyList(), // scalar columns only in v1 (the type mapper rejects nested types)
             )
         }
-        catalog.createTable(request.dbName, request.tableName, columns, null, null)
+        catalog.createTable(request.dbName, request.tableName, columns, partitionFields, null)
     }
 
     override fun dropTable(session: ConnectorSession?, tableHandle: ConnectorTableHandle) {

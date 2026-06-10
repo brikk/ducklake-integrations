@@ -151,22 +151,25 @@ the same ones).
   rejection. Doris suite 79→87 green.
 #### W1b — partitioned CREATE TABLE + live DDL smoke (TURNKEY: shapes pre-discovered)
 
-**(a) Partitioned CREATE TABLE — connector mapping.** Today `DuckLakeConnectorMetadata.createTable`
-(rejection at ~line 400) throws if `partitionSpec`/`bucketSpec` is present. Replace that with a
-map → `catalog.createTable(db, table, columns, partitionFields, null)`:
-- `request.bucketSpec` (`ConnectorBucketSpec`: `getColumns(): List<String>`, `getNumBuckets(): Int`,
-  `getAlgorithm(): String`) → one `PartitionFieldSpec(col, DucklakePartitionTransform.BUCKET, numBuckets)`
-  per column. (DuckLake bucket == iceberg murmur3 — W2c proved the BE matches; reject a non-murmur3
-  `algorithm` to be safe.)
-- `request.partitionSpec` (`ConnectorPartitionSpec`: `getStyle()` ∈ {IDENTITY, TRANSFORM, LIST, RANGE},
-  `getFields(): List<ConnectorPartitionField>` where each has `getColumnName()`, `getTransform(): String`,
-  `getTransformArgs(): List<Integer>`) → `PartitionFieldSpec(col, transform, arity)`. Map IDENTITY→IDENTITY;
-  TRANSFORM→parse `getTransform()` ("year"/"month"/"day"/"hour"/"bucket") to `DucklakePartitionTransform`
-  (arity = `getTransformArgs()[0]` for bucket). **Reject LIST/RANGE** — DuckLake only has Iceberg-style
-  transforms (conservative-throw, like the type mapper). `PartitionFieldSpec(columnName, transform, arity?)`
-  is in `PartitionSpecTypes.kt`; `DuckLakeIcebergPartitionSpec.kt` is the reference for transform handling.
-- *Headless oracle:* CREATE TABLE with bucket/identity/temporal specs → assert `catalog.getPartitionSpecs`
-  returns the expected `DucklakePartitionField`s (extend `DuckLakeDdlTest`).
+**(a) Partitioned CREATE TABLE — connector mapping. ✅ DONE + headless-green (2026-06-09).**
+`DuckLakeConnectorMetadata.createTable` now maps `partitionSpec`/`bucketSpec` →
+`catalog.createTable(db, table, columns, partitionFields, null)` via the new
+**`DuckLakeCreatePartitionMapper`** (write-side inverse of `DuckLakeIcebergPartitionSpec`).
+- **`request.partitionSpec` is the real partition path.** The FE
+  (`CreateTableInfoToConnectorRequestConverter`) lowercases the transform fn name, so
+  `PARTITIONED BY (bucket(16,c), year(d), region)` arrives as per-field
+  `transform="bucket"/[16]`, `"year"`, `"identity"`. Map identity/year/month/day/hour/bucket →
+  `DucklakePartitionTransform` (bucket arity = `transformArgs[0]`). **Reject LIST/RANGE styles and
+  any other transform** (e.g. `truncate`) — conservative-throw, like the type mapper.
+- **`request.bucketSpec` (Doris `DISTRIBUTED BY`) is NOT DuckLake bucketing.** Discovered while
+  wiring: the FE only ever stamps its algorithm `"doris_default"` (CRC32) / `"doris_random"` —
+  *never* murmur3. So mapping it to a DuckLake BUCKET would silently bucket by the wrong hash; we
+  **reject any non-murmur3 algorithm** (pointing users at `PARTITIONED BY (bucket(N,col))`) and only
+  accept an explicit `murmur3`/`iceberg_bucket` algorithm should a future FE pass one. The W2c
+  murmur3-equivalence only holds for the Iceberg-transform path above.
+- *Oracles (both green):* `DuckLakeCreatePartitionMapperTest` (pure-logic, every transform +
+  rejections) and `DuckLakeDdlTest` (CREATE → `getPartitionSpecs` round-trip for bucket / identity+
+  temporal, + DISTRIBUTED-BY / LIST / truncate rejection). **Doris suite 87→96 green.**
 
 **(b) Live DDL smoke — validate the route + drop the DuckDB-create crutch.** Add a step to
 `compose/smoke.sh`: Doris `CREATE DATABASE`/`CREATE TABLE dl.tpch.doris_ddl (...)` → verify via
@@ -183,8 +186,8 @@ then be replaced by a Doris `CREATE TABLE`.
 ## Phased plan
 
 - [x] **W1 — DDL** (`CREATE/DROP DATABASE/TABLE`): connector side built + headless-tested
-  (CREATE/DROP DATABASE, CREATE/DROP TABLE unpartitioned, scalar columns). Partitioned
-  CREATE TABLE + the live route (gated like INSERT) remain (W1b).
+  (CREATE/DROP DATABASE, CREATE/DROP TABLE unpartitioned + **partitioned: bucket/identity/temporal,
+  W1b(a)**, scalar columns). Only the live DDL route (gated like INSERT) remains (W1b(b) smoke).
 - [x] **W2 — INSERT (append, unpartitioned):** ✅ **VALIDATED GREEN end-to-end** on a
   live FE+BE — Doris writes a DuckLake Parquet file, reads back through Doris + DuckDB.
 - [x] **W2c — INSERT (partitioned / BUCKET):** ✅ **VALIDATED GREEN end-to-end** — iceberg

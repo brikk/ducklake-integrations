@@ -1,6 +1,8 @@
 package dev.brikk.ducklake.doris.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
+import dev.brikk.ducklake.catalog.DucklakePartitionField
+import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import org.apache.doris.connector.api.ConnectorColumn
@@ -8,6 +10,8 @@ import org.apache.doris.connector.api.ConnectorType
 import org.apache.doris.connector.api.DorisConnectorException
 import org.apache.doris.connector.api.ddl.ConnectorBucketSpec
 import org.apache.doris.connector.api.ddl.ConnectorCreateTableRequest
+import org.apache.doris.connector.api.ddl.ConnectorPartitionField
+import org.apache.doris.connector.api.ddl.ConnectorPartitionSpec
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterAll
@@ -109,21 +113,151 @@ internal class DuckLakeDdlTest {
         }
     }
 
+    /** column_id-keyed partition fields of a freshly created table, by column name. */
+    private fun partitionFieldsByColumn(
+        catalog: JdbcDucklakeCatalog,
+        database: String,
+        table: String,
+    ): Map<String, DucklakePartitionField> {
+        val snap = catalog.currentSnapshotId
+        val tableId = requireNotNull(catalog.getTable(database, table, snap)) { "table not created" }.tableId
+        val nameById = catalog.getTableColumns(tableId, snap).associate { it.columnId to it.columnName }
+        return catalog.getPartitionSpecs(tableId, snap)
+            .flatMap { it.fields }
+            .associateBy { requireNotNull(nameById[it.columnId]) { "partition column ${it.columnId} not in schema" } }
+    }
+
     @Test
     @Throws(Exception::class)
-    fun rejectsPartitionedCreateTableForNow() {
+    fun createsIcebergBucketPartitionedTable() {
         withCatalog { catalog ->
+            // PARTITIONED BY (bucket(4, name)) — the Iceberg-transform path that produces a
+            // real DuckLake (murmur3) bucket, BE-equivalence proven by the W2c live smoke.
+            val request = ConnectorCreateTableRequest.builder()
+                .dbName("w1b_bucket")
+                .tableName("by_name_bucket")
+                .columns(listOf(col("id", ConnectorType.of("INT"), nullable = false), col("name", ConnectorType.of("STRING"), nullable = true)))
+                .partitionSpec(
+                    ConnectorPartitionSpec(
+                        ConnectorPartitionSpec.Style.TRANSFORM,
+                        listOf(ConnectorPartitionField("name", "bucket", listOf(4))),
+                        emptyList(),
+                    ),
+                )
+                .build()
+            val md = DuckLakeConnectorMetadata(catalog)
+            md.createDatabase(null, "w1b_bucket", emptyMap())
+            md.createTable(null, request)
+
+            val fields = partitionFieldsByColumn(catalog, "w1b_bucket", "by_name_bucket")
+            assertThat(fields).containsOnlyKeys("name")
+            assertThat(fields.getValue("name").transform).isEqualTo(DucklakePartitionTransform.BUCKET)
+            assertThat(fields.getValue("name").arity).isEqualTo(4)
+            assertThat(fields.getValue("name").partitionKeyIndex).isEqualTo(0)
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun createsIdentityAndTemporalPartitionedTable() {
+        withCatalog { catalog ->
+            // PARTITIONED BY (region, year(d), day(d)) — IDENTITY + temporal transforms,
+            // partition_key_index follows clause order.
+            val request = ConnectorCreateTableRequest.builder()
+                .dbName("w1b_part")
+                .tableName("sales")
+                .columns(
+                    listOf(
+                        col("id", ConnectorType.of("INT"), nullable = false),
+                        col("region", ConnectorType.of("STRING"), nullable = true),
+                        col("d", ConnectorType.of("DATE"), nullable = true),
+                    ),
+                )
+                .partitionSpec(
+                    ConnectorPartitionSpec(
+                        ConnectorPartitionSpec.Style.TRANSFORM,
+                        listOf(
+                            ConnectorPartitionField("region", "identity", emptyList()),
+                            ConnectorPartitionField("d", "year", emptyList()),
+                            ConnectorPartitionField("d", "day", emptyList()),
+                        ),
+                        emptyList(),
+                    ),
+                )
+                .build()
+            val md = DuckLakeConnectorMetadata(catalog)
+            md.createDatabase(null, "w1b_part", emptyMap())
+            md.createTable(null, request)
+
+            val snap = catalog.currentSnapshotId
+            val tableId = requireNotNull(catalog.getTable("w1b_part", "sales", snap)).tableId
+            val nameById = catalog.getTableColumns(tableId, snap).associate { it.columnId to it.columnName }
+            // Assert order + transforms by partition_key_index (region@0, year(d)@1, day(d)@2).
+            val ordered = catalog.getPartitionSpecs(tableId, snap)
+                .flatMap { it.fields }
+                .sortedBy { it.partitionKeyIndex }
+                .map { nameById.getValue(it.columnId) to it.transform }
+            assertThat(ordered).containsExactly(
+                "region" to DucklakePartitionTransform.IDENTITY,
+                "d" to DucklakePartitionTransform.YEAR,
+                "d" to DucklakePartitionTransform.DAY,
+            )
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun rejectsDorisDistributedByAsNonMurmur3() {
+        withCatalog { catalog ->
+            // DISTRIBUTED BY HASH(...) arrives as a ConnectorBucketSpec with algorithm
+            // "doris_default" (CRC32) — not DuckLake's murmur3, so it must be rejected
+            // rather than mis-bucketed.
             val request = ConnectorCreateTableRequest.builder()
                 .dbName("sales")
                 .tableName("wont_exist")
                 .columns(listOf(col("id", ConnectorType.of("INT"), nullable = true), col("name", ConnectorType.of("STRING"), nullable = true)))
-                .bucketSpec(ConnectorBucketSpec(listOf("name"), 4, "murmur3"))
+                .bucketSpec(ConnectorBucketSpec(listOf("name"), 4, "doris_default"))
                 .build()
             assertThatThrownBy { DuckLakeConnectorMetadata(catalog).createTable(null, request) }
                 .isInstanceOf(DorisConnectorException::class.java)
-                .hasMessageContaining("partitioned")
-            // And nothing was created.
+                .hasMessageContaining("DuckLake bucketing")
             assertThat(catalog.getTable("sales", "wont_exist", catalog.currentSnapshotId)).isNull()
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun rejectsListRangeAndUnknownTransform() {
+        withCatalog { catalog ->
+            val md = DuckLakeConnectorMetadata(catalog)
+            val base = ConnectorCreateTableRequest.builder()
+                .dbName("sales")
+                .columns(listOf(col("id", ConnectorType.of("INT"), nullable = true)))
+
+            // LIST partitioning has no Iceberg equivalent → reject.
+            val listReq = base.tableName("nope_list")
+                .partitionSpec(ConnectorPartitionSpec(ConnectorPartitionSpec.Style.LIST, emptyList(), emptyList()))
+                .build()
+            assertThatThrownBy { md.createTable(null, listReq) }
+                .isInstanceOf(DorisConnectorException::class.java)
+                .hasMessageContaining("LIST")
+
+            // truncate() is a valid Iceberg transform but unsupported by DuckLake → reject.
+            val truncReq = base.tableName("nope_trunc")
+                .partitionSpec(
+                    ConnectorPartitionSpec(
+                        ConnectorPartitionSpec.Style.TRANSFORM,
+                        listOf(ConnectorPartitionField("id", "truncate", listOf(10))),
+                        emptyList(),
+                    ),
+                )
+                .build()
+            assertThatThrownBy { md.createTable(null, truncReq) }
+                .isInstanceOf(DorisConnectorException::class.java)
+                .hasMessageContaining("truncate")
+
+            assertThat(catalog.getTable("sales", "nope_list", catalog.currentSnapshotId)).isNull()
+            assertThat(catalog.getTable("sales", "nope_trunc", catalog.currentSnapshotId)).isNull()
         }
     }
 
