@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_LANCE
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.airlift.log.Logger
 import io.trino.filesystem.Location
@@ -93,6 +94,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.ArrayList
+import java.util.Comparator
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.UUID
@@ -138,9 +140,14 @@ constructor(
     private val columns: List<DucklakeColumnHandle> = columns.toList()
     private val columnTypes: List<Type> = this.columns.map { it.columnType }
     private val isVortex: Boolean = FORMAT_VORTEX.equals(outputFormat, ignoreCase = true)
-    // Inline single-pass stats for the vortex path (no queryable table to MIN/MAX); null for duckdb.
+    private val isLance: Boolean = FORMAT_LANCE.equals(outputFormat, ignoreCase = true)
+    // vortex + lance both COPY the Arrow stream straight to the output (no ATTACH/table); stats are
+    // gathered inline from the same pages. Lance additionally writes a *directory* dataset, not a
+    // single file — so size/upload/cleanup walk the tree (see uploadToRemote / cleanupLocalFile).
+    private val usesCopy: Boolean = isVortex || isLance
+    // Inline single-pass stats for the COPY formats (no queryable table to MIN/MAX); null for duckdb.
     private val statsAccumulator: DucklakeColumnStatsAccumulator? =
-            if (isVortex) DucklakeColumnStatsAccumulator(this.columns) else null
+            if (usesCopy) DucklakeColumnStatsAccumulator(this.columns) else null
     private val localTempFile: Path
 
     private val connection: DuckDBConnection
@@ -159,7 +166,8 @@ constructor(
 
     init {
         Files.createDirectories(localTempDir)
-        val extension = if (isVortex) "vortex" else "db"
+        // For lance this path is a *directory* DuckDB's COPY will create; for vortex a single file.
+        val extension = if (isLance) "lance" else if (isVortex) "vortex" else "db"
         this.localTempFile = localTempDir.resolve("ducklake-write-${UUID.randomUUID()}.$extension")
         this.streamName = "trino_in_${UUID.randomUUID().toString().replace('-', '_')}"
 
@@ -170,11 +178,12 @@ constructor(
         try {
             conn = DriverManager.getConnection("jdbc:duckdb:") as DuckDBConnection
             conn.createStatement().use { stmt ->
-                if (isVortex) {
-                    // No ATTACH/table: the consumer COPYs the stream straight to the .vortex file.
-                    // INSTALL may require network on first use.
-                    stmt.execute("INSTALL vortex")
-                    stmt.execute("LOAD vortex")
+                if (usesCopy) {
+                    // No ATTACH/table: the consumer COPYs the stream straight to the output
+                    // file/dir. INSTALL may require network on first use.
+                    val ext = if (isLance) "lance" else "vortex"
+                    stmt.execute("INSTALL $ext")
+                    stmt.execute("LOAD $ext")
                 }
                 else {
                     stmt.execute(
@@ -213,8 +222,9 @@ constructor(
     }
 
     private fun runInsert() {
-        val sql = if (isVortex) {
-            "COPY (SELECT * FROM $streamName) TO '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' (FORMAT vortex)"
+        val sql = if (usesCopy) {
+            val copyFormat = if (isLance) "lance" else "vortex"
+            "COPY (SELECT * FROM $streamName) TO '${localTempFile.toAbsolutePath().toString().replace("'", "''")}' (FORMAT $copyFormat)"
         }
         else {
             "INSERT INTO $ATTACHED_DB.$ATTACHED_SCHEMA.$ATTACHED_TABLE SELECT * FROM $streamName"
@@ -319,7 +329,7 @@ constructor(
         // stream — no table to query, no DETACH. DuckDB: query the just-written attached table.
         val columnStats: List<DucklakeFileColumnStats>
         try {
-            if (isVortex) {
+            if (usesCopy) {
                 columnStats = statsAccumulator!!.build()
             }
             else {
@@ -342,7 +352,7 @@ constructor(
 
         val fileSize: Long
         try {
-            fileSize = Files.size(localTempFile)
+            fileSize = if (isLance) localDirectorySize(localTempFile) else Files.size(localTempFile)
             uploadToRemote()
         }
         catch (e: IOException) {
@@ -417,12 +427,57 @@ constructor(
 
     @Throws(IOException::class)
     private fun uploadToRemote() {
+        if (isLance) {
+            uploadDirectoryToRemote()
+            return
+        }
         val outputFile = fileSystem.newOutputFile(remoteLocation)
         outputFile.create().use { out ->
             Files.newInputStream(localTempFile).use { input ->
                 input.transferTo(out)
             }
         }
+    }
+
+    /**
+     * Uploads every file in the locally-written Lance dataset *directory* to the remote dataset
+     * location, preserving the relative tree. Lance reads (`__lance_scan('<dir>')`) need the whole
+     * tree — manifest, data, and index files.
+     */
+    @Throws(IOException::class)
+    private fun uploadDirectoryToRemote() {
+        Files.walk(localTempFile).use { paths ->
+            val iter = paths.iterator()
+            while (iter.hasNext()) {
+                val path: Path = iter.next()
+                if (!Files.isRegularFile(path)) {
+                    continue
+                }
+                val relative: String = localTempFile.relativize(path).toString().replace('\\', '/')
+                val target: Location = remoteLocation.appendPath(relative)
+                fileSystem.newOutputFile(target).create().use { out ->
+                    Files.newInputStream(path).use { input ->
+                        input.transferTo(out)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Sum of regular-file sizes under a Lance dataset directory. */
+    @Throws(IOException::class)
+    private fun localDirectorySize(dir: Path): Long {
+        var total = 0L
+        Files.walk(dir).use { paths ->
+            val iter = paths.iterator()
+            while (iter.hasNext()) {
+                val path: Path = iter.next()
+                if (Files.isRegularFile(path)) {
+                    total += Files.size(path)
+                }
+            }
+        }
+        return total
     }
 
     private fun cleanupAfterFailure() {
@@ -451,10 +506,31 @@ constructor(
 
     private fun cleanupLocalFile() {
         try {
-            Files.deleteIfExists(localTempFile)
+            if (isLance) {
+                deleteRecursively(localTempFile)
+            }
+            else {
+                Files.deleteIfExists(localTempFile)
+            }
         }
         catch (e: IOException) {
             log.warn(e, "Failed to delete Arrow-stream writer temp file: %s", localTempFile)
+        }
+    }
+
+    /** Recursively deletes a local directory tree (children before parents). */
+    @Throws(IOException::class)
+    private fun deleteRecursively(root: Path) {
+        if (!Files.exists(root)) {
+            return
+        }
+        Files.walk(root).use { paths ->
+            // reverseOrder puts deeper paths (longer, prefixed by their parent) before their
+            // parents, so children are removed first.
+            val iter = paths.sorted(Comparator.reverseOrder()).iterator()
+            while (iter.hasNext()) {
+                Files.deleteIfExists(iter.next())
+            }
         }
     }
 
@@ -473,10 +549,15 @@ constructor(
         }
         cleanupAfterFailure()
         try {
-            fileSystem.deleteFile(remoteLocation)
+            if (isLance) {
+                fileSystem.deleteDirectory(remoteLocation)
+            }
+            else {
+                fileSystem.deleteFile(remoteLocation)
+            }
         }
         catch (ignored: IOException) {
-            // file may not have been uploaded yet
+            // file/dir may not have been uploaded yet
         }
     }
 

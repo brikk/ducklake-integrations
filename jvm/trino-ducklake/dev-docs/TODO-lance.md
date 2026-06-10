@@ -106,9 +106,10 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 - [ ] Add `ConnectorTableFunction`s: `lance_vector_search`, `lance_fts`, `lance_hybrid_search` under `my_catalog.system.*` (parallel to `add_files`). Each resolves Lance files from the catalog, emits splits carrying `(path, column, query_vec, k, prefilter)`, and the page source runs the corresponding `lance_*` DuckDB function. This is the novel SPI work — we have no table functions today (`add_files` is a procedure, different shape). See RESEARCH §2.
 - [ ] (Stretch) `applyTopN` so a Trino-side `ORDER BY <distance> LIMIT k` synthesizes the function's `k`.
 
-### Phase A4 — write (after the dataset-vs-file decision in Phase 0)
-- [ ] `DucklakePageSink.openNewWriter` (≈:307): add a `FORMAT_LANCE` writer branch using DuckDB `COPY … TO (FORMAT lance)`.
-- [ ] Catalog rows for the produced dataset per the Phase-0 decision. `resolveWriteFormat` already plumbs the session/catalog format through.
+### Phase A4 — write (DONE — 2026-06-09, arm64)
+- [x] `DucklakePageSink.openNewWriter`: added a `FORMAT_LANCE` branch (`openLanceWriter`) reusing the Arrow-stream writer. **Local-temp-then-upload** (decided): `COPY (SELECT * FROM <arrow-stream>) TO '<localtmp>.lance' (FORMAT lance)`, then walk the dataset dir and upload every file under the remote location. In `DuckDbArrowStreamFileWriter`, `isVortex` → `usesCopy = isVortex || isLance` (shared COPY + inline `DucklakeColumnStatsAccumulator`, no ATTACH); lance adds directory-aware size/upload/cleanup + `deleteDirectory` on abort. Both `validateDataFileFormat` validators now accept `'lance'`.
+- [x] Catalog rows: the writer emits a `DucklakeWriteFragment(relativePath, "lance", …)` per the Phase-0 dataset model (one row, dir path, relative). Round-trip verified by `TestDucklakeLanceFormat` (CTAS + INSERT + SELECT/predicate).
+- [ ] **Scalar columns only.** The Arrow-stream writer's `toArrowType`/`populateVector` are scalar-only, so embedding/ARRAY *writes* fail fast — register embedding datasets via `add_files(file_format => 'lance')` instead. Follow-up: add ARRAY support to the writer to enable embedding CTAS.
 
 ---
 

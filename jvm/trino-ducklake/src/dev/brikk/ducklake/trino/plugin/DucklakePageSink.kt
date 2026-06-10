@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import com.google.common.collect.ImmutableList.toImmutableList
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
+import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_LANCE
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.airlift.json.JsonCodec
@@ -315,7 +316,36 @@ class DucklakePageSink(
         if (FORMAT_VORTEX.equals(fileFormat, ignoreCase = true)) {
             return openVortexWriter(partitionValues)
         }
+        if (FORMAT_LANCE.equals(fileFormat, ignoreCase = true)) {
+            return openLanceWriter(partitionValues)
+        }
         throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
+    }
+
+    /**
+     * Lance writer: same Arrow-stream path as vortex, but `COPY … (FORMAT lance)` produces a
+     * dataset *directory* (manifest + data + index files), which [DuckDbArrowStreamFileWriter]
+     * writes to local temp then walks+uploads file-by-file to the remote dataset location. Stats
+     * are gathered inline from the same pages. (Embedding/ARRAY columns are not yet writable — the
+     * Arrow-stream writer's type mapping is scalar-only; register externally-written embedding
+     * datasets via `add_files(file_format => 'lance')` instead.)
+     */
+    @Throws(IOException::class)
+    private fun openLanceWriter(partitionValues: Map<Int, String?>): DucklakeFileWriter {
+        val fileName = "ducklake-${UUID.randomUUID()}.lance"
+        val relativePath = buildRelativePath(partitionValues, fileName)
+        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
+        writtenFilePaths.add(filePath)
+        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        return DuckDbArrowStreamFileWriter(
+                fileSystem,
+                filePath,
+                relativePath,
+                partitionValues,
+                partitionId,
+                handle.columns,
+                duckDbLocalTempDir(),
+                FORMAT_LANCE)
     }
 
     /**

@@ -11,7 +11,7 @@ published: **`osx_arm64`** (Apple Silicon), `linux_amd64`, `linux_arm64`, or `wi
 
 ## PROGRESS — arm64 run (M1 Max, osx_arm64), 2026-06-09
 
-Picked up on a lance-capable box. **Steps 1–5 done and green; Steps 6–7 + O1 still open.**
+Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 still open.**
 
 - **Step 1 (Phase A0 probe) — DONE, green.** The probe ran (no skip) once one bug was fixed:
   the scan function is **`__lance_scan`** (double-underscore), NOT `lance_scan`. The shipped
@@ -54,10 +54,23 @@ Picked up on a lance-capable box. **Steps 1–5 done and green; Steps 6–7 + O1
   (`os.arch`-based selection in the test's `@BeforeAll`). The container rejects the arm64 extension at
   `LOAD`. Their vortex sibling skips this gracefully via `assumeTrue`; these 3 predate that guard.
   Pre-existing, exposed by moving to Apple Silicon — orthogonal to lance. Flagged as a separate task.
+- **Step 6 (writer A4) — DONE, green.** `DucklakePageSink.openNewWriter` gets a `FORMAT_LANCE` branch
+  reusing the Arrow-stream writer with **local-temp-then-upload** (the decided approach). In
+  `DuckDbArrowStreamFileWriter`, `isVortex` generalized to `usesCopy = isVortex || isLance`: both
+  `COPY … (FORMAT <fmt>)` to local temp with inline `DucklakeColumnStatsAccumulator` (no ATTACH).
+  Lance-specific: the COPY target is a *directory*, so size = sum of the tree, upload walks the dir
+  and uploads each file under the remote dataset location (`uploadDirectoryToRemote`), cleanup deletes
+  recursively, and abort uses `deleteDirectory`. Flipped both `validateDataFileFormat` validators
+  (session + table props) to accept `'lance'`. New round-trip test `TestDucklakeLanceFormat` (CTAS +
+  INSERT → two dataset dirs → SELECT/predicate). **Scalar columns only** — the Arrow-stream writer's
+  `toArrowType` is scalar-only, so embedding/ARRAY *writes* fail fast; register embedding datasets via
+  `add_files(file_format => 'lance')` (Step 5) instead. Writer regression batch (vortex CTAS, duckdb
+  arrow-stream writer, rollover) stays green.
 
-**Still open:** Step 6 (writer A4 — DECIDED: local-temp-then-upload, mirror vortex),
-Step 7 (table functions A3 — `lance_fts`/`lance_vector_search`/`lance_hybrid_search` confirmed present),
-and O1 (s3 secret vs storageOptions — needs an `s3://` lance read, not yet tested).
+**Still open:** Step 7 (table functions A3 — `lance_fts`/`lance_vector_search`/`lance_hybrid_search`
+confirmed present), and O1 (s3 secret vs storageOptions — needs an `s3://` lance read, not yet tested).
+A natural follow-up: ARRAY/embedding *write* support in the Arrow-stream writer (`toArrowType` +
+`populateVector` + stats) so embeddings can be written via CTAS, not just registered via `add_files`.
 
 **Design context (read first):**
 - [TODO-lance.md](TODO-lance.md) — the chunked plan (Phases A0–A4) + the Route A vs B decision.

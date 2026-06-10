@@ -162,10 +162,11 @@ open class DucklakeSessionProperties @Inject constructor() {
             // Validator only fires on explicit SET — null (unset) never reaches this method.
             if (!FORMAT_PARQUET.equals(value, ignoreCase = true) &&
                     !FORMAT_DUCKDB.equals(value, ignoreCase = true) &&
-                    !FORMAT_VORTEX.equals(value, ignoreCase = true)) {
+                    !FORMAT_VORTEX.equals(value, ignoreCase = true) &&
+                    !FORMAT_LANCE.equals(value, ignoreCase = true)) {
                 throw TrinoException(
                         INVALID_SESSION_PROPERTY,
-                    "$DATA_FILE_FORMAT must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB', '$FORMAT_VORTEX'"
+                    "$DATA_FILE_FORMAT must be one of: '$FORMAT_PARQUET', '$FORMAT_DUCKDB', '$FORMAT_VORTEX', '$FORMAT_LANCE'"
                 )
             }
         }
