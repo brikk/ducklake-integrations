@@ -17,6 +17,97 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-06-10 · `CreateTableInfo.pluginCatalogTypeToEngine` only knows `"max_compute"` → plugin `CREATE TABLE` rejected
+
+**Symptom.** On the live FE, `CREATE DATABASE` on the `dl` (ducklake) plugin
+catalog succeeds, but `CREATE TABLE` is rejected before the connector is ever
+called:
+
+```
+ERROR 1105 (HY000) at line 4: errCode = 2,
+detailMessage = Current catalog does not support create table: dl
+```
+
+(W2/W2c INSERT and CREATE/DROP DATABASE were already routed fine — only
+table-level CREATE/DROP failed.)
+
+**Root cause.** `CreateTableInfo.paddingEngineName` pads a legacy engine name for
+a no-ENGINE `CREATE TABLE` on a plugin catalog by calling
+`pluginCatalogTypeToEngine()`, whose `switch` only maps `"max_compute"` →
+`ENGINE_MAXCOMPUTE`; every other plugin type (incl. `"ducklake"`) hits
+`default → null`, so the `else` branch throws
+(`CreateTableInfo.java:928`, switch at `:942`). The rejection is purely FE
+engine-padding — `PluginDrivenExternalCatalog.createTable()` is generic (it
+converts the request and calls `metadata.createTable`), and the connector mapping
+is headless-green (`DuckLakeDdlTest`). The catalog-engine consistency check
+(`checkEngineWithCatalog`, `:396`) calls the *same* function, so it stays
+consistent automatically.
+
+**Workaround.** Pad `ENGINE_ICEBERG` for `"ducklake"` (working-tree patch on the
+local FE; tracked in `jvm/doris-ducklake/fe-patches/ducklake-fe.patch`). Iceberg
+is the right engine: DuckLake is Iceberg-shaped (TIcebergTableSink, Iceberg
+transform partitioning), `checkEngineName` accepts `ENGINE_ICEBERG`, and the
+iceberg path is the one that accepts `PARTITION BY (bucket(N,col))` and rejects
+`DISTRIBUTE BY` — matching the connector's own DDL contract. Routing is by catalog
+*instance* (a `PluginDrivenExternalCatalog`), not the engine string, so the pad
+never diverts CREATE TABLE to the native Iceberg DDL handler. Read-side engine
+display (`PluginDrivenExternalTable.getEngine`) is left generic so the shipped
+read path is untouched. **Validated GREEN** in `compose/smoke.sh` W1 DDL step.
+
+**Fix.** Generalize `pluginCatalogTypeToEngine` (and the read-side switches in
+`PluginDrivenExternalTable`) to consult the connector's declared
+capability/engine instead of a hardcoded per-type `switch`, so a new
+CREATE-TABLE-capable SPI full-adopter doesn't need an FE edit. As a minimal
+interim, add `case "ducklake": return ENGINE_ICEBERG;`.
+
+---
+
+## 2026-06-10 · External partitioned `CREATE TABLE` arrives as `Style.LIST`/`RANGE`, never `Style.TRANSFORM`
+
+**Symptom.** With the engine-padding fix above in place, an unpartitioned
+`CREATE TABLE` works, but the iceberg-transform partitioned form first fails to
+*parse*:
+
+```
+CREATE TABLE dl.ddl_smoke.t (id INT, name STRING) PARTITION BY (bucket(4, name));
+-- mismatched input '<EOF>' expecting '(' (line 1, pos 87)
+```
+
+and once written in the grammar Doris *does* accept —
+`PARTITION BY LIST (bucket(4, name)) ()` — the connector then rejected it:
+
+```
+DuckLake supports only Iceberg-style partitioning (...);
+PARTITION BY LIST is not supported
+```
+
+**Root cause.** Two compounding facts. (1) Doris's only accepted grammar for an
+external/iceberg partitioned `CREATE TABLE` is
+`PARTITION BY [LIST|RANGE] (transform(col), …) ()` — the bare
+`PARTITION BY (expr)` and `PARTITIONED BY (...)` forms don't parse. (2) The FE
+converter keys the connector `ConnectorPartitionSpec.style` off the grammar
+*keyword*: `CreateTableInfoToConnectorRequestConverter.convertPartition` sets
+`Style.LIST`/`RANGE` whenever the `LIST`/`RANGE` keyword is present, putting the
+real transform (`bucket(4, name)`) into the per-field data and only using
+`Style.TRANSFORM` for the keyword-less expression form. So every live partitioned
+external CREATE arrives tagged `LIST`/`RANGE`, **not** `TRANSFORM`. The W1b(a)
+connector mapper assumed `TRANSFORM` and rejected `LIST`/`RANGE` outright.
+
+**Workaround.** Map by each field's transform regardless of
+`spec.style` in `DuckLakeCreatePartitionMapper.fromPartitionSpec` (the converter
+drops the empty value-lists, so the style keyword carries no extra meaning for an
+iceberg/ducklake target; per-field `toFieldSpec` still rejects transforms DuckLake
+can't represent, e.g. `truncate`). Connector-side only, headless-tested. The smoke
+uses `PARTITION BY LIST (bucket(4, name)) ()`. **Validated GREEN** (W1 DDL records
+`bucket(4)`; W2c bucket-equivalence `{1,2,3}` round-trips on a Doris-created table).
+
+**Fix.** In `convertPartition`, prefer `Style.TRANSFORM` when every partition
+expression is a transform/identity function even under the `LIST`/`RANGE` keyword
+(the keyword is grammar boilerplate for external tables, not list/range
+semantics) — then connectors need only handle `IDENTITY`/`TRANSFORM`.
+
+---
+
 ## 2026-05-19 · DuckLake position-delete files use OPTIONAL columns; Doris BE rejects them
 
 **Symptom.** Step 7 smoke: DuckDB issues DELETE on `tpch.orders` (with

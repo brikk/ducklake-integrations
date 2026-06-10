@@ -287,15 +287,18 @@ fi
 # proves Doris wrote DuckLake-compatible Parquet (field_id == column_id, footer ok).
 #
 # Requires the FE to carry "ducklake" in CatalogFactory.SPI_READY_TYPES, else INSERT
-# is rejected as unsupported. Doris can't CREATE TABLE on a plugin catalog yet (W1),
-# so the empty target is created via DuckDB first.
-w2_helper() {  # $1 = MODE (create|verify), $2 = TABLE (default doris_w), $3 = PARTITION_BY (optional)
+# is rejected as unsupported. As of W1b(b) the INSERT targets are created by Doris
+# CREATE TABLE (live DDL — the FE engine-padding fix landed); the DuckDB-create crutch
+# is gone. w2_helper is now used only in `verify` mode for the cross-engine read-back
+# (its `create` mode is retained in w2-insert.py purely as a fallback).
+w2_helper() {  # $1 = MODE (create|verify), $2 = TABLE (default doris_w), $3 = PARTITION_BY (optional), $4 = SCHEMA (default tpch)
     docker run --rm \
         --network trino-ducklake-dev_default \
         -v "${HERE}/w2-insert.py:/script.py:ro" \
         -e MODE="$1" \
         -e TABLE="${2:-doris_w}" \
         -e PARTITION_BY="${3:-}" \
+        -e SCHEMA="${4:-tpch}" \
         -e PG_HOST=trino-ducklake-postgres -e PG_DB=ducklake \
         -e PG_USER=ducklake -e PG_PASSWORD=ducklake \
         -e S3_ENDPOINT=trino-ducklake-minio:9000 \
@@ -308,28 +311,196 @@ w2_helper() {  # $1 = MODE (create|verify), $2 = TABLE (default doris_w), $3 = P
         ' 2>&1 | sed "s/^/  [duckdb] /"
 }
 
-refresh_dl_catalog() {  # DROP+CREATE so Doris re-resolves the latest snapshot/schema
-    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
-        DROP CATALOG IF EXISTS dl;
-        CREATE CATALOG dl PROPERTIES (
-            'type'              = 'ducklake',
-            'metadata.url'      = 'jdbc:postgresql://trino-ducklake-postgres:5432/ducklake',
-            'metadata.user'     = 'ducklake',
-            'metadata.password' = 'ducklake',
-            'storage.warehouse' = 's3://ducklake/data/',
-            's3.endpoint'       = 'http://trino-ducklake-minio:9000',
-            's3.region'         = 'us-east-1',
-            's3.access_key'     = 'minioadmin',
-            's3.secret_key'     = 'minioadmin',
-            'use_path_style'    = 'true'
-        );
-    " 2>&1 | tail -3
-}
+# ───────────────────────────────────────────────────────────────────────────
+# W1 DDL (live): live FE→connector CREATE/DROP DATABASE + TABLE, end-to-end.
+# The headless DDL tests (DuckLakeDdlTest) prove the connector mapping; this step
+# proves the live FE route. VALIDATED GREEN 2026-06-10 (W1b(b)) once two gaps were
+# fixed (both tracked in ducklake-doris-friction.md, 2026-06-10):
+#   1. FE engine-padding: CreateTableInfo.pluginCatalogTypeToEngine() only mapped
+#      the plugin type "max_compute" to an engine, so CREATE TABLE on a "ducklake"
+#      catalog threw "Current catalog does not support create table" BEFORE reaching
+#      the connector. Fixed by padding ENGINE_ICEBERG for "ducklake" (jvm/doris-
+#      ducklake/fe-patches/ducklake-fe.patch). DB-level DDL was already routed.
+#   2. Partition style: Doris's only accepted grammar for an external/iceberg
+#      partitioned CREATE TABLE is `PARTITION BY [LIST|RANGE] (transform(col), …) ()`,
+#      and the FE converter stamps that Style.LIST/RANGE (transform in the field),
+#      NOT Style.TRANSFORM. The connector now maps by per-field transform regardless
+#      of style (DuckLakeCreatePartitionMapper).
+#
+# Same SPI_READY_TYPES gate as INSERT. If CREATE TABLE now FAILS it's a regression
+# (most likely the FE image was rebuilt without ducklake-fe.patch) — the step logs
+# that and continues (the DuckDB-create fallback can still stand W2/W2c up).
+#
+# Bucketing note: a real DuckLake (murmur3) bucket comes ONLY from the iceberg-
+# transform path bucket(N,col); Doris DISTRIBUTED BY (CRC32) is a different hash and
+# the connector rejects it — so the partitioned DDL below uses bucket(4, name) inside
+# PARTITION BY LIST (…) (), never DISTRIBUTED BY.
+DDL_DB=ddl_smoke
 
-log "W2: creating empty target lake.tpch.doris_w via DuckDB…"
-w2_helper create
-log "W2: refreshing Doris catalog so it sees tpch.doris_w…"
-refresh_dl_catalog
+log "W1 DDL: best-effort clean slate (DROP any leftover ${DDL_DB} from a prior run)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    DROP TABLE IF EXISTS ${DDL_DB}.doris_ddl;
+    DROP TABLE IF EXISTS ${DDL_DB}.doris_ddl_p;
+    DROP DATABASE IF EXISTS ${DDL_DB};
+" >/dev/null 2>&1 || true
+
+# (1) CREATE DATABASE — routed to connector.createDatabase, commits to DuckLake.
+log "W1 DDL: Doris CREATE DATABASE dl.${DDL_DB} (database-level DDL)…"
+set +e
+ddldb_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    CREATE DATABASE ${DDL_DB};
+" 2>&1)
+ddldb_status=$?
+set -e
+echo "$ddldb_out" | tail -4
+if [[ $ddldb_status -ne 0 ]]; then
+    log "W1 DDL: CREATE DATABASE failed — see output above + fe.log. (Previously live-green; regression?)"
+else
+    db_present=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+        SELECT COUNT(*) FROM ducklake_schema WHERE schema_name='${DDL_DB}' AND end_snapshot IS NULL;
+    " 2>&1 | tail -1)
+    if [[ "${db_present:-0}" == "1" ]]; then
+        log "W1 DDL: CREATE DATABASE LIVE-GREEN — connector committed schema '${DDL_DB}' to DuckLake."
+    else
+        log "W1 DDL CHECK: CREATE DATABASE returned OK but schema not active in catalog (count=${db_present:-?})."
+    fi
+fi
+
+# (2) CREATE TABLE — routed to connector.createTable (FE engine-padding fix applied).
+# Expected GREEN; a failure here is a regression (see header).
+log "W1 DDL: Doris CREATE TABLE dl.${DDL_DB}.doris_ddl (id INT, name STRING)…"
+set +e
+ddl_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    CREATE TABLE ${DDL_DB}.doris_ddl (id INT, name STRING);
+" 2>&1)
+ddl_status=$?
+set -e
+echo "$ddl_out" | tail -8
+
+if [[ $ddl_status -ne 0 ]]; then
+    if echo "$ddl_out" | grep -qiE "does not support create table"; then
+        log "W1 DDL REGRESSION: CREATE TABLE rejected with the engine-padding error again —"
+        log "  the FE image is missing ducklake-fe.patch (pluginCatalogTypeToEngine 'ducklake' case)."
+        log "  Reapply jvm/doris-ducklake/fe-patches/ducklake-fe.patch, rebuild + re-image the FE."
+    elif echo "$ddl_out" | grep -qiE "does not support|not ready|SPI_READY|unsupported|not.*allowed"; then
+        log "W1 DDL: CREATE TABLE rejected at the FE (not the known engine-padding error) — inspect output + fe.log."
+    else
+        log "W1 DDL ERROR: CREATE TABLE failed at the FE/connector — see output above + fe.log."
+    fi
+else
+    log "W1 DDL: CREATE TABLE GREEN — routed to the connector + committed to DuckLake. Running full verify…"
+    log "W1 DDL: DESC dl.${DDL_DB}.doris_ddl (Doris-side schema after the round-trip)…"
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        DESC dl.${DDL_DB}.doris_ddl;
+    " 2>&1
+
+    log "W1 DDL: catalog cross-check — schema + columns the connector wrote to DuckLake…"
+    docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+        SELECT c.column_order, c.column_name, c.column_type
+        FROM ducklake_column c
+        JOIN ducklake_table t  ON t.table_id  = c.table_id
+        JOIN ducklake_schema s ON s.schema_id = t.schema_id
+        WHERE s.schema_name='${DDL_DB}' AND t.table_name='doris_ddl'
+          AND c.end_snapshot IS NULL AND c.parent_column IS NULL
+        ORDER BY c.column_order;
+    " 2>&1 | sed 's/^/  [catalog] /'
+
+    log "W1 DDL: DuckDB+DuckLake cross-check the table exists (expect 0 rows pre-INSERT)…"
+    w2_helper verify doris_ddl "" "${DDL_DB}"
+
+    log "W1 DDL: INSERT INTO dl.${DDL_DB}.doris_ddl (reuses the W2 BE sink) + read back…"
+    set +e
+    ddl_ins=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        INSERT INTO dl.${DDL_DB}.doris_ddl VALUES (1,'alice'),(2,'bob');
+    " 2>&1)
+    ddl_ins_status=$?
+    set -e
+    echo "$ddl_ins" | tail -6
+    if [[ $ddl_ins_status -eq 0 ]]; then
+        ddl_rows=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+            SELECT COUNT(*) FROM dl.${DDL_DB}.doris_ddl;
+        " 2>&1 | tail -1)
+        docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+            SELECT * FROM dl.${DDL_DB}.doris_ddl ORDER BY id;
+        " 2>&1
+        w2_helper verify doris_ddl "" "${DDL_DB}"
+        if [[ "${ddl_rows:-0}" == "2" ]]; then
+            log "W1 DDL: INSERT into the Doris-created table round-trips cross-engine (2 rows)."
+        else
+            log "W1 DDL CHECK: read back ${ddl_rows:-?} rows (expected 2) — inspect above."
+        fi
+    else
+        log "W1 DDL: INSERT into the Doris-created table failed — see output above + be.log."
+    fi
+
+    # Doris's grammar for an external/iceberg partitioned CREATE TABLE is
+    # `PARTITION BY [LIST|RANGE] (transform(col), …) ()` — the transform lives in the
+    # field and the FE stamps Style.LIST (the connector maps by field, not by style).
+    log "W1 DDL: partitioned CREATE TABLE doris_ddl_p PARTITION BY LIST (bucket(4, name)) ()…"
+    set +e
+    ddlp_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        SWITCH dl;
+        CREATE TABLE ${DDL_DB}.doris_ddl_p (id INT, name STRING) PARTITION BY LIST (bucket(4, name)) ();
+    " 2>&1)
+    ddlp_status=$?
+    set -e
+    echo "$ddlp_out" | tail -8
+    if [[ $ddlp_status -eq 0 ]]; then
+        log "W1 DDL: catalog cross-check — partition transform the connector recorded…"
+        transforms=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+            SELECT pc.transform
+            FROM ducklake_partition_column pc
+            JOIN ducklake_partition_info pi ON pi.partition_id = pc.partition_id
+            JOIN ducklake_table t  ON t.table_id  = pi.table_id
+            JOIN ducklake_schema s ON s.schema_id = t.schema_id
+            WHERE s.schema_name='${DDL_DB}' AND t.table_name='doris_ddl_p'
+              AND pi.end_snapshot IS NULL
+            ORDER BY pc.partition_key_index;
+        " 2>&1 | paste -sd, -)
+        log "  recorded transform(s): [$transforms]  (expect a bucket transform, arity 4)"
+        if echo "$transforms" | grep -qi bucket; then
+            log "W1 DDL: partitioned CREATE landed a bucket partition spec — live analogue of the W1b(a) round-trip. ✅"
+        else
+            log "W1 DDL CHECK: expected a bucket transform, got [$transforms] — inspect ducklake_partition_column."
+        fi
+    else
+        log "W1 DDL CHECK: partitioned CREATE failed — expected GREEN. Syntax must be PARTITION BY LIST (bucket(N,col)) (); inspect output above + fe.log."
+    fi
+fi
+
+# (3) DROP DATABASE — routed to connector.dropDatabase; also tidies the table
+# from a fixed-FE run. (No CASCADE: drop the table first when present.)
+log "W1 DDL: DROP TABLE (if any) + DROP DATABASE dl.${DDL_DB} (database-level DDL)…"
+set +e
+dropdb_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    DROP TABLE IF EXISTS ${DDL_DB}.doris_ddl;
+    DROP TABLE IF EXISTS ${DDL_DB}.doris_ddl_p;
+    DROP DATABASE ${DDL_DB};
+" 2>&1)
+dropdb_status=$?
+set -e
+echo "$dropdb_out" | tail -4
+gone=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+    SELECT COUNT(*) FROM ducklake_schema WHERE schema_name='${DDL_DB}' AND end_snapshot IS NULL;
+" 2>&1 | tail -1)
+if [[ $dropdb_status -eq 0 && "${gone:-1}" == "0" ]]; then
+    log "W1 DDL: DROP DATABASE LIVE-GREEN — connector tombstoned schema '${DDL_DB}' in DuckLake."
+else
+    log "W1 DDL CHECK: DROP DATABASE status=$dropdb_status, active '${DDL_DB}' schema count=${gone:-?} (expect 0) — inspect dropSchema/output above."
+fi
+
+log "W1 DDL summary: CREATE/DROP DATABASE + TABLE (unpartitioned + bucket-partitioned) all LIVE-GREEN end-to-end. 🎉"
+
+log "W2: creating target dl.tpch.doris_w via Doris CREATE TABLE (live DDL — no DuckDB crutch)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    DROP TABLE IF EXISTS tpch.doris_w;
+    CREATE TABLE tpch.doris_w (id INT, name STRING);
+" 2>&1 | tail -4
 
 log "W2: INSERT INTO dl.tpch.doris_w via Doris (BE Iceberg sink writes the Parquet)…"
 set +e
@@ -379,10 +550,12 @@ fi
 # DuckLake's own murmur3 sends alice→1, bob→2, charlie→3 (the DuckLakeBucketTransform
 # reference + bootstrap by_name_bucket), so the recorded buckets MUST be exactly
 # {1,2,3}. A different/colliding set means the BE hash differs from DuckLake's.
-log "W2c: creating bucketed target lake.tpch.doris_wb (bucket(4, name)) via DuckDB…"
-w2_helper create doris_wb "bucket(4, name)"
-log "W2c: refreshing Doris catalog so it sees tpch.doris_wb…"
-refresh_dl_catalog
+log "W2c: creating bucketed target dl.tpch.doris_wb via Doris CREATE TABLE PARTITION BY LIST (bucket(4, name)) () (live DDL — no DuckDB crutch)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    DROP TABLE IF EXISTS tpch.doris_wb;
+    CREATE TABLE tpch.doris_wb (id INT, name STRING) PARTITION BY LIST (bucket(4, name)) ();
+" 2>&1 | tail -4
 
 log "W2c: INSERT alice/bob/charlie INTO dl.tpch.doris_wb via Doris (BE buckets + writes partitioned)…"
 set +e

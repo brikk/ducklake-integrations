@@ -1,0 +1,39 @@
+diff --git a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
+index 290fc5ca0ae..211664f0a2b 100644
+--- a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
++++ b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
+@@ -49,7 +49,7 @@ public class CatalogFactory {
+     // Other types (hms, iceberg, paimon, hudi) still use
+     // their built-in ExternalCatalog implementations until their ConnectorProviders are fully ready.
+     private static final Set<String> SPI_READY_TYPES =
+-            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute");
++            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "ducklake");
+ 
+     /**
+      * create the catalog instance from catalog log.
+diff --git a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
+index c52bd4aadf4..ffa6b06fd1b 100644
+--- a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
++++ b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
+@@ -938,11 +938,21 @@ public class CreateTableInfo {
+      * stay in sync if SPI_READY_TYPES gains a CREATE-TABLE-capable full-adopter. Returns {@code null}
+      * for SPI types that do not support CREATE TABLE (jdbc/es/trino-connector) so callers preserve
+      * their existing (legacy-equivalent) behavior for those types.
++     *
++     * <p>"ducklake" is a CREATE-TABLE-capable full-adopter (its connector advertises
++     * {@code supportsCreateTable()} and {@code PluginDrivenExternalCatalog.createTable()} is generic),
++     * so it pads {@code ENGINE_ICEBERG}: DuckLake is Iceberg-shaped (the sink is a TIcebergTableSink and
++     * partitioning uses the Iceberg transform family), and the iceberg engine path is exactly the one
++     * that accepts {@code PARTITIONED BY (bucket(N, col))} and rejects {@code DISTRIBUTE BY} — matching
++     * the connector's own DDL contract. Read-side engine display (getEngine/getEngineTableTypeName) is
++     * intentionally left generic for ducklake so the already-shipped read path is untouched.
+      */
+     private static String pluginCatalogTypeToEngine(PluginDrivenExternalCatalog catalog) {
+         switch (catalog.getType()) {
+             case "max_compute":
+                 return ENGINE_MAXCOMPUTE;
++            case "ducklake":
++                return ENGINE_ICEBERG;
+             default:
+                 return null;
+         }

@@ -227,23 +227,44 @@ internal class DuckLakeDdlTest {
 
     @Test
     @Throws(Exception::class)
-    fun rejectsListRangeAndUnknownTransform() {
+    fun createsBucketPartitionedTableUnderListStyle() {
         withCatalog { catalog ->
-            val md = DuckLakeConnectorMetadata(catalog)
-            val base = ConnectorCreateTableRequest.builder()
-                .dbName("sales")
-                .columns(listOf(col("id", ConnectorType.of("INT"), nullable = true)))
-
-            // LIST partitioning has no Iceberg equivalent → reject.
-            val listReq = base.tableName("nope_list")
-                .partitionSpec(ConnectorPartitionSpec(ConnectorPartitionSpec.Style.LIST, emptyList(), emptyList()))
+            // Live Doris expresses iceberg partitioning as `PARTITION BY LIST (bucket(4,name)) ()`,
+            // which the FE converter stamps Style.LIST with the transform in the field (confirmed
+            // live 2026-06-10). The connector maps by field transform, not by the style keyword.
+            val request = ConnectorCreateTableRequest.builder()
+                .dbName("w1bb_list")
+                .tableName("by_name_bucket_list")
+                .columns(listOf(col("id", ConnectorType.of("INT"), nullable = false), col("name", ConnectorType.of("STRING"), nullable = true)))
+                .partitionSpec(
+                    ConnectorPartitionSpec(
+                        ConnectorPartitionSpec.Style.LIST,
+                        listOf(ConnectorPartitionField("name", "bucket", listOf(4))),
+                        emptyList(),
+                    ),
+                )
                 .build()
-            assertThatThrownBy { md.createTable(null, listReq) }
-                .isInstanceOf(DorisConnectorException::class.java)
-                .hasMessageContaining("LIST")
+            val md = DuckLakeConnectorMetadata(catalog)
+            md.createDatabase(null, "w1bb_list", emptyMap())
+            md.createTable(null, request)
 
-            // truncate() is a valid Iceberg transform but unsupported by DuckLake → reject.
-            val truncReq = base.tableName("nope_trunc")
+            val fields = partitionFieldsByColumn(catalog, "w1bb_list", "by_name_bucket_list")
+            assertThat(fields).containsOnlyKeys("name")
+            assertThat(fields.getValue("name").transform).isEqualTo(DucklakePartitionTransform.BUCKET)
+            assertThat(fields.getValue("name").arity).isEqualTo(4)
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun rejectsUnknownTransform() {
+        withCatalog { catalog ->
+            // truncate() is a valid Iceberg transform but unsupported by DuckLake → reject
+            // (the mapper throws before the catalog is touched, so no schema setup needed).
+            val truncReq = ConnectorCreateTableRequest.builder()
+                .dbName("sales")
+                .tableName("nope_trunc")
+                .columns(listOf(col("id", ConnectorType.of("INT"), nullable = true)))
                 .partitionSpec(
                     ConnectorPartitionSpec(
                         ConnectorPartitionSpec.Style.TRANSFORM,
@@ -252,11 +273,9 @@ internal class DuckLakeDdlTest {
                     ),
                 )
                 .build()
-            assertThatThrownBy { md.createTable(null, truncReq) }
+            assertThatThrownBy { DuckLakeConnectorMetadata(catalog).createTable(null, truncReq) }
                 .isInstanceOf(DorisConnectorException::class.java)
                 .hasMessageContaining("truncate")
-
-            assertThat(catalog.getTable("sales", "nope_list", catalog.currentSnapshotId)).isNull()
             assertThat(catalog.getTable("sales", "nope_trunc", catalog.currentSnapshotId)).isNull()
         }
     }

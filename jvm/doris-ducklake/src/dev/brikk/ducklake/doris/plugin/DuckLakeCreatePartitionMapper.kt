@@ -18,12 +18,19 @@ import org.apache.doris.connector.api.ddl.ConnectorPartitionSpec
  * anything else is rejected rather than silently dropped or mis-mapped.
  *
  * **Two distinct SPI inputs, and why they're treated differently:**
- * - [ConnectorPartitionSpec] carries the Iceberg-style `PARTITIONED BY (...)`
- *   clause. The FE ([CreateTableInfoToConnectorRequestConverter]) lowercases the
- *   transform function name, so `bucket(16, c)` arrives as `transform="bucket",
- *   transformArgs=[16]`, `year(d)` as `"year"`, a plain column as `"identity"`.
- *   This is the path that produces a *real* DuckLake bucket — DuckLake's bucket is
- *   Iceberg murmur3, proven BE-equivalent by the W2c live smoke.
+ * - [ConnectorPartitionSpec] carries the Iceberg-style partition clause. The FE
+ *   ([CreateTableInfoToConnectorRequestConverter]) lowercases the transform function
+ *   name, so `bucket(16, c)` arrives as `transform="bucket", transformArgs=[16]`,
+ *   `year(d)` as `"year"`, a plain column as `"identity"`. This is the path that
+ *   produces a *real* DuckLake bucket — DuckLake's bucket is Iceberg murmur3, proven
+ *   BE-equivalent by the W2c live smoke.
+ *   We map by each field's transform **regardless of [ConnectorPartitionSpec.style]**:
+ *   Doris's grammar forces an external/iceberg partitioned CREATE TABLE to be written
+ *   `PARTITION BY [LIST|RANGE] (transform(col), …) ()`, so these specs arrive tagged
+ *   `Style.LIST` (or `RANGE`) with the real transform living in each field — not
+ *   `Style.TRANSFORM` (confirmed live 2026-06-10; see `ducklake-doris-friction.md`).
+ *   The converter drops the (empty) value lists, so the style keyword carries no extra
+ *   meaning here; per-field validation in [toFieldSpec] is the conservative guard.
  * - [ConnectorBucketSpec] carries Doris's `DISTRIBUTED BY` clause. The FE only ever
  *   stamps its algorithm `"doris_default"` (CRC32) or `"doris_random"` — **neither is
  *   murmur3**. Treating Doris hash-distribution as DuckLake bucketing would silently
@@ -56,21 +63,11 @@ internal object DuckLakeCreatePartitionMapper {
         return fields.ifEmpty { null }
     }
 
-    private fun fromPartitionSpec(spec: ConnectorPartitionSpec): List<PartitionFieldSpec> {
-        when (spec.style) {
-            ConnectorPartitionSpec.Style.IDENTITY,
-            ConnectorPartitionSpec.Style.TRANSFORM,
-            -> Unit // Iceberg-shaped — supported
-            ConnectorPartitionSpec.Style.LIST,
-            ConnectorPartitionSpec.Style.RANGE,
-            -> throw DorisConnectorException(
-                "DuckLake supports only Iceberg-style partitioning " +
-                    "(identity / year / month / day / hour / bucket); " +
-                    "PARTITION BY ${spec.style} is not supported",
-            )
-        }
-        return spec.fields.map { toFieldSpec(it) }
-    }
+    // Map by each field's transform regardless of spec.style — see the class KDoc:
+    // live Doris tags iceberg-style partitioning as LIST/RANGE, with the transform in
+    // each field. toFieldSpec rejects any per-field transform DuckLake can't represent.
+    private fun fromPartitionSpec(spec: ConnectorPartitionSpec): List<PartitionFieldSpec> =
+        spec.fields.map { toFieldSpec(it) }
 
     private fun toFieldSpec(field: ConnectorPartitionField): PartitionFieldSpec {
         val column = field.columnName
@@ -104,7 +101,7 @@ internal object DuckLakeCreatePartitionMapper {
             throw DorisConnectorException(
                 "DISTRIBUTED BY uses algorithm '${spec.algorithm}', which is Doris-native distribution, " +
                     "not DuckLake bucketing — DuckLake buckets by Iceberg murmur3. " +
-                    "Use PARTITIONED BY (bucket(N, col)) instead",
+                    "Use PARTITION BY LIST (bucket(N, col)) () instead",
             )
         }
         if (spec.numBuckets <= 0) {

@@ -7,8 +7,13 @@ substrate (Postgres + MinIO + seeded TPC-H) and exercises the plugin end-to-end:
 - **read** — `CREATE CATALOG`, `SHOW/DESC`, `SELECT * FROM dl.tpch.orders`
 - **Step 7** — position-delete plumbing (FE-side; BE-side gated on a known
   parquet-nullability gap)
-- **W2 INSERT** — `INSERT INTO dl.tpch.doris_w VALUES (…)` via Doris, then reads it
-  back through **both Doris and DuckDB+DuckLake** (cross-engine). ✅ GREEN 2026-06-09.
+- **W1 DDL** — live Doris `CREATE DATABASE` + `CREATE TABLE` (unpartitioned and
+  `PARTITION BY LIST (bucket(4, name)) ()`) routed FE→connector→DuckLake, cross-verified
+  via DuckDB+DuckLake and the catalog tables, then `INSERT` + `DROP`. ✅ GREEN 2026-06-10
+  (needs the FE engine-padding patch — see *Building the FE image*).
+- **W2 INSERT** — `INSERT INTO dl.tpch.doris_w VALUES (…)` via Doris (target now created
+  by Doris `CREATE TABLE`, not DuckDB), then reads it back through **both Doris and
+  DuckDB+DuckLake** (cross-engine). ✅ GREEN 2026-06-09.
 - **W2c BUCKET INSERT** — `INSERT … INTO dl.tpch.doris_wb` (a `bucket(4, name)` table)
   via Doris, then asserts the bucket each file was tagged with in the catalog is exactly
   `{1,2,3}` — i.e. the BE's Iceberg murmur3 matches DuckLake's (alice→1, bob→2,
@@ -68,9 +73,11 @@ stock Doris base, via Doris's own `docker/runtime/doris-fe-overlay/Dockerfile`
 (`FROM apache/doris:fe-4.1.0`, wipes + COPYs `output/fe/{bin,lib,conf,plugins,webroot}`).
 
 ```bash
-# 1. Build the P-series FE (JDK 17). Patch SPI_READY_TYPES first (the route gate):
+# 1. Build the P-series FE (JDK 17). Apply BOTH FE patches first — see
+#    ../fe-patches/FE-PATCHES.md (reapplyable: git apply ../fe-patches/ducklake-fe.patch):
 cd ~/DEV/OSS/db/doris   # branch-catalog-spi
-#   fe/.../datasource/CatalogFactory.java: add "ducklake" to SPI_READY_TYPES
+#   • CatalogFactory.java         : add "ducklake" to SPI_READY_TYPES        (catalog/INSERT route gate)
+#   • CreateTableInfo.java        : pluginCatalogTypeToEngine += "ducklake"→ENGINE_ICEBERG  (CREATE TABLE gate)
 JAVA_HOME=<jdk17> DISABLE_BUILD_UI=ON ./build.sh --fe        # → output/fe  (see doris-fe-build-macos memory)
 
 # 2. Image it (stage a minimal context so podman/docker isn't sent the multi-GB repo):
@@ -102,7 +109,8 @@ or plugin changes so the fresh FE reloads everything.
 |---|---|
 | `FE never came up` but FE log shows SQL | The FE *is* up; the health-check `SELECT 1` needs a **live BE** (Nereids assigns even constant queries to a backend). Check `SHOW BACKENDS\G` → `Alive`. |
 | BE `Exited (0)`, `ErrMsg: NoRouteToHost`, FE `No backend available as scan node` | BE crashed. On x86_64 this is the **arm64-under-emulation** crash — set `DORIS_BE_PLATFORM=linux/amd64` + re-pull the amd64 BE. |
-| `Unknown catalog type: ducklake` on `CREATE CATALOG` | FE missing `"ducklake"` in `SPI_READY_TYPES`. Rebuild the FE image from a patched FE. |
+| `Unknown catalog type: ducklake` on `CREATE CATALOG` | FE missing `"ducklake"` in `SPI_READY_TYPES`. Rebuild the FE image from a patched FE (`../fe-patches/`). |
+| `Current catalog does not support create table: dl` on `CREATE TABLE` | FE missing the `pluginCatalogTypeToEngine` `"ducklake"→ENGINE_ICEBERG` patch. Reapply `../fe-patches/ducklake-fe.patch`, rebuild + re-image the FE. |
 | INSERT: `Unsupported compress type UNKNOWN with parquet` | (fixed) sink must set a compression — we use `ZSTD`. |
 | Read-back path doubled (`…/doris_w/s3%3A//…`) | (fixed) the BE returns an absolute path; the connector relativizes it against the table data dir. |
 
@@ -119,5 +127,7 @@ or plugin changes so the fresh FE reloads everything.
 - **Network**: the substrate compose project is `trino-ducklake-dev`, so its bridge
   network is `trino-ducklake-dev_default` — the one-shot DuckDB helper containers join it
   by that name. Keep the two `name:` fields in sync if you rename projects.
-- **`SPI_READY_TYPES` + the FE-source patch are NOT in this repo** — they live in your
-  `~/DEV/OSS/db/doris` checkout. Re-apply if you re-pull the branch head.
+- **The FE-source patches are applied to your `~/DEV/OSS/db/doris` checkout, not built
+  from this repo** — but they ARE tracked here as [`../fe-patches/ducklake-fe.patch`](../fe-patches/FE-PATCHES.md)
+  (`SPI_READY_TYPES` + `pluginCatalogTypeToEngine`). Reapply with `git apply` if you
+  re-pull the branch head, then rebuild + re-image the FE.

@@ -83,16 +83,34 @@ internal class DuckLakeCreatePartitionMapperTest {
     }
 
     @Test
-    fun rejectsUnknownTransformAndListRange() {
+    fun rejectsUnknownTransform() {
         assertThatThrownBy {
             DuckLakeCreatePartitionMapper.toPartitionFields(transformSpec(ConnectorPartitionField("a", "truncate", listOf(10))), null)
         }.isInstanceOf(DorisConnectorException::class.java).hasMessageContaining("truncate")
+    }
 
-        assertThatThrownBy {
-            DuckLakeCreatePartitionMapper.toPartitionFields(
-                ConnectorPartitionSpec(ConnectorPartitionSpec.Style.RANGE, emptyList(), emptyList()),
+    @Test
+    fun mapsTransformFieldsUnderListOrRangeStyle() {
+        // Live Doris stamps iceberg-style partitioning with the grammar keyword
+        // (LIST/RANGE), not Style.TRANSFORM, carrying the real transform per field. We
+        // map by field regardless of style (confirmed live 2026-06-10; see friction log).
+        for (style in listOf(ConnectorPartitionSpec.Style.LIST, ConnectorPartitionSpec.Style.RANGE)) {
+            val fields = DuckLakeCreatePartitionMapper.toPartitionFields(
+                ConnectorPartitionSpec(
+                    style,
+                    listOf(
+                        ConnectorPartitionField("name", "bucket", listOf(4)),
+                        ConnectorPartitionField("d", "day", emptyList()),
+                    ),
+                    emptyList(),
+                ),
                 null,
+            )!!
+            assertThat(fields.map { it.transform }).containsExactly(
+                DucklakePartitionTransform.BUCKET,
+                DucklakePartitionTransform.DAY,
             )
-        }.isInstanceOf(DorisConnectorException::class.java).hasMessageContaining("RANGE")
+            assertThat(fields.first().arity).isEqualTo(4)
+        }
     }
 }

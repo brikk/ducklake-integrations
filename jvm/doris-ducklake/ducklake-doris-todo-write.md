@@ -171,11 +171,26 @@ the same ones).
   rejections) and `DuckLakeDdlTest` (CREATE → `getPartitionSpecs` round-trip for bucket / identity+
   temporal, + DISTRIBUTED-BY / LIST / truncate rejection). **Doris suite 87→96 green.**
 
-**(b) Live DDL smoke — validate the route + drop the DuckDB-create crutch.** Add a step to
-`compose/smoke.sh`: Doris `CREATE DATABASE`/`CREATE TABLE dl.tpch.doris_ddl (...)` → verify via
-DuckDB+DuckLake the table exists with the right columns → (compose W1+W2) INSERT into it → DROP.
-Same `SPI_READY_TYPES` gate as INSERT (already set in the smoke FE). `w2-insert.py create` mode can
-then be replaced by a Doris `CREATE TABLE`.
+**(b) Live DDL smoke. ✅ DONE + VALIDATED GREEN end-to-end (2026-06-10).**
+`compose/smoke.sh` now runs a live **W1 DDL** step: Doris `CREATE DATABASE` →
+`CREATE TABLE doris_ddl (id INT, name STRING)` → cross-verify (DESC + `ducklake_column`
+catalog + DuckDB+DuckLake) → `INSERT` + cross-engine read-back → **partitioned**
+`CREATE TABLE … PARTITION BY LIST (bucket(4, name)) ()` (catalog records `bucket(4)`) →
+`DROP TABLE`/`DROP DATABASE`. The **DuckDB-create crutch is removed**: W2/W2c targets
+are now stood up by Doris `CREATE TABLE` (`doris_w` plain, `doris_wb` bucket-partitioned),
+and both still round-trip GREEN cross-engine.
+
+Two FE-route gaps surfaced and were fixed to get here (both in
+[`ducklake-doris-friction.md`](./ducklake-doris-friction.md), 2026-06-10; FE patches in
+[`fe-patches/`](./fe-patches/FE-PATCHES.md)):
+- **FE engine-padding:** `CreateTableInfo.pluginCatalogTypeToEngine` only mapped
+  `"max_compute"`, so plugin `CREATE TABLE` threw *"Current catalog does not support
+  create table"* before reaching the connector. Fixed by padding `ENGINE_ICEBERG` for
+  `"ducklake"` (DB-level DDL was already routed). Read path untouched.
+- **Partition style:** live Doris stamps external partitioned `CREATE TABLE` as
+  `Style.LIST`/`RANGE` (transform in the field), not `Style.TRANSFORM`. The connector
+  (`DuckLakeCreatePartitionMapper`) now maps by per-field transform regardless of style;
+  tests updated (`DuckLakeCreatePartitionMapperTest`, `DuckLakeDdlTest`).
 
 **Env recipe (so a fresh agent is turnkey):** all compose images are cached → cluster bring-up ~2–3 min.
 - *Headless tests:* `PATH=/opt/podman/bin:$PATH DOCKER_HOST=unix:///var/run/docker.sock
@@ -185,9 +200,12 @@ then be replaced by a Doris `CREATE TABLE`.
 
 ## Phased plan
 
-- [x] **W1 — DDL** (`CREATE/DROP DATABASE/TABLE`): connector side built + headless-tested
-  (CREATE/DROP DATABASE, CREATE/DROP TABLE unpartitioned + **partitioned: bucket/identity/temporal,
-  W1b(a)**, scalar columns). Only the live DDL route (gated like INSERT) remains (W1b(b) smoke).
+- [x] **W1 — DDL** (`CREATE/DROP DATABASE/TABLE`): ✅ **VALIDATED GREEN end-to-end** on a
+  live FE+BE (W1b(b)). CREATE/DROP DATABASE + CREATE/DROP TABLE (unpartitioned +
+  **bucket-partitioned**, scalar columns) route FE→connector→DuckLake and cross-verify via
+  DuckDB+DuckLake and the catalog tables. Needed two FE patches —
+  `pluginCatalogTypeToEngine` += `"ducklake"→ENGINE_ICEBERG` and a connector-side relax to
+  accept the live `Style.LIST`/`RANGE` partition tagging (see W1b(b) + friction log 2026-06-10).
 - [x] **W2 — INSERT (append, unpartitioned):** ✅ **VALIDATED GREEN end-to-end** on a
   live FE+BE — Doris writes a DuckLake Parquet file, reads back through Doris + DuckDB.
 - [x] **W2c — INSERT (partitioned / BUCKET):** ✅ **VALIDATED GREEN end-to-end** — iceberg
