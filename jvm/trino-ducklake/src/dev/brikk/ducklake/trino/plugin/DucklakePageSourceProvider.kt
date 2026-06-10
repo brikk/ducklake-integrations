@@ -159,13 +159,18 @@ class DucklakePageSourceProvider @Inject constructor(
             // Get file system for the session
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
-            // Open the data file
+            // Resolve the data file location. NOTE: do NOT open a TrinoInputFile here — only the
+            // parquet branch needs one. Lance data files are *directories* (the catalog path ends
+            // in a trailing slash for an existing dir), and fileSystem.newInputFile rejects a
+            // directory/trailing-slash location; the DuckDB-engine branch reads via the path string
+            // (`__lance_scan('<dir>')`), not a TrinoInputFile, so opening one is both unnecessary
+            // and fatal for lance.
             val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
-            val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
 
             // Dispatch on file format
             val format = ducklakeSplit.fileFormat
             if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
+                val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
                 val delegate: ConnectorPageSource = createParquetPageSource(
                         inputFile,
                         sourceColumns,

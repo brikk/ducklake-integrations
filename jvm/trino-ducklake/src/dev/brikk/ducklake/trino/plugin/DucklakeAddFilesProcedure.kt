@@ -42,6 +42,7 @@ import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
+import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BooleanType.BOOLEAN
@@ -74,6 +75,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
         private val typeConverter: DucklakeTypeConverter,
         private val pathResolver: DucklakePathResolver,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
+        private val executorFactory: DucklakeDuckDbExecutorFactory,
+        private val duckDbS3Config: DuckDbS3Config,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -88,7 +91,12 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         Procedure.Argument("FILES", ArrayType(VARCHAR)),
                         Procedure.Argument("ALLOW_MISSING", BOOLEAN, false, false),
                         Procedure.Argument("IGNORE_EXTRA_COLUMNS", BOOLEAN, false, false),
-                        Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false)),
+                        Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false),
+                        // Optional format selector. Default 'parquet' keeps every existing call
+                        // unchanged. 'lance' registers an externally-written Lance dataset
+                        // *directory* (read via the FileScan __lance_scan path) without a parquet
+                        // footer — see addLanceFragment.
+                        Procedure.Argument("FILE_FORMAT", VARCHAR, false, "parquet")),
                 ADD_FILES.bindTo(this),
                 true)
 
@@ -101,6 +109,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             allowMissing: Boolean,
             ignoreExtraColumns: Boolean,
             hivePartitioning: Boolean,
+            fileFormat: String?,
     ) {
         if (schemaName.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "schema_name is required")
@@ -110,6 +119,15 @@ class DucklakeAddFilesProcedure @Inject constructor(
         }
         if (fileList.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
+        }
+        val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
+        if (format != FORMAT_PARQUET && format != DucklakeSessionProperties.FORMAT_LANCE) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "add_files file_format must be 'parquet' or 'lance', got '$format'")
+        }
+        val isLance: Boolean = format == DucklakeSessionProperties.FORMAT_LANCE
+        if (isLance && hivePartitioning) {
+            throw TrinoException(NOT_SUPPORTED, "add_files file_format => 'lance' does not support hive_partitioning")
         }
 
         val filePaths = extractStringArray(fileList)
@@ -130,6 +148,11 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
+
+        if (isLance && activePartitionSpec.isPresent) {
+            throw TrinoException(NOT_SUPPORTED,
+                    "add_files file_format => 'lance' does not support partitioned tables yet (table \"$schemaName.$tableName\" is partitioned)")
+        }
 
         if (activePartitionSpec.isPresent && hivePartitioning) {
             for (field in activePartitionSpec.get().fields) {
@@ -155,17 +178,20 @@ class DucklakeAddFilesProcedure @Inject constructor(
             if (!processed.add(normalized)) {
                 continue
             }
-            fragments.add(buildFragment(
-                    fileSystem,
-                    filePath,
-                    schemaName,
-                    tableName,
-                    allColumns,
-                    topLevelColumns,
-                    activePartitionSpec,
-                    allowMissing,
-                    ignoreExtraColumns,
-                    hivePartitioning))
+            fragments.add(if (isLance)
+                buildLanceFragment(fileSystem, filePath)
+            else
+                buildFragment(
+                        fileSystem,
+                        filePath,
+                        schemaName,
+                        tableName,
+                        allColumns,
+                        topLevelColumns,
+                        activePartitionSpec,
+                        allowMissing,
+                        ignoreExtraColumns,
+                        hivePartitioning))
         }
 
         try {
@@ -303,6 +329,76 @@ class DucklakeAddFilesProcedure @Inject constructor(
         }
     }
 
+    /**
+     * Builds a fragment for an externally-written Lance dataset *directory*. Unlike parquet there
+     * is no footer to read: the path is registered opaquely (one catalog row per dataset, read via
+     * the FileScan `__lance_scan` path), record_count is sourced by counting rows through the same
+     * DuckDB executor the read path uses, and file_size is a best-effort sum of the directory's
+     * files. No column stats and no name map — Lance reads project columns by name, so the
+     * dataset's column names must match the table's (as DuckDB renders them).
+     */
+    private fun buildLanceFragment(
+            fileSystem: TrinoFileSystem,
+            filePath: String,
+    ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
+        val recordCount: Long = countLanceRows(filePath)
+        val fileSize: Long = bestEffortDirectorySize(fileSystem, filePath)
+        return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
+                filePath,
+                /* pathIsRelative */ false,
+                DucklakeSessionProperties.FORMAT_LANCE,
+                fileSize,
+                /* footerSize */ 0L,
+                recordCount,
+                /* columnStats */ emptyList(),
+                /* partitionValues */ emptyMap(),
+                /* partitionId */ null,
+                /* nameMap */ null)
+    }
+
+    /**
+     * Counts the rows of a Lance dataset by scanning it through the DuckDB executor (the same
+     * engine the read path uses), reusing the FileScan `__lance_scan` source. Doubles as a
+     * readability/existence check — a missing or unreadable dataset surfaces as an error here.
+     */
+    private fun countLanceRows(url: String): Long {
+        val isS3: Boolean = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
+        val target = DuckDbAttachTarget.FileScan(
+                url, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE,
+                if (isS3) Optional.of(duckDbS3Config) else Optional.empty())
+        // Empty projection → `SELECT 1 FROM __lance_scan(...)`, one row per dataset row.
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                target, emptyList<DucklakeColumnHandle>(), TupleDomain.all<DucklakeColumnHandle>())
+        var count = 0L
+        try {
+            executorFactory.create().execute(request).use { ctx ->
+                val reader = ctx.arrowReader()
+                while (reader.loadNextBatch()) {
+                    count += reader.vectorSchemaRoot.rowCount.toLong()
+                }
+            }
+        }
+        catch (e: Exception) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read lance dataset: $url", e)
+        }
+        return count
+    }
+
+    /** Best-effort sum of a dataset directory's file sizes; 0 if it cannot be listed. */
+    private fun bestEffortDirectorySize(fileSystem: TrinoFileSystem, dirPath: String): Long {
+        return try {
+            var total = 0L
+            val iterator = fileSystem.listFiles(Location.of(dirPath))
+            while (iterator.hasNext()) {
+                total += iterator.next().length()
+            }
+            total
+        }
+        catch (_: IOException) {
+            0L
+        }
+    }
+
     private fun remapPartitionValuesToPartitionKeyIndex(
             byFieldId: Map<Int, String>,
             activePartitionSpec: Optional<DucklakePartitionSpec>,
@@ -327,6 +423,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
     }
 
     companion object {
+        private const val FORMAT_PARQUET: String = "parquet"
+
         private val ADD_FILES: MethodHandle
 
         init {
@@ -342,7 +440,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
                                 List::class.java,
                                 java.lang.Boolean.TYPE,
                                 java.lang.Boolean.TYPE,
-                                java.lang.Boolean.TYPE))
+                                java.lang.Boolean.TYPE,
+                                String::class.java))
             }
             catch (e: ReflectiveOperationException) {
                 throw AssertionError(e)

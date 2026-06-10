@@ -11,7 +11,7 @@ published: **`osx_arm64`** (Apple Silicon), `linux_amd64`, `linux_arm64`, or `wi
 
 ## PROGRESS — arm64 run (M1 Max, osx_arm64), 2026-06-09
 
-Picked up on a lance-capable box. **Steps 1–4 done and green; Steps 5–7 + O1 still open.**
+Picked up on a lance-capable box. **Steps 1–5 done and green; Steps 6–7 + O1 still open.**
 
 - **Step 1 (Phase A0 probe) — DONE, green.** The probe ran (no skip) once one bug was fixed:
   the scan function is **`__lance_scan`** (double-underscore), NOT `lance_scan`. The shipped
@@ -35,6 +35,19 @@ Picked up on a lance-capable box. **Steps 1–4 done and green; Steps 5–7 + O1
   alias — bare WHERE over the scan source) and reaches DuckDB: `__lance_scan` returns only the
   matching row. New test `fileScanPushesPredicateIntoLanceScan`. Pushdown comes for free, as the
   handoff predicted. (lance's `prefilter` semantics still matter for the Step-7 table functions.)
+- **Step 5 (SQL-level read via add_files) — DONE, green.** Extended `add_files` with an optional
+  `FILE_FORMAT` arg (default `'parquet'`, so existing calls are unchanged). `file_format => 'lance'`
+  registers a dataset *directory* as one catalog row: skips the parquet footer, sources `record_count`
+  by scanning via `__lance_scan` through the read executor (also a readability check), best-effort
+  directory size, no stats, read-by-name (no nameMap). Guards reject hive-partitioning + partitioned
+  tables for lance v1. New CTAS-free integration test `TestDucklakeLanceAddFiles` registers an
+  externally-written `.lance` dir and SELECTs it (catalog records `file_format='lance'` + `record_count=3`;
+  count/order/predicate all correct). **Fixed a latent read-path bug:** `createPageSource` opened a
+  `TrinoInputFile` eagerly for every format, which throws on a lance *directory* location (trailing
+  slash) — moved that `newInputFile` into the parquet-only branch (the DuckDB-engine branch reads via
+  the path string, never a `TrinoInputFile`). `__lance_scan` accepts bare / trailing-slash / `file://`
+  path forms (verified), so the catalog's directory URI is fine for the scan. Targeted regression batch
+  (parquet/vortex/duckdb reads + parquet add_files) stays green.
 - **Environment caveat (NOT lance):** the full `:trino-ducklake:test` suite is green here EXCEPT 3
   `TestDucklakeDuckDbExecutorBackends` parity tests that hard-fail because the Quack testcontainer's
   duckdb is **amd64** while the host bundles the **arm64** `trino_parity.duckdb_extension`
@@ -42,7 +55,7 @@ Picked up on a lance-capable box. **Steps 1–4 done and green; Steps 5–7 + O1
   `LOAD`. Their vortex sibling skips this gracefully via `assumeTrue`; these 3 predate that guard.
   Pre-existing, exposed by moving to Apple Silicon — orthogonal to lance. Flagged as a separate task.
 
-**Still open:** Step 5 (`add_files` → SQL-level read), Step 6 (writer A4),
+**Still open:** Step 6 (writer A4 — DECIDED: local-temp-then-upload, mirror vortex),
 Step 7 (table functions A3 — `lance_fts`/`lance_vector_search`/`lance_hybrid_search` confirmed present),
 and O1 (s3 secret vs storageOptions — needs an `s3://` lance read, not yet tested).
 
@@ -209,11 +222,12 @@ SQL-level read test first.)
 `DucklakePageSink.openNewWriter` gets a `FORMAT_LANCE` branch using DuckDB
 `COPY … TO (FORMAT lance)`. Then **flip the write validators** (the two `validateDataFileFormat`s)
 to accept `'lance'`. Key decisions:
-- **Direct-to-s3 vs local-temp-then-upload.** Vortex chose local-temp-then-upload for portability.
-  Lance is a *directory*, so local-temp means writing a dir then walking + uploading every file —
-  more friction. Direct `COPY … TO 's3://…/x.lance' (FORMAT lance)` is more attractive here (the
-  lance-duckdb extension supports direct s3 writes per TODO-lance verification). Weigh portability
-  vs the dir-walk-upload cost; this is a real fork, flag it for Jayson.
+- **Direct-to-s3 vs local-temp-then-upload — DECIDED (Jayson, 2026-06-09): local-temp-then-upload,
+  mirroring vortex.** Write the lance dir to local temp via `COPY … (FORMAT lance)`, then walk the
+  directory and upload every file to the destination filesystem. Keeps portability + the
+  inline-stats hook (below); accept the dir-walk/upload friction. (Direct `COPY … TO 's3://…'` was
+  the alternative — simpler for lance's directory shape but loses inline stats and diverges from
+  vortex.)
 - **Stats** — reuse `DucklakeColumnStatsAccumulator` (the same inline single-pass accumulator the
   vortex writer uses), if you go through the Arrow-stream writer. If you `COPY` directly from a
   server-side source you lose the inline-stats hook — decide deliberately.

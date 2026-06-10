@@ -19,6 +19,8 @@
 - record one row per Lance fragment file (closer to the per-file model but more catalog churn).
 Read-only probing can sidestep this by registering an externally-written dataset via `add_files` with the directory path.
 
+**RESOLVED — option A (2026-06-09, arm64):** `__lance_scan('<dir>')` accepts the dataset directory directly; one catalog row per dataset version, `path` = dir, opaque. `add_files(..., file_format => 'lance')` now registers such a directory (skips parquet footer, sources `record_count` by scanning via `__lance_scan`, no stats, read-by-name). The SQL-level read works end-to-end (`TestDucklakeLanceAddFiles`). One read-path fix was needed: `createPageSource` must NOT `newInputFile()` a lance directory (trailing-slash location) — only the parquet branch opens a `TrinoInputFile`; the DuckDB-engine branch reads via the path string. The lance writer (Phase A4) will own the dataset-write side; **decided: local-temp-then-upload, mirroring vortex.**
+
 ---
 
 ## Verification & maintenance status (2026-06-09)
