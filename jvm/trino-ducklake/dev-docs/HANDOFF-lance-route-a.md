@@ -76,10 +76,56 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   `add_files(file_format => 'lance')` (Step 5) instead. Writer regression batch (vortex CTAS, duckdb
   arrow-stream writer, rollover) stays green.
 
-**Still open:** Step 7 (table functions A3 — `lance_fts`/`lance_vector_search`/`lance_hybrid_search`
-confirmed present), and O1 (s3 secret vs storageOptions — needs an `s3://` lance read, not yet tested).
-A natural follow-up: ARRAY/embedding *write* support in the Arrow-stream writer (`toArrowType` +
-`populateVector` + stats) so embeddings can be written via CTAS, not just registered via `add_files`.
+**Still open:** Step 7 (table functions A3), the O1 fix (lance s3 cred channel), and a follow-up
+(ARRAY/embedding *write* support). Ordering + scope below.
+
+---
+
+## NEXT — ordering & scope (decided 2026-06-10; handoff happens in a fresh session)
+
+Three independent workstreams remain. **They have no hard dependency on each other**; recommended
+order is by value + risk:
+
+### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3) — DO FIRST
+The big novel-SPI chunk. **Scope the first session to `lance_vector_search` end-to-end ONLY**, then
+mirror the proven shape for `lance_fts` + `lance_hybrid_search` in a follow-up. Plan:
+- **Spike the hard part first: the `query_vec` argument.** Trino `ConnectorTableFunction` args are
+  scalar / descriptor / table only — there is no native array-argument kind. Figure out how a caller
+  passes a `FLOAT[]`/`DOUBLE[]` query vector (scalar `array`-typed arg? a VARCHAR the function parses?
+  a `DESCRIPTOR`?) BEFORE building the rest. This is the main unknown; everything else mirrors the
+  `add_files` procedure + the existing FileScan split→page-source flow. We have **zero** table
+  functions today (`add_files` is a *procedure* — different SPI shape), so this is greenfield.
+- Wire: register the `ConnectorTableFunction` in `DucklakeModule` (new `Multibinder` for
+  `ConnectorTableFunction`), resolve lance files from the catalog, emit splits carrying
+  `(path, column, query_vec, k, prefilter)`, and have the page source run
+  `lance_vector_search(dir, column, query_vec, k := …, prefilter := …)` (confirmed present;
+  two overloads — `FLOAT[]` and `DOUBLE[]` query vecs; see the duckdb_functions() dump in
+  [[project_lance_scan_function_name]]). Stretch: `applyTopN` so `ORDER BY <distance> LIMIT k`
+  synthesizes `k`.
+- **Target LOCAL-path lance datasets only.** s3 vector search would hit the same missing cred
+  channel as O1 — so treat "table functions over s3" as gated behind the O1 fix, not part of this
+  session. Verifiable end-to-end on arm64 (PostgreSQL catalog testcontainer + in-process executor).
+- Register the fixture via the Step-5 `add_files(file_format => 'lance')` path (or the Step-6 writer),
+  then call `SELECT * FROM TABLE(<catalog>.system.lance_vector_search(...))`.
+
+### 2. O1 fix — lance s3 credential channel — INDEPENDENT, schedule after/with Step 7
+Confirmed (see §O1): lance ignores the DuckDB secret and reads object_store's `AWS_*` **process-global**
+env. The connector's `DuckDbS3Config → CREATE SECRET` is a no-op for lance s3. Fix is a design choice,
+NOT more SPI:
+- **Favored: the Quack sidecar path** — set `AWS_*` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+  `AWS_ENDPOINT`/`AWS_ENDPOINT_URL`, `AWS_ALLOW_HTTP`, `AWS_REGION`) in the container env at launch
+  from catalog `s3.*` config. Clean because it's a separate process (no global-env collision with
+  Trino's parquet s3 client). Mirror the `s3.* → AWS_*` aliasing the Doris BE already does
+  ([[project_doris_be_aws_keys]]).
+- In-process executor: setting `AWS_*` per-query is unsafe (global). Only viable as a once-at-startup
+  global for a single s3 identity — document the limitation, or restrict in-process lance-s3.
+- Keep it OUT of the Step-7 PR — it touches execution-engine/sidecar config, not the table-function SPI.
+
+### 3. Follow-up — ARRAY/embedding WRITE support (lower priority)
+The Arrow-stream writer is scalar-only (`toArrowType`/`populateVector`), so embedding columns can't be
+written via CTAS — only registered via `add_files`. Add `ARRAY`(`FixedSizeList`) support to the writer
++ stats to enable embedding CTAS. Not blocking; embeddings are usually produced out-of-band and
+registered.
 
 **Design context (read first):**
 - [TODO-lance.md](TODO-lance.md) — the chunked plan (Phases A0–A4) + the Route A vs B decision.
