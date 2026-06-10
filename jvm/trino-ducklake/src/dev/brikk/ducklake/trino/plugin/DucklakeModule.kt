@@ -34,6 +34,7 @@ import io.trino.plugin.hive.parquet.ParquetWriterConfig
 import io.trino.spi.connector.ConnectorPageSinkProvider
 import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 import io.trino.spi.connector.ConnectorSplitManager
+import io.trino.spi.function.table.ConnectorTableFunction
 import io.trino.spi.procedure.Procedure
 import org.weakref.jmx.guice.ExportBinder.newExporter
 
@@ -132,5 +133,11 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         // Procedures (per-catalog, exposed under <catalog>.system.<name>).
         val procedureBinder = Multibinder.newSetBinder(binder, Procedure::class.java)
         procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure::class.java).`in`(Scopes.SINGLETON)
+
+        // Table functions (per-catalog, invoked as TABLE(<catalog>.system.<name>(...))).
+        // DucklakeFunctionProvider routes each function's handle to its split processor.
+        val tableFunctionBinder = Multibinder.newSetBinder(binder, ConnectorTableFunction::class.java)
+        tableFunctionBinder.addBinding().to(LanceVectorSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
+        binder.bind(DucklakeFunctionProvider::class.java).`in`(Scopes.SINGLETON)
     }
 }

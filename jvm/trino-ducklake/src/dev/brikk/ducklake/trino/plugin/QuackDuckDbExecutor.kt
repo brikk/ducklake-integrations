@@ -189,7 +189,7 @@ internal class QuackDuckDbExecutor(
         val source: String = when (val target = request.target()) {
             // File-scan formats read via the extension's table function — no attached db/table.
             is DuckDbAttachTarget.FileScan ->
-                "${target.scanFunction}('${target.path.replace("'", "''")}')"
+                "${target.scanFunction}('${target.path.replace("'", "''")}'${target.extraArgsSql})"
             else -> "$serverAlias.main.$ATTACHED_TABLE"
         }
         return DuckDbSelectSqlBuilder.buildSelectSql(source, request)

@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import io.airlift.bootstrap.LifeCycleManager
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorMetadata
+import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorTableFunction
 import io.trino.spi.connector.Connector
 import io.trino.spi.connector.ConnectorMetadata
 import io.trino.spi.connector.ConnectorPageSinkProvider
@@ -24,11 +25,14 @@ import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorSplitManager
 import io.trino.spi.connector.ConnectorTransactionHandle
+import io.trino.spi.function.FunctionProvider
+import io.trino.spi.function.table.ConnectorTableFunction
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.session.PropertyMetadata
 import io.trino.spi.transaction.IsolationLevel
 import io.trino.spi.transaction.IsolationLevel.SERIALIZABLE
 import io.trino.spi.transaction.IsolationLevel.checkConnectorSupports
+import java.util.Optional
 
 /**
  * Main connector implementation for Ducklake.
@@ -42,13 +46,26 @@ class DucklakeConnector @Inject constructor(
     private val pageSinkProvider: ConnectorPageSinkProvider,
     ducklakeSessionProperties: DucklakeSessionProperties,
     ducklakeTableProperties: DucklakeTableProperties,
-    procedures: Set<Procedure>) : Connector {
+    procedures: Set<Procedure>,
+    tableFunctions: Set<@JvmSuppressWildcards ConnectorTableFunction>,
+    private val functionProvider: DucklakeFunctionProvider) : Connector {
     private val sessionProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeSessionProperties.getSessionProperties())
     private val tableProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeTableProperties.tableProperties)
     private val procedures: Set<Procedure> = procedures.toSet()
+    private val tableFunctions: Set<ConnectorTableFunction> = tableFunctions
+            .map { ClassLoaderSafeConnectorTableFunction(it, javaClass.classLoader) }
+            .toSet()
 
     override fun getProcedures(): Set<Procedure> {
         return procedures
+    }
+
+    override fun getTableFunctions(): Set<ConnectorTableFunction> {
+        return tableFunctions
+    }
+
+    override fun getFunctionProvider(): Optional<FunctionProvider> {
+        return Optional.of(functionProvider)
     }
 
     override fun getMetadata(session: ConnectorSession, transaction: ConnectorTransactionHandle): ConnectorMetadata {

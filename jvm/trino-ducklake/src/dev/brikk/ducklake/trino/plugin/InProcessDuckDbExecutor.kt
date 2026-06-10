@@ -215,7 +215,7 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
                         stmt.execute("LOAD httpfs")
                         stmt.execute(target.s3Config.get().renderCreateSecretSql())
                     }
-                    "${target.scanFunction}('${target.path.replace("'", "''")}')"
+                    "${target.scanFunction}('${target.path.replace("'", "''")}'${target.extraArgsSql})"
                 }
             }
 

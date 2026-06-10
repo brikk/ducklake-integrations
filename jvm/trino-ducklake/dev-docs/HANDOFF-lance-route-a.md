@@ -76,8 +76,26 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   `add_files(file_format => 'lance')` (Step 5) instead. Writer regression batch (vortex CTAS, duckdb
   arrow-stream writer, rollover) stays green.
 
-**Still open:** Step 7 (table functions A3), the O1 fix (lance s3 cred channel), and a follow-up
-(ARRAY/embedding *write* support). Ordering + scope below.
+- **Step 7, `lance_vector_search` slice — DONE, green (2026-06-10, arm64, fresh session).** The
+  connector's first `ConnectorTableFunction`: `TABLE(<catalog>.system.lance_vector_search(
+  schema_name, table_name, column_name, query_vec, k, prefilter))`. The feared `query_vec` SPI
+  unknown dissolved: a `ScalarArgumentSpecification` of `ArrayType(DOUBLE)` just works — the value
+  arrives in `analyze()` as a `Block`, and a bare `ARRAY[1.0, 0.0, 0.0]` literal coerces with no
+  cast. Execution is split-based (the Iceberg `table_changes` pattern): analyze resolves the
+  table's lance dataset dirs from the catalog and returns descriptor = table columns +
+  `_distance REAL`; `DucklakeSplitManager.getSplits(ConnectorTableFunctionHandle)` emits one split
+  per dataset dir; `LanceVectorSearchSplitProcessor` runs `lance_vector_search('<dir>', '<col>',
+  [..]::DOUBLE[], k := …, prefilter := …)` via the executor factory (FileScan gained an
+  `extraArgsSql` tail; both executors render it). Per-fragment local top-k → multi-fragment
+  result is a superset of global top-k; `ORDER BY _distance LIMIT k` recovers exact (documented +
+  pinned). v1 scope enforced at analyze: local paths only (O1 gate), all-lance files, no
+  row-level deletes. Tests `TestDucklakeLanceVectorSearch` (5, e2e through DistributedQueryRunner)
+  + `TestLanceVectorSearchSql`; detekt green (ThrowsCount fixed via `Nothing`-returning helpers,
+  no baseline adds). Full details in TODO-lance §A3.
+
+**Still open:** Step 7 remainder (`lance_fts` + `lance_hybrid_search` — mirror the proven
+`lance_vector_search` shape), the O1 fix (lance s3 cred channel), predicate pushdown into the
+table functions (O2), and ARRAY/embedding *write* support. Ordering + scope below.
 
 ---
 
@@ -86,27 +104,21 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
 Three independent workstreams remain. **They have no hard dependency on each other**; recommended
 order is by value + risk:
 
-### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3) — DO FIRST
-The big novel-SPI chunk. **Scope the first session to `lance_vector_search` end-to-end ONLY**, then
-mirror the proven shape for `lance_fts` + `lance_hybrid_search` in a follow-up. Plan:
-- **Spike the hard part first: the `query_vec` argument.** Trino `ConnectorTableFunction` args are
-  scalar / descriptor / table only — there is no native array-argument kind. Figure out how a caller
-  passes a `FLOAT[]`/`DOUBLE[]` query vector (scalar `array`-typed arg? a VARCHAR the function parses?
-  a `DESCRIPTOR`?) BEFORE building the rest. This is the main unknown; everything else mirrors the
-  `add_files` procedure + the existing FileScan split→page-source flow. We have **zero** table
-  functions today (`add_files` is a *procedure* — different SPI shape), so this is greenfield.
-- Wire: register the `ConnectorTableFunction` in `DucklakeModule` (new `Multibinder` for
-  `ConnectorTableFunction`), resolve lance files from the catalog, emit splits carrying
-  `(path, column, query_vec, k, prefilter)`, and have the page source run
-  `lance_vector_search(dir, column, query_vec, k := …, prefilter := …)` (confirmed present;
-  two overloads — `FLOAT[]` and `DOUBLE[]` query vecs; see the duckdb_functions() dump in
-  [[project_lance_scan_function_name]]). Stretch: `applyTopN` so `ORDER BY <distance> LIMIT k`
-  synthesizes `k`.
-- **Target LOCAL-path lance datasets only.** s3 vector search would hit the same missing cred
-  channel as O1 — so treat "table functions over s3" as gated behind the O1 fix, not part of this
-  session. Verifiable end-to-end on arm64 (PostgreSQL catalog testcontainer + in-process executor).
-- Register the fixture via the Step-5 `add_files(file_format => 'lance')` path (or the Step-6 writer),
-  then call `SELECT * FROM TABLE(<catalog>.system.lance_vector_search(...))`.
+### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3)
+**`lance_vector_search` slice DONE 2026-06-10 (see PROGRESS above + TODO-lance §A3).** The
+`query_vec` spike answered itself: `ScalarArgumentSpecification` accepts `ArrayType(DOUBLE)`,
+the constant arrives as a `Block`, bare `ARRAY[...]` literals coerce. Remaining:
+- **`lance_fts` + `lance_hybrid_search`** — mirror the proven shape (function class + handle +
+  split + processor dispatch in `DucklakeFunctionProvider` / `DucklakeSplitManager`). FTS is the
+  easy one (`query` is a VARCHAR — no new argument kinds). Hybrid takes both a vector and a text
+  query; check arg order against `duckdb_functions()` first (two overloads, FLOAT[]/DOUBLE[]).
+- **O2 follow-up** — render pushed/explicit predicates as a WHERE inside the processor's query and
+  pass `prefilter := true` for filter-then-search semantics (verified live: WHERE over the function
+  output post-filters and can return < k; with `prefilter := true` DuckDB pushes the WHERE into
+  lance and k survivors come back).
+- Stretch: `applyTopN` so `ORDER BY _distance LIMIT k` synthesizes `k` (and could collapse the
+  per-fragment superset to exact global top-k).
+- s3-resident vector search stays gated behind the O1 fix (analyze rejects s3 paths today).
 
 ### 2. O1 fix — lance s3 credential channel — INDEPENDENT, schedule after/with Step 7
 Confirmed (see §O1): lance ignores the DuckDB secret and reads object_store's `AWS_*` **process-global**

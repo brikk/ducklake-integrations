@@ -103,8 +103,43 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 - [x] TupleDomain pushdown flows through the existing `DuckDbWhereClauseTranslator` / `DuckDbSelectSqlBuilder` exactly as the `.db` path does — a `WHERE`-clause predicate renders into the `__lance_scan(...)` query (no ATTACH alias) and reaches DuckDB; verified on arm64 by `TestDucklakeLanceFileScanRead.fileScanPushesPredicateIntoLanceScan` (pushed `id=2` returns only that row). Function-shape (`pushedExpressions`) uses the same channel; lance `prefilter` semantics still matter for the Phase A3 table functions.
 
 ### Phase A3 — vector / FTS / hybrid table functions
-- [ ] Add `ConnectorTableFunction`s: `lance_vector_search`, `lance_fts`, `lance_hybrid_search` under `my_catalog.system.*` (parallel to `add_files`). Each resolves Lance files from the catalog, emits splits carrying `(path, column, query_vec, k, prefilter)`, and the page source runs the corresponding `lance_*` DuckDB function. This is the novel SPI work — we have no table functions today (`add_files` is a procedure, different shape). See RESEARCH §2.
+- [x] **`lance_vector_search` DONE (2026-06-10, arm64).** First `ConnectorTableFunction` in the connector:
+  `SELECT ... FROM TABLE(<catalog>.system.lance_vector_search(schema_name, table_name, column_name,
+  query_vec, k, prefilter))`. The SPI chain (all greenfield): `LanceVectorSearchTableFunction.analyze`
+  (resolves the table's lance dataset dirs from the catalog + builds the output descriptor = table
+  columns + `_distance REAL`) → `LanceVectorSearchFunctionHandle` → `DucklakeSplitManager.getSplits(
+  ConnectorTableFunctionHandle)` (one `LanceVectorSearchSplit` per dataset dir) →
+  `LanceVectorSearchSplitProcessor` (a `TableFunctionSplitProcessor`) runs DuckDB
+  `lance_vector_search('<dir>', '<col>', [..]::DOUBLE[], k := …, prefilter := …)` through the
+  executor factory and converts Arrow→Page with the shared converter. Wiring: `Multibinder
+  <ConnectorTableFunction>` in `DucklakeModule`, `DucklakeConnector.getTableFunctions()` (wrapped
+  `ClassLoaderSafeConnectorTableFunction`) + `getFunctionProvider()` → `DucklakeFunctionProvider`.
+  Key answers from the spike:
+  - **`query_vec` argument**: a plain `ScalarArgumentSpecification` of `ArrayType(DOUBLE)` works —
+    the engine evaluates the constant and `ScalarArgument.value` arrives as a `Block`; a bare
+    `ARRAY[1.0, 0.0, 0.0]` literal (array(decimal)) coerces to `ARRAY(DOUBLE)` with no caller cast.
+    There is no array-argument restriction in the Trino 481 analyzer.
+  - **DuckDB signature** (extension June 2026): `lance_vector_search(VARCHAR dir, VARCHAR col,
+    FLOAT[]|DOUBLE[] vec, k := BIGINT, nprobs, use_index, refine_factor, prefilter BOOLEAN,
+    explain_verbose)`. Output = dataset columns + `_distance FLOAT`, ascending, exactly k rows.
+    `prefilter` is a BOOLEAN flag: a WHERE over the function output is post-filtered (can return
+    < k) unless DuckDB pushes it into the function with `prefilter := true` (filter-then-search).
+  - **Semantics**: one split per dataset fragment, each computes a *local* top-k → a multi-fragment
+    table returns up to `k × fragments` rows (superset of global top-k); `ORDER BY _distance LIMIT k`
+    recovers exact (pinned by `vectorSearchOverMultipleFragmentsReturnsPerFragmentTopK`).
+  - **v1 scope**: local-path datasets only (s3 gated on O1), all data files lance-format, no
+    row-level deletes (inlined or file), embedding column must be an array type.
+  Tests: `TestDucklakeLanceVectorSearch` (5 e2e: nearest+distance, SELECT * incl. embedding,
+  SQL composition, arg validation + empty table, multi-fragment, non-lance rejection) +
+  `TestLanceVectorSearchSql` (arg-tail rendering). `FileScan` gained `extraArgsSql` (default "")
+  rendered after the quoted path by both executors.
+- [ ] `lance_fts` + `lance_hybrid_search` — mirror the proven `lance_vector_search` shape.
+  DuckDB signatures: `lance_fts(dir, col, query VARCHAR, prefilter BOOLEAN, k BIGINT)`;
+  `lance_hybrid_search(dir, col?, vec FLOAT[]|DOUBLE[], col?, query?, k, nprobs, alpha, use_index,
+  refine_factor, prefilter, oversample_factor)` (check arg order against `duckdb_functions()`).
 - [ ] (Stretch) `applyTopN` so a Trino-side `ORDER BY <distance> LIMIT k` synthesizes the function's `k`.
+- [ ] (Follow-up, O2) predicate pushdown INTO the function (render pushed predicates as a WHERE
+  inside the split processor's query + `prefilter := true` for filter-then-search semantics).
 
 ### Phase A4 — write (DONE — 2026-06-09, arm64)
 - [x] `DucklakePageSink.openNewWriter`: added a `FORMAT_LANCE` branch (`openLanceWriter`) reusing the Arrow-stream writer. **Local-temp-then-upload** (decided): `COPY (SELECT * FROM <arrow-stream>) TO '<localtmp>.lance' (FORMAT lance)`, then walk the dataset dir and upload every file under the remote location. In `DuckDbArrowStreamFileWriter`, `isVortex` → `usesCopy = isVortex || isLance` (shared COPY + inline `DucklakeColumnStatsAccumulator`, no ATTACH); lance adds directory-aware size/upload/cleanup + `deleteDirectory` on abort. Both `validateDataFileFormat` validators now accept `'lance'`.

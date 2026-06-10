@@ -43,11 +43,16 @@ sealed interface DuckDbAttachTarget {
      * @param scanFunction the DuckDB table function, e.g. `read_vortex` / `__lance_scan`.
      * @param extension the DuckDB extension to INSTALL/LOAD, e.g. `vortex` / `lance`.
      * @param s3Config present iff [path] is an `s3://` URL — then httpfs + a secret are set up.
+     * @param extraArgsSql SQL rendered verbatim after the quoted path inside the call's
+     *        parentheses (must start with `, ` when non-empty), for table functions taking
+     *        more than the path — e.g. `lance_vector_search('<path>', 'emb', [...]::DOUBLE[],
+     *        k := 5)`. Connector-built (never user input); empty for plain single-arg scans.
      */
     @JvmRecord
     data class FileScan(
             @get:JvmName("path") val path: String,
             @get:JvmName("scanFunction") val scanFunction: String,
             @get:JvmName("extension") val extension: String,
-            @get:JvmName("s3Config") val s3Config: Optional<DuckDbS3Config>) : DuckDbAttachTarget
+            @get:JvmName("s3Config") val s3Config: Optional<DuckDbS3Config>,
+            @get:JvmName("extraArgsSql") val extraArgsSql: String = "") : DuckDbAttachTarget
 }
