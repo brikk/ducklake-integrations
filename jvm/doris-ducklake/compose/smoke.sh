@@ -599,4 +599,67 @@ else
     fi
 fi
 
+# ───────────────────────────────────────────────────────────────────────────
+# 12. W3 (CTAS) — CREATE TABLE AS SELECT = W1 DDL + W2 INSERT composed in one
+# statement. Doris creates dl.tpch.doris_ctas from the SELECT's output schema
+# (connector createTable), then the BE Iceberg sink writes the selected rows
+# (connector commitInsert), all in one CTAS. We source from tpch.doris_w (INT32 /
+# VARCHAR, just written by W2) and verify the new table round-trips through BOTH
+# Doris and DuckDB+DuckLake.
+#
+# NOTE: the source columns are deliberately INT (int32) / STRING. CTAS that infers
+# a NARROW int — e.g. `SELECT 1 AS id` → TINYINT — currently CRASHES the BE Iceberg
+# writer: Iceberg has no 8/16-bit int, so int8/int16 map to iceberg int(32), but the
+# BE picks the serde by the source column type (TINYINT) and assert_casts the int32
+# arrow builder to Int8 → abort (be/.../viceberg_table_writer.cpp via
+# DataTypeNumberSerDe<TINYINT>::write_column_to_arrow). Tracked in
+# ducklake-doris-friction.md (2026-06-10, "narrow-int CTAS/INSERT crashes BE Iceberg
+# writer"). It's a BE bug, not CTAS-specific (a direct INSERT into a TINYINT column
+# crashes the same way), so the smoke avoids narrow ints rather than crashing the BE.
+log "W3 CTAS: CREATE TABLE dl.tpch.doris_ctas AS SELECT id, name FROM tpch.doris_w (DDL + INSERT composed)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    DROP TABLE IF EXISTS tpch.doris_ctas;
+" >/dev/null 2>&1 || true
+set +e
+ctas_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl;
+    CREATE TABLE tpch.doris_ctas AS SELECT id, name FROM tpch.doris_w;
+" 2>&1)
+ctas_status=$?
+set -e
+echo "$ctas_out" | tail -6
+
+if [[ $ctas_status -ne 0 ]]; then
+    if echo "$ctas_out" | grep -qiE "does not support|not ready|SPI_READY|unsupported|create table"; then
+        log "W3 CTAS BLOCKED: rejected at the FE — same engine-padding/route family as W1 DDL (reapply fe-patches/ducklake-fe.patch)."
+    else
+        log "W3 CTAS ERROR: failed at the FE/BE — see output above + fe.log/be.log."
+    fi
+else
+    ctas_rows=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+        SELECT COUNT(*) FROM dl.tpch.doris_ctas;
+    " 2>&1 | tail -1)
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        DESC dl.tpch.doris_ctas;
+        SELECT * FROM dl.tpch.doris_ctas ORDER BY id;
+    " 2>&1
+    log "W3 CTAS: cross-engine read-back via DuckDB+DuckLake…"
+    w2_helper verify doris_ctas
+    ctas_files=$(docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "
+        SELECT COUNT(*) FROM ducklake_data_file f
+        JOIN ducklake_table t ON t.table_id = f.table_id
+        WHERE t.table_name = 'doris_ctas' AND f.end_snapshot IS NULL;
+    " 2>&1 | tail -1 | tr -d '[:space:]')
+    log "  active data files for doris_ctas: ${ctas_files:-?}"
+    if [[ "${ctas_rows:-0}" == "3" && "${ctas_files:-0}" -ge 1 ]]; then
+        log "W3 CTAS GREEN: Doris CREATE TABLE AS SELECT composed DDL+INSERT and round-trips cross-engine (3 rows). 🎉"
+    else
+        log "W3 CTAS CHECK: rows=${ctas_rows:-?} (exp 3), data files=${ctas_files:-?} (exp ≥1) — inspect above."
+    fi
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+        SWITCH dl; DROP TABLE IF EXISTS tpch.doris_ctas;
+    " 2>&1 | tail -1
+fi
+
 log "Smoke complete."

@@ -213,7 +213,13 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   commit fragment; the live smoke confirmed the BE's bucket transform == DuckLake's
   (recorded buckets `{1,2,3}`). Only the date/decimal/float **stat-decode** extension
   remains (write-side pruning coverage, not correctness).
-- [ ] **W3 — CTAS** = W1 DDL + W2 INSERT composed.
+- [x] **W3 — CTAS** (`CREATE TABLE … AS SELECT`) = W1 DDL + W2 INSERT composed: ✅
+  **VALIDATED GREEN end-to-end** on a live FE+BE — Doris creates the table from the
+  SELECT schema + the BE writes the rows in one statement; round-trips through Doris
+  and DuckDB+DuckLake (compose `smoke.sh` W3 step, INT32/VARCHAR source). **Caveat:**
+  CTAS that infers a NARROW int (literal `1`→TINYINT) crashes the BE Iceberg writer —
+  a BE serde/arrow-builder bug, not CTAS-specific (see friction log 2026-06-10); use
+  INT/BIGINT or `CAST(… AS INT)`.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
   `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker
   (READ todo Step 7, BE OPTIONAL-column position-delete rejection).

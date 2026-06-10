@@ -17,6 +17,45 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-06-10 · Narrow-int (TINYINT/SMALLINT) write crashes the BE Iceberg writer
+
+**Symptom.** A `CREATE TABLE … AS SELECT 1 AS id, 'alice' AS name` (CTAS) takes the
+**BE down** mid-write. `SHOW BACKENDS` → `Alive: false`,
+`ErrMsg: java.net.SocketTimeoutException: Read timed out`; the BE log shows an
+`assert_cast` abort:
+
+```
+assert_cast<arrow::NumericBuilder<arrow::Int8Type>&>(arrow::ArrayBuilder&)   assert_cast.h:75
+doris::DataTypeNumberSerDe<(PrimitiveType)3 /*TINYINT*/>::write_column_to_arrow
+doris::FromBlockConverter::convert                    arrow_block_convertor.cpp:113
+doris::VParquetTransformer::write                     vparquet_transformer.cpp:262
+doris::VIcebergPartitionWriter::write                 viceberg_partition_writer.cpp:136
+doris::VIcebergTableWriter::_write_prepared_block      viceberg_table_writer.cpp:329
+```
+
+**Root cause.** CTAS infers the literal `1` as **TINYINT** (`int8`). Iceberg has no
+8/16-bit integer, so the table's iceberg schema represents the column as
+`int` (32-bit) → the Arrow builder is `Int32`. But the BE picks the column
+serializer by the **source Doris column type** (TINYINT), and
+`DataTypeNumberSerDe<TINYINT>::write_column_to_arrow` `assert_cast`s the builder to
+`Int8Type` — which it isn't (it's Int32) → abort. It is **not CTAS-specific**: a
+direct `INSERT` into a `TINYINT`/`SMALLINT` column through the Iceberg sink crashes
+identically. (Our connector's type mapping is fine: TINYINT→`int8` on create,
+`int8`→iceberg `int` on read are both correct; the bug is purely the BE writer's
+serde-vs-builder type pick.)
+
+**Workaround.** Use `INT`/`BIGINT` (32/64-bit) columns when writing through the
+sink; cast narrow ints (`CAST(x AS INT)`) in the SELECT. The compose smoke's W3
+CTAS sources INT32/VARCHAR columns and never inflicts the narrow-int crash on the
+BE.
+
+**Fix.** In `VIcebergTableWriter`/`FromBlockConverter`, up-cast int8/int16 source
+columns to the Arrow type declared by the Iceberg schema (int32) before
+`write_column_to_arrow`, or select the serde by the *target* Arrow field type
+rather than the source Doris column type. (BE-side; separate from the FE/connector.)
+
+---
+
 ## 2026-06-10 · `CreateTableInfo.pluginCatalogTypeToEngine` only knows `"max_compute"` → plugin `CREATE TABLE` rejected
 
 **Symptom.** On the live FE, `CREATE DATABASE` on the `dl` (ducklake) plugin
