@@ -50,12 +50,48 @@ green here (lance test skips, everything else runs).
 
 ---
 
-## Step 1 — confirm the probe runs (Phase A0)
+## Test environment setup (do this once on the new box)
 
-Env (mirror the local test env — see memory `jvm-test-env.md`; on linux adjust DOCKER_HOST):
+The lance **probe test itself** (`TestDucklakeLanceFileScanRead`) needs only network (to
+`INSTALL lance`) — no Docker, no parity extension. But the **full suite** and any **Quack-container**
+work need the two things below. (This recipe was Intel-Mac specific in the original dev memory;
+generalized here for arm64/linux. Substitute your host platform where noted.)
+
+**1. Docker runtime for Testcontainers.** Need a Docker-compatible daemon. With **podman** (the
+setup on the dev boxes):
+```sh
+export PATH="/opt/podman/bin:$PATH"          # podman CLI location on the Mac boxes; skip on linux if podman/docker is already on PATH
+export DOCKER_HOST=unix:///var/run/docker.sock
+export TESTCONTAINERS_RYUK_DISABLED=true      # Ryuk reaper is flaky on podman
+```
+With Docker Desktop / native docker, none of the above is needed. First suite run builds the
+`brikk-ducklake-quack-server` image from
+`ducklake-catalog/testFixtures/resources/docker/quack-server/Dockerfile` (~few min, then cached).
+
+**2. trino_parity DuckDB extension** (needed by the `.db` and Quack tests, NOT by the lance probe).
+Fetch the prebuilt CI artifact instead of building it (`gh` must be authed):
+```sh
+cd duckdb-trino-parity-extension && ./scripts/fetch-from-ci-artifacts.sh
+```
+**Gotcha:** the fetch writes the *host* binary to `build/<host-platform>/release/...` but
+`jvm/trino-ducklake/build.gradle.kts` reads the host source from the bare `build/release/...` path.
+The `linux-*` paths line up; the host one does NOT. Copy it into place (substitute your host dir —
+`darwin-arm64` on Apple Silicon, `darwin-amd64` on Intel Mac, `linux-amd64`/`linux-arm64` on linux):
+```sh
+cp build/<host-platform>/release/extension/trino_parity/trino_parity.duckdb_extension \
+   build/release/extension/trino_parity/trino_parity.duckdb_extension
+```
+Then re-run gradle; `bundleParityExtension` re-bundles (its inputs changed). To build from source
+instead: `cd duckdb-trino-parity-extension && GEN=ninja make` (needs `ninja ccache cmake`); the host
+`make` writes to `build/release/` directly, so no copy needed when building locally.
+
+---
+
+## Step 1 — confirm the probe runs (Phase A0)
 
 ```sh
 cd jvm
+# The probe test alone needs no Docker/parity-extension — just network for INSTALL lance:
 ./gradlew :trino-ducklake:test --tests "dev.brikk.ducklake.trino.plugin.TestDucklakeLanceFileScanRead"
 ```
 
