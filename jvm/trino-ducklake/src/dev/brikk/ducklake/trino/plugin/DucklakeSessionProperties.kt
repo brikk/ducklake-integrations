@@ -91,7 +91,7 @@ open class DucklakeSessionProperties @Inject constructor() {
         // Read-only via the DuckDB `vortex` extension (FileScan path). Writes not yet wired.
         const val FORMAT_VORTEX: String = "vortex"
 
-        // Read-only via the DuckDB `lance` extension (FileScan path, lance_scan). Lance is a
+        // Read-only via the DuckDB `lance` extension (FileScan path, __lance_scan). Lance is a
         // *dataset directory*, not a single file — see resolveDuckDbReadTarget. Writes (Phase A4)
         // and the write validators are deliberately NOT wired yet (dataset-vs-file decision
         // pending the arm64 probe). Reads dispatch on the catalog's file_format='lance', so this

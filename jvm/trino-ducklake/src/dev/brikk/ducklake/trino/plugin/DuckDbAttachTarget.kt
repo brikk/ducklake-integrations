@@ -25,7 +25,7 @@ import java.util.Optional
  * ATTACHes the `s3://...` URL directly — no full download.
  *
  * [FileScan] is NOT an ATTACH at all: it reads a single non-`.db` file via a DuckDB
- * extension's table function (e.g. `read_vortex('path')`, `lance_scan('path')`). The
+ * extension's table function (e.g. `read_vortex('path')`, `__lance_scan('path')`). The
  * executor `INSTALL`/`LOAD`s [extension] and uses `FROM <scanFunction>('<path>')` as the
  * query source instead of attaching a database. Used for the `vortex` / `lance` formats.
  */
@@ -40,7 +40,7 @@ sealed interface DuckDbAttachTarget {
 
     /**
      * @param path local filesystem path or `s3://...` URL of the file to scan.
-     * @param scanFunction the DuckDB table function, e.g. `read_vortex` / `lance_scan`.
+     * @param scanFunction the DuckDB table function, e.g. `read_vortex` / `__lance_scan`.
      * @param extension the DuckDB extension to INSTALL/LOAD, e.g. `vortex` / `lance`.
      * @param s3Config present iff [path] is an `s3://` URL — then httpfs + a secret are set up.
      */

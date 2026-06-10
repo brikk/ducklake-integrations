@@ -7,6 +7,45 @@ published: **`osx_arm64`** (Apple Silicon), `linux_amd64`, `linux_arm64`, or `wi
 
 **Branch:** `worktree-trino-ducklake` (pushed). Pull it, then start at "Step 1" below.
 
+---
+
+## PROGRESS — arm64 run (M1 Max, osx_arm64), 2026-06-09
+
+Picked up on a lance-capable box. **Steps 1–4 done and green; Steps 5–7 + O1 still open.**
+
+- **Step 1 (Phase A0 probe) — DONE, green.** The probe ran (no skip) once one bug was fixed:
+  the scan function is **`__lance_scan`** (double-underscore), NOT `lance_scan`. The shipped
+  extension errored `Catalog Error: Table Function with name lance_scan does not exist!`. Renamed in
+  the read wiring (`DucklakePageSourceProvider.resolveDuckDbReadTarget`), `DuckDbAttachTarget`/
+  `DucklakeSessionProperties` comments, and the probe test. `TestDucklakeLanceFileScanRead` now
+  `tests=2 skipped=0 failures=0`.
+- **Step 2 (dataset-vs-file) — DECIDED: option A.** `__lance_scan('<dataset-dir>')` accepts the
+  directory path directly and streams all rows. One catalog row per dataset version, `path` = dir,
+  opaque. Recorded in TODO-lance Phase 0 findings.
+- **Step 3 (type audit) — DONE + converter gap fixed.** Scalars (INTEGER, DECIMAL, DATE, TIMESTAMP,
+  STRUCT, variable `INTEGER[]`) all round-trip. The embedding column `FLOAT[]` comes back as
+  `FLOAT[3]` = Arrow `FixedSizeList<float>` → must map to `ARRAY(REAL)`. **`DucklakeArrowToPageConverter`
+  was scalar-only** (any nested type threw `NOT_SUPPORTED`). Added `ARRAY` support (fixed + variable
+  list of scalar / nested-array elements; ROW/MAP + timestamp/uuid elements still deferred). New test
+  `fileScanReadsLanceEmbeddingColumnAsArrayOfReal` verifies the `ARRAY(REAL)` path end-to-end through
+  the real executor + converter. NOTE: this converter is **shared** with the duckdb/vortex read paths
+  — the change is purely additive (no scalar-path edits), so those are unaffected.
+- **Step 4 (pushdown) — DONE, green.** A `TupleDomain` on `id` renders into the `WHERE` of the
+  `__lance_scan(...)` query via `DuckDbWhereClauseTranslator`/`DuckDbSelectSqlBuilder` (no ATTACH
+  alias — bare WHERE over the scan source) and reaches DuckDB: `__lance_scan` returns only the
+  matching row. New test `fileScanPushesPredicateIntoLanceScan`. Pushdown comes for free, as the
+  handoff predicted. (lance's `prefilter` semantics still matter for the Step-7 table functions.)
+- **Environment caveat (NOT lance):** the full `:trino-ducklake:test` suite is green here EXCEPT 3
+  `TestDucklakeDuckDbExecutorBackends` parity tests that hard-fail because the Quack testcontainer's
+  duckdb is **amd64** while the host bundles the **arm64** `trino_parity.duckdb_extension`
+  (`os.arch`-based selection in the test's `@BeforeAll`). The container rejects the arm64 extension at
+  `LOAD`. Their vortex sibling skips this gracefully via `assumeTrue`; these 3 predate that guard.
+  Pre-existing, exposed by moving to Apple Silicon — orthogonal to lance. Flagged as a separate task.
+
+**Still open:** Step 5 (`add_files` → SQL-level read), Step 6 (writer A4),
+Step 7 (table functions A3 — `lance_fts`/`lance_vector_search`/`lance_hybrid_search` confirmed present),
+and O1 (s3 secret vs storageOptions — needs an `s3://` lance read, not yet tested).
+
 **Design context (read first):**
 - [TODO-lance.md](TODO-lance.md) — the chunked plan (Phases A0–A4) + the Route A vs B decision.
 - [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md) — the deep design rationale.

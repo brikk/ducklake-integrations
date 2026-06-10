@@ -689,11 +689,11 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             split: DucklakeSplit): DuckDbAttachTarget
     {
-        // Lance is a *dataset directory*, not a single file: `lance_scan('<dir>')` reads the
+        // Lance is a *dataset directory*, not a single file: `__lance_scan('<dir>')` reads the
         // whole dataset (manifest + data + index files). It must NOT route through
         // resolveDuckDbAttachTarget's materialize cache, which copies a single file to local tmp
         // — that would pull one file out of the directory and hand DuckDB a broken path. Instead
-        // hand the catalog path straight to lance_scan. For s3 we pass the DuckDbS3Config so the
+        // hand the catalog path straight to __lance_scan. For s3 we pass the DuckDbS3Config so the
         // executor sets up httpfs + a secret; whether the lance extension's object_store actually
         // consumes a DuckDB secret (vs. its own storageOptions) is an open item to confirm on the
         // arm64 box — see dev-docs/HANDOFF-lance-route-a.md.
@@ -701,7 +701,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val url: String = dataFileLocation.toString()
             val isS3: Boolean = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
             return DuckDbAttachTarget.FileScan(
-                    url, "lance_scan", "lance",
+                    url, "__lance_scan", "lance",
                     if (isS3) Optional.of(duckDbS3Config) else Optional.empty())
         }
         val base: DuckDbAttachTarget = resolveDuckDbAttachTarget(session, dataFileLocation, fileSystem, split)
