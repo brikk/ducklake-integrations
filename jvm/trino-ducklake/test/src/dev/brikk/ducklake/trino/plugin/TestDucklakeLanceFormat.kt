@@ -30,9 +30,10 @@ import java.sql.DriverManager
  *
  * This is the sibling of [TestDucklakeVortexFormat] for Lance — the key difference being that lance
  * produces a directory, so the writer's upload/size/cleanup walk the tree rather than handle a
- * single file. (Only scalar columns are writable: the Arrow-stream writer's type mapping is
- * scalar-only, so embedding/ARRAY columns must be registered via `add_files` instead — see
- * [TestDucklakeLanceAddFiles].)
+ * single file. Embedding (ARRAY-of-scalar) columns are writable too — the Arrow-stream writer maps
+ * them to Arrow List and lance materializes uniform float lists as FixedSizeList — so embeddings
+ * can be CTAS'd/INSERTed directly and then searched via `lance_vector_search` (see the embedding
+ * round-trip test below; `add_files` registration remains for externally-produced datasets).
  *
  * Network/platform-gated: writing and reading both `INSTALL lance` (404 on osx_amd64); skips if the
  * extension is unavailable. PostgreSQL-catalog testcontainer + in-process reads, so this runs on
@@ -74,6 +75,53 @@ class TestDucklakeLanceFormat : AbstractDucklakeIntegrationTest() {
             assertThat(computeActual("SELECT name FROM $table ORDER BY id").materializedRows
                     .map { it.getField(0) as String })
                     .containsExactly("alpha", "beta", "gamma", "delta")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    /**
+     * The closing of the lance Route-A loop: embeddings written BY TRINO (CTAS + INSERT through
+     * the Arrow-stream writer's new ARRAY support) and searched by the `lance_vector_search`
+     * table function — no out-of-band dataset, no `add_files`. CTAS and INSERT produce two
+     * dataset fragments, so the search runs per-fragment and `ORDER BY _distance LIMIT n` gives
+     * the exact global answer. Also pins NULL array rows (writable; unwritten Arrow slot) and
+     * the ARRAY(REAL) read-back through `__lance_scan`.
+     */
+    @Test
+    fun embeddingCtasInsertThenVectorSearchRoundTrip() {
+        assumeLanceExtensionAvailable()
+        val table = "lance_embedding_ctas"
+        try {
+            computeActual(
+                    "CREATE TABLE $table WITH (data_file_format = 'lance') AS "
+                            + "SELECT * FROM (VALUES "
+                            + "(1, 'alpha', ARRAY[CAST(1.0 AS REAL), CAST(0.0 AS REAL)]), "
+                            + "(2, 'beta',  ARRAY[CAST(0.0 AS REAL), CAST(1.0 AS REAL)])) AS t(id, name, emb)")
+            computeActual("INSERT INTO $table VALUES "
+                    + "(3, 'gamma', ARRAY[CAST(0.9 AS REAL), CAST(0.1 AS REAL)]), "
+                    + "(4, 'delta', NULL)")
+
+            assertThat(computeScalar("SELECT DISTINCT file_format FROM \"$table\$files\"") as String)
+                    .isEqualTo("lance")
+            assertThat(computeScalar("SELECT count(*) FROM $table") as Long).isEqualTo(4L)
+
+            // The embedding column round-trips by value through __lance_scan, NULL row included.
+            @Suppress("UNCHECKED_CAST")
+            val embedding = (computeScalar("SELECT emb FROM $table WHERE id = 1") as List<Number>)
+                    .map { it.toFloat() }
+            assertThat(embedding).containsExactly(1.0f, 0.0f)
+            assertThat(computeScalar("SELECT emb FROM $table WHERE id = 4")).isNull()
+
+            // Trino-written embeddings, searched by the table function: nearest to [1,0] is the
+            // CTAS row id=1 (distance 0), then the INSERTed row id=3 across the second fragment.
+            assertThat(computeActual(
+                    "SELECT id FROM TABLE(ducklake.system.lance_vector_search("
+                            + "'test_schema', '$table', 'emb', ARRAY[1.0, 0.0], 2)) "
+                            + "ORDER BY _distance LIMIT 2").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(1L, 3L)
         }
         finally {
             tryDropTable(table)

@@ -194,7 +194,19 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 ### Phase A4 — write (DONE — 2026-06-09, arm64)
 - [x] `DucklakePageSink.openNewWriter`: added a `FORMAT_LANCE` branch (`openLanceWriter`) reusing the Arrow-stream writer. **Local-temp-then-upload** (decided): `COPY (SELECT * FROM <arrow-stream>) TO '<localtmp>.lance' (FORMAT lance)`, then walk the dataset dir and upload every file under the remote location. In `DuckDbArrowStreamFileWriter`, `isVortex` → `usesCopy = isVortex || isLance` (shared COPY + inline `DucklakeColumnStatsAccumulator`, no ATTACH); lance adds directory-aware size/upload/cleanup + `deleteDirectory` on abort. Both `validateDataFileFormat` validators now accept `'lance'`.
 - [x] Catalog rows: the writer emits a `DucklakeWriteFragment(relativePath, "lance", …)` per the Phase-0 dataset model (one row, dir path, relative). Round-trip verified by `TestDucklakeLanceFormat` (CTAS + INSERT + SELECT/predicate).
-- [ ] **Scalar columns only.** The Arrow-stream writer's `toArrowType`/`populateVector` are scalar-only, so embedding/ARRAY *writes* fail fast — register embedding datasets via `add_files(file_format => 'lance')` instead. Follow-up: add ARRAY support to the writer to enable embedding CTAS.
+- [x] **ARRAY/embedding writes DONE (2026-06-10).** The Arrow-stream writer maps `ARRAY(scalar)`
+  to Arrow `List<element>` (`toArrowField` child field + `populateListVector` via
+  `UnionListWriter`; elements: boolean/tinyint/smallint/int/bigint/real/double/varchar). DuckDB
+  stores LIST and the lance COPY writer materializes uniform float lists as FixedSizeList — the
+  exact shape `lance_vector_search` consumes, so **embedding CTAS/INSERT now closes the full
+  loop**: write embeddings through Trino, search them with the table function (pinned by
+  `TestDucklakeLanceFormat.embeddingCtasInsertThenVectorSearchRoundTrip`, incl. a NULL array row
+  and the multi-fragment CTAS+INSERT case). Stats: array columns record value/null counts only
+  (no min/max — `DucklakeColumnStatsAccumulator.supportsMinMax` skips them). Limits: NULL array
+  *elements* rejected (no positional null append on the list sub-writers; embeddings never carry
+  them), nested arrays / ROW / MAP elements still fail fast at writer setup. NOTE: the writer is
+  shared — ARRAY writes are now also accepted toward `.db`/vortex targets (DuckDB LIST handles
+  them; vortex COPY behavior untested).
 
 ---
 

@@ -94,6 +94,22 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Join pushdown (`applyJoin`). JDBC connector territory; not relevant for us.
 - Trino → backend pushdown for non-DuckDB executors (e.g., direct-to-S3 parquet reads). The parquet path stays as it is.
 
+## Known open bug — Quack-engine `CREATE OR REPLACE SECRET` write-write race
+
+Concurrent queries with s3 targets on `ducklake.execution-engine=quack` each run
+`DuckDbS3Config.renderCreateSecretSql()` (`CREATE OR REPLACE SECRET ducklake_s3 (...)`) server-side
+(`QuackDuckDbExecutor.serverInitStatementsFor`, both the `HttpfsS3` and s3-`FileScan` branches).
+DuckDB 1.5.3 treats two concurrent `CREATE OR REPLACE` of the same secret as a transactional
+conflict — `Catalog write-write conflict on create with "ducklake_s3"` — despite the `OR REPLACE`
+(the "same credentials → safe race" comment in `DuckDbS3Config` is wrong). **Observed live
+2026-06-10** when two lance-s3 queries initialized simultaneously against one Quack server; lance
+no longer passes the secret config (its object_store ignores it — see HANDOFF-lance-route-a O1),
+so the race is now reachable only via **vortex/.db s3 targets on the quack engine**. Fix options:
+retry-on-conflict around the CREATE, `IF NOT EXISTS` semantics (verify DuckDB support), or
+create-once-per-server memoization keyed by (host, port, config). Add a concurrency regression
+test against one `TestingDucklakeQuackEngineServer` (MinIO + network fixture pattern in
+`TestDucklakeLanceS3QuackRead`).
+
 ## Status
 
 - Step 0 (this doc, mapping table) — drafted.

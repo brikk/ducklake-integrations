@@ -149,7 +149,18 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
     s3 dataset paths when `ducklake.execution-engine=quack` (sidecar env carries the creds);
     in-process keeps rejecting with a message explaining why (process-global env, unverifiable).
 
-**Still open:** ARRAY/embedding *write* support. Ordering + scope below.
+- **ARRAY/embedding write support — DONE, green (2026-06-10, same session).** The Arrow-stream
+  writer now maps `ARRAY(scalar)` → Arrow `List` (schema child field + `UnionListWriter`
+  population; NULL rows fine, NULL *elements* rejected, nested/ROW/MAP elements still fail fast).
+  Lance materializes uniform float lists as FixedSizeList, so embedding CTAS/INSERT works and the
+  full loop closes: Trino-written embeddings searched by `lance_vector_search`
+  (`TestDucklakeLanceFormat.embeddingCtasInsertThenVectorSearchRoundTrip`). Array columns get
+  value/null-count stats only. With this, **Route A is functionally complete** — every item from
+  the original chunked plan (Phases A0–A4 + table functions + s3 + pushdown) has shipped.
+
+**Still open:** nothing blocking in Route A. Remaining threads are quality/strategic — see below
+(O3 version pinning, the Route A-vs-B benchmark, ROW/MAP converter support, the quack-engine
+secret race tracked in TODO-pushdown-duckdb).
 
 ---
 

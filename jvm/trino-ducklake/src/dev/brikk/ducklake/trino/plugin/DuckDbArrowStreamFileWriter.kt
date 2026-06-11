@@ -26,6 +26,7 @@ import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
+import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.DateTimeEncoding.unpackMillisUtc
@@ -68,6 +69,8 @@ import org.apache.arrow.vector.TinyIntVector
 import org.apache.arrow.vector.VarBinaryVector
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.complex.ListVector
+import org.apache.arrow.vector.complex.impl.UnionListWriter
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.DateUnit
@@ -649,9 +652,30 @@ constructor(
         /** Sentinel to wake the consumer thread when no more pages will arrive.  */
         private val END_OF_STREAM: Page = Page(0)
         private fun toArrowField(name: String, type: Type, nullable: Boolean): Field {
+            if (type is ArrayType) {
+                // ARRAY(scalar) rides as Arrow List<element>; DuckDB stores it as LIST and the
+                // lance COPY writer materializes uniform-length float lists as FixedSizeList —
+                // exactly the embedding shape lance_vector_search consumes (verified live: the
+                // probe fixtures were written from DuckDB FLOAT[] lists and read back FLOAT[N]).
+                // Elements are always nullable in the Arrow schema, but populateListVector
+                // rejects NULL elements (no embedding use case; see there). Nested element
+                // types stay fail-fast here, like every other unsupported type.
+                if (type.elementType !is ArrayType && isSupportedListElement(type.elementType)) {
+                    return Field(name, FieldType(nullable, ArrowType.List.INSTANCE, null),
+                            listOf(toArrowField("item", type.elementType, true)))
+                }
+                throw TrinoException(NOT_SUPPORTED,
+                        "DuckDB Arrow-stream writer does not yet support array element type: ${type.elementType}")
+            }
             val arrow: ArrowType = toArrowType(type)
             return Field(name, FieldType(nullable, arrow, null), null)
         }
+
+        private fun isSupportedListElement(elementType: Type): Boolean =
+            elementType == BOOLEAN || elementType == TINYINT || elementType == SMALLINT
+                    || elementType == INTEGER || elementType == BIGINT
+                    || elementType == REAL || elementType == DOUBLE
+                    || elementType is VarcharType
 
         private fun toArrowType(type: Type): ArrowType {
             if (type == BOOLEAN) {
@@ -884,8 +908,56 @@ constructor(
                     }
                 }
             }
+            else if (type is ArrayType) {
+                populateListVector(vector as ListVector, type, block, rowCount)
+            }
             else {
                 throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
+            }
+        }
+
+        /**
+         * ARRAY(scalar) → Arrow List. NULL *rows* are fine (unwritten slots become null —
+         * [ListVector.startNewValue] back-fills skipped offsets, and the caller's
+         * `vector.valueCount = rowCount` finalizes the tail). NULL *elements* are rejected:
+         * the list writer's per-type sub-writers have no positional null append, and the only
+         * driving use case (embedding vectors) never carries null components.
+         */
+        private fun populateListVector(vector: ListVector, type: ArrayType, block: Block, rowCount: Int) {
+            vector.allocateNew()
+            val writer: UnionListWriter = vector.writer
+            val elementType: Type = type.elementType
+            for (i in 0 until rowCount) {
+                if (block.isNull(i)) {
+                    continue
+                }
+                writer.setPosition(i)
+                writer.startList()
+                val elements: Block = type.getObject(block, i) as Block
+                for (j in 0 until elements.positionCount) {
+                    if (elements.isNull(j)) {
+                        throw TrinoException(NOT_SUPPORTED,
+                                "DuckDB Arrow-stream writer does not support NULL elements in array columns")
+                    }
+                    appendListElement(writer, elementType, elements, j)
+                }
+                writer.endList()
+            }
+        }
+
+        private fun appendListElement(writer: UnionListWriter, elementType: Type, elements: Block, j: Int) {
+            when {
+                elementType == REAL -> writer.float4().writeFloat4(intBitsToFloat(REAL.getInt(elements, j)))
+                elementType == DOUBLE -> writer.float8().writeFloat8(DOUBLE.getDouble(elements, j))
+                elementType == INTEGER -> writer.integer().writeInt(INTEGER.getInt(elements, j))
+                elementType == BIGINT -> writer.bigInt().writeBigInt(BIGINT.getLong(elements, j))
+                elementType == SMALLINT -> writer.smallInt().writeSmallInt(SMALLINT.getShort(elements, j))
+                elementType == TINYINT -> writer.tinyInt().writeTinyInt(TINYINT.getByte(elements, j))
+                elementType == BOOLEAN -> writer.bit().writeBit(if (BOOLEAN.getBoolean(elements, j)) 1 else 0)
+                elementType is VarcharType -> writer.varChar().writeVarChar(
+                        org.apache.arrow.vector.util.Text(elementType.getSlice(elements, j).toStringUtf8()))
+                else -> throw TrinoException(NOT_SUPPORTED,
+                        "DuckDB Arrow-stream writer does not yet support array element type: $elementType")
             }
         }
 
