@@ -43,17 +43,22 @@ import java.util.Optional
  * argument list, call [resolveSearchTable] for the catalog resolution + v1-scope guards, build
  * their output layout (table columns + score column(s)), and return [analysis].
  *
- * <p>Common v1 scope, enforced here: local-path lance datasets only (s3 is gated on the lance
- * credential channel, HANDOFF O1), every data file of the table must be lance-format, and no
- * row-level deletes (file-based or inlined). An empty table analyzes fine and yields zero splits.
+ * <p>Common scope, enforced here: every data file of the table must be lance-format, no
+ * row-level deletes (file-based or inlined), and s3-resident datasets only on the Quack
+ * execution engine — its sidecar container carries the `AWS_*` env that lance's object_store
+ * needs ([DuckDbS3Config.toObjectStoreEnv], HANDOFF O1); the in-process engine would need the
+ * env set on the Trino JVM itself, which the connector can't verify, so it stays rejected.
+ * An empty table analyzes fine and yields zero splits.
  */
 abstract class AbstractLanceSearchTableFunction(
         private val catalog: DucklakeCatalog,
         private val typeConverter: DucklakeTypeConverter,
         private val pathResolver: DucklakePathResolver,
+        config: DucklakeConfig,
         functionName: String,
         arguments: List<ArgumentSpecification>,
 ) : AbstractConnectorTableFunction(SYSTEM_SCHEMA, functionName, arguments, GENERIC_TABLE) {
+    private val executionEngine: DucklakeExecutionEngine = config.getExecutionEngine()
 
     /** The catalog-resolved inputs every lance search shares. */
     protected class ResolvedLanceTable(
@@ -140,9 +145,12 @@ abstract class AbstractLanceSearchTableFunction(
                 notSupported("$name does not support tables with row-level deletes yet: $schemaName.$tableName")
             }
             val resolved: String = pathResolver.resolveFilePath(dataFile.path, dataFile.pathIsRelative, tableDataPath)
-            if (isS3Url(resolved)) {
-                notSupported("$name supports local-path lance datasets only for now "
-                        + "(s3 is pending the lance credential channel): $resolved")
+            if (isS3Url(resolved) && executionEngine != DucklakeExecutionEngine.QUACK) {
+                notSupported("$name over s3-resident lance datasets requires the Quack execution "
+                        + "engine (ducklake.execution-engine=quack) with the object_store AWS_* "
+                        + "credentials set in the sidecar's environment — the lance extension does "
+                        + "not read DuckDB s3 secrets, and the in-process engine cannot set "
+                        + "process-global env per query: $resolved")
             }
             resolved
         }

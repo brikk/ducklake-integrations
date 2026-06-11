@@ -77,7 +77,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
         private val pathResolver: DucklakePathResolver,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val executorFactory: DucklakeDuckDbExecutorFactory,
-        private val duckDbS3Config: DuckDbS3Config,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -363,10 +362,11 @@ class DucklakeAddFilesProcedure @Inject constructor(
      * readability/existence check — a missing or unreadable dataset surfaces as an error here.
      */
     private fun countLanceRows(url: String): Long {
-        val isS3: Boolean = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
+        // No DuckDbS3Config even for s3:// — lance's object_store ignores DuckDB secrets and
+        // reads AWS_* process env instead (HANDOFF O1), so the httpfs + secret setup the config
+        // triggers is pure overhead (and a concurrent-CREATE race on the Quack engine).
         val target = DuckDbAttachTarget.FileScan(
-                url, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE,
-                if (isS3) Optional.of(duckDbS3Config) else Optional.empty())
+                url, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE, Optional.empty())
         // Empty projection → `SELECT 1 FROM __lance_scan(...)`, one row per dataset row.
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
                 target, emptyList<DucklakeColumnHandle>(), TupleDomain.all<DucklakeColumnHandle>())

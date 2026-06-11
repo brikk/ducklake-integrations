@@ -79,30 +79,14 @@ internal class TestDucklakeDuckDbExecutorBackends {
                     s.execute("INSERT INTO $TABLE_NAME VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')")
                 }
             }
-            // Source the host-side parity extension binary for the Quack
-            // testcontainer copy. The testcontainer runs LINUX, so we need a Linux
-            // binary regardless of the test JVM's OS. Precedence:
-            //   1. -Dducklake.test.parityExtensionPath (if Gradle forwarded it —
-            //      operator-asserted to be Linux-loadable).
-            //   2. The bundled linux-<arch> binary in the plugin jar resources,
-            //      extracted to a temp path. Built via `make linux-arm64` /
-            //      `make linux-amd64` in the extension repo.
-            // The Quack executor LOADs the in-container counterpart at
-            // TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH;
-            // withCopyFileToContainer puts the file there.
-            val containerArch = if (System.getProperty("os.arch", "").lowercase().contains("aarch"))
-                "linux-arm64" else "linux-amd64"
-            val configuredPath: Path? = System.getProperty("ducklake.test.parityExtensionPath")
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.let(Path::of)
-            val parityExtensionPath: Optional<Path> = if (configuredPath != null) {
-                Optional.of(configuredPath)
-            } else {
-                TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerArch)
-                        .map { Path.of(it) }
-            }
-            quackServer = TestingDucklakeQuackEngineServer(sharedDir, parityExtensionPath)
+            // Install the parity extension into the RUNNING container, selecting the binary
+            // by the container's ACTUAL platform (uname -m) rather than the JVM host's
+            // os.arch — the two differ when a podman machine on Apple Silicon runs an amd64
+            // VM, which is exactly the mismatch that used to make these parity tests skip.
+            // See TestingDucklakeQuackEngineServer.installParityExtension for the
+            // -Dducklake.test.parityExtensionPath override + bundled-resource precedence.
+            quackServer = TestingDucklakeQuackEngineServer(sharedDir)
+            quackServer!!.installParityExtension()
         }
 
         @AfterAll

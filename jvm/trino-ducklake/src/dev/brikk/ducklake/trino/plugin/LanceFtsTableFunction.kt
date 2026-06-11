@@ -48,10 +48,12 @@ class LanceFtsTableFunction @Inject constructor(
         catalog: DucklakeCatalog,
         typeConverter: DucklakeTypeConverter,
         pathResolver: DucklakePathResolver,
+        config: DucklakeConfig,
 ) : AbstractLanceSearchTableFunction(
         catalog,
         typeConverter,
         pathResolver,
+        config,
         FUNCTION_NAME,
         listOf(
                 ScalarArgumentSpecification.builder().name(ARG_SCHEMA_NAME).type(VARCHAR).build(),

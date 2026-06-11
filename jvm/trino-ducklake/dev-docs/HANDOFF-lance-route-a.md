@@ -129,8 +129,27 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   `prefilter := true` + WHERE shapes DuckDB can't push (OR-of-ranges/IN) — the page source
   renders only single-range conjuncts when prefiltering; the rest degrade to post-filter.
 
-**Still open:** ARRAY/embedding *write* support, and (enabler) the container-platform parity
-selection fix. Ordering + scope below.
+- **Container-platform parity selection + lance-s3 quack e2e — DONE, green (2026-06-10, same
+  session).** `TestingDucklakeQuackEngineServer` now resolves the trino_parity binary by the
+  CONTAINER's actual platform (`uname -m` in the running container → `installParityExtension()`
+  post-start copy) instead of guessing from the JVM's `os.arch` — the mismatch case is real: a
+  podman machine on Apple Silicon runs an amd64 VM, so an arm64 host builds amd64 containers.
+  **All 5 `TestDucklakeDuckDbExecutorBackends` tests now RUN AND PASS on this box (previously 3–4
+  skipped).** On top of that, `TestDucklakeLanceS3QuackRead` automates the O1 e2e: MinIO + Quack
+  on a shared network, `AWS_*` injected via `toObjectStoreEnv()`, dataset written to s3
+  *server-side* (in-container duckdb inherits env+network), then `__lance_scan('s3://…')` AND
+  `lance_vector_search('s3://…', …)` read back through `QuackDuckDbExecutor` — both green.
+  Two consequences shipped with it:
+  - **Lance FileScans no longer carry `DuckDbS3Config`** (read path + `countLanceRows`): the
+    httpfs secret is a proven no-op for lance, and concurrent `CREATE OR REPLACE SECRET` calls
+    can hit a DuckDB write-write conflict on the Quack server (seen live when two queries
+    initialized simultaneously). NOTE: that secret race is still latent for *vortex/.db* s3
+    targets on the quack engine — pre-existing, out of lance scope.
+  - **The analyze-time s3 gate is lifted for the Quack engine**: the search functions now accept
+    s3 dataset paths when `ducklake.execution-engine=quack` (sidecar env carries the creds);
+    in-process keeps rejecting with a message explaining why (process-global env, unverifiable).
+
+**Still open:** ARRAY/embedding *write* support. Ordering + scope below.
 
 ---
 
