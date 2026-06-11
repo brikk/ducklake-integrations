@@ -122,10 +122,12 @@ fails to the IMDS fallback (`PUT http://169.254.169.254/...`, seconds-long) even
 with the secret present (probed 2026-06-11). Only the vortex COPY *write* honors the secret,
 which is what made the secret channel look sufficient. Vortex-s3 reads are lance-shaped
 (HANDOFF-lance-route-a O1): they need the `AWS_*` env channel
-(`DuckDbS3Config.toObjectStoreEnv()` on the Quack sidecar). The connector still ships the
-(now-harmless) secret on vortex FileScans; deciding whether to drop it and/or gate in-process
-vortex-s3 like lance is the follow-up task. `.db` (`HttpfsS3`) targets genuinely use the secret
-and are fully covered by the regression test.
+(`DuckDbS3Config.toObjectStoreEnv()` on the Quack sidecar). **Resolved same day:** the streaming
+vortex FileScan no longer carries `DuckDbS3Config` (mirrors lance — see
+`resolveDuckDbReadTarget`), so `FileScan.s3Config` is production-empty for every current format;
+the executor plumbing is kept for a future scan extension that reads through DuckDB's own
+filesystem layer (which DOES honor secrets, like `.db` ATTACH). `.db` (`HttpfsS3`) targets
+genuinely use the secret and are fully covered by the regression test.
 
 ## Status
 

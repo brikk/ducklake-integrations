@@ -199,10 +199,13 @@ Measurement task first; nothing is built for B.
 nested/ROW/MAP array elements. The converter is shared with the duckdb/vortex read paths, so the
 work is additive there too — same pattern as the Step-3 ARRAY extension.
 
-### 3. Quack secret-create race (pre-existing; vortex/.db s3 targets only)
-Concurrent `CREATE OR REPLACE SECRET` calls on the Quack server can hit a DuckDB write-write
-conflict (seen live). Lance dodged it by dropping the httpfs secret from its FileScans entirely;
-vortex/.db s3 targets on the quack engine still carry it. Tracked in TODO-pushdown-duckdb.
+### 3. Quack secret-create race — FIXED (2026-06-11, same session as O3)
+`CREATE SECRET IF NOT EXISTS` (steady state = catalog no-op) + `DuckDbCatalogWriteRetry` around
+the quack server-init/ATTACH statements for the first-contact storm; pinned by
+`TestDucklakeQuackS3InitRace`. The reproduction also surfaced that `read_vortex` over s3 NEVER
+consumed the httpfs secret (object_store/env-credentialed — lance-shaped, O1 redux), so the
+streaming vortex FileScan now ships no secret and relies on the O1 `AWS_*` env channel. Full
+record in TODO-pushdown-duckdb "FIXED (2026-06-11)".
 
 **Standing maintenance:** `TestLanceExtensionCanary` trips when extensions.duckdb.org starts
 serving a lance build other than the verified pin — if its signature/behavior asserts are green,

@@ -760,10 +760,13 @@ class DucklakePageSourceProvider @Inject constructor(
     /**
      * The read target for a DuckDB-engine split. For the {@code duckdb} (.db) format this is the
      * ATTACH target from {@link #resolveDuckDbAttachTarget}. For the single-file scan format
-     * ({@code vortex}) the same materialize-vs-httpfs decision is reused, then wrapped as a
+     * ({@code vortex}) the same materialize-vs-streaming decision is reused, then wrapped as a
      * {@link DuckDbAttachTarget.FileScan} carrying the scan function + extension so the executor
-     * reads via {@code read_vortex('path')} instead of ATTACHing a database. {@code lance} is a
-     * dataset *directory* and bypasses the materialize cache entirely (see below).
+     * reads via {@code read_vortex('path')} instead of ATTACHing a database — but WITHOUT the
+     * httpfs secret on the streaming s3 shape: {@code read_vortex} is object_store-credentialed
+     * (`AWS_*` env), not secret-credentialed, so s3-streaming vortex reads need the lance-O1 env
+     * channel on the executing process. {@code lance} is a dataset *directory* and bypasses the
+     * materialize cache entirely (see below).
      */
     private fun resolveDuckDbReadTarget(
             session: ConnectorSession,
@@ -801,8 +804,15 @@ class DucklakePageSourceProvider @Inject constructor(
         return when (base) {
             is DuckDbAttachTarget.LocalPath ->
                 DuckDbAttachTarget.FileScan(base.path.toAbsolutePath().toString(), scanFunction, extension, Optional.empty())
+            // No DuckDbS3Config on the streaming shape: `read_vortex` binds through Rust
+            // object_store, which NEVER consults DuckDB httpfs secrets (probed 2026-06-11 —
+            // single-threaded read with only the secret present falls back to the EC2 metadata
+            // service and fails; only the vortex COPY *write* honors the secret). Credentials
+            // are the lance-O1 `AWS_*` env channel: the Quack sidecar's container env, or the
+            // Trino JVM's own env in-process (DuckDbS3Config.toObjectStoreEnv). Shipping the
+            // secret anyway would just add pointless httpfs INSTALL + secret-create chatter.
             is DuckDbAttachTarget.HttpfsS3 ->
-                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, Optional.of(base.s3Config))
+                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, Optional.empty())
             is DuckDbAttachTarget.FileScan -> base
         }
     }

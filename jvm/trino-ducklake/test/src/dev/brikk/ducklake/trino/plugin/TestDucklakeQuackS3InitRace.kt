@@ -49,11 +49,14 @@ import java.util.concurrent.TimeUnit
  * [DuckDbCatalogWriteRetry] around the init statements for the first-contact storm — exercised
  * here with barrier-aligned concurrent executions of both racy target shapes:
  *
- *  - s3 [DuckDbAttachTarget.FileScan] (vortex) — the secret race exactly as observed live
- *    (vortex reads need the sidecar `AWS_*` env to actually return rows — see the fixture
- *    comment — but the init path ships and races the secret regardless);
- *  - [DuckDbAttachTarget.HttpfsS3] (`.db` over s3) — secret + shared-alias ATTACH, and the
- *    read itself is httpfs-credentialed, so it proves the created secret is *usable*.
+ *  - s3 [DuckDbAttachTarget.FileScan] (vortex) with an EXPLICIT `s3Config` — production vortex
+ *    FileScans no longer carry the secret (`read_vortex` is object_store/env-credentialed, see
+ *    the fixture comment), so this shape is built directly to keep racing the FileScan-branch
+ *    secret+httpfs init statements; the rows coming back also make it the vortex-over-s3 quack
+ *    read e2e (env channel);
+ *  - [DuckDbAttachTarget.HttpfsS3] (`.db` over s3) — the production secret carrier: secret +
+ *    shared-alias ATTACH, and the read itself is httpfs-credentialed, so it proves the created
+ *    secret is *usable*.
  *
  * Topology mirrors [TestDucklakeLanceS3QuackRead]: MinIO + Quack on one Testcontainers network.
  * The vortex/httpfs extensions are pre-warmed (downloaded) server-side in the fixture so the

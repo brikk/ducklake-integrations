@@ -40,6 +40,14 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
 - [x] `DucklakePageSourceProvider.createPageSource`: routes `FORMAT_VORTEX` through the DuckDB
   engine; `resolveDuckDbReadTarget` reuses the materialize-vs-httpfs decision and wraps it as a
   FileScan. Positional virtuals + delete filtering reused unchanged.
+  **s3-streaming credential correction (2026-06-11):** `read_vortex` binds through Rust
+  object_store and NEVER reads the DuckDB httpfs secret (probed: a secret-only single-threaded
+  s3 read fails to the EC2-IMDS fallback; only the vortex COPY *write* honors the secret). The
+  streaming FileScan therefore no longer carries `DuckDbS3Config` — credentials are the lance-O1
+  `AWS_*` env channel (`DuckDbS3Config.toObjectStoreEnv()` on the Quack sidecar / Trino JVM env
+  in-process). Materialized (sub-threshold) s3 reads are unaffected — Trino's own filesystem
+  downloads those. Read e2e: `TestDucklakeQuackS3InitRace` scenario 1 reads vortex-over-s3
+  through the env-credentialed Quack sidecar.
 - [x] DuckDB executor renders `read_vortex('path')`. **Quack FileScan now supported** (commit
   `68fd99b`): server-side `INSTALL/LOAD vortex` + `FROM read_vortex('/data/x.vortex')`, no ATTACH
   alias. Verified end-to-end against the linux quack container by

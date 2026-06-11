@@ -42,7 +42,12 @@ sealed interface DuckDbAttachTarget {
      * @param path local filesystem path or `s3://...` URL of the file to scan.
      * @param scanFunction the DuckDB table function, e.g. `read_vortex` / `__lance_scan`.
      * @param extension the DuckDB extension to INSTALL/LOAD, e.g. `vortex` / `lance`.
-     * @param s3Config present iff [path] is an `s3://` URL — then httpfs + a secret are set up.
+     * @param s3Config when present, the executors set up httpfs + the `ducklake_s3` secret before
+     *        scanning. Currently always EMPTY in production: both `read_vortex` and `__lance_scan`
+     *        bind through Rust object_store, which ignores DuckDB secrets and reads the `AWS_*`
+     *        env channel instead ([DuckDbS3Config.toObjectStoreEnv]; HANDOFF-lance-route-a O1 for
+     *        lance, probed for vortex 2026-06-11). Kept for a future scan extension that reads
+     *        through DuckDB's own filesystem layer (which DOES honor secrets, like `.db` ATTACH).
      * @param extraArgsSql SQL rendered verbatim after the quoted path inside the call's
      *        parentheses (must start with `, ` when non-empty), for table functions taking
      *        more than the path — e.g. `lance_vector_search('<path>', 'emb', [...]::DOUBLE[],

@@ -64,6 +64,40 @@ class TestDucklakeVortexFormat : AbstractDucklakeIntegrationTest() {
         }
     }
 
+    /**
+     * ARRAY columns through the vortex COPY path: the Arrow-stream writer's ARRAY support is
+     * shared with lance, but until now only the lance side was round-trip-tested
+     * ([TestDucklakeLanceFormat.embeddingCtasInsertThenVectorSearchRoundTrip]). Pins CTAS +
+     * INSERT of `ARRAY(REAL)` (NULL row included) and the value-level read-back through
+     * `read_vortex` + the shared Arrow-to-page converter.
+     */
+    @Test
+    fun embeddingArrayCtasInsertRoundTripsVortex() {
+        assumeVortexExtensionAvailable()
+        val table = "vortex_embedding"
+        try {
+            computeActual(
+                    "CREATE TABLE $table WITH (data_file_format = 'vortex') AS "
+                            + "SELECT * FROM (VALUES "
+                            + "(1, ARRAY[CAST(1.0 AS REAL), CAST(0.0 AS REAL)]), "
+                            + "(2, ARRAY[CAST(0.5 AS REAL), CAST(0.5 AS REAL)])) AS t(id, emb)")
+            computeActual("INSERT INTO $table VALUES (3, NULL)")
+
+            assertThat(computeScalar("SELECT DISTINCT file_format FROM \"$table\$files\"") as String)
+                    .isEqualTo("vortex")
+            assertThat(computeScalar("SELECT count(*) FROM $table") as Long).isEqualTo(3L)
+
+            @Suppress("UNCHECKED_CAST")
+            val embedding = (computeScalar("SELECT emb FROM $table WHERE id = 1") as List<Number>)
+                    .map { it.toFloat() }
+            assertThat(embedding).containsExactly(1.0f, 0.0f)
+            assertThat(computeScalar("SELECT emb FROM $table WHERE id = 3")).isNull()
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     private fun assumeVortexExtensionAvailable() {
         try {
             DriverManager.getConnection("jdbc:duckdb:").use { c ->
