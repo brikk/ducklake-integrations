@@ -234,9 +234,22 @@ Current lean (RESEARCH §4.3): **A first** (single engine, matches the `.db` sto
 
 ## Risks / open questions
 - **Dataset-vs-file** (Phase 0) — gates all write work and `$path`/`add_files` semantics.
+  **RESOLVED: option A** — `__lance_scan('<dataset-dir>')`, one catalog row per dataset, path = dir.
 - **Extension availability at test time** — `INSTALL lance` may need network (extensions.duckdb.org). Decide whether read-path tests run only when the extension is reachable (tag/skip), or pre-stage the extension like we bundle `trino_parity`. Mirror the JVM-test-env approach.
+  **RESOLVED: tag/skip** (`assumeLanceExtensionAvailable()` in every lance test). Pre-staging was
+  rejected when O3 established the repo hosts only the latest build per (DuckDB version, platform) —
+  vendoring would mean trino_parity-style per-platform bundling for no pin benefit.
+- **Extension version churn (HANDOFF O3)** — lance-duckdb ships ~daily and already renamed
+  `lance_scan` → `__lance_scan` once. **RESOLVED (2026-06-11): no repo-side pin is possible**
+  (`INSTALL lance VERSION '…'` parses on DuckDB 1.5.3 but the versioned URLs 404), so
+  `TestLanceExtensionCanary` FORCE-installs the currently served build, asserts every rendered call
+  shape (`__lance_scan`, search positional prefixes + `k`/`prefilter`/`alpha` named args,
+  `COPY (FORMAT lance)` behavior), then trips if the served build hash ≠ the verified pin
+  (`533e0ee`). Bump workflow in the class doc.
 - **Embedding type** — `ARRAY(REAL)` vs a future Trino `VECTOR(N)`; schema validation in the meantime (RESEARCH §5).
 - **`prefilter` predicate routing** — pushing `WHERE category='x'` into a table-function's `prefilter` arg needs expression pushdown on a table-function input; verify the Trino SPI surface (RESEARCH §5).
+  **RESOLVED:** `applyTableFunction` → `LanceSearchTableHandle` scan rewrite; `applyFilter` honors
+  the user's `prefilter` flag (§A3 gotchas for the non-pushable WHERE shapes).
 - **Two cred paths under Route B** — DuckDbS3Config vs lance storageOptions.
 
 ## Test plan (both routes)

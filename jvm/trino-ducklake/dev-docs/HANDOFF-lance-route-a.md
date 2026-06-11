@@ -11,7 +11,9 @@ published: **`osx_arm64`** (Apple Silicon), `linux_amd64`, `linux_arm64`, or `wi
 
 ## PROGRESS — arm64 run (M1 Max, osx_arm64), 2026-06-09
 
-Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 still open.**
+Picked up on a lance-capable box. **All of it shipped — Steps 1–7, O1, O2 (+`applyTopN`), the
+container-platform parity fix, ARRAY/embedding writes, and the O3 version-pin canary; dated
+entries below, later entries supersede earlier "still open" notes.**
 
 - **Step 1 (Phase A0 probe) — DONE, green.** The probe ran (no skip) once one bug was fixed:
   the scan function is **`__lance_scan`** (double-underscore), NOT `lance_scan`. The shipped
@@ -158,48 +160,54 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   value/null-count stats only. With this, **Route A is functionally complete** — every item from
   the original chunked plan (Phases A0–A4 + table functions + s3 + pushdown) has shipped.
 
-**Still open:** nothing blocking in Route A. Remaining threads are quality/strategic — see below
-(O3 version pinning, the Route A-vs-B benchmark, ROW/MAP converter support, the quack-engine
-secret race tracked in TODO-pushdown-duckdb).
+- **O3 — version-pin canary — DONE, green (2026-06-11, fresh session).** A hard INSTALL-time pin
+  is impossible: extensions.duckdb.org hosts only the latest lance build per (DuckDB version,
+  platform) — DuckDB 1.5.3 parses `INSTALL lance VERSION '…'` but the versioned URLs 404 for both
+  the semver (`0.5.1`) and the build hash (verified live). Pinning for real would mean vendoring
+  per-platform binaries trino_parity-style. So the executors keep INSTALLing floating/latest and
+  `TestLanceExtensionCanary` is the tripwire: it `FORCE INSTALL`s the *currently served* build
+  (bypassing the sticky `~/.duckdb` cache), asserts every rendered call shape via
+  `duckdb_functions()` (`__lance_scan` path arg; the three searches' positional prefixes +
+  `k`/`prefilter`/`alpha` named args), runs a live `COPY (FORMAT lance)` → scan → vector/FTS/hybrid
+  round-trip, and only then asserts the served `extension_version` equals the verified pin
+  (`533e0ee` on DuckDB v1.5.3). Version-only drift fails the last assert with bump instructions;
+  surface churn fails the precise earlier assert. Skips offline (FORCE needs network even when
+  cached — deliberate).
+
+**Still open:** nothing blocking in Route A. Remaining threads are quality/strategic — see NEXT
+below (the Route A-vs-B benchmark, ROW/MAP converter support, the quack-engine secret race
+tracked in TODO-pushdown-duckdb).
 
 ---
 
-## NEXT — ordering & scope (decided 2026-06-10; handoff happens in a fresh session)
+## NEXT — remaining threads (refreshed 2026-06-11; everything blocking has shipped)
 
-Three independent workstreams remain. **They have no hard dependency on each other**; recommended
-order is by value + risk:
+Route A is functionally complete and churn-hardened (O3 canary). The earlier three-workstream plan
+here (Step 7, O1, ARRAY writes) all landed — see PROGRESS. What remains is quality/strategic, no
+hard dependencies, in rough value order:
 
-### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3) — FUNCTION SURFACE COMPLETE
-**All three searches DONE 2026-06-10 (see PROGRESS above + TODO-lance §A3):**
-`lance_vector_search`, `lance_fts`, `lance_hybrid_search` under `<catalog>.system.*`, sharing
-`AbstractLanceSearchTableFunction` / `LanceSearchHandle` / `LanceSearchSplit(Processor)`.
-Remaining A3-adjacent work:
-- **O2 follow-up** — render pushed/explicit predicates as a WHERE inside the processor's query and
-  pass `prefilter := true` for filter-then-search semantics (verified live: WHERE over the function
-  output post-filters and can return < k; with `prefilter := true` DuckDB pushes the WHERE into
-  lance and k survivors come back — and for FTS, prefiltering changes the BM25 corpus stats).
-- Stretch: `applyTopN` so `ORDER BY _distance LIMIT k` synthesizes `k` (and could collapse the
-  per-fragment superset to exact global top-k).
-- s3-resident search stays gated behind the O1 fix (analyze rejects s3 paths today).
+### 1. Route A-vs-B benchmark (strategic decision gate)
+Same dataset/vector/k, cold + warm: Route A (DuckDB lance extension indirection) vs Route B
+(lance-trino JNI). This is the gate recorded in TODO-lance §"Route A vs B decision" — B becomes
+interesting only if the DuckDB indirection shows up in measured vector latency, upstream
+lance-duckdb stalls, or we want the JNI-only surface (`substraitAggregate`, `setColumnOrderings`).
+Measurement task first; nothing is built for B.
 
-### 2. O1 fix — lance s3 credential channel — INDEPENDENT, schedule after/with Step 7
-Confirmed (see §O1): lance ignores the DuckDB secret and reads object_store's `AWS_*` **process-global**
-env. The connector's `DuckDbS3Config → CREATE SECRET` is a no-op for lance s3. Fix is a design choice,
-NOT more SPI:
-- **Favored: the Quack sidecar path** — set `AWS_*` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-  `AWS_ENDPOINT`/`AWS_ENDPOINT_URL`, `AWS_ALLOW_HTTP`, `AWS_REGION`) in the container env at launch
-  from catalog `s3.*` config. Clean because it's a separate process (no global-env collision with
-  Trino's parquet s3 client). Mirror the `s3.* → AWS_*` aliasing the Doris BE already does
-  ([[project_doris_be_aws_keys]]).
-- In-process executor: setting `AWS_*` per-query is unsafe (global). Only viable as a once-at-startup
-  global for a single s3 identity — document the limitation, or restrict in-process lance-s3.
-- Keep it OUT of the Step-7 PR — it touches execution-engine/sidecar config, not the table-function SPI.
+### 2. ROW/MAP element support in the shared converter + writer (capability gap)
+`DucklakeArrowToPageConverter`'s ARRAY support covers scalar and nested-array elements; ROW/MAP
+(and timestamp/uuid) elements still throw NOT_SUPPORTED, and the Arrow-stream writer fails fast on
+nested/ROW/MAP array elements. The converter is shared with the duckdb/vortex read paths, so the
+work is additive there too — same pattern as the Step-3 ARRAY extension.
 
-### 3. Follow-up — ARRAY/embedding WRITE support (lower priority)
-The Arrow-stream writer is scalar-only (`toArrowType`/`populateVector`), so embedding columns can't be
-written via CTAS — only registered via `add_files`. Add `ARRAY`(`FixedSizeList`) support to the writer
-+ stats to enable embedding CTAS. Not blocking; embeddings are usually produced out-of-band and
-registered.
+### 3. Quack secret-create race (pre-existing; vortex/.db s3 targets only)
+Concurrent `CREATE OR REPLACE SECRET` calls on the Quack server can hit a DuckDB write-write
+conflict (seen live). Lance dodged it by dropping the httpfs secret from its FileScans entirely;
+vortex/.db s3 targets on the quack engine still carry it. Tracked in TODO-pushdown-duckdb.
+
+**Standing maintenance:** `TestLanceExtensionCanary` trips when extensions.duckdb.org starts
+serving a lance build other than the verified pin — if its signature/behavior asserts are green,
+just bump the pin constant; if they fail, upstream churn hit a rendered call shape (workflow in
+the class doc).
 
 **Design context (read first):**
 - [TODO-lance.md](TODO-lance.md) — the chunked plan (Phases A0–A4) + the Route A vs B decision.
@@ -413,10 +421,16 @@ and RESEARCH §2. Stretch: `applyTopN` so `ORDER BY <distance> LIMIT k` synthesi
   takes only `(path, explain_verbose)`, so none via the scan function. Compare with
   [[project_doris_be_aws_keys]] — the codebase already aliases `s3.*` → `AWS_*` for a native s3 client
   (Doris BE); lance is the same shape. **Local-path lance reads/writes are unaffected** (no creds).
-- **O2 — `prefilter` pushdown** into the table functions (Phase A3) — needs expression pushdown on
-  a table-function input; verify the Trino SPI surface.
-- **O3 — extension version pinning.** lance-duckdb ships ~daily; pin a version and watch for
-  `lance_scan` / `COPY` API churn (TODO-lance Risks).
+- **O2 — `prefilter` pushdown — SHIPPED (2026-06-10).** The SPI surface is
+  `DucklakeMetadata.applyTableFunction` → table-scan rewrite, which makes `applyFilter`/`applyTopN`/
+  projection compose over the search. See the PROGRESS entry + TODO-lance §A3 gotchas.
+- **O3 — extension version pinning — DONE (2026-06-11).** No repo-side pin exists:
+  extensions.duckdb.org serves only the latest build per (DuckDB version, platform); DuckDB 1.5.3
+  parses `INSTALL lance VERSION '…'` but the versioned URLs 404 (semver and hash both). A real pin
+  would mean vendoring binaries trino_parity-style. Instead `TestLanceExtensionCanary` FORCE-installs
+  the served build, verifies every rendered call shape + a COPY/scan/search round-trip, then asserts
+  the build hash equals the verified pin (`533e0ee`) — churn fails loudly with a bump workflow in the
+  class doc. See the PROGRESS entry.
 
 ## Substrait side-quest (deferred, independent)
 
