@@ -60,6 +60,37 @@ data class DuckDbS3Config(
         return sql.toString()
     }
 
+    /**
+     * Render these settings as the **object_store `AWS_*` environment variables** that the
+     * DuckDB `lance` extension's Rust object_store reads. Lance does NOT honor the DuckDB
+     * httpfs secret ([renderCreateSecretSql] is a no-op for lance s3 paths — HANDOFF O1,
+     * probed 2026-06-10 against MinIO), so any process running lance-over-s3 needs this env:
+     * the Quack sidecar container at launch, or the Trino JVM itself for the in-process
+     * engine (env is process-global — single s3 identity only).
+     *
+     * Keys are the probe-verified set: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+     * `AWS_REGION`, `AWS_ENDPOINT` + `AWS_ENDPOINT_URL` (both spellings, for object_store
+     * version drift; value includes the scheme), and `AWS_ALLOW_HTTP=true` for http
+     * endpoints. Mirrors the `s3.* → AWS_*` aliasing the Doris BE integration already does
+     * for its native s3 client.
+     */
+    fun toObjectStoreEnv(): Map<String, String> {
+        val env = LinkedHashMap<String, String>()
+        accessKey.ifPresent { env["AWS_ACCESS_KEY_ID"] = it }
+        secretKey.ifPresent { env["AWS_SECRET_ACCESS_KEY"] = it }
+        region.ifPresent { env["AWS_REGION"] = it }
+        endpoint.ifPresent { e ->
+            // object_store wants a URL with scheme; catalog config may carry either form.
+            val url = if (e.contains("://")) e else (if (useSsl) "https://" else "http://") + e
+            env["AWS_ENDPOINT"] = url
+            env["AWS_ENDPOINT_URL"] = url
+        }
+        if (!useSsl) {
+            env["AWS_ALLOW_HTTP"] = "true"
+        }
+        return env
+    }
+
     companion object {
         fun fromCatalogConfig(config: Map<String, String>): DuckDbS3Config {
             val endpoint = trimmed(config["s3.endpoint"])

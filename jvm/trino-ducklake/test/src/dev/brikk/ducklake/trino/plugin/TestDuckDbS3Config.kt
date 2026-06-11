@@ -145,4 +145,67 @@ class TestDuckDbS3Config {
         assertThat(config.pathStyleAccess).isFalse()
         assertThat(config.useSsl).isTrue()
     }
+
+    /**
+     * The object_store `AWS_*` env mapping for lance s3 (HANDOFF O1). This exact key/value
+     * set was verified live against MinIO (2026-06-10, env-injected child process): lance
+     * COPY-write, `__lance_scan`, `lance_vector_search`, and `lance_fts` over `s3://` all
+     * succeed with it, and all fail with only the DuckDB httpfs secret present.
+     */
+    @Test
+    fun testToObjectStoreEnvMinioStyle() {
+        val config = DuckDbS3Config.fromCatalogConfig(mapOf(
+                "s3.endpoint" to "http://localhost:9000",
+                "s3.region" to "us-east-1",
+                "s3.aws-access-key" to "minio-user",
+                "s3.aws-secret-key" to "minio-secret",
+                "s3.path-style-access" to "true"))
+
+        assertThat(config.toObjectStoreEnv()).containsExactlyInAnyOrderEntriesOf(mapOf(
+                "AWS_ACCESS_KEY_ID" to "minio-user",
+                "AWS_SECRET_ACCESS_KEY" to "minio-secret",
+                "AWS_REGION" to "us-east-1",
+                // Scheme preserved; both endpoint spellings for object_store version drift.
+                "AWS_ENDPOINT" to "http://localhost:9000",
+                "AWS_ENDPOINT_URL" to "http://localhost:9000",
+                "AWS_ALLOW_HTTP" to "true"))
+    }
+
+    @Test
+    fun testToObjectStoreEnvAwsHosted() {
+        val config = DuckDbS3Config.fromCatalogConfig(mapOf(
+                "s3.region" to "us-west-2",
+                "s3.aws-access-key" to "AKIAEXAMPLE",
+                "s3.aws-secret-key" to "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"))
+
+        // No endpoint configured → object_store's AWS default resolution; https → no ALLOW_HTTP.
+        assertThat(config.toObjectStoreEnv()).containsExactlyInAnyOrderEntriesOf(mapOf(
+                "AWS_ACCESS_KEY_ID" to "AKIAEXAMPLE",
+                "AWS_SECRET_ACCESS_KEY" to "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "AWS_REGION" to "us-west-2"))
+    }
+
+    @Test
+    fun testToObjectStoreEnvAddsSchemeToBareEndpoint() {
+        // Catalog config may carry a scheme-less host:port (the DuckDB-secret form);
+        // object_store wants a URL — the scheme is derived from useSsl.
+        val httpsConfig = DuckDbS3Config(
+                java.util.Optional.of("s3.example.com"),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                false,
+                true)
+        assertThat(httpsConfig.toObjectStoreEnv()["AWS_ENDPOINT"]).isEqualTo("https://s3.example.com")
+        assertThat(httpsConfig.toObjectStoreEnv()).doesNotContainKey("AWS_ALLOW_HTTP")
+
+        val httpConfig = httpsConfig.copy(useSsl = false)
+        assertThat(httpConfig.toObjectStoreEnv()["AWS_ENDPOINT"]).isEqualTo("http://s3.example.com")
+        assertThat(httpConfig.toObjectStoreEnv()["AWS_ALLOW_HTTP"]).isEqualTo("true")
+    }
+
+    @Test
+    fun testToObjectStoreEnvEmptyConfig() {
+        assertThat(DuckDbS3Config.fromCatalogConfig(emptyMap()).toObjectStoreEnv()).isEmpty()
+    }
 }

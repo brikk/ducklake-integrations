@@ -105,8 +105,22 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   function surface is now COMPLETE (all three searches). Tests
   `TestDucklakeLanceFtsAndHybridSearch` (4) + `TestLanceSearchSql` (4). Details TODO-lance §A3.
 
-**Still open:** the O1 fix (lance s3 cred channel), predicate pushdown into the
-table functions (O2), and ARRAY/embedding *write* support. Ordering + scope below.
+- **O1 fix — lance s3 cred channel — SHIPPED (2026-06-10, same session).** The probe-verified
+  `s3.* → AWS_*` mapping is now code: `DuckDbS3Config.toObjectStoreEnv()` emits
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/`AWS_ENDPOINT`+`AWS_ENDPOINT_URL`
+  (scheme-full)/`AWS_ALLOW_HTTP` (http only). **Re-verified live against MinIO** with exactly
+  that env in a child process: lance COPY-write, `__lance_scan`, `lance_vector_search`, AND
+  `lance_fts` over `s3://` all work. Injection points wired: the dev `docker-compose` `duckqk`
+  service sets the AWS_* env from the MinIO vars, and `TestingDucklakeQuackEngineServer` grew an
+  `objectStoreEnv` constructor param. For the in-process engine the channel is the Trino JVM's
+  own environment (operator-set, single identity — documented limitation). The analyze-time s3
+  rejection in the search table functions and the read path's reliance on env remain until an
+  automated quack-e2e exists — gated on the container-platform parity-extension selection fix
+  (the amd64-container/arm64-host mismatch), which is the remaining blocker for running
+  quack-path tests on Apple Silicon.
+
+**Still open:** predicate pushdown into the table functions (O2), ARRAY/embedding *write*
+support, and (enabler) the container-platform parity selection fix. Ordering + scope below.
 
 ---
 

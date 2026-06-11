@@ -96,6 +96,17 @@ services:
     environment:
       QUACK_PORT: "9494"
       QUACK_TOKEN: ${QUACK_TOKEN:-ducklake-engine-token}
+      # Lance s3 credential channel (HANDOFF O1): the DuckDB lance extension's Rust
+      # object_store ignores DuckDB httpfs secrets and reads these process-global
+      # AWS_* env vars instead. Set at container launch, inherited by the duckdb
+      # process — keep in sync with DuckDbS3Config.toObjectStoreEnv()'s mapping of
+      # the catalog's s3.* properties. Harmless for non-lance reads.
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT: http://minio:9000
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ALLOW_HTTP: "true"
     volumes:
       # Shared with trino at the same path so materialize-mode .db files
       # written by the Trino worker are visible to server-side ATTACH.

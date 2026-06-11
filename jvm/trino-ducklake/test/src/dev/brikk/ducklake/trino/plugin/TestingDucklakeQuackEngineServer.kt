@@ -43,7 +43,20 @@ internal class TestingDucklakeQuackEngineServer : AutoCloseable {
 
     constructor(sharedDataDir: Path) : this(sharedDataDir, Optional.empty())
 
-    constructor(sharedDataDir: Path, parityExtensionPath: Optional<Path>) {
+    constructor(sharedDataDir: Path, parityExtensionPath: Optional<Path>)
+            : this(sharedDataDir, parityExtensionPath, emptyMap())
+
+    /**
+     * @param objectStoreEnv extra environment for the container — in production this is where
+     *        the operator injects the lance s3 credential channel
+     *        ([DuckDbS3Config.toObjectStoreEnv]'s `AWS_*` vars): the DuckDB `lance` extension's
+     *        Rust object_store reads process-global env, not DuckDB secrets (HANDOFF O1), and
+     *        env set on the container at launch is inherited by the in-container `duckdb`.
+     */
+    constructor(
+            sharedDataDir: Path,
+            parityExtensionPath: Optional<Path>,
+            objectStoreEnv: Map<String, String>) {
         this.token = DEFAULT_TOKEN
         var c: GenericContainer<*> = GenericContainer(buildImage())
                 .withExposedPorts(CONTAINER_PORT)
@@ -52,6 +65,9 @@ internal class TestingDucklakeQuackEngineServer : AutoCloseable {
                 .withFileSystemBind(sharedDataDir.toAbsolutePath().toString(), "/data", BindMode.READ_WRITE)
                 .withStartupAttempts(3)
                 .waitingFor(Wait.forListeningPort())
+        for ((key, value) in objectStoreEnv) {
+            c = c.withEnv(key, value)
+        }
         if (parityExtensionPath.isPresent && Files.isRegularFile(parityExtensionPath.get())) {
             c = c.withCopyFileToContainer(
                     MountableFile.forHostPath(parityExtensionPath.get()),
