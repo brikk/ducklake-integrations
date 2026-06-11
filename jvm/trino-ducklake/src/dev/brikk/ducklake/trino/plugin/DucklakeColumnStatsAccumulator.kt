@@ -135,10 +135,11 @@ internal class DucklakeColumnStatsAccumulator(columns: List<DucklakeColumnHandle
 
     companion object {
         private fun supportsMinMax(type: Type): Boolean =
-            // Arrays (e.g. lance embedding columns) get null/value counts only — there is no
-            // meaningful catalog min/max for a vector (extractComparable would return null per
-            // position anyway; this just skips the wasted walk).
-            !(type == VARBINARY || type == UuidType.UUID || type is io.trino.spi.type.ArrayType)
+            // Complex types (arrays — e.g. lance embedding columns — rows, maps) get null/value
+            // counts only — there is no meaningful catalog min/max for them (extractComparable
+            // would return null per position anyway; this just skips the wasted walk).
+            !(type == VARBINARY || type == UuidType.UUID || type is io.trino.spi.type.ArrayType
+                    || type is io.trino.spi.type.RowType || type is io.trino.spi.type.MapType)
 
         /**
          * Native, [Comparable] representation of one cell, in a shape [DuckDbWriterSupport

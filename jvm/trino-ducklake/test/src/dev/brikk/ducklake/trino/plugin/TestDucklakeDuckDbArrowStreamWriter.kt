@@ -25,6 +25,7 @@ import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMA
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.WRITER_MODE_ARROW_STREAM
 import io.trino.Session
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
@@ -48,6 +49,14 @@ open class TestDucklakeDuckDbArrowStreamWriter : AbstractDucklakeIntegrationTest
                 .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
                 .setCatalogSessionProperty("ducklake", DUCKDB_WRITER_MODE, WRITER_MODE_ARROW_STREAM)
                 .build()
+    }
+
+    /** ROW values materialize as [io.trino.testing.MaterializedRow]; flatten to plain Lists so
+     * complex expected values read naturally. Arrays/maps already materialize as List/Map. */
+    private fun normalize(value: Any?): Any? = when (value) {
+        is io.trino.testing.MaterializedRow -> value.fields.map { normalize(it) }
+        is List<*> -> value.map { normalize(it) }
+        else -> value
     }
 
     @Test
@@ -80,6 +89,99 @@ open class TestDucklakeDuckDbArrowStreamWriter : AbstractDucklakeIntegrationTest
         finally {
             tryDropTable("test_schema.arrow_scalars")
         }
+    }
+
+    /**
+     * Complex types end-to-end through the arrow-stream writer + `read`-side converter:
+     * ROW → Arrow Struct (incl. a NULL field and a NULL row), MAP → Arrow Map (incl. NULL
+     * value, empty map, NULL map), ARRAY alongside them, a ROW nested inside a ROW, and an
+     * ARRAY inside a ROW. INSERT adds a second data file so multi-fragment reads are covered.
+     * Complex columns get value/null-count stats only (no min/max) — pinned against `$files`
+     * via record_count and by the CTAS simply succeeding (the stats query would error if it
+     * tried MIN/MAX on a STRUCT through formatStatValue).
+     */
+    @Test
+    fun testComplexTypesRoundTripThroughArrowStream() {
+        computeActual(arrowStreamSession(),
+                "CREATE TABLE test_schema.arrow_complex AS " +
+                        "SELECT * FROM (VALUES " +
+                        "  (1, " +
+                        "   CAST(ROW(10, 'alpha') AS ROW(i INTEGER, s VARCHAR)), " +
+                        "   MAP(ARRAY['a', 'b'], ARRAY[1, CAST(NULL AS INTEGER)]), " +
+                        "   ARRAY[1, 2, 3], " +
+                        "   CAST(ROW(ROW(7, 'deep'), ARRAY['t1', 't2']) AS ROW(irow ROW(i INTEGER, s VARCHAR), tags ARRAY(VARCHAR)))), " +
+                        "  (2, " +
+                        "   CAST(ROW(NULL, 'beta') AS ROW(i INTEGER, s VARCHAR)), " +
+                        "   CAST(MAP() AS MAP(VARCHAR, INTEGER)), " +
+                        "   CAST(ARRAY[] AS ARRAY(INTEGER)), " +
+                        "   CAST(NULL AS ROW(irow ROW(i INTEGER, s VARCHAR), tags ARRAY(VARCHAR))))" +
+                        ") AS t(id, st, mp, arr, nested)")
+        try {
+            computeActual(arrowStreamSession(),
+                    "INSERT INTO test_schema.arrow_complex VALUES " +
+                            "(3, CAST(NULL AS ROW(i INTEGER, s VARCHAR)), CAST(NULL AS MAP(VARCHAR, INTEGER)), " +
+                            " CAST(NULL AS ARRAY(INTEGER)), " +
+                            " CAST(ROW(NULL, ARRAY['solo']) AS ROW(irow ROW(i INTEGER, s VARCHAR), tags ARRAY(VARCHAR))))")
+
+            val files = computeActual(
+                    "SELECT file_format, record_count FROM \"arrow_complex\$files\" ORDER BY record_count DESC")
+            assertThat(files.materializedRows.map { it.getField(0) as String })
+                    .containsExactly("duckdb", "duckdb")
+            assertThat(files.materializedRows.map { (it.getField(1) as Number).toLong() })
+                    .containsExactly(2L, 1L)
+
+            val result = computeActual(
+                    "SELECT id, st, mp, arr, nested FROM test_schema.arrow_complex ORDER BY id")
+            assertThat(result.rowCount).isEqualTo(3)
+
+            val r1 = result.materializedRows[0]
+            assertThat(normalize(r1.getField(1))).`as`("row value").isEqualTo(listOf(10, "alpha"))
+            assertThat(r1.getField(2)).`as`("map with null value")
+                    .isEqualTo(mapOf("a" to 1, "b" to null))
+            assertThat(r1.getField(3)).`as`("int array").isEqualTo(listOf(1, 2, 3))
+            assertThat(normalize(r1.getField(4))).`as`("row(row, array)")
+                    .isEqualTo(listOf(listOf(7, "deep"), listOf("t1", "t2")))
+
+            val r2 = result.materializedRows[1]
+            assertThat(normalize(r2.getField(1))).`as`("row with null field").isEqualTo(listOf(null, "beta"))
+            assertThat(r2.getField(2)).`as`("empty map").isEqualTo(emptyMap<String, Int>())
+            assertThat(r2.getField(3)).`as`("empty array").isEqualTo(emptyList<Int>())
+            assertThat(r2.getField(4)).`as`("null nested row").isNull()
+
+            val r3 = result.materializedRows[2]
+            assertThat(r3.getField(1)).`as`("null row").isNull()
+            assertThat(r3.getField(2)).`as`("null map").isNull()
+            assertThat(r3.getField(3)).`as`("null array").isNull()
+            assertThat(normalize(r3.getField(4))).`as`("row with null irow field")
+                    .isEqualTo(listOf(null, listOf("solo")))
+
+            // A predicate over a complex table must still work (filters on the scalar column;
+            // the complex columns ride through projection).
+            assertThat(computeActual(
+                    "SELECT st FROM test_schema.arrow_complex WHERE id = 1").materializedRows
+                    .map { normalize(it.getField(0)) })
+                    .containsExactly(listOf(10, "alpha"))
+        }
+        finally {
+            tryDropTable("test_schema.arrow_complex")
+        }
+    }
+
+    /** The comparison `appender` writer has no complex-value path — it must reject ROW/MAP/ARRAY
+     * columns at schema time with a pointer to arrow_stream, not fail mid-append. */
+    @Test
+    fun testAppenderModeRejectsComplexTypesAtSchemaTime() {
+        val appenderSession = Session.builder(session)
+                .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
+                .setCatalogSessionProperty("ducklake", DUCKDB_WRITER_MODE, "appender")
+                .build()
+        assertThatThrownBy {
+            computeActual(appenderSession,
+                    "CREATE TABLE test_schema.appender_complex AS "
+                            + "SELECT CAST(ROW(1, 'x') AS ROW(i INTEGER, s VARCHAR)) AS st")
+        }.hasMessageContaining("appender writer does not support type")
+                .hasMessageContaining("arrow_stream")
+        tryDropTable("test_schema.appender_complex")
     }
 
     @Test

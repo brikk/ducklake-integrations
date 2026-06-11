@@ -15,13 +15,16 @@ package dev.brikk.ducklake.trino.plugin
 
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
+import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.DateType.DATE
 import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.MapType
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
@@ -95,6 +98,23 @@ internal object DuckDbWriterSupport {
         }
         if (type == UuidType.UUID) {
             return "UUID"
+        }
+        return toDuckDbComplexSqlType(type, writerLabel)
+    }
+
+    /** The complex (ARRAY/ROW/MAP) tail of [toDuckDbSqlType] — recursion shares one source of
+     * truth with the scalar mapping. */
+    private fun toDuckDbComplexSqlType(type: Type, writerLabel: String): String {
+        if (type is ArrayType) {
+            return toDuckDbSqlType(type.elementType, writerLabel) + "[]"
+        }
+        if (type is RowType) {
+            return type.fields.mapIndexed { idx, f ->
+                '"' + f.name.orElse("f$idx").replace("\"", "\"\"") + "\" " + toDuckDbSqlType(f.type, writerLabel)
+            }.joinToString(", ", "STRUCT(", ")")
+        }
+        if (type is MapType) {
+            return "MAP(${toDuckDbSqlType(type.keyType, writerLabel)}, ${toDuckDbSqlType(type.valueType, writerLabel)})"
         }
         throw TrinoException(NOT_SUPPORTED, "$writerLabel does not yet support type: $type")
     }

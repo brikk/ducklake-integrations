@@ -26,6 +26,8 @@ import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
+import io.trino.spi.block.SqlMap
+import io.trino.spi.block.SqlRow
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
@@ -37,7 +39,9 @@ import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
+import io.trino.spi.type.MapType
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
@@ -70,6 +74,8 @@ import org.apache.arrow.vector.VarBinaryVector
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.complex.ListVector
+import org.apache.arrow.vector.complex.MapVector
+import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.complex.impl.UnionListWriter
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.ipc.ArrowReader
@@ -168,6 +174,41 @@ constructor(
     private var closed: Boolean = false
 
     init {
+        // The vortex COPY path natively crashes or hangs the process on MAP data (probed
+        // 2026-06-11, vortex extension on DuckDB 1.5.3 — memory corruption, not a clean error),
+        // so MAP anywhere in a column type is rejected up front for vortex. Lance rejects MAP
+        // itself with a clean versioned error ("Map ... only supported in Lance file format
+        // 2.2+"), and the .db path supports MAP fully — neither needs this gate.
+        if (isVortex) {
+            for (col in columns) {
+                if (DuckDbComplexVectorWriter.containsMapType(col.columnType)) {
+                    throw TrinoException(NOT_SUPPORTED,
+                            "vortex write of MAP columns is not supported (the DuckDB vortex "
+                                    + "extension fails natively on MAP COPY); column "
+                                    + "'${col.columnName}' has type ${col.columnType}. Use the "
+                                    + "parquet or duckdb data_file_format for MAP columns.")
+                }
+            }
+        }
+        // The lance COPY leg silently morphs NULL ROW values into ROW-of-NULLs when the COPY
+        // source is an arrow scan (probed 2026-06-11: a VALUES-sourced lance COPY preserves
+        // struct-level nulls, and the same arrow stream INSERTed into a .db preserves them too —
+        // the loss is specific to arrow-scan → lance COPY). A silent NULL→ROW(NULL,..) rewrite
+        // is a correctness bug, so ROW columns are rejected for lance writes until the upstream
+        // interplay is fixed; externally-written lance datasets with structs read fine via
+        // add_files (their nulls survive).
+        if (isLance) {
+            for (col in columns) {
+                if (DuckDbComplexVectorWriter.containsRowType(col.columnType)) {
+                    throw TrinoException(NOT_SUPPORTED,
+                            "lance write of ROW columns is not supported (the lance COPY of an "
+                                    + "Arrow-streamed source loses struct-level NULLs); column "
+                                    + "'${col.columnName}' has type ${col.columnType}. Use the "
+                                    + "parquet, duckdb or vortex data_file_format, or register an "
+                                    + "externally-written lance dataset via add_files.")
+                }
+            }
+        }
         Files.createDirectories(localTempDir)
         // For lance this path is a *directory* DuckDB's COPY will create; for vortex a single file.
         val extension = if (isLance) "lance" else if (isVortex) "vortex" else "db"
@@ -372,6 +413,13 @@ constructor(
                 if (partitionId.isPresent) partitionId.asLong else null)
     }
 
+    /** Whether the catalog records min/max for this type. VARBINARY/UUID never did; complex
+     * types (ARRAY/ROW/MAP) get counts only — DuckDB would happily MIN/MAX them
+     * lexicographically, but formatStatValue has no catalog representation for the result. */
+    private fun statsMinMaxSupported(type: Type): Boolean =
+        !(type == VARBINARY || type == UuidType.UUID
+                || type is ArrayType || type is RowType || type is MapType)
+
     @Throws(SQLException::class)
     private fun extractColumnStats(): List<DucklakeFileColumnStats> {
         if (columns.isEmpty()) {
@@ -383,7 +431,7 @@ constructor(
             val col: DucklakeColumnHandle = columns[i]
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             sql.append(", COUNT(").append(name).append(")")
-            if (!(col.columnType == VARBINARY || col.columnType == UuidType.UUID)) {
+            if (statsMinMaxSupported(col.columnType)) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
                 minMaxColumns.add(i)
             }
@@ -667,6 +715,23 @@ constructor(
                 throw TrinoException(NOT_SUPPORTED,
                         "DuckDB Arrow-stream writer does not yet support array element type: ${type.elementType}")
             }
+            if (type is RowType) {
+                // ROW rides as Arrow Struct (DuckDB STRUCT); children positional, names from the
+                // Trino row fields (anonymous fields get fN — DuckDB only needs valid entry names,
+                // matching is positional through the arrow-stream INSERT).
+                val children: List<Field> = type.fields.mapIndexed { idx, f ->
+                    toArrowField(f.name.orElse("f$idx"), f.type, true)
+                }
+                return Field(name, FieldType(nullable, ArrowType.Struct.INSTANCE, null), children)
+            }
+            if (type is MapType) {
+                // MAP rides as Arrow Map: a list of non-null key/value entry structs. Keys are
+                // non-null by Trino contract; keysSorted=false (DuckDB does not require it).
+                val entries = Field("entries", FieldType(false, ArrowType.Struct.INSTANCE, null), listOf(
+                        toArrowField(MapVector.KEY_NAME, type.keyType, false),
+                        toArrowField(MapVector.VALUE_NAME, type.valueType, true)))
+                return Field(name, FieldType(nullable, ArrowType.Map(false), null), listOf(entries))
+            }
             val arrow: ArrowType = toArrowType(type)
             return Field(name, FieldType(nullable, arrow, null), null)
         }
@@ -909,55 +974,16 @@ constructor(
                 }
             }
             else if (type is ArrayType) {
-                populateListVector(vector as ListVector, type, block, rowCount)
+                DuckDbComplexVectorWriter.populateListVector(vector as ListVector, type, block, rowCount)
+            }
+            else if (type is RowType) {
+                DuckDbComplexVectorWriter.populateStructVector(vector as StructVector, type, block, rowCount)
+            }
+            else if (type is MapType) {
+                DuckDbComplexVectorWriter.populateMapVector(vector as MapVector, type, block, rowCount)
             }
             else {
                 throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
-            }
-        }
-
-        /**
-         * ARRAY(scalar) → Arrow List. NULL *rows* are fine (unwritten slots become null —
-         * [ListVector.startNewValue] back-fills skipped offsets, and the caller's
-         * `vector.valueCount = rowCount` finalizes the tail). NULL *elements* are rejected:
-         * the list writer's per-type sub-writers have no positional null append, and the only
-         * driving use case (embedding vectors) never carries null components.
-         */
-        private fun populateListVector(vector: ListVector, type: ArrayType, block: Block, rowCount: Int) {
-            vector.allocateNew()
-            val writer: UnionListWriter = vector.writer
-            val elementType: Type = type.elementType
-            for (i in 0 until rowCount) {
-                if (block.isNull(i)) {
-                    continue
-                }
-                writer.setPosition(i)
-                writer.startList()
-                val elements: Block = type.getObject(block, i) as Block
-                for (j in 0 until elements.positionCount) {
-                    if (elements.isNull(j)) {
-                        throw TrinoException(NOT_SUPPORTED,
-                                "DuckDB Arrow-stream writer does not support NULL elements in array columns")
-                    }
-                    appendListElement(writer, elementType, elements, j)
-                }
-                writer.endList()
-            }
-        }
-
-        private fun appendListElement(writer: UnionListWriter, elementType: Type, elements: Block, j: Int) {
-            when {
-                elementType == REAL -> writer.float4().writeFloat4(intBitsToFloat(REAL.getInt(elements, j)))
-                elementType == DOUBLE -> writer.float8().writeFloat8(DOUBLE.getDouble(elements, j))
-                elementType == INTEGER -> writer.integer().writeInt(INTEGER.getInt(elements, j))
-                elementType == BIGINT -> writer.bigInt().writeBigInt(BIGINT.getLong(elements, j))
-                elementType == SMALLINT -> writer.smallInt().writeSmallInt(SMALLINT.getShort(elements, j))
-                elementType == TINYINT -> writer.tinyInt().writeTinyInt(TINYINT.getByte(elements, j))
-                elementType == BOOLEAN -> writer.bit().writeBit(if (BOOLEAN.getBoolean(elements, j)) 1 else 0)
-                elementType is VarcharType -> writer.varChar().writeVarChar(
-                        org.apache.arrow.vector.util.Text(elementType.getSlice(elements, j).toStringUtf8()))
-                else -> throw TrinoException(NOT_SUPPORTED,
-                        "DuckDB Arrow-stream writer does not yet support array element type: $elementType")
             }
         }
 

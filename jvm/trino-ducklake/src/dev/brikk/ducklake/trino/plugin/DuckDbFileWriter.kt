@@ -105,6 +105,17 @@ constructor(
     private var closed: Boolean = false
 
     init {
+        // Fail at schema time, not mid-append: toDuckDbSqlType renders complex types now (for the
+        // Arrow-stream writer), but this appender writes per-cell and has no complex-value path.
+        for (col in columns) {
+            if (col.columnType is io.trino.spi.type.ArrayType
+                    || col.columnType is io.trino.spi.type.RowType
+                    || col.columnType is io.trino.spi.type.MapType) {
+                throw TrinoException(NOT_SUPPORTED,
+                        "DuckDB-format appender writer does not support type ${col.columnType}; "
+                                + "use duckdb_writer_mode = 'arrow_stream' (the default) for complex types")
+            }
+        }
         Files.createDirectories(localTempDir)
         this.localTempFile = localTempDir.resolve("ducklake-write-${java.util.UUID.randomUUID()}.db")
 

@@ -128,6 +128,24 @@ class TestDucklakeLanceFormat : AbstractDucklakeIntegrationTest() {
         }
     }
 
+    /**
+     * ROW writes are gated for lance: the lance COPY of an Arrow-streamed source silently
+     * morphs NULL ROW values into ROW-of-NULLs (probed 2026-06-11 — a VALUES-sourced lance
+     * COPY preserves struct nulls and the same arrow stream into a `.db` preserves them, so
+     * the loss is specific to the arrow-scan → lance COPY leg). Until that upstream interplay
+     * is fixed, the writer rejects ROW at schema time rather than silently rewriting NULLs.
+     * (MAP needs no gate — lance itself errors cleanly: "Map ... only in Lance format 2.2+".)
+     */
+    @Test
+    fun rowColumnIsRejectedForLanceWrites() {
+        assumeLanceExtensionAvailable()
+        org.assertj.core.api.Assertions.assertThatThrownBy {
+            computeActual("CREATE TABLE lance_row WITH (data_file_format = 'lance') AS "
+                    + "SELECT CAST(ROW(10, 'alpha') AS ROW(i INTEGER, s VARCHAR)) AS st")
+        }.hasMessageContaining("lance write of ROW columns is not supported")
+        tryDropTable("lance_row")
+    }
+
     private fun assumeLanceExtensionAvailable() {
         try {
             DriverManager.getConnection("jdbc:duckdb:").use { c ->

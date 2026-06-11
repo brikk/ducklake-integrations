@@ -21,6 +21,8 @@ import io.trino.spi.TrinoException
 import io.trino.spi.block.ArrayBlockBuilder
 import io.trino.spi.block.Block
 import io.trino.spi.block.BlockBuilder
+import io.trino.spi.block.MapBlockBuilder
+import io.trino.spi.block.RowBlockBuilder
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
@@ -32,7 +34,9 @@ import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
+import io.trino.spi.type.MapType
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimeZoneKey
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
@@ -67,17 +71,22 @@ import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.complex.FixedSizeListVector
 import org.apache.arrow.vector.complex.ListVector
+import org.apache.arrow.vector.complex.MapVector
+import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.types.pojo.ArrowType
 
 /**
  * Materializes one {@link VectorSchemaRoot} batch from DuckDB's Arrow export stream
  * into a Trino {@link Page}, dispatching per-column on the resolved Trino {@link Type}.
  *
- * <p>Supported types are the scalar writer surface plus {@code ARRAY} of scalar (or nested
- * {@code ARRAY}) elements — the latter added for Lance embedding columns, which arrive as Arrow
- * {@code FixedSizeList<float>} and map to {@code ARRAY(REAL)}. {@code ROW}/{@code MAP}, timestamp/
- * uuid array elements, unsupported timestamp precisions, and unknown vector classes raise
- * {@link io.trino.spi.StandardErrorCode#NOT_SUPPORTED}.
+ * <p>Supported types are the full scalar surface plus the complex types {@code ARRAY}
+ * (Arrow {@code List} / {@code FixedSizeList} — the latter is how Lance materializes embedding
+ * columns), {@code ROW} (Arrow {@code Struct}, fields matched positionally), and {@code MAP}
+ * (Arrow {@code Map}); complex types nest arbitrarily, and nested values cover every scalar the
+ * column level does (timestamps, timestamptz, uuid, decimal included) via [appendNestedValue].
+ * Scalar columns keep dedicated per-column loops (one type dispatch per column); complex columns
+ * dispatch per value, which is unavoidable for nested data. Unsupported timestamp precisions and
+ * unknown vector classes raise {@link io.trino.spi.StandardErrorCode#NOT_SUPPORTED}.
  */
 internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
     private val columnTypes: List<Type> = columnTypes.toList()
@@ -236,12 +245,11 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     }
                 }
             }
-            else if (type is ArrayType) {
-                // Lance embedding columns arrive as Arrow FixedSizeList<float> (e.g. FLOAT[3]) and
-                // map to ARRAY(REAL); plain DuckDB/vortex lists arrive as variable-width ListVector.
-                // Both are handled here. ROW/MAP and timestamp/uuid element types are still
-                // NOT_SUPPORTED (see appendArrayElement).
-                writeArrayColumn(type, vector, builder as ArrayBlockBuilder, rowCount)
+            else if (type is ArrayType || type is RowType || type is MapType) {
+                // ARRAY arrives as Arrow List (or FixedSizeList — how lance materializes
+                // embeddings), ROW as Struct (fields positional), MAP as Map (list of key/value
+                // entry structs). Contents go through the recursive appendNestedValue machinery.
+                writeComplexColumn(type, vector, builder, rowCount)
             }
             else {
                 throw TrinoException(
@@ -251,23 +259,19 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             return builder.build()
         }
 
-        /** Writes a whole ARRAY column: one Trino array entry per row (null-aware at the list level). */
-        private fun writeArrayColumn(type: ArrayType, vector: FieldVector, builder: ArrayBlockBuilder, rowCount: Int) {
+        /** Writes a whole complex (ARRAY/ROW/MAP) column: one entry per row, null-aware at the
+         * top level; entry contents go through the recursive [appendNestedValue] machinery. */
+        private fun writeComplexColumn(type: Type, vector: FieldVector, builder: BlockBuilder, rowCount: Int) {
             for (row in 0 until rowCount) {
-                if (vector.isNull(row)) {
-                    builder.appendNull()
-                }
-                else {
-                    appendArrayEntry(type, vector, row, builder)
-                }
+                appendNestedValue(type, vector, row, builder)
             }
         }
 
         /**
          * Appends the (non-null) ARRAY value at [row] of [vector] as one entry of [builder].
          * Handles both Arrow [FixedSizeListVector] (lance embeddings, `FLOAT[N]`) and variable-width
-         * [ListVector]. Element values are written via [appendArrayElement], which also drives
-         * recursion for nested ARRAY-of-ARRAY.
+         * [ListVector]. Element values are written via [appendNestedValue], which also drives
+         * recursion for nested complex elements.
          */
         private fun appendArrayEntry(type: ArrayType, vector: FieldVector, row: Int, builder: ArrayBlockBuilder) {
             val elementType: Type = type.elementType
@@ -278,7 +282,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     val base: Int = row * width
                     builder.buildEntry<RuntimeException> { elementBuilder ->
                         for (j in 0 until width) {
-                            appendArrayElement(elementType, data, base + j, elementBuilder)
+                            appendNestedValue(elementType, data, base + j, elementBuilder)
                         }
                     }
                 }
@@ -288,7 +292,7 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     val end: Int = vector.getElementEndIndex(row)
                     builder.buildEntry<RuntimeException> { elementBuilder ->
                         for (idx in start until end) {
-                            appendArrayElement(elementType, data, idx, elementBuilder)
+                            appendNestedValue(elementType, data, idx, elementBuilder)
                         }
                     }
                 }
@@ -299,12 +303,52 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
         }
 
         /**
-         * Appends a single element value of Trino [type] read from [vector] at [i] into [builder].
-         * Null-aware (uses the element vector's own validity). Covers the scalar element types lance
-         * arrays carry (REAL for embeddings, plus the other primitives) and recurses for nested
-         * ARRAY; ROW/MAP and timestamp/uuid elements remain NOT_SUPPORTED.
+         * Appends the (non-null) ROW value at [row] of [vector] as one entry of [builder].
+         * Arrow struct children are matched to Trino row fields POSITIONALLY — both sides carry
+         * the catalog's declared field order (DuckDB exports struct entries in declaration order).
          */
-        private fun appendArrayElement(type: Type, vector: FieldVector, i: Int, builder: BlockBuilder) {
+        private fun appendRowEntry(type: RowType, vector: StructVector, row: Int, builder: RowBlockBuilder) {
+            val fields: List<RowType.Field> = type.fields
+            if (vector.size() < fields.size) {
+                throw TrinoException(
+                        NOT_SUPPORTED,
+                        "DuckDB-format reader: Arrow struct has ${vector.size()} children but Trino ROW declares ${fields.size} fields")
+            }
+            builder.buildEntry<RuntimeException> { fieldBuilders ->
+                for (f in fields.indices) {
+                    appendNestedValue(fields[f].type, vector.getChildByOrdinal(f) as FieldVector, row, fieldBuilders[f])
+                }
+            }
+        }
+
+        /**
+         * Appends the (non-null) MAP value at [row] of [vector] as one entry of [builder]. An
+         * Arrow Map is list-shaped: per-row offsets into an entries struct whose two children are
+         * the flattened keys and values. Keys are non-null by both Arrow and Trino contract;
+         * values are null-aware via [appendNestedValue].
+         */
+        private fun appendMapEntry(type: MapType, vector: MapVector, row: Int, builder: MapBlockBuilder) {
+            val entries: StructVector = vector.dataVector as StructVector
+            val keyChild: FieldVector = entries.getChildByOrdinal(0) as FieldVector
+            val valueChild: FieldVector = entries.getChildByOrdinal(1) as FieldVector
+            val start: Int = vector.getElementStartIndex(row)
+            val end: Int = vector.getElementEndIndex(row)
+            builder.buildEntry<RuntimeException> { keyBuilder, valueBuilder ->
+                for (idx in start until end) {
+                    appendNestedValue(type.keyType, keyChild, idx, keyBuilder)
+                    appendNestedValue(type.valueType, valueChild, idx, valueBuilder)
+                }
+            }
+        }
+
+        /**
+         * Appends a single value of Trino [type] read from [vector] at [i] into [builder].
+         * Null-aware (uses the vector's own validity). This is the recursive workhorse for all
+         * complex-type contents — it covers the FULL supported type surface (every scalar
+         * including timestamps/timestamptz/uuid/decimal, plus nested ARRAY/ROW/MAP), so any
+         * supported type can appear at any nesting depth.
+         */
+        private fun appendNestedValue(type: Type, vector: FieldVector, i: Int, builder: BlockBuilder) {
             if (vector.isNull(i)) {
                 builder.appendNull()
                 return
@@ -312,11 +356,20 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             when {
                 type is DecimalType -> appendDecimalElement(type, vector as DecimalVector, i, builder)
                 type is ArrayType -> appendArrayEntry(type, vector, i, builder as ArrayBlockBuilder)
+                type is RowType -> appendRowEntry(type, vector as StructVector, i, builder as RowBlockBuilder)
+                type is MapType -> appendMapEntry(type, vector as MapVector, i, builder as MapBlockBuilder)
+                type is TimestampType -> appendTimestampValue(type, vector, i, builder)
+                type is TimestampWithTimeZoneType -> appendTimestampTzValue(type, vector, i, builder)
+                type == UuidType.UUID -> {
+                    // Utf8-encoded over the Arrow exchange, like the column-level path.
+                    val s = String((vector as VarCharVector).get(i), Charsets.UTF_8)
+                    UuidType.UUID.writeSlice(builder, UuidType.javaUuidToTrinoUuid(java.util.UUID.fromString(s)))
+                }
                 else -> appendScalarElement(type, vector, i, builder)
             }
         }
 
-        /** Appends one (non-null) scalar element value. Split from [appendArrayElement] to keep each
+        /** Appends one (non-null) primitive value. Split from [appendNestedValue] to keep each
          * dispatch's cyclomatic complexity in check. */
         private fun appendScalarElement(type: Type, vector: FieldVector, i: Int, builder: BlockBuilder) {
             when {
@@ -332,7 +385,52 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                 type is VarcharType -> type.writeSlice(builder, Slices.wrappedBuffer(*(vector as VarCharVector).get(i)))
                 else -> throw TrinoException(
                         NOT_SUPPORTED,
-                        "DuckDB-format reader does not yet support ARRAY element type: $type")
+                        "DuckDB-format reader does not yet support nested value type: $type")
+            }
+        }
+
+        /** Per-value TIMESTAMP write for nested positions; same unit math as [writeTimestampColumn]. */
+        private fun appendTimestampValue(type: TimestampType, vector: FieldVector, i: Int, builder: BlockBuilder) {
+            when (vector) {
+                is TimeStampSecVector ->
+                    writeTimestampMicrosWithRemainder(type, builder, Math.multiplyExact(vector.get(i), 1_000_000L), 0)
+                is TimeStampMilliVector ->
+                    writeTimestampMicrosWithRemainder(type, builder, Math.multiplyExact(vector.get(i), 1_000L), 0)
+                is TimeStampMicroVector ->
+                    writeTimestampMicrosWithRemainder(type, builder, vector.get(i), 0)
+                is TimeStampNanoVector -> {
+                    val nanos = vector.get(i)
+                    writeTimestampMicrosWithRemainder(type, builder,
+                            Math.floorDiv(nanos, 1_000L), (Math.floorMod(nanos, 1_000L) * 1_000L).toInt())
+                }
+                else -> throw TrinoException(
+                        NOT_SUPPORTED,
+                        "Unsupported Arrow timestamp vector for nested Trino type $type: ${vector.javaClass.simpleName}")
+            }
+        }
+
+        /** Per-value TIMESTAMP WITH TIME ZONE write for nested positions; same unit math and
+         * schema-TZ resolution as [writeTimestampTzColumn] (the zone lookup is a map hit). */
+        private fun appendTimestampTzValue(type: TimestampWithTimeZoneType, vector: FieldVector, i: Int, builder: BlockBuilder) {
+            val zone = resolveTimeZoneKey(vector)
+            when (vector) {
+                is TimeStampSecTZVector ->
+                    writeTimestampTz(type, builder, Math.multiplyExact(vector.get(i), 1_000L), 0, zone)
+                is TimeStampMilliTZVector ->
+                    writeTimestampTz(type, builder, vector.get(i), 0, zone)
+                is TimeStampMicroTZVector -> {
+                    val micros = vector.get(i)
+                    writeTimestampTz(type, builder,
+                            Math.floorDiv(micros, 1_000L), (Math.floorMod(micros, 1_000L) * 1_000_000L).toInt(), zone)
+                }
+                is TimeStampNanoTZVector -> {
+                    val nanos = vector.get(i)
+                    writeTimestampTz(type, builder,
+                            Math.floorDiv(nanos, 1_000_000L), (Math.floorMod(nanos, 1_000_000L) * 1_000L).toInt(), zone)
+                }
+                else -> throw TrinoException(
+                        NOT_SUPPORTED,
+                        "Unsupported Arrow timestamp_tz vector for nested Trino type $type: ${vector.javaClass.simpleName}")
             }
         }
 

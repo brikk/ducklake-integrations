@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
@@ -96,6 +97,41 @@ class TestDucklakeVortexFormat : AbstractDucklakeIntegrationTest() {
         finally {
             tryDropTable(table)
         }
+    }
+
+    /** ROW columns through the vortex COPY path (probed upstream-supported), null row included. */
+    @Test
+    fun rowColumnRoundTripsVortex() {
+        assumeVortexExtensionAvailable()
+        val table = "vortex_row"
+        try {
+            computeActual(
+                    "CREATE TABLE $table WITH (data_file_format = 'vortex') AS "
+                            + "SELECT * FROM (VALUES "
+                            + "(1, CAST(ROW(10, 'alpha') AS ROW(i INTEGER, s VARCHAR))), "
+                            + "(2, CAST(NULL AS ROW(i INTEGER, s VARCHAR)))) AS t(id, st)")
+            assertThat(computeScalar("SELECT st.s FROM $table WHERE id = 1") as String)
+                    .isEqualTo("alpha")
+            assertThat(computeScalar("SELECT st FROM $table WHERE id = 2")).isNull()
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    /**
+     * MAP writes are hard-gated for vortex: the DuckDB vortex extension fails NATIVELY (crash or
+     * hang, not a clean error — probed 2026-06-11) on MAP COPY, so the writer must reject at
+     * schema time before any native code runs.
+     */
+    @Test
+    fun mapColumnIsRejectedForVortexWrites() {
+        assumeVortexExtensionAvailable()
+        assertThatThrownBy {
+            computeActual("CREATE TABLE vortex_map WITH (data_file_format = 'vortex') AS "
+                    + "SELECT MAP(ARRAY['a'], ARRAY[1]) AS mp")
+        }.hasMessageContaining("vortex write of MAP columns is not supported")
+        tryDropTable("vortex_map")
     }
 
     private fun assumeVortexExtensionAvailable() {

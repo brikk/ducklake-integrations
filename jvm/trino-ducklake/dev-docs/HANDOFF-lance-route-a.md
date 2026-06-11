@@ -193,11 +193,22 @@ interesting only if the DuckDB indirection shows up in measured vector latency, 
 lance-duckdb stalls, or we want the JNI-only surface (`substraitAggregate`, `setColumnOrderings`).
 Measurement task first; nothing is built for B.
 
-### 2. ROW/MAP element support in the shared converter + writer (capability gap)
-`DucklakeArrowToPageConverter`'s ARRAY support covers scalar and nested-array elements; ROW/MAP
-(and timestamp/uuid) elements still throw NOT_SUPPORTED, and the Arrow-stream writer fails fast on
-nested/ROW/MAP array elements. The converter is shared with the duckdb/vortex read paths, so the
-work is additive there too — same pattern as the Step-3 ARRAY extension.
+### 2. ROW/MAP support — DONE (2026-06-11, same session)
+The shared `DucklakeArrowToPageConverter` now covers ROW (Arrow Struct, positional fields) and
+MAP columns plus FULL nested-element recursion (timestamp/timestamptz/uuid/decimal/row/map/array
+at any depth) — pinned value-level by `TestDucklakeDuckDbComplexTypeRead` over a raw-written
+`.db`. The Arrow-stream writer gained ROW/MAP columns (per-value `DuckDbComplexVectorWriter`;
+list elements stay scalar-only), `toDuckDbSqlType` renders `STRUCT(..)`/`MAP(..)`/`T[]` (ARRAY
+on the `.db` CREATE TABLE path was silently missing before), complex columns get counts-only
+stats, and the appender writer rejects complex at schema time. E2E:
+`TestDucklakeDuckDbArrowStreamWriter.testComplexTypesRoundTripThroughArrowStream`.
+**Format gates from probing (both upstream issues):**
+- **vortex MAP COPY crashes/hangs natively** (memory corruption, not an error) → MAP rejected at
+  schema time for vortex writes. Vortex ROW round-trips fine (tested).
+- **lance arrow-scan→COPY loses struct-level NULLs** (NULL ROW reads back as ROW-of-NULLs;
+  VALUES-sourced lance COPY preserves them, so it's the arrow-scan interplay) → ROW rejected at
+  schema time for lance writes; `add_files`-registered lance structs read fine. Lance MAP needs
+  no gate (clean upstream "Lance format 2.2+" error).
 
 ### 3. Quack secret-create race — FIXED (2026-06-11, same session as O3)
 `CREATE SECRET IF NOT EXISTS` (steady state = catalog no-op) + `DuckDbCatalogWriteRetry` around
