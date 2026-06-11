@@ -200,16 +200,17 @@ class DucklakeSplitManager @Inject constructor(
     }
 
     /**
-     * Splits for table-function execution — today only `system.lance_vector_search`. The handle
-     * already carries the resolved lance dataset directories (one split each); the per-split
-     * search inputs ride on the handle itself (see [LanceVectorSearchFunctionHandle]).
+     * Splits for table-function execution — today the lance searches (`system.lance_vector_search`
+     * / `lance_fts` / `lance_hybrid_search`). The handle already carries the resolved lance
+     * dataset directories (one split each); the per-split search inputs ride on the handle itself
+     * (see [LanceSearchHandle]).
      */
     override fun getSplits(
             transaction: ConnectorTransactionHandle,
             session: ConnectorSession,
             function: io.trino.spi.function.table.ConnectorTableFunctionHandle): ConnectorSplitSource {
-        if (function is LanceVectorSearchFunctionHandle) {
-            return FixedSplitSource(function.datasetPaths.map { LanceVectorSearchSplit(it) })
+        if (function is LanceSearchHandle) {
+            return FixedSplitSource(function.datasetPaths.map { LanceSearchSplit(it) })
         }
         throw IllegalArgumentException("Unknown table function handle: ${function.javaClass.name}")
     }

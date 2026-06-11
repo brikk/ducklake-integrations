@@ -138,6 +138,8 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         // DucklakeFunctionProvider routes each function's handle to its split processor.
         val tableFunctionBinder = Multibinder.newSetBinder(binder, ConnectorTableFunction::class.java)
         tableFunctionBinder.addBinding().to(LanceVectorSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
+        tableFunctionBinder.addBinding().to(LanceFtsTableFunction::class.java).`in`(Scopes.SINGLETON)
+        tableFunctionBinder.addBinding().to(LanceHybridSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeFunctionProvider::class.java).`in`(Scopes.SINGLETON)
     }
 }

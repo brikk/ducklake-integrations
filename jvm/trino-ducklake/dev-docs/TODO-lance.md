@@ -133,10 +133,28 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
   SQL composition, arg validation + empty table, multi-fragment, non-lance rejection) +
   `TestLanceVectorSearchSql` (arg-tail rendering). `FileScan` gained `extraArgsSql` (default "")
   rendered after the quoted path by both executors.
-- [ ] `lance_fts` + `lance_hybrid_search` — mirror the proven `lance_vector_search` shape.
-  DuckDB signatures: `lance_fts(dir, col, query VARCHAR, prefilter BOOLEAN, k BIGINT)`;
-  `lance_hybrid_search(dir, col?, vec FLOAT[]|DOUBLE[], col?, query?, k, nprobs, alpha, use_index,
-  refine_factor, prefilter, oversample_factor)` (check arg order against `duckdb_functions()`).
+- [x] **`lance_fts` + `lance_hybrid_search` DONE (2026-06-10, arm64).** Mirrored via a shared-
+  machinery refactor: `AbstractLanceSearchTableFunction` (catalog resolution + v1 guards + arg
+  helpers + score-column constants), marker interface `LanceSearchHandle { datasetPaths,
+  outputColumns }` (split manager + function provider dispatch on it), shared `LanceSearchSplit` +
+  `LanceSearchSplitProcessor` (scan function + arg tail dispatched per concrete handle).
+  Probe facts (extension June 2026):
+  - **FTS works WITHOUT an inverted index** (brute force; an index in the dataset accelerates
+    transparently). `lance_fts(dir, col, query, k := …, prefilter := …)` returns *matching rows
+    only* + `_score FLOAT` descending. **`k` is best-effort for FTS** — the shipped build returned
+    2 rows for k:=1 — so the connector documents "up to/around k" and the exact recipe is
+    `ORDER BY _score DESC LIMIT k`. `prefilter := true` changes BM25 corpus stats (scores differ
+    from post-filter), confirming genuine filter-then-search.
+  - **Hybrid** is positional `lance_hybrid_search(dir, vec_col, vec, fts_col, query, k := …,
+    alpha := …, prefilter := …)`; output = dataset cols + `_distance` + `_score` (**NULL** for
+    rows with no text match — score handles are nullable) + `_hybrid_score`, descending. Trino
+    arg `ALPHA DOUBLE` is optional via `defaultValue(null)` (verified working) — omitted ⇒ not
+    rendered ⇒ extension default blend; given ⇒ validated to [0,1] and rendered `alpha := x`.
+  Trino surface: `lance_fts(schema_name, table_name, column_name, query, k, prefilter)` (column
+  must be varchar); `lance_hybrid_search(schema_name, table_name, vector_column, query_vec,
+  text_column, query, k, alpha, prefilter)` (array + varchar validation). Tests:
+  `TestDucklakeLanceFtsAndHybridSearch` (4 e2e) + `TestLanceSearchSql` (4, tail rendering +
+  scan-fn dispatch; replaces TestLanceVectorSearchSql).
 - [ ] (Stretch) `applyTopN` so a Trino-side `ORDER BY <distance> LIMIT k` synthesizes the function's `k`.
 - [ ] (Follow-up, O2) predicate pushdown INTO the function (render pushed predicates as a WHERE
   inside the split processor's query + `prefilter := true` for filter-then-search semantics).

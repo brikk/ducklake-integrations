@@ -93,8 +93,19 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   + `TestLanceVectorSearchSql`; detekt green (ThrowsCount fixed via `Nothing`-returning helpers,
   no baseline adds). Full details in TODO-lance §A3.
 
-**Still open:** Step 7 remainder (`lance_fts` + `lance_hybrid_search` — mirror the proven
-`lance_vector_search` shape), the O1 fix (lance s3 cred channel), predicate pushdown into the
+- **Step 7 remainder, `lance_fts` + `lance_hybrid_search` — DONE, green (2026-06-10, arm64, same
+  session).** Mirrored via a shared-machinery refactor (`AbstractLanceSearchTableFunction` +
+  `LanceSearchHandle` marker interface + shared `LanceSearchSplit`/`LanceSearchSplitProcessor`
+  with per-handle scan-fn + arg-tail dispatch). Probe facts: FTS needs NO inverted index (brute
+  force works), returns matching rows only + `_score FLOAT` desc, and the shipped extension's `k`
+  is best-effort for FTS (k:=1 returned 2 matches — documented as "around k", exact via
+  `ORDER BY _score DESC LIMIT k`); hybrid is positional `(dir, vec_col, vec, fts_col, query)` +
+  `k/alpha/prefilter` named, output appends `_distance` + `_score` (NULL when no text match) +
+  `_hybrid_score` desc; optional `ALPHA` via `defaultValue(null)` works in Trino 481. Phase A3
+  function surface is now COMPLETE (all three searches). Tests
+  `TestDucklakeLanceFtsAndHybridSearch` (4) + `TestLanceSearchSql` (4). Details TODO-lance §A3.
+
+**Still open:** the O1 fix (lance s3 cred channel), predicate pushdown into the
 table functions (O2), and ARRAY/embedding *write* support. Ordering + scope below.
 
 ---
@@ -104,21 +115,18 @@ table functions (O2), and ARRAY/embedding *write* support. Ordering + scope belo
 Three independent workstreams remain. **They have no hard dependency on each other**; recommended
 order is by value + risk:
 
-### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3)
-**`lance_vector_search` slice DONE 2026-06-10 (see PROGRESS above + TODO-lance §A3).** The
-`query_vec` spike answered itself: `ScalarArgumentSpecification` accepts `ArrayType(DOUBLE)`,
-the constant arrives as a `Block`, bare `ARRAY[...]` literals coerce. Remaining:
-- **`lance_fts` + `lance_hybrid_search`** — mirror the proven shape (function class + handle +
-  split + processor dispatch in `DucklakeFunctionProvider` / `DucklakeSplitManager`). FTS is the
-  easy one (`query` is a VARCHAR — no new argument kinds). Hybrid takes both a vector and a text
-  query; check arg order against `duckdb_functions()` first (two overloads, FLOAT[]/DOUBLE[]).
+### 1. Step 7 — vector / FTS / hybrid table functions (Phase A3) — FUNCTION SURFACE COMPLETE
+**All three searches DONE 2026-06-10 (see PROGRESS above + TODO-lance §A3):**
+`lance_vector_search`, `lance_fts`, `lance_hybrid_search` under `<catalog>.system.*`, sharing
+`AbstractLanceSearchTableFunction` / `LanceSearchHandle` / `LanceSearchSplit(Processor)`.
+Remaining A3-adjacent work:
 - **O2 follow-up** — render pushed/explicit predicates as a WHERE inside the processor's query and
   pass `prefilter := true` for filter-then-search semantics (verified live: WHERE over the function
   output post-filters and can return < k; with `prefilter := true` DuckDB pushes the WHERE into
-  lance and k survivors come back).
+  lance and k survivors come back — and for FTS, prefiltering changes the BM25 corpus stats).
 - Stretch: `applyTopN` so `ORDER BY _distance LIMIT k` synthesizes `k` (and could collapse the
   per-fragment superset to exact global top-k).
-- s3-resident vector search stays gated behind the O1 fix (analyze rejects s3 paths today).
+- s3-resident search stays gated behind the O1 fix (analyze rejects s3 paths today).
 
 ### 2. O1 fix — lance s3 credential channel — INDEPENDENT, schedule after/with Step 7
 Confirmed (see §O1): lance ignores the DuckDB secret and reads object_store's `AWS_*` **process-global**

@@ -20,13 +20,13 @@ import io.airlift.slice.SizeOf.instanceSize
 import io.trino.spi.connector.ConnectorSplit
 
 /**
- * One split per lance dataset directory for `lance_vector_search` execution. The remaining
- * inputs (column, query vector, k, prefilter, output layout) ride on the
- * [LanceVectorSearchFunctionHandle], which the engine hands to the split processor alongside
- * this split.
+ * One split per lance dataset directory for the lance search table functions
+ * (`lance_vector_search` / `lance_fts` / `lance_hybrid_search`). The remaining inputs (search
+ * arguments + output layout) ride on the [LanceSearchHandle], which the engine hands to the
+ * split processor alongside this split.
  */
 @JvmRecord
-data class LanceVectorSearchSplit @JsonCreator constructor(
+data class LanceSearchSplit @JsonCreator constructor(
         @get:JvmName("datasetPath")
         @param:JsonProperty("datasetPath") val datasetPath: String) : ConnectorSplit
 {
@@ -34,6 +34,6 @@ data class LanceVectorSearchSplit @JsonCreator constructor(
         INSTANCE_SIZE.toLong() + estimatedSizeOf(datasetPath)
 
     companion object {
-        private val INSTANCE_SIZE: Int = instanceSize(LanceVectorSearchSplit::class.java)
+        private val INSTANCE_SIZE: Int = instanceSize(LanceSearchSplit::class.java)
     }
 }

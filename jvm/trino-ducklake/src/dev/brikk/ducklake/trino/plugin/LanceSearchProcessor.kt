@@ -29,27 +29,28 @@ import java.sql.SQLException
 import java.util.Optional
 
 /**
- * Executes one [LanceVectorSearchSplit]: runs DuckDB's
- * `lance_vector_search('<dataset>', '<column>', [...]::DOUBLE[], k := ..., prefilter := ...)`
- * through the configured [DucklakeDuckDbExecutor] (the same engine the lance FileScan read path
- * uses) and streams the Arrow result back as Trino pages via [DucklakeArrowToPageConverter].
+ * Executes one [LanceSearchSplit] of any lance search table function: runs the matching DuckDB
+ * `lance_*` call (`lance_vector_search` / `lance_fts` / `lance_hybrid_search`, dispatched on the
+ * concrete [LanceSearchHandle]) through the configured [DucklakeDuckDbExecutor] — the same engine
+ * the lance FileScan read path uses — and streams the Arrow result back as Trino pages via
+ * [DucklakeArrowToPageConverter].
  */
-class LanceVectorSearchProcessorProvider(
+class LanceSearchProcessorProvider(
         private val executorFactory: DucklakeDuckDbExecutorFactory) : TableFunctionProcessorProvider {
 
     override fun getSplitProcessor(
             session: ConnectorSession,
             handle: ConnectorTableFunctionHandle,
             split: ConnectorSplit): TableFunctionSplitProcessor =
-        LanceVectorSearchSplitProcessor(
+        LanceSearchSplitProcessor(
                 executorFactory.create(),
-                handle as LanceVectorSearchFunctionHandle,
-                (split as LanceVectorSearchSplit).datasetPath)
+                handle as LanceSearchHandle,
+                (split as LanceSearchSplit).datasetPath)
 }
 
-internal class LanceVectorSearchSplitProcessor(
+internal class LanceSearchSplitProcessor(
         private val executor: DucklakeDuckDbExecutor,
-        private val handle: LanceVectorSearchFunctionHandle,
+        private val handle: LanceSearchHandle,
         private val datasetPath: String) : TableFunctionSplitProcessor {
     private val converter = DucklakeArrowToPageConverter(handle.outputColumns.map { it.columnType })
     private var context: DucklakeDuckDbExecutor.ExecutionContext? = null
@@ -69,11 +70,11 @@ internal class LanceVectorSearchSplitProcessor(
         }
         catch (e: SQLException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR,
-                    "lance_vector_search failed for dataset $datasetPath: ${e.message}", e)
+                    "${scanFunctionFor(handle)} failed for dataset $datasetPath: ${e.message}", e)
         }
         catch (e: IOException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR,
-                    "lance_vector_search failed for dataset $datasetPath: ${e.message}", e)
+                    "${scanFunctionFor(handle)} failed for dataset $datasetPath: ${e.message}", e)
         }
     }
 
@@ -87,7 +88,7 @@ internal class LanceVectorSearchSplitProcessor(
         DucklakeDuckDbExecutor.ExecutionRequest(
                 DuckDbAttachTarget.FileScan(
                         datasetPath,
-                        LanceVectorSearchTableFunction.FUNCTION_NAME,
+                        scanFunctionFor(handle),
                         DucklakeSessionProperties.FORMAT_LANCE,
                         Optional.empty(),
                         renderExtraArgsSql(handle)),
@@ -95,16 +96,40 @@ internal class LanceVectorSearchSplitProcessor(
                 TupleDomain.all())
 
     companion object {
+        /** The DuckDB table function backing this handle's search. */
+        internal fun scanFunctionFor(handle: LanceSearchHandle): String =
+            when (handle) {
+                is LanceVectorSearchFunctionHandle -> LanceVectorSearchTableFunction.FUNCTION_NAME
+                is LanceFtsFunctionHandle -> LanceFtsTableFunction.FUNCTION_NAME
+                is LanceHybridSearchFunctionHandle -> LanceHybridSearchTableFunction.FUNCTION_NAME
+                else -> throw IllegalArgumentException("Unknown lance search handle: ${handle.javaClass.name}")
+            }
+
         /**
-         * The argument tail appended after the quoted dataset path inside the
-         * `lance_vector_search(...)` call. The column name is single-quote escaped; the vector
-         * elements are finite doubles (validated at analyze time) so `Double.toString` always
-         * yields valid SQL literals; `k`/`prefilter` are a long and a boolean.
+         * The argument tail appended after the quoted dataset path inside the DuckDB call's
+         * parentheses. String arguments (column names, FTS queries) are single-quote escaped;
+         * vector elements are finite doubles (validated at analyze time) so `Double.toString`
+         * always yields valid SQL literals; `k`/`alpha`/`prefilter` are numeric/boolean.
          */
-        internal fun renderExtraArgsSql(handle: LanceVectorSearchFunctionHandle): String {
-            val column: String = handle.columnName.replace("'", "''")
-            val vector: String = handle.queryVector.joinToString(", ")
-            return ", '$column', [$vector]::DOUBLE[], k := ${handle.k}, prefilter := ${handle.prefilter}"
-        }
+        internal fun renderExtraArgsSql(handle: LanceSearchHandle): String =
+            when (handle) {
+                is LanceVectorSearchFunctionHandle ->
+                    ", ${sqlString(handle.columnName)}, ${sqlVector(handle.queryVector)}" +
+                            ", k := ${handle.k}, prefilter := ${handle.prefilter}"
+                is LanceFtsFunctionHandle ->
+                    ", ${sqlString(handle.columnName)}, ${sqlString(handle.query)}" +
+                            ", k := ${handle.k}, prefilter := ${handle.prefilter}"
+                is LanceHybridSearchFunctionHandle ->
+                    ", ${sqlString(handle.vectorColumn)}, ${sqlVector(handle.queryVector)}" +
+                            ", ${sqlString(handle.textColumn)}, ${sqlString(handle.query)}" +
+                            ", k := ${handle.k}" +
+                            (handle.alpha?.let { ", alpha := $it" } ?: "") +
+                            ", prefilter := ${handle.prefilter}"
+                else -> throw IllegalArgumentException("Unknown lance search handle: ${handle.javaClass.name}")
+            }
+
+        private fun sqlString(value: String): String = "'${value.replace("'", "''")}'"
+
+        private fun sqlVector(vector: List<Double>): String = "[${vector.joinToString(", ")}]::DOUBLE[]"
     }
 }

@@ -15,23 +15,14 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
-import io.trino.spi.function.table.ConnectorTableFunctionHandle
 
 /**
- * Analysis result of `<catalog>.system.lance_vector_search(...)` — everything execution needs,
- * fully resolved at analyze time by [LanceVectorSearchTableFunction]:
- *
- * - [datasetPaths]: the table's lance dataset *directories* (catalog paths resolved through
- *   [DucklakePathResolver]). One [LanceVectorSearchSplit] is emitted per entry; each computes its
- *   own local top-[k], so a multi-fragment table yields up to `k * fragments` rows (a superset of
- *   the global top-k — wrap with `ORDER BY _distance LIMIT k` for exact global semantics).
- * - [outputColumns]: the produced page layout — every table column followed by the synthetic
- *   `_distance` REAL column, in the exact order of the descriptor returned to the engine.
+ * Analysis result of `<catalog>.system.lance_vector_search(...)` — see [LanceSearchHandle] for
+ * the shared contract. [outputColumns] = table columns + `_distance` REAL.
  */
 @JvmRecord
 data class LanceVectorSearchFunctionHandle @JsonCreator constructor(
-        @get:JvmName("datasetPaths")
-        @param:JsonProperty("datasetPaths") val datasetPaths: List<String>,
+        @param:JsonProperty("datasetPaths") override val datasetPaths: List<String>,
         @get:JvmName("columnName")
         @param:JsonProperty("columnName") val columnName: String,
         @get:JvmName("queryVector")
@@ -40,6 +31,5 @@ data class LanceVectorSearchFunctionHandle @JsonCreator constructor(
         @param:JsonProperty("k") val k: Long,
         @get:JvmName("prefilter")
         @param:JsonProperty("prefilter") val prefilter: Boolean,
-        @get:JvmName("outputColumns")
-        @param:JsonProperty("outputColumns") val outputColumns: List<DucklakeColumnHandle>)
-        : ConnectorTableFunctionHandle
+        @param:JsonProperty("outputColumns") override val outputColumns: List<DucklakeColumnHandle>)
+        : LanceSearchHandle
