@@ -94,21 +94,38 @@ Skip the "route parquet through DuckDB too" alternative. Loses Trino's native pa
 - Join pushdown (`applyJoin`). JDBC connector territory; not relevant for us.
 - Trino → backend pushdown for non-DuckDB executors (e.g., direct-to-S3 parquet reads). The parquet path stays as it is.
 
-## Known open bug — Quack-engine `CREATE OR REPLACE SECRET` write-write race
+## FIXED (2026-06-11) — Quack-engine secret write-write race; NEW vortex-s3 read finding
 
-Concurrent queries with s3 targets on `ducklake.execution-engine=quack` each run
-`DuckDbS3Config.renderCreateSecretSql()` (`CREATE OR REPLACE SECRET ducklake_s3 (...)`) server-side
-(`QuackDuckDbExecutor.serverInitStatementsFor`, both the `HttpfsS3` and s3-`FileScan` branches).
-DuckDB 1.5.3 treats two concurrent `CREATE OR REPLACE` of the same secret as a transactional
-conflict — `Catalog write-write conflict on create with "ducklake_s3"` — despite the `OR REPLACE`
-(the "same credentials → safe race" comment in `DuckDbS3Config` is wrong). **Observed live
-2026-06-10** when two lance-s3 queries initialized simultaneously against one Quack server; lance
-no longer passes the secret config (its object_store ignores it — see HANDOFF-lance-route-a O1),
-so the race is now reachable only via **vortex/.db s3 targets on the quack engine**. Fix options:
-retry-on-conflict around the CREATE, `IF NOT EXISTS` semantics (verify DuckDB support), or
-create-once-per-server memoization keyed by (host, port, config). Add a concurrency regression
-test against one `TestingDucklakeQuackEngineServer` (MinIO + network fixture pattern in
-`TestDucklakeLanceS3QuackRead`).
+The race: concurrent queries with s3 targets on `ducklake.execution-engine=quack` each ran
+`CREATE OR REPLACE SECRET ducklake_s3 (...)` server-side
+(`QuackDuckDbExecutor.serverInitStatementsFor`, both the `HttpfsS3` and s3-`FileScan` branches),
+and DuckDB 1.5.3 aborts overlapping catalog writes — `Catalog write-write conflict on
+create/alter with "ducklake_s3"` — despite identical content (observed live 2026-06-10; the old
+"same credentials → safe race" comment was wrong). Reproduction also showed a second mode the
+conflicts had masked: the `OR REPLACE` drop+recreate window left concurrently-binding scans
+secretless.
+
+**The fix (two halves, pinned by `TestDucklakeQuackS3InitRace` — 8 barrier-aligned threads × 3
+rounds × both target shapes):**
+- `DuckDbS3Config.renderCreateSecretSql()` now emits **`CREATE SECRET IF NOT EXISTS`** — probed
+  on 1.5.3: an existing secret makes it a catalog no-op (400 concurrent creates, 0 conflicts),
+  so steady state is write-free; in-process executors are unaffected (fresh instance per split).
+  Tradeoff: first creator wins, so rotated s3 creds need a Quack-server restart.
+- **`DuckDbCatalogWriteRetry`** (bounded, jittered, "write-write conflict" substring match)
+  around the server-side init statements + ATTACH for the first-contact storm (probed: 7 of 8
+  simultaneous first-creates conflict). Each attempt uses a fresh local Statement — duckdb_jdbc
+  invalidates a Statement after a failed execution. Unit-pinned by `TestDuckDbCatalogWriteRetry`.
+
+**New finding (separate pre-existing bug, discovered by the regression test):** `read_vortex`
+over s3 **never consumed the DuckDB httpfs secret** — it binds through Rust object_store and
+fails to the IMDS fallback (`PUT http://169.254.169.254/...`, seconds-long) even single-threaded
+with the secret present (probed 2026-06-11). Only the vortex COPY *write* honors the secret,
+which is what made the secret channel look sufficient. Vortex-s3 reads are lance-shaped
+(HANDOFF-lance-route-a O1): they need the `AWS_*` env channel
+(`DuckDbS3Config.toObjectStoreEnv()` on the Quack sidecar). The connector still ships the
+(now-harmless) secret on vortex FileScans; deciding whether to drop it and/or gate in-process
+vortex-s3 like lance is the follow-up task. `.db` (`HttpfsS3`) targets genuinely use the secret
+and are fully covered by the regression test.
 
 ## Status
 

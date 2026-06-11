@@ -778,9 +778,10 @@ class DucklakePageSourceProvider @Inject constructor(
         // hand the catalog path straight to __lance_scan. No DuckDbS3Config even for s3:// — the
         // lance extension's Rust object_store ignores DuckDB httpfs secrets entirely and resolves
         // credentials from process-global AWS_* env (HANDOFF O1; the Quack sidecar gets them via
-        // container env). Passing the config would only run a pointless httpfs INSTALL + a
-        // CREATE OR REPLACE SECRET that concurrent splits can race (DuckDB write-write conflict
-        // on the secret catalog entry).
+        // container env). Passing the config would only run a pointless httpfs INSTALL + the
+        // CREATE of a secret lance never reads (and, before the IF NOT EXISTS + retry fix in
+        // DuckDbS3Config/DuckDbCatalogWriteRetry, that needless CREATE was the write-write
+        // conflict trigger first observed on this very path).
         if (DucklakeSessionProperties.FORMAT_LANCE.equals(split.fileFormat, ignoreCase = true)) {
             return DuckDbAttachTarget.FileScan(
                     dataFileLocation.toString(), "__lance_scan", "lance", Optional.empty())

@@ -38,16 +38,29 @@ data class DuckDbS3Config(
         @get:JvmName("pathStyleAccess") val pathStyleAccess: Boolean,
         @get:JvmName("useSsl") val useSsl: Boolean) {
     /**
-     * Render a DuckDB {@code CREATE OR REPLACE SECRET (TYPE S3, ...)} statement
-     * using these settings. {@code OR REPLACE} makes this idempotent across
-     * concurrent callers — required on the Quack execution-engine path where
-     * the secret is server-instance-scoped and shared across sessions (without
-     * {@code OR REPLACE}, the second client to issue this statement against the
-     * Quack server would fail). Harmless on the in-process path where each
-     * split has its own fresh in-memory DuckDB.
+     * Render a DuckDB {@code CREATE SECRET IF NOT EXISTS ducklake_s3 (TYPE S3, ...)} statement
+     * using these settings. {@code IF NOT EXISTS} (NOT {@code OR REPLACE}) is load-bearing on the
+     * Quack execution-engine path, where the secret is server-instance-scoped and shared across
+     * concurrent sessions:
+     *
+     *  - {@code OR REPLACE} under concurrency is a proven failure (live 2026-06-10, pinned by
+     *    `TestDucklakeQuackS3InitRace`): DuckDB 1.5.3 aborts overlapping replaces with
+     *    `Catalog write-write conflict on create/alter with "ducklake_s3"`, and worse, the
+     *    drop+recreate window can leave a concurrently-binding scan with NO matching secret —
+     *    observed as vortex's object_store falling back to the EC2 metadata service
+     *    (`PUT http://169.254.169.254/...`) and failing the query seconds later.
+     *  - {@code IF NOT EXISTS} on an existing secret performs no catalog write at all (probed:
+     *    400 concurrent creates, zero conflicts), so steady state is race-free and the secret
+     *    never blinks out under a scan. First-contact creates can still conflict (probed: 7 of 8
+     *    in a simultaneous bootstrap storm) — [QuackDuckDbExecutor] retries those.
+     *
+     * Consequences: the FIRST creator wins and later contents are silently ignored, so rotated
+     * s3 credentials reach a long-lived Quack server only after a server restart (new DuckDB
+     * instance). On the in-process path each split gets a fresh DuckDB, so IF NOT EXISTS always
+     * creates and behaves identically to the old OR REPLACE there.
      */
     fun renderCreateSecretSql(): String {
-        val sql = StringBuilder("CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3")
+        val sql = StringBuilder("CREATE SECRET IF NOT EXISTS ducklake_s3 (TYPE S3")
         endpoint.ifPresent { e ->
             sql.append(", ENDPOINT '").append(stripScheme(e).replace("'", "''")).append("'")
         }

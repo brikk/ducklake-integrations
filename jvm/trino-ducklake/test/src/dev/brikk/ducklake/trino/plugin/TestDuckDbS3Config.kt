@@ -98,7 +98,10 @@ class TestDuckDbS3Config {
         assertThat(sql).contains("URL_STYLE 'path'")
         // http:// inferred USE_SSL=false
         assertThat(sql).contains("USE_SSL false")
-        assertThat(sql).startsWith("CREATE OR REPLACE SECRET ducklake_s3 (TYPE S3")
+        // IF NOT EXISTS, NOT OR REPLACE: on the shared Quack server an existing secret must be
+        // a catalog no-op — concurrent replaces conflict and blink the secret out under
+        // concurrent scans (see renderCreateSecretSql's doc + TestDucklakeQuackS3InitRace).
+        assertThat(sql).startsWith("CREATE SECRET IF NOT EXISTS ducklake_s3 (TYPE S3")
         assertThat(sql).endsWith(")")
     }
 

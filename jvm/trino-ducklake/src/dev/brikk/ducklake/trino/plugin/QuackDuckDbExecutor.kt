@@ -106,12 +106,25 @@ internal class QuackDuckDbExecutor(
                 // must have been started with allow_unsigned_extensions enabled
                 // (see TestingDucklakeQuackEngineServer's entrypoint.sh).
                 TrinoFunctionAliases.loadServerSide({ sql -> drainWrappedQuery(init, sql) }, parityExtensionPath)
+                // The server-side init statements and the ATTACH are catalog writes against the
+                // ONE DuckDB instance every concurrent client session shares; overlapping
+                // transactions abort with a write-write conflict even for identical content.
+                // All of them converge when re-run (IF NOT EXISTS / INSTALL idempotence), so a
+                // conflicted statement is retried (see DuckDbCatalogWriteRetry; pinned by
+                // TestDucklakeQuackS3InitRace). Each attempt needs its OWN local Statement:
+                // duckdb_jdbc invalidates a Statement after a failed execution, so retrying on
+                // the shared init statement would throw "Statement was closed" (session state —
+                // the quack ATTACH — is connection-scoped and unaffected).
                 for (serverInitStatement in serverInitStatementsFor(request.target())) {
-                    drainWrappedQuery(init, serverInitStatement)
+                    DuckDbCatalogWriteRetry.retryConflicts(describeForRetry(serverInitStatement)) {
+                        connection.createStatement().use { s -> drainWrappedQuery(s, serverInitStatement) }
+                    }
                 }
                 val attachServerSide = buildServerSideAttachSql(request.target(), serverAlias!!)
                 if (attachServerSide.isNotEmpty()) {
-                    drainWrappedQuery(init, attachServerSide)
+                    DuckDbCatalogWriteRetry.retryConflicts("server-side ATTACH") {
+                        connection.createStatement().use { s -> drainWrappedQuery(s, attachServerSide) }
+                    }
                 }
                 applyServerSideTimeZone(init, request.duckDbTimeZone())
             }
@@ -159,7 +172,7 @@ internal class QuackDuckDbExecutor(
      * reachable: nothing for {@link DuckDbAttachTarget.LocalPath} (the file is
      * accessible via the server's filesystem mount), but for
      * {@link DuckDbAttachTarget.HttpfsS3} we ship the {@code INSTALL httpfs} /
-     * {@code LOAD httpfs} / {@code CREATE OR REPLACE SECRET (TYPE S3, ...)}
+     * {@code LOAD httpfs} / {@code CREATE SECRET IF NOT EXISTS (TYPE S3, ...)}
      * sequence so the server can resolve the {@code s3://} URL itself. Each
      * statement is run via the wrapper.
      */
@@ -168,9 +181,11 @@ internal class QuackDuckDbExecutor(
         is DuckDbAttachTarget.HttpfsS3 -> listOf(
                 "INSTALL httpfs",
                 "LOAD httpfs",
-                // CREATE OR REPLACE — the secret is server-instance-scoped and
-                // shared across concurrent clients on this Quack server. Same
-                // credentials from any client (same Trino catalog) → safe race.
+                // IF NOT EXISTS — the secret is server-instance-scoped and shared across
+                // concurrent clients on this Quack server (same Trino catalog → same content).
+                // An existing secret makes this a catalog no-op; first-contact conflicts are
+                // retried by the caller. See DuckDbS3Config.renderCreateSecretSql for why
+                // OR REPLACE is NOT safe here.
                 target.s3Config.renderCreateSecretSql())
         // Server-side INSTALL/LOAD of the scan extension (vortex/lance); + httpfs/secret when
         // the path is s3://. The SELECT then reads via scanFunction('path') (no ATTACH).
@@ -240,6 +255,13 @@ internal class QuackDuckDbExecutor(
         private const val ENGINE_CATALOG: String = "engine"
         private const val ATTACHED_TABLE: String = "t"
 
+
+        /**
+         * Retry-log label for a server-init statement: everything before the first paren,
+         * which for {@code CREATE SECRET ...} keeps the credentials out of the log.
+         */
+        private fun describeForRetry(innerSql: String): String =
+            innerSql.substringBefore('(').trim()
 
         /**
          * Execute the given inner SQL via the {@code quack_query_by_name} wrapper
