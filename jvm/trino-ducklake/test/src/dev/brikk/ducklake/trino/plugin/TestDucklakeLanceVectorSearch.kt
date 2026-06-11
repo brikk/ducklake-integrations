@@ -151,6 +151,92 @@ class TestDucklakeLanceVectorSearch : AbstractDucklakeIntegrationTest() {
     }
 
     /**
+     * O2 — predicate pushdown through the `applyTableFunction` scan rewrite. A WHERE over the
+     * function composes differently per the user's PREFILTER flag, and the difference is only
+     * observable when the predicate actually reaches DuckDB's `lance_*` call (via
+     * [DucklakeMetadata.applyFilter] → [LanceSearchTableHandle.pushedPredicate] → the rendered
+     * WHERE): with `prefilter => false` lance post-filters its top-k (can return < k rows);
+     * with `prefilter => true` DuckDB pushes the WHERE into lance, which filters BEFORE
+     * searching and returns a full k among the survivors. Without the rewrite both queries
+     * would return 1 row — so the second assertion is the proof the whole O2 chain engaged.
+     */
+    @Test
+    fun vectorSearchPushesPredicateIntoLanceWithPrefilterSemantics() {
+        assumeLanceExtensionAvailable()
+        val table = "lance_vs_prefilter"
+
+        val dataset = Files.createTempDirectory("lance-vs-prefilter").resolve("$table.lance")
+        val escaped = dataset.toString().replace("'", "''")
+        DriverManager.getConnection("jdbc:duckdb:").use { c ->
+            c.createStatement().use { s ->
+                s.execute("INSTALL lance")
+                s.execute("LOAD lance")
+                s.execute("CREATE TABLE t AS SELECT * FROM (VALUES "
+                        + "(1, [1.0::FLOAT, 0.0::FLOAT, 0.0::FLOAT]), "
+                        + "(2, [0.0::FLOAT, 1.0::FLOAT, 0.0::FLOAT]), "
+                        + "(3, [0.0::FLOAT, 0.0::FLOAT, 1.0::FLOAT]), "
+                        + "(4, [0.9::FLOAT, 0.1::FLOAT, 0.0::FLOAT])) v(id, emb)")
+                s.execute("COPY t TO '$escaped' (FORMAT lance)")
+            }
+        }
+
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, emb ARRAY(REAL))")
+            val datasetPath = dataset.toAbsolutePath().toString().replace("'", "''")
+            computeActual(
+                    "CALL ducklake.system.add_files("
+                            + "schema_name => 'test_schema', "
+                            + "table_name => '$table', "
+                            + "files => ARRAY['$datasetPath'], "
+                            + "file_format => 'lance')")
+
+            // prefilter => false: lance computes top-2 = {1, 4}, then the WHERE drops id=1.
+            assertThat(computeActual(
+                    "SELECT id FROM TABLE(ducklake.system.lance_vector_search("
+                            + "'test_schema', '$table', 'emb', ARRAY[1.0, 0.0, 0.0], 2, false)) "
+                            + "WHERE id <> 1").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(4L)
+
+            // prefilter => true with a pushable (single-range) predicate: the WHERE is pushed
+            // into lance, which filters first and searches among {2, 3, 4} — a full k=2 comes
+            // back, nearest first.
+            val prefiltered = computeActual(
+                    "SELECT id FROM TABLE(ducklake.system.lance_vector_search("
+                            + "'test_schema', '$table', 'emb', ARRAY[1.0, 0.0, 0.0], 2, true)) "
+                            + "WHERE id >= 2").materializedRows
+                    .map { (it.getField(0) as Number).toLong() }
+            assertThat(prefiltered).`as`("filter-then-search returns a full k among survivors")
+                    .hasSize(2)
+            assertThat(prefiltered[0]).isEqualTo(4L)
+            assertThat(prefiltered).doesNotContain(1L)
+
+            // prefilter => true with an UNpushable shape (id <> 1 renders as an OR of ranges,
+            // which DuckDB can't push into lance — lance would error if we rendered it): the
+            // connector keeps it engine-side, so the query degrades to post-filter semantics
+            // instead of failing. Top-2 = {1, 4} minus id=1 → one row.
+            assertThat(computeActual(
+                    "SELECT id FROM TABLE(ducklake.system.lance_vector_search("
+                            + "'test_schema', '$table', 'emb', ARRAY[1.0, 0.0, 0.0], 2, true)) "
+                            + "WHERE id <> 1").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(4L)
+
+            // applyTopN: ORDER BY _distance LIMIT n over the scan (trims the per-fragment k —
+            // not directly observable in rows, but exercises the rewrite + still exact).
+            assertThat(computeActual(
+                    "SELECT id FROM TABLE(ducklake.system.lance_vector_search("
+                            + "'test_schema', '$table', 'emb', ARRAY[1.0, 0.0, 0.0], 4)) "
+                            + "ORDER BY _distance LIMIT 2").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(1L, 4L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    /**
      * A table with several lance dataset fragments searches each fragment independently (one
      * split per dataset directory): k=1 over two fragments returns one row PER fragment — a
      * superset of the global top-1 — and `ORDER BY _distance LIMIT 1` recovers the exact answer.

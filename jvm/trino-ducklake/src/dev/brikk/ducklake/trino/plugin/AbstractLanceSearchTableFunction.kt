@@ -109,7 +109,9 @@ abstract class AbstractLanceSearchTableFunction(
                     + "(columns: ${resolved.columnHandles.joinToString(", ") { it.columnName }})")
 
     /** Build the [TableFunctionAnalysis] from the output layout + the function's handle. */
-    protected fun analysis(outputColumns: List<DucklakeColumnHandle>, handle: LanceSearchHandle): TableFunctionAnalysis =
+    protected fun analysis(
+            outputColumns: List<DucklakeColumnHandle>,
+            handle: io.trino.spi.function.table.ConnectorTableFunctionHandle): TableFunctionAnalysis =
         TableFunctionAnalysis.builder()
                 .returnedType(Descriptor(outputColumns.map { Descriptor.Field(it.columnName, Optional.of(it.columnType)) }))
                 .handle(handle)

@@ -37,3 +37,5 @@ out/
 
 ### Qodana ###
 .qodana/
+# Kotlin daemon session metadata (Kotlin 2.x creates this at the project root)
+.kotlin/

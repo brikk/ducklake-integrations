@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
+import io.trino.spi.function.table.ConnectorTableFunctionHandle
 
 /**
  * Analysis result of `<catalog>.system.lance_vector_search(...)` — see [LanceSearchHandle] for
@@ -27,9 +28,15 @@ data class LanceVectorSearchFunctionHandle @JsonCreator constructor(
         @param:JsonProperty("columnName") val columnName: String,
         @get:JvmName("queryVector")
         @param:JsonProperty("queryVector") val queryVector: List<Double>,
-        @get:JvmName("k")
-        @param:JsonProperty("k") val k: Long,
+        @param:JsonProperty("k") override val k: Long,
         @get:JvmName("prefilter")
-        @param:JsonProperty("prefilter") val prefilter: Boolean,
+        @param:JsonProperty("prefilter") override val prefilter: Boolean,
         @param:JsonProperty("outputColumns") override val outputColumns: List<DucklakeColumnHandle>)
-        : LanceSearchHandle
+        : ConnectorTableFunctionHandle, LanceSearchHandle
+{
+    override fun withK(newK: Long): LanceVectorSearchFunctionHandle = copy(k = newK)
+
+    override fun scoreOrderColumn(): String = AbstractLanceSearchTableFunction.DISTANCE_COLUMN.columnName
+
+    override fun scoreOrderAscending(): Boolean = true
+}

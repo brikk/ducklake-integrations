@@ -155,9 +155,41 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
   text_column, query, k, alpha, prefilter)` (array + varchar validation). Tests:
   `TestDucklakeLanceFtsAndHybridSearch` (4 e2e) + `TestLanceSearchSql` (4, tail rendering +
   scan-fn dispatch; replaces TestLanceVectorSearchSql).
-- [ ] (Stretch) `applyTopN` so a Trino-side `ORDER BY <distance> LIMIT k` synthesizes the function's `k`.
-- [ ] (Follow-up, O2) predicate pushdown INTO the function (render pushed predicates as a WHERE
-  inside the split processor's query + `prefilter := true` for filter-then-search semantics).
+- [x] **O2 + applyTopN DONE (2026-06-10, arm64) — `applyTableFunction` scan migration.** The
+  split-processor path has NO pushdown hooks in the SPI; the route is
+  `ConnectorMetadata.applyTableFunction(handle)` → `TableFunctionApplicationResult(
+  LanceSearchTableHandle, outputColumns)` — the engine's `RewriteTableFunctionToTableScan` then
+  plans an ordinary scan and the connector hooks compose:
+  - **`applyFilter`** intersects the TupleDomain into `LanceSearchTableHandle.pushedPredicate`;
+    the page source (`createLanceSearchPageSource` → reused `DuckDbFilePageSource`) renders it
+    as the WHERE over the `lance_*` call. All predicates stay in the remaining filter (engine
+    re-applies — correct under both prefilter modes). Projection now reaches DuckDB too (the
+    processor path always materialized every column).
+  - **`applyTopN`** recognizes `ORDER BY <natural score column> <natural direction> LIMIT n`
+    (single sort item; `_distance` ASC / `_score` DESC / `_hybrid_score` DESC via
+    `LanceSearchHandle.scoreOrderColumn()/scoreOrderAscending()`) and trims the per-fragment
+    `k` to `limitK = n` (`topNGuaranteed=false` — engine still sorts+limits; pure row-volume
+    reduction; per-fragment top-n stays a superset of global top-n).
+  - **prefilter edge (probed live):** with `prefilter := true` lance REQUIRES any WHERE over
+    the call to be pushable into the function — DuckDB pushes single-range conjuncts
+    (`=`, `>`, `BETWEEN`) but NOT OR-of-ranges or IN-lists, and lance errors
+    ("requires filter pushdown for prefilterable columns") on unpushable shapes. No WHERE at
+    all + prefilter is fine. So `createLanceSearchPageSource` renders only single-range,
+    non-null-allowing domains when `prefilter=true` (`isPrefilterPushable`); unpushable shapes
+    (e.g. `<>` = two ranges) stay engine-side and degrade to post-filter semantics instead of
+    erroring. Pinned by `vectorSearchPushesPredicateIntoLanceWithPrefilterSemantics`:
+    `WHERE id >= 2, prefilter=true` → full k among survivors (filter-then-search observable);
+    `WHERE id <> 1, prefilter=true` → no error, post-filter row count.
+  - **Jackson gotcha (cost one debug round):** a handle field whose DECLARED type is assignable
+    to `ConnectorTableFunctionHandle` gets hijacked by the engine's `AbstractTypedJacksonModule`
+    (matches by runtime type for serialization, by exact declared type for deserialization) and
+    fails with "Type id handling not implemented" if any `@JsonTypeInfo` is present. Resolution:
+    `LanceSearchHandle` is NOT a `ConnectorTableFunctionHandle` subtype (concretes implement
+    both), and `LanceSearchTableHandle.searchHandle` is declared as the bare
+    `ConnectorTableFunctionHandle` so the engine's own envelope handles nested polymorphism.
+  The processor path (`DucklakeFunctionProvider` + `LanceSearchSplitProcessor.process`) stays
+  wired as a fallback for engines that skip the rewrite; the same processor companion renders
+  the scan-fn + arg tail for both paths.
 
 ### Phase A4 — write (DONE — 2026-06-09, arm64)
 - [x] `DucklakePageSink.openNewWriter`: added a `FORMAT_LANCE` branch (`openLanceWriter`) reusing the Arrow-stream writer. **Local-temp-then-upload** (decided): `COPY (SELECT * FROM <arrow-stream>) TO '<localtmp>.lance' (FORMAT lance)`, then walk the dataset dir and upload every file under the remote location. In `DuckDbArrowStreamFileWriter`, `isVortex` → `usesCopy = isVortex || isLance` (shared COPY + inline `DucklakeColumnStatsAccumulator`, no ATTACH); lance adds directory-aware size/upload/cleanup + `deleteDirectory` on abort. Both `validateDataFileFormat` validators now accept `'lance'`.

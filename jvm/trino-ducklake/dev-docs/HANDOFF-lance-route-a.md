@@ -119,8 +119,18 @@ Picked up on a lance-capable box. **Steps 1–6 done and green; Step 7 + O1 stil
   (the amd64-container/arm64-host mismatch), which is the remaining blocker for running
   quack-path tests on Apple Silicon.
 
-**Still open:** predicate pushdown into the table functions (O2), ARRAY/embedding *write*
-support, and (enabler) the container-platform parity selection fix. Ordering + scope below.
+- **O2 + applyTopN — DONE, green (2026-06-10, same session).** Lance searches now execute as
+  ordinary scans via `DucklakeMetadata.applyTableFunction` → `LanceSearchTableHandle` (the
+  engine's `RewriteTableFunctionToTableScan`), so `applyFilter` (WHERE into the `lance_*` call;
+  honors the user's `prefilter` flag — filter-then-search verified observable end-to-end),
+  `applyTopN` (`ORDER BY <score> LIMIT n` trims per-fragment k), and projection all push down.
+  The processor path stays as fallback. Two gotchas recorded in TODO-lance §A3: the engine's
+  typed-Jackson-module nested-handle hijack, and lance's "requires filter pushdown" error with
+  `prefilter := true` + WHERE shapes DuckDB can't push (OR-of-ranges/IN) — the page source
+  renders only single-range conjuncts when prefiltering; the rest degrade to post-filter.
+
+**Still open:** ARRAY/embedding *write* support, and (enabler) the container-platform parity
+selection fix. Ordering + scope below.
 
 ---
 

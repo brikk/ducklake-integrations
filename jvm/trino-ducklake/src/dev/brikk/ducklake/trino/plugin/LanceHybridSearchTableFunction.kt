@@ -140,11 +140,17 @@ data class LanceHybridSearchFunctionHandle @JsonCreator constructor(
         @param:JsonProperty("textColumn") val textColumn: String,
         @get:JvmName("query")
         @param:JsonProperty("query") val query: String,
-        @get:JvmName("k")
-        @param:JsonProperty("k") val k: Long,
+        @param:JsonProperty("k") override val k: Long,
         @get:JvmName("alpha")
         @param:JsonProperty("alpha") val alpha: Double?,
         @get:JvmName("prefilter")
-        @param:JsonProperty("prefilter") val prefilter: Boolean,
+        @param:JsonProperty("prefilter") override val prefilter: Boolean,
         @param:JsonProperty("outputColumns") override val outputColumns: List<DucklakeColumnHandle>)
-        : LanceSearchHandle
+        : io.trino.spi.function.table.ConnectorTableFunctionHandle, LanceSearchHandle
+{
+    override fun withK(newK: Long): LanceHybridSearchFunctionHandle = copy(k = newK)
+
+    override fun scoreOrderColumn(): String = AbstractLanceSearchTableFunction.HYBRID_SCORE_COLUMN.columnName
+
+    override fun scoreOrderAscending(): Boolean = false
+}

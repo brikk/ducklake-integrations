@@ -63,6 +63,10 @@ import io.trino.spi.connector.RowChangeParadigm
 import io.trino.spi.connector.SaveMode
 import io.trino.spi.connector.SchemaTableName
 import io.trino.spi.connector.SchemaTablePrefix
+import io.trino.spi.connector.SortItem
+import io.trino.spi.connector.TableFunctionApplicationResult
+import io.trino.spi.connector.TopNApplicationResult
+import io.trino.spi.function.table.ConnectorTableFunctionHandle
 import io.trino.spi.connector.ViewNotFoundException
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
@@ -215,6 +219,20 @@ class DucklakeMetadata(
                     getMetadataColumns(tableHandle.metadataTableType))
         }
 
+        if (tableHandle is LanceSearchTableHandle) {
+            // PTF-scan handle (applyTableFunction). Reached by EXPLAIN / plan printing; the
+            // synthetic name is the backing DuckDB function, columns are the function output.
+            return ConnectorTableMetadata(
+                    SchemaTableName("system", LanceSearchSplitProcessor.scanFunctionFor(tableHandle.search())),
+                    tableHandle.search().outputColumns.map { column ->
+                        ColumnMetadata.builder()
+                                .setName(column.columnName)
+                                .setType(column.columnType)
+                                .setNullable(column.nullable)
+                                .build()
+                    })
+        }
+
         val ducklakeTableHandle = tableHandle as DucklakeTableHandle
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
@@ -314,6 +332,11 @@ class DucklakeMetadata(
             return toColumnHandles(getMetadataColumns(tableHandle.metadataTableType))
         }
 
+        if (tableHandle is LanceSearchTableHandle) {
+            // PTF-scan handle: the column handles are fixed at analyze time (no virtuals).
+            return tableHandle.search().outputColumns.associateBy { it.columnName }
+        }
+
         val ducklakeTableHandle = tableHandle as DucklakeTableHandle
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
@@ -357,7 +380,7 @@ class DucklakeMetadata(
 
     override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics
     {
-        if (tableHandle is DucklakeMetadataTableHandle) {
+        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle) {
             return TableStatistics.empty()
         }
 
@@ -476,6 +499,80 @@ class DucklakeMetadata(
                 .sum()
     }
 
+    /**
+     * Map a lance search table function to a [LanceSearchTableHandle] *scan*, so the engine's
+     * `RewriteTableFunctionToTableScan` plans an ordinary TableScanNode over the function's
+     * output and [applyFilter] / [applyTopN] compose on it (the table-function processor path
+     * has no pushdown hooks — HANDOFF O2). The processor wiring stays as a fallback.
+     */
+    override fun applyTableFunction(
+            session: ConnectorSession,
+            handle: ConnectorTableFunctionHandle): Optional<TableFunctionApplicationResult<ConnectorTableHandle>>
+    {
+        if (handle !is LanceSearchHandle) {
+            return Optional.empty()
+        }
+        return Optional.of(TableFunctionApplicationResult(
+                LanceSearchTableHandle(handle, TupleDomain.all(), null),
+                handle.outputColumns.toList()))
+    }
+
+    /**
+     * `ORDER BY <natural score column> LIMIT n` over a lance search scan — the documented
+     * exact-global-top-k recipe — trims the per-fragment `k` to `n`: each fragment's top-n is
+     * still a superset of the global top-n, and `topNGuaranteed=false` keeps the engine's own
+     * sort+limit above the scan, so this is purely row-volume reduction.
+     */
+    override fun applyTopN(
+            session: ConnectorSession,
+            handle: ConnectorTableHandle,
+            topNCount: Long,
+            sortItems: List<SortItem>,
+            assignments: Map<String, ColumnHandle>): Optional<TopNApplicationResult<ConnectorTableHandle>>
+    {
+        if (handle !is LanceSearchTableHandle || sortItems.size != 1 || topNCount <= 0) {
+            return Optional.empty()
+        }
+        val sortColumn = assignments[sortItems[0].name] as? DucklakeColumnHandle
+            ?: return Optional.empty()
+        val search = handle.search()
+        // Direction must match the function's natural order; nulls placement is irrelevant
+        // (the order columns are never NULL in lance output — hybrid's nullable `_score` is
+        // not an order column).
+        if (sortColumn.columnName != search.scoreOrderColumn()
+                || sortItems[0].sortOrder.isAscending != search.scoreOrderAscending()) {
+            return Optional.empty()
+        }
+        val newLimitK: Long = minOf(handle.limitK ?: search.k, topNCount)
+        if (newLimitK == (handle.limitK ?: search.k)) {
+            return Optional.empty()
+        }
+        return Optional.of(TopNApplicationResult(handle.copy(limitK = newLimitK), false, false))
+    }
+
+    /**
+     * Lance search PTF scan: push the TupleDomain into the WHERE the page source renders over
+     * the lance_* call. Everything stays in the remaining filter: with prefilter => false
+     * DuckDB applies the WHERE after the search (same rows the engine would keep), and with
+     * prefilter => true lance filters BEFORE searching (more rows can come back) — either way
+     * the engine's re-application above the scan is correct and cheap.
+     */
+    private fun applyLanceSearchFilter(
+            handle: LanceSearchTableHandle,
+            constraint: Constraint): Optional<ConstraintApplicationResult<ConnectorTableHandle>>
+    {
+        val pushed: TupleDomain<DucklakeColumnHandle> = extractDucklakePredicate(constraint.summary)
+        val combined: TupleDomain<DucklakeColumnHandle> = handle.pushedPredicate.intersect(pushed)
+        if (combined == handle.pushedPredicate) {
+            return Optional.empty()
+        }
+        return Optional.of(ConstraintApplicationResult(
+                handle.copy(pushedPredicate = combined),
+                constraint.summary,
+                constraint.expression,
+                false))
+    }
+
     override fun applyFilter(
             session: ConnectorSession,
             handle: ConnectorTableHandle,
@@ -483,6 +580,10 @@ class DucklakeMetadata(
     {
         if (handle is DucklakeMetadataTableHandle) {
             return Optional.empty()
+        }
+
+        if (handle is LanceSearchTableHandle) {
+            return applyLanceSearchFilter(handle, constraint)
         }
 
         val table = handle as DucklakeTableHandle

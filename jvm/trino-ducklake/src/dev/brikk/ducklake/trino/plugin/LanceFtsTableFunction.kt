@@ -107,9 +107,15 @@ data class LanceFtsFunctionHandle @JsonCreator constructor(
         @param:JsonProperty("columnName") val columnName: String,
         @get:JvmName("query")
         @param:JsonProperty("query") val query: String,
-        @get:JvmName("k")
-        @param:JsonProperty("k") val k: Long,
+        @param:JsonProperty("k") override val k: Long,
         @get:JvmName("prefilter")
-        @param:JsonProperty("prefilter") val prefilter: Boolean,
+        @param:JsonProperty("prefilter") override val prefilter: Boolean,
         @param:JsonProperty("outputColumns") override val outputColumns: List<DucklakeColumnHandle>)
-        : LanceSearchHandle
+        : io.trino.spi.function.table.ConnectorTableFunctionHandle, LanceSearchHandle
+{
+    override fun withK(newK: Long): LanceFtsFunctionHandle = copy(k = newK)
+
+    override fun scoreOrderColumn(): String = AbstractLanceSearchTableFunction.SCORE_COLUMN.columnName
+
+    override fun scoreOrderAscending(): Boolean = false
+}

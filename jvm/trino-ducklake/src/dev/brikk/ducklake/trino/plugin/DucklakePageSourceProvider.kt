@@ -117,15 +117,7 @@ class DucklakePageSourceProvider @Inject constructor(
             columns: List<ColumnHandle>,
             dynamicFilter: DynamicFilter): ConnectorPageSource
     {
-        if (split is DucklakeMetadataSplit) {
-            return createMetadataPageSource(split, columns)
-        }
-
-        if (split is DucklakeInlinedSplit) {
-            // createInlinedPageSource materializes rows in memory, so it weaves virtuals per row
-            // directly (it needs per-row begin_snapshot for $snapshot_id anyway). No outer wrapper.
-            return createInlinedPageSource(split, columns)
-        }
+        specialSplitPageSource(session, split, table, columns, dynamicFilter)?.let { return it }
 
         val ducklakeSplit = split as DucklakeSplit
 
@@ -678,6 +670,91 @@ class DucklakePageSourceProvider @Inject constructor(
         log.debug("Created DuckDB page source for %d columns from file: %s",
                 columns.size, split.dataFilePath)
         return pageSource
+    }
+
+    /**
+     * Page sources for the non-data-file splits: metadata tables, inlined data, and the lance
+     * search PTF scans. Null for ordinary data-file splits ([DucklakeSplit]).
+     * (createInlinedPageSource materializes rows in memory, so it weaves virtuals per row
+     * directly — it needs per-row begin_snapshot for $snapshot_id anyway. No outer wrapper.)
+     */
+    private fun specialSplitPageSource(
+            session: ConnectorSession,
+            split: ConnectorSplit,
+            table: ConnectorTableHandle,
+            columns: List<ColumnHandle>,
+            dynamicFilter: DynamicFilter): ConnectorPageSource? = when (split) {
+        is DucklakeMetadataSplit -> createMetadataPageSource(split, columns)
+        is DucklakeInlinedSplit -> createInlinedPageSource(split, columns)
+        is LanceSearchSplit -> createLanceSearchPageSource(session, split, table as LanceSearchTableHandle, columns, dynamicFilter)
+        else -> null
+    }
+
+    /**
+     * Page source for one lance-search PTF-scan split (`applyTableFunction` rewrite — see
+     * [LanceSearchTableHandle]). Runs the matching `lance_*` DuckDB call over the split's
+     * dataset directory through [DuckDbFilePageSource], with the engine's projection
+     * ([columns] — only the requested output columns are SELECTed), the handle's pushed
+     * predicate intersected with the dynamic filter rendered as the `WHERE`, and `applyTopN`'s
+     * trimmed per-fragment `k` folded into the rendered argument tail.
+     */
+    private fun createLanceSearchPageSource(
+            session: ConnectorSession,
+            split: LanceSearchSplit,
+            tableHandle: LanceSearchTableHandle,
+            columns: List<ColumnHandle>,
+            dynamicFilter: DynamicFilter): ConnectorPageSource
+    {
+        val dynamicFilterPredicate: TupleDomain<DucklakeColumnHandle> = dynamicFilter.currentPredicate
+                .transformKeys(DucklakeColumnHandle::class.java::cast)
+        val effectivePredicate: TupleDomain<DucklakeColumnHandle> = tableHandle.pushedPredicate
+                .intersect(dynamicFilterPredicate)
+        if (effectivePredicate.isNone) {
+            return EmptyPageSource()
+        }
+
+        val search: LanceSearchHandle = tableHandle.effectiveSearch()
+        // With prefilter => true, lance REQUIRES every WHERE conjunct over the call to be
+        // pushable into the function and errors otherwise ("requires filter pushdown for
+        // prefilterable columns"). DuckDB can push single-range conjuncts (=, >, BETWEEN, ...)
+        // but not OR-of-ranges or IN-lists — so render only the pushable domains; the rest stay
+        // engine-side (the full predicate is always in the engine's remaining filter).
+        val renderedPredicate: TupleDomain<DucklakeColumnHandle> = if (search.prefilter)
+            effectivePredicate.filter { _, domain -> isPrefilterPushable(domain) }
+        else
+            effectivePredicate
+        val projectedColumns: List<DucklakeColumnHandle> = columns.stream()
+                .map(DucklakeColumnHandle::class.java::cast)
+                .collect(toImmutableList())
+        val target = DuckDbAttachTarget.FileScan(
+                split.datasetPath,
+                LanceSearchSplitProcessor.scanFunctionFor(search),
+                DucklakeSessionProperties.FORMAT_LANCE,
+                Optional.empty(),
+                LanceSearchSplitProcessor.renderExtraArgsSql(search))
+        val duckDbTimeZone: Optional<String> = Optional.ofNullable(
+                TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id))
+        return DuckDbFilePageSource(
+                executorFactory.create(),
+                target,
+                projectedColumns,
+                projectedColumns.map { it.columnType },
+                renderedPredicate,
+                emptyList(),
+                duckDbTimeZone)
+    }
+
+    /**
+     * Whether a domain renders as a WHERE conjunct DuckDB can push into a lance table function
+     * under `prefilter := true`: a single range over an orderable type, with no NULL allowance
+     * (nullable domains render an `OR x IS NULL` arm, which is not pushable). Probed live
+     * (2026-06-10): single-range and BETWEEN push; OR-of-ranges and IN-lists do not.
+     */
+    private fun isPrefilterPushable(domain: io.trino.spi.predicate.Domain): Boolean {
+        if (domain.isNullAllowed || domain.isNone || domain.values.isAll) {
+            return false
+        }
+        return runCatching { domain.values.ranges.rangeCount == 1 }.getOrDefault(false)
     }
 
     /**

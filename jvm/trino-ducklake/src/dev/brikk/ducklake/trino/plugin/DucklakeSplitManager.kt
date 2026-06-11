@@ -73,14 +73,7 @@ class DucklakeSplitManager @Inject constructor(
             table: ConnectorTableHandle,
             dynamicFilter: DynamicFilter,
             constraint: Constraint): ConnectorSplitSource {
-        if (table is DucklakeMetadataTableHandle) {
-            val metadataTableHandle: DucklakeMetadataTableHandle = table
-            val metadataSplit = DucklakeMetadataSplit(
-                    metadataTableHandle.baseTableId,
-                    metadataTableHandle.snapshotId,
-                    metadataTableHandle.metadataTableType)
-            return FixedSplitSource(listOf(metadataSplit))
-        }
+        specialSplitSource(table)?.let { return it }
 
         val tableHandle: DucklakeTableHandle = table as DucklakeTableHandle
 
@@ -197,6 +190,21 @@ class DucklakeSplitManager @Inject constructor(
                 inlinedSplits.size)
 
         return FixedSplitSource(allSplits)
+    }
+
+    /**
+     * Fixed-split sources for the non-data-file handles: metadata tables ($files etc.) and the
+     * lance search PTF scans (`applyTableFunction` rewrite — the handle already carries the
+     * resolved dataset directories, one [LanceSearchSplit] each; predicate/topN pushdown state
+     * rides on the table handle and is consumed by the page source). Null for ordinary tables.
+     */
+    private fun specialSplitSource(table: ConnectorTableHandle): ConnectorSplitSource? = when (table) {
+        is DucklakeMetadataTableHandle -> FixedSplitSource(listOf(DucklakeMetadataSplit(
+                table.baseTableId,
+                table.snapshotId,
+                table.metadataTableType)))
+        is LanceSearchTableHandle -> FixedSplitSource(table.search().datasetPaths.map { LanceSearchSplit(it) })
+        else -> null
     }
 
     /**
