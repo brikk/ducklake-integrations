@@ -180,18 +180,20 @@ tracked in TODO-pushdown-duckdb).
 
 ---
 
-## NEXT — remaining threads (refreshed 2026-06-11; everything blocking has shipped)
+## NEXT — ALL CLOSED (final refresh 2026-06-12)
 
-Route A is functionally complete and churn-hardened (O3 canary). The earlier three-workstream plan
-here (Step 7, O1, ARRAY writes) all landed — see PROGRESS. What remains is quality/strategic, no
-hard dependencies, in rough value order:
+Route A is functionally complete, churn-hardened (O3 canary), and benchmark-validated as the
+right architecture (§1 below). Every thread that was ever in this section has shipped — the
+entries below are kept as the record of how each closed. This handoff is DONE; new lance work
+should start a fresh doc.
 
-### 1. Route A-vs-B benchmark (strategic decision gate)
-Same dataset/vector/k, cold + warm: Route A (DuckDB lance extension indirection) vs Route B
-(lance-trino JNI). This is the gate recorded in TODO-lance §"Route A vs B decision" — B becomes
-interesting only if the DuckDB indirection shows up in measured vector latency, upstream
-lance-duckdb stalls, or we want the JNI-only surface (`substraitAggregate`, `setColumnOrderings`).
-Measurement task first; nothing is built for B.
+### 1. Route A-vs-B benchmark — DONE, DECIDED (2026-06-12): Route A stays primary
+Benchmarked same dataset/vectors/k, brute-force, cold + warm, via `BenchLanceRouteAVsB`
+(`-Dducklake.bench=true`; lance-core 6.0.0 JNI as Route B): warm parity at 384 dims, ~10% A
+overhead at 768 dims, cold comparable both ways. The indirection is not decision-grade — do NOT
+fork lance-trino. Full numbers + reopening criteria in
+[REPORT-lance-route-a-vs-b.md](REPORT-lance-route-a-vs-b.md). TODO-lance §"Route A vs B
+decision" updated. **With this, every item in this NEXT section is closed.**
 
 ### 2. ROW/MAP support — DONE (2026-06-11, same session)
 The shared `DucklakeArrowToPageConverter` now covers ROW (Arrow Struct, positional fields) and

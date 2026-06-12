@@ -17,6 +17,8 @@ containers = "2.0.5"
 jooq = "3.19.22"
 roaring-bitmap = "1.3.0"
 detekt = "2.0.0-alpha.3"
+# Route B (lance-core JNI) — benchmark-only test dependency; the RESEARCH-verified version.
+lance-core = "6.0.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -37,6 +39,7 @@ adbc-jni = { module = "org.apache.arrow.adbc:adbc-driver-jni", version.ref = "ad
 
 hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
 duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
+lance-core = { module = "org.lance:lance-core", version.ref = "lance-core" }
 trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
 trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }
 postgres-jdbc = { module = "org.postgresql:postgresql", version.ref = "postgres" }

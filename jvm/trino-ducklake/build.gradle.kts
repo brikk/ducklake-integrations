@@ -85,6 +85,11 @@ dependencies {
     testImplementation(libs.testcontainers.core)
     testImplementation(libs.testcontainers.postgresql)
 
+    // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
+    // bundles per-platform natives (incl. darwin-aarch64). Arrow transitives resolve through the
+    // arrow BOM above.
+    testImplementation(libs.lance.core)
+
     // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
     // ducklake-catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
@@ -202,6 +207,14 @@ tasks.test {
     systemProperty("junit.jupiter.extensions.autodetection.enabled", "true")
     // Podman Docker API compatibility rejects status=restarting filter in ReportLeakedContainers
     systemProperty("ReportLeakedContainers.disabled", "true")
+
+    // Forward the manual-benchmark gate + tunables (see BenchLanceRouteAVsB) to the test JVM.
+    System.getProperties().stringPropertyNames()
+            .filter { it.startsWith("ducklake.bench") }
+            .forEach { name ->
+                systemProperty(name, System.getProperty(name))
+                inputs.property(name, System.getProperty(name))
+            }
 
     // Forward the catalog-backend selector from the Gradle CLI to the test JVM. Gradle
     // doesn't propagate `-D` system properties to forked test workers by default.

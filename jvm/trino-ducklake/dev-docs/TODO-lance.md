@@ -227,8 +227,16 @@ Native path, no DuckDB indirection; full vector/FTS/index surface (`nearest`, `f
 - [ ] Extend `ScannerFactory.open(...)` with `Optional<Query> nearest`, `Optional<FullTextQuery> fts`, `boolean prefilter`; `FragmentScannerFactory` plumbs them onto `ScanOptions.Builder`. Backward-compatible as optional args (RESEARCH §4.2).
 - [ ] The same three `ConnectorTableFunction`s from A3, but building `org.lance.ipc.Query` / `FullTextQuery` and passing them via a table-handle field → split → page source → scanner factory.
 
-### Route A vs B decision
-Current lean (RESEARCH §4.3): **A first** (single engine, matches the `.db` story). B becomes the priority if (a) DuckDB's lance extension lags upstream Lance, (b) the indirection shows up in measured vector latency, or (c) we want the `prefilter`/`substraitAggregate`/`setColumnOrderings` surface the JNI exposes cleanly. **Benchmark A vs B** (same dataset/vector/k, cold + warm) before committing to one as primary.
+### Route A vs B decision — DECIDED: Route A is primary (benchmarked 2026-06-12)
+Measured (same dataset/vectors/k, brute-force, cold + warm — full numbers in
+[REPORT-lance-route-a-vs-b.md](REPORT-lance-route-a-vs-b.md), harness `BenchLanceRouteAVsB`
+re-runnable via `-Dducklake.bench=true`): warm medians at parity at 384 dims, ~10% Route A
+overhead at 768 dims, cold start comparable (0.27–0.44 s both — the predicted extension
+cold-start penalty did not materialize). B's only consistent edge is tighter tail latency
+(single-digit to low-tens of ms — below Trino's own split-scheduling noise). **Not
+decision-grade → do NOT fork lance-trino.** The original triggers stand for reopening:
+(a) extension lags upstream — watched by the O3 canary; (b) latency — now measured, fine;
+(c) JNI-only surface (`substraitAggregate`/`setColumnOrderings`) — no current need.
 
 ---
 
