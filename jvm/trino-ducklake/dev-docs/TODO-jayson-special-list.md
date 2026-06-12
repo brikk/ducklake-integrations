@@ -1,0 +1,203 @@
+# TODO — Jayson's driving list (completion, edges filled, test verified)
+
+**This is the driving list.** Ordered by Jayson (2026-06-12) from the completeness sweep of the
+trackers + code greps; group labels are his, paragraph text is the sweep verbatim. Mandate:
+*"I want completion, edges filled, test verified."* Suggested split: **one agent on the TEST
+side, one agent on the FEATURE side**, hygiene items as low-risk fillers for either.
+
+Ground rules carried over from the same conversation:
+- Parquet is NOT more important than the other formats — duckdb/vortex/lance coverage and
+  capability matter equally.
+- Don't break the monolith classes in arbitrary ways — extraction only for concerns that
+  matter, careful plan first (SPI groups some things together; delegation is fine).
+- Kotlinize wherever the SPI/Jackson isn't forcing Java shapes.
+- Every feature lands with tests; every "wired-looking but unverified" claim gets a
+  verification test before the README claims it.
+
+---
+
+## TEST SIDE (agent 1)
+
+### T1. All-formats test parity — "they are ALL important"
+
+Two cross-cutting unknowns, flagged because nothing in the trackers names them:
+
+1. **Row-level DELETE/UPDATE/MERGE against tables whose *data* files are .db/vortex/lance.**
+   The read path visibly handles splits-with-deletes (it drops pushdown to keep positions
+   contiguous), but a grep finds **zero** e2e tests pairing DELETE with a non-parquet data
+   format — every delete test is parquet-data. Status: wired-looking, unverified. That's a
+   half-day verification spike, and until it runs the README must not claim it.
+2. **Partitioned CTAS/INSERT with non-parquet formats.** The writers all accept partition
+   values, so plumbing exists — also zero tests.
+
+Beyond those two: build the capability × format grid (reads, writes, deletes, partitioning,
+time travel, schema evolution, metadata tables, add_files, s3 × engine) and fill every cell
+that parquet has and the others don't. Inlined-data interplay with non-parquet splits belongs
+in the grid too.
+
+### T2. Fill the left-behind gaps — "zero tests needs to be undone"
+
+The HttpfsS3 (.db-over-s3) path got its FIRST live coverage only this week (the secret-race
+test) — that blind spot hid a never-worked credential path for vortex-s3 reads. Hunt for the
+remaining never-exercised branches the same way (coverage tooling or grep-the-dispatch-sites).
+Known open boxes that belong here: views across all catalog backends (TODO-READ-MODE), the
+DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
+concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
+
+---
+
+## FEATURE SIDE (agent 2) — in priority order
+
+### F1. DDL gaps
+
+`RENAME TABLE`/`RENAME SCHEMA`/`COMMENT ON TABLE/COLUMN` are small catalog ops (days, not
+weeks); `SET TYPE` and nested `ADD/DROP FIELD` are medium. `ANALYZE` medium.
+
+### F2. add_files for anything
+
+`add_files` accepts parquet + lance only. Vortex is missing — the cheapest real win on this
+list, probably a day (single file, count via `read_vortex`, same shape as lance's
+registration). Consider `.db` registration too (niche but symmetric). Existing related boxes:
+hive_partitioning beyond IDENTITY transforms, and upstream's `allow_missing` recursing into
+STRUCT fields (TODO-WRITE-MODE).
+
+### F3. Index lifecycle — lance first, designed for every non-parquet format
+
+**The point of these formats is that we CAN have indexes, which parquet cannot.** Lance now:
+search is brute-force unless a dataset arrives pre-indexed via `add_files`; at 200k×384
+that's ~30ms, at tens of millions it won't be. The extension exposes `__lance_optimize_index`
+etc., so procedures wrapping them is the natural medium-sized step. Then the bigger design
+Jayson wants: **index DEFINITION on the table** — "this table always wants that for new
+data", with auto-index (or index-on-write/maintenance) semantics — planned generically so the
+duckdb format (ART indexes in the .db files) and future formats plug into the same surface,
+not a lance one-off. Catalog representation, DDL/procedure surface, and when indexing runs
+(synchronous on write vs maintenance op) are the design questions.
+
+### F4. Row-level CRUD over non-parquet data files
+
+Verification spike from T1 first; then fix whatever it finds (write-side may need to accept or
+reject cleanly; read-side delete filtering over .db/vortex/lance positions must be proven),
+then e2e tests per format. Lance search functions currently reject tables with row-level
+deletes (v1 gate) — revisit that gate once plain reads are proven.
+
+### F5. Partitioned CTAS/INSERT for non-parquet formats
+
+Plumbing exists (writers take partition values); verify end-to-end per format, fix what
+breaks, pin with tests. Interplay to check: lance `add_files` rejects partitioned tables —
+decide whether partitioned lance CTAS should work or be gated with a clear error.
+
+### F6. Maintenance operations
+
+`optimize`, `rewrite_data_files`, `expire_snapshots`, `cleanup_old_files`,
+`remove_orphan_files`, `flush_inlined_data`, stats recalc: all absent; users must run DuckDB
+against the shared catalog. This is the biggest single hole — a multi-week program (M8 in
+TODO-WRITE-MODE), and the one with real operational consequences (orphan files after failed
+commits currently have *no* Trino-side remedy).
+
+### F7. Write-side polish
+
+Sorted writes (the catalog sort spec is read and exposed to the planner but not applied on
+write), Puffin deletion-vector *writes* (reads done), commit-context session props (small).
+The quack-as-catalog backend group is the active migration thread — its remaining boxes are
+mostly verification/CI, not construction. Related standing direction: **retire the in-process
+DuckDB engine entirely once quack safety allows** — quack-only is the destination.
+
+### F8. Degraded types (minus variant)
+
+json/interval/geometry/uint128: data round-trips; full typed support is engine-level work and
+mostly a permanent trade. Geometry spatial functions / bounding-box pruning and json functions
+are the plausible upgrades; uint128 is likely permanent VARCHAR.
+
+### F9. Change feed
+
+`table_changes`/`insertions`/`deletions`: absent. Medium-large — the snapshot machinery and
+the table-function pattern (split-based, from the lance searches) both exist, so it's
+tractable.
+
+### F10. Variant
+
+Shredded field access (`payload.user`), shredded-subfield statistics for pushdown. The only
+big-ticket degraded-type item; engine-level type features.
+
+### F11. Parking lot — "whatever I forgot"
+
+- Pushdown Step 5: DuckDB-exclusive functions via `ConnectorFunctionProvider` (never started,
+  optional); arithmetic-operator and `concat`/`position` translation (small, deliberately
+  deferred).
+- SQLite catalog backend (planned tier).
+- Vortex: type audit beyond scalars/ARRAY/ROW; verify the extension actually *exploits* pushed
+  predicates (the WHERE renders; whether vortex skips decompression is unmeasured).
+- Upstream watches (canary-driven retests on extension bumps): vortex MAP COPY native crash;
+  lance arrow-scan NULL-ROW morph; lance MAP needs format 2.2; lance FTS k is best-effort.
+- `add_files` lance `record_count` full-scan cost on huge datasets.
+- Cross-dialect view transpilation (research item).
+- DuckDB-equivalent virtual columns (`rowid`, `snapshot_id`) — TODO-READ-MODE box.
+
+---
+
+## HYGIENE (either agent, low-risk fillers)
+
+### H1. dev-docs archive sweep
+
+Move the closed lab-notebook docs (HANDOFF-lance-route-a is explicitly final; finished
+TODO/RESEARCH logs) into `dev-docs/archive/`; keep live trackers + this list at top level.
+Agents already know to ignore archive. Tick the stale boxes while there: TODO-vortex
+"SQL-level read through the catalog" (satisfied by the CTAS work), TODO-lance Route-B boxes
+(moot after the A-vs-B decision — REPORT-lance-route-a-vs-b.md is the record).
+
+### H2. Kotlinization candidate list
+
+Build the explicit list of remaining Java-accent shapes where SPI/Jackson is NOT forcing them,
+then convert: the accessor-method classes (`ExecutionRequest` → data class with properties +
+default args is the poster child), remaining `@get:JvmName`/`@JvmRecord` on never-serialized
+internal types, telescoping constructors → default args, manual equals/hashCode/toString →
+data classes. Excluded by rule: Trino SPI signatures, the `@JvmRecord` Jackson wire DTOs
+(load-bearing for Trino's module-less mapper — see project memory), airlift `DucklakeConfig`.
+
+### H3. Decomposition plan for the monoliths
+
+`DucklakeMetadata` and `DucklakePageSourceProvider` are 1,000+ line multi-concern classes, and
+the arrow-stream writer mixes lifecycle, schema mapping, stats, and upload. Plan first, not
+arbitrary splits: extract the concerns that matter (per-format page-source construction,
+metadata-table handling, stats extraction, upload/cleanup) behind the existing SPI entry
+points via delegation. First-party connectors have the same disease, so match the genre where
+the SPI forces it and delegate where it doesn't.
+
+### H4. LikePattern — the reflection is forced; keep it caged
+
+Investigated 2026-06-12: the engine delivers LIKE as `Call($like, [value, Constant(v)])` where
+`v` is an engine-constructed `io.trino.type.LikePattern` **instance** (trino-main). The plugin
+classloader exposes only `io.trino.spi.*`, so a compile-time import passes tests (no isolation
+there) and throws `NoClassDefFoundError` in a real plugin-dir deployment; porting a copy
+in-house can't read the engine's instance (different `Class`). So the reflection stays, caged:
+it lives in one guarded accessor (`LikePatternAccessor` — class-name pinned, method cache,
+fails soft to "don't push"), with 8 unit canaries (`TestDuckDbExpressionTranslator.testLike*`)
+pinning the surface against real engine objects. Revisit on Trino version bumps — if the SPI
+ever carries pattern/escape as plain values, delete the accessor. (Long-term: an upstream SPI
+ask is the real fix.)
+
+---
+
+## Per-area completeness snapshot (sweep verbatim, 2026-06-12)
+
+**DuckLake core — the real gaps live here.** Maintenance operations (F6) are the biggest
+single hole. Change feed (F9) absent but tractable. DDL gaps (F1) small-to-medium. Write-side
+polish (F7). Degraded types (F8/F10) working-as-degraded. Views: only Trino-dialect exposed.
+SQLite + Quack catalog backends planned/in-progress.
+
+**duckdb `.db` format — the most complete.** Read modes, both writers, full complex types, the
+95-function pushdown catalog, TZ semantics — all shipped and tested. Genuinely open: pushdown
+Step 5 (optional), arithmetic-operator and `concat`/`position` translation (small, deferred).
+
+**Lance — functionally complete for its v1 scope, with upstream-bound edges.** Real holes: no
+index lifecycle through Trino (F3). Write gates (ROW until the upstream null-struct fix, MAP
+until lance format 2.2, scalar-only list elements) are upstream-bound — the canary
+(`TestLanceExtensionCanary`) says when to retest. Search v1 gates (s3 quack-only, all-lance
+tables, no row-level deletes) are documented choices.
+
+**Vortex — the thinnest, but its holes are small.** `add_files` missing (F2 — cheapest win).
+Type audit + pushdown-exploitation verification (F11). MAP write gated on the upstream native
+crash. s3 streaming reads are env-channel only (documented).
+
+**Cross-cutting:** the two zero-test unknowns in T1 (row-level CRUD over non-parquet;
+partitioned non-parquet writes) gate several feature claims and go first.
