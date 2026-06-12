@@ -228,14 +228,14 @@ object DucklakeInlinedValueConverter {
 
     /**
      * Decode DuckDB's blob-to-text representation back to raw bytes. Mirrors
-     * {@code Blob::ToBlob} in {@code duckdb/src/common/types/blob.cpp}: each
-     * {@code \xNN} sequence (uppercase or lowercase hex) becomes one byte; any
+     * `Blob::ToBlob` in `duckdb/src/common/types/blob.cpp`: each
+     * `\xNN` sequence (uppercase or lowercase hex) becomes one byte; any
      * other ASCII character is taken as a literal byte value. The text form is
-     * unambiguous because {@code Blob::ToString} emits {@code \\}, {@code '},
-     * {@code "}, and every non-printable byte as {@code \xNN}, so a literal
-     * {@code \\} in the text always introduces a hex escape.
+     * unambiguous because `Blob::ToString` emits `\\`, `'`,
+     * `"`, and every non-printable byte as `\xNN`, so a literal
+     * `\\` in the text always introduces a hex escape.
      *
-     * <p>Visible for testing.
+     * Visible for testing.
      */
     internal fun decodeBlobText(text: String): ByteArray {
         val len = text.length

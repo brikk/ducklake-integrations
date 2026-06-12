@@ -19,23 +19,23 @@ import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 
 /**
- * Constructs the configured {@link DucklakeDuckDbExecutor} per split. A new
+ * Constructs the configured [DucklakeDuckDbExecutor] per split. A new
  * executor is returned for each call — executors are per-split state and own a
  * JDBC connection through their lifecycle.
  *
- * <p>The selection happens at catalog-config level via
- * {@link DucklakeConfig#getExecutionEngine()}. Per-split or per-session
+ * The selection happens at catalog-config level via
+ * [DucklakeConfig.getExecutionEngine]. Per-split or per-session
  * selection is not exposed (yet) because the choice of engine has operational
  * implications — different deployment topology, different failure modes — that
  * are best made once at catalog configuration time, not per query.
  *
- * <p>The trino_parity DuckDB extension is REQUIRED — there is no SQL-replay
+ * The trino_parity DuckDB extension is REQUIRED — there is no SQL-replay
  * fallback. The factory resolves the path with this precedence:
- * <ol>
- *   <li>{@code ducklake.duckdb.parity-extension-path} config property (any engine).</li>
- *   <li>For DUCKDB_LOCAL only: the bundled binary extracted by
- *       {@link TrinoParityExtensionResolver} from the plugin jar.</li>
- * </ol>
+ *
+ *   - `ducklake.duckdb.parity-extension-path` config property (any engine).
+ *   - For DUCKDB_LOCAL only: the bundled binary extracted by
+ *       [TrinoParityExtensionResolver] from the plugin jar.
+ *
  * If both are absent, the catalog refuses to construct an executor — operators
  * see a clear configuration error at first use rather than a query-time
  * failure for missing macros.

@@ -24,7 +24,6 @@ import java.util.Optional
  * still benefit from node pinning (keeps the DuckDB sidecar's buffer pool warm for the
  * same files).
  *
- *
  * Key shape matches `CacheSplitAffinityProvider` so behavior is identical when
  * `fs.cache.enabled=true` — that binding takes over via `setBinding()`.
  */

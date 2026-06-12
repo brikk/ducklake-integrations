@@ -58,7 +58,7 @@ class TestDucklakeLanceS3QuackRead {
         // No s3Config on the FileScan — mirrors resolveDuckDbReadTarget: lance ignores DuckDB
         // secrets; the credentials are the container's AWS_* env (the whole point of this test).
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan(DATASET_URL, "__lance_scan", "lance", Optional.empty()),
+                DuckDbAttachTarget.FileScan(DATASET_URL, "__lance_scan", "lance", null),
                 listOf(
                         DucklakeColumnHandle(1L, "id", INTEGER, false),
                         DucklakeColumnHandle(2L, "name", VARCHAR, false)),
@@ -87,7 +87,7 @@ class TestDucklakeLanceS3QuackRead {
         // for the search table functions — argument tail after the quoted s3 path.
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
                 DuckDbAttachTarget.FileScan(
-                        DATASET_URL, "lance_vector_search", "lance", Optional.empty(),
+                        DATASET_URL, "lance_vector_search", "lance", null,
                         ", 'emb', [1.0, 0.0]::DOUBLE[], k := 2, prefilter := false"),
                 listOf(
                         DucklakeColumnHandle(1L, "id", INTEGER, false),

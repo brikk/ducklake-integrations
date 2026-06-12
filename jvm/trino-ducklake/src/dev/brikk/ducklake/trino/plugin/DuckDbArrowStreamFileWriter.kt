@@ -101,7 +101,6 @@ import java.time.LocalDate
 import java.util.ArrayList
 import java.util.Comparator
 import java.util.Optional
-import java.util.OptionalLong
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.BlockingQueue
@@ -111,7 +110,6 @@ import java.util.concurrent.atomic.AtomicReference
  * Alternative [DuckDbFileWriter] implementation that streams Trino Pages to
  * DuckDB columnarly via Apache Arrow.
  *
- *
  * Architecture: Trino's page-sink thread feeds [Page]s into a small
  * blocking queue; a worker thread drives `INSERT INTO target SELECT * FROM
  * <registered_arrow_stream>` against DuckDB; the registered stream's reader pulls
@@ -120,7 +118,6 @@ import java.util.concurrent.atomic.AtomicReference
  * regardless of total CTAS size, and the per-cell JNI cost of the JDBC
  * `Appender` is replaced by the Arrow C-data interface (one batch
  * round-trip per Page, no per-cell crossing).
- *
  *
  * Selected per-CREATE / per-INSERT via the `duckdb_writer_mode` session
  * property — see [DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM]. The
@@ -134,7 +131,7 @@ constructor(
     private val remoteLocation: Location,
     private val relativePath: String,
     partitionValues: Map<Int, String?>,
-    private val partitionId: OptionalLong,
+    private val partitionId: Long?,
     columns: List<DucklakeColumnHandle>,
     localTempDir: Path,
     // FORMAT_DUCKDB: INSERT the Arrow stream into an ATTACHed .db (the .db is the output, stats
@@ -251,10 +248,10 @@ constructor(
             }
             throw IOException("Failed to initialize Arrow-stream DuckDB writer for $remoteLocation", e)
         }
-        this.connection = conn!!
-        this.allocator = alloc!!
-        this.reader = rdr!!
-        this.arrayStream = stream!!
+        this.connection = conn
+        this.allocator = alloc
+        this.reader = rdr
+        this.arrayStream = stream
 
         this.consumerThread = Thread(this::runInsert, "ducklake-arrow-insert-$streamName")
         this.consumerThread.isDaemon = true
@@ -406,7 +403,7 @@ constructor(
                 rowCount,
                 columnStats,
                 partitionValues,
-                if (partitionId.isPresent) partitionId.asLong else null)
+                partitionId)
     }
 
     /** Whether the catalog records min/max for this type. VARBINARY/UUID never did; complex
@@ -462,9 +459,9 @@ constructor(
             val col: DucklakeColumnHandle = columns[i]
             val valueCount: Long = valueCounts[i]
             val nullCount = maxOf(0L, totalCount - valueCount)
-            val min: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
-            val max: Optional<String> = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
-            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min.orElse(null), max.orElse(null), false))
+            val min: String? = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
+            val max: String? = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
+            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
         }
         return result
     }

@@ -32,12 +32,12 @@ import io.trino.spi.type.VarcharType.VARCHAR
  * search over a DuckLake table whose data files are lance dataset directories, executed by the
  * DuckDB `lance` extension's `lance_vector_search` table function (Route A, Phase A3).
  *
- * <p>Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `COLUMN_NAME` (the embedding column),
+ * Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `COLUMN_NAME` (the embedding column),
  * `QUERY_VEC` (an `ARRAY(DOUBLE)` constant — a bare `ARRAY[0.1, 0.2]` literal coerces),
  * `K` (top-k, default 10), `PREFILTER` (default false; forwarded to lance — only meaningful
  * once predicate pushdown into the function lands, see TODO-lance O2).
  *
- * <p>Returns the table's columns plus a synthetic `_distance` REAL column, ascending. Each lance
+ * Returns the table's columns plus a synthetic `_distance` REAL column, ascending. Each lance
  * dataset fragment is searched independently (one split per dataset directory), so a
  * multi-fragment table returns up to `k × fragments` rows — a superset of the global top-k; wrap
  * with `ORDER BY _distance LIMIT k` for exact global semantics. v1 scope (local paths, all-lance,

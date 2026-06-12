@@ -178,12 +178,10 @@ object DucklakeTestCatalogEnvironment {
                             ?.trim()
                             ?.takeIf { it.isNotEmpty() }
                             ?.let(Path::of)
-                        val extensionPath: Optional<Path> = if (configuredPath != null) {
-                            Optional.of(configuredPath)
-                        } else {
-                            TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerArch)
-                                .map { Path.of(it) }
-                        }
+                        val extensionPath: Optional<Path> = Optional.ofNullable(
+                                configuredPath
+                                        ?: TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerArch)
+                                                ?.let(Path::of))
                         result = TestingDucklakeDuckDbQuackCatalogServer(extensionPath)
                         quackServer = result
                         Runtime.getRuntime().addShutdownHook(Thread { result!!.close() })

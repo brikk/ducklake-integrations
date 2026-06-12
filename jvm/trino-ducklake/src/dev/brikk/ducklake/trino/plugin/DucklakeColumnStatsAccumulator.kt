@@ -130,7 +130,7 @@ internal class DucklakeColumnStatsAccumulator(columns: List<DucklakeColumnHandle
         }
         // Slices carry the comparison (UTF-8 byte order); format from their string form.
         val forFormat: Any = if (winner is Slice) winner.toStringUtf8() else winner
-        return DuckDbWriterSupport.formatStatValue(type, forFormat).orElse(null)
+        return DuckDbWriterSupport.formatStatValue(type, forFormat)
     }
 
     companion object {

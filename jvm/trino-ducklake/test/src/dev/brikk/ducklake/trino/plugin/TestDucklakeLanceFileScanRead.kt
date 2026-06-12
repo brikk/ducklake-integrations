@@ -74,7 +74,7 @@ class TestDucklakeLanceFileScanRead {
                 DucklakeColumnHandle(1L, "id", INTEGER, false),
                 DucklakeColumnHandle(2L, "name", VARCHAR, false))
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", Optional.empty()),
+                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", null),
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>())
 
@@ -127,7 +127,7 @@ class TestDucklakeLanceFileScanRead {
                 DucklakeColumnHandle(1L, "id", INTEGER, false),
                 DucklakeColumnHandle(2L, "emb", embType, false))
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", Optional.empty()),
+                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", null),
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>())
 
@@ -186,7 +186,7 @@ class TestDucklakeLanceFileScanRead {
         val predicate = TupleDomain.withColumnDomains(
                 mapOf(idHandle to Domain.singleValue(INTEGER, 2L)))
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", Optional.empty()),
+                DuckDbAttachTarget.FileScan(dataset.toString(), "__lance_scan", "lance", null),
                 listOf(idHandle, nameHandle),
                 predicate)
 

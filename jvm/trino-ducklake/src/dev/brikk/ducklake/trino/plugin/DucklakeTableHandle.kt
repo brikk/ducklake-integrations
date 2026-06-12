@@ -22,12 +22,12 @@ import io.trino.spi.predicate.TupleDomain
 /**
  * Handle for a Ducklake table, including snapshot context and pushed-down predicates.
  *
- * <p>{@code pushedExpressions} carries function-shape predicates that
- * {@link DuckDbExpressionTranslator} successfully translated into DuckDB SQL
- * fragments (e.g. {@code trino_lower("name") = 'apple'}). They are AND-ed into
- * the WHERE clause sent to DuckDB on the {@code .db} read path. For mixed-format
- * tables, the same conjuncts are also returned in {@code remainingExpression}
- * so Trino re-applies them above the scan — double evaluation on {@code .db}
+ * `pushedExpressions` carries function-shape predicates that
+ * [DuckDbExpressionTranslator] successfully translated into DuckDB SQL
+ * fragments (e.g. `trino_lower("name") = 'apple'`). They are AND-ed into
+ * the WHERE clause sent to DuckDB on the `.db` read path. For mixed-format
+ * tables, the same conjuncts are also returned in `remainingExpression`
+ * so Trino re-applies them above the scan — double evaluation on `.db`
  * splits is cheap because the result set is already reduced.
  */
 @JvmRecord

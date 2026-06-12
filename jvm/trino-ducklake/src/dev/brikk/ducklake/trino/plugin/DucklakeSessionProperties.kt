@@ -122,7 +122,6 @@ open class DucklakeSessionProperties @Inject constructor() {
          * interprets the WTZ instants using the session `TimeZone` that chunk
          * 2's plumbing set on attach.
          *
-         *
          * Correctness is bounded by chunk 2's `SET TimeZone` success: if
          * that failed (rare — only for fractional bare-offset session zones DuckDB
          * can't normalise), Tier C results may diverge from Trino's reference. The

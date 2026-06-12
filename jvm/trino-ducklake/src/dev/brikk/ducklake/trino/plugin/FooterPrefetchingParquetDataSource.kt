@@ -32,7 +32,6 @@ import java.io.IOException
  * exceeds 48 KB. If the hint is wrong (too small), the caller's re-read with the correct
  * size falls through to the delegate, matching today's behavior at no extra cost.
  *
- *
  * The wrapper is intended to be short-lived, used only for the single
  * `MetadataReader.readFooter()` invocation on a file. After that, the pre-fetched
  * tail is dropped and further `readTail` calls delegate directly. Non-tail reads

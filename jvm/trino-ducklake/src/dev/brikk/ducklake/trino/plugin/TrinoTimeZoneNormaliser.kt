@@ -14,35 +14,33 @@
 package dev.brikk.ducklake.trino.plugin
 
 /**
- * Translates a Trino {@code TimeZoneKey} string into a string DuckDB's
- * {@code SET TimeZone = '...'} will accept. Three rules, derived empirically
- * in {@code dev-docs/archive/REPORT-datetime-tz-handling.md} (Q3 table) and validated
+ * Translates a Trino `TimeZoneKey` string into a string DuckDB's
+ * `SET TimeZone = '...'` will accept. Three rules, derived empirically
+ * in `dev-docs/archive/REPORT-datetime-tz-handling.md` (Q3 table) and validated
  * across 14 representative shapes — every named IANA and integer-hour offset
- * matched {@code java.time}'s ground truth exactly.
+ * matched `java.time`'s ground truth exactly.
  *
- * <ol>
- *   <li>{@code Z} → {@code UTC}. {@code java.time} accepts {@code Z};
- *       DuckDB doesn't, but they mean the same thing.</li>
- *   <li>{@code ±HH:MM} with {@code MM == 00} → {@code Etc/GMT∓HH}. POSIX sign
- *       inversion: {@code +05:00} (UTC+5) becomes {@code Etc/GMT-5}.</li>
- *   <li>Everything else — named IANA ({@code America/Los_Angeles},
- *       {@code Asia/Kolkata}), bare {@code UTC}/{@code GMT}, AND fractional
- *       bare offsets ({@code +05:30}) — passes through unchanged. DuckDB
+ *   - `Z` → `UTC`. `java.time` accepts `Z`;
+ *       DuckDB doesn't, but they mean the same thing.
+ *   - `±HH:MM` with `MM == 00` → `Etc/GMT∓HH`. POSIX sign
+ *       inversion: `+05:00` (UTC+5) becomes `Etc/GMT-5`.
+ *   - Everything else — named IANA (`America/Los_Angeles`,
+ *       `Asia/Kolkata`), bare `UTC`/`GMT`, AND fractional
+ *       bare offsets (`+05:30`) — passes through unchanged. DuckDB
  *       accepts the named cases and cleanly rejects fractional bare offsets
- *       (probed: {@code Unknown TimeZone '+05:30'!}). The caller decides
+ *       (probed: `Unknown TimeZone '+05:30'!`). The caller decides
  *       what to do on rejection — typically log a one-shot WARN and proceed
- *       without a {@code SET TimeZone}, which compromises Tier C pushdown
- *       correctness for that attach but leaves Tier A/B untouched.</li>
- * </ol>
+ *       without a `SET TimeZone`, which compromises Tier C pushdown
+ *       correctness for that attach but leaves Tier A/B untouched.
  *
- * <p>In practice Trino delivers fractional-offset zones via their named IANA
- * counterparts ({@code Asia/Kolkata}, {@code America/St_Johns}), so the
+ * In practice Trino delivers fractional-offset zones via their named IANA
+ * counterparts (`Asia/Kolkata`, `America/St_Johns`), so the
  * fractional-bare-offset rejection path is rarely hit.
  */
 object TrinoTimeZoneNormaliser {
     /**
      * Normalise a Trino zone identifier to a string DuckDB's
-     * {@code SET TimeZone} is most likely to accept. Returns the original
+     * `SET TimeZone` is most likely to accept. Returns the original
      * string for any case the rules can't translate; the caller handles
      * DuckDB's actual response.
      */

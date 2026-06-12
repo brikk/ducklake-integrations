@@ -649,8 +649,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // UTC in CI — so an explicit SET is the only way to make duckdb-format
         // reads reproducible across deployment environments). See
         // dev-docs/archive/REPORT-datetime-tz-handling.md.
-        val duckDbTimeZone: Optional<String> = Optional.ofNullable(
-                TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id))
+        val duckDbTimeZone: String? = TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id)
 
         // B3b: drop pushed complex expressions when the split has active deletes — same
         // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
@@ -730,10 +729,9 @@ class DucklakePageSourceProvider @Inject constructor(
                 split.datasetPath,
                 LanceSearchSplitProcessor.scanFunctionFor(search),
                 DucklakeSessionProperties.FORMAT_LANCE,
-                Optional.empty(),
+                null,
                 LanceSearchSplitProcessor.renderExtraArgsSql(search))
-        val duckDbTimeZone: Optional<String> = Optional.ofNullable(
-                TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id))
+        val duckDbTimeZone: String? = TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id)
         return DuckDbFilePageSource(
                 executorFactory.create(),
                 target,
@@ -758,14 +756,14 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /**
-     * The read target for a DuckDB-engine split. For the {@code duckdb} (.db) format this is the
-     * ATTACH target from {@link #resolveDuckDbAttachTarget}. For the single-file scan format
-     * ({@code vortex}) the same materialize-vs-streaming decision is reused, then wrapped as a
-     * {@link DuckDbAttachTarget.FileScan} carrying the scan function + extension so the executor
-     * reads via {@code read_vortex('path')} instead of ATTACHing a database — but WITHOUT the
-     * httpfs secret on the streaming s3 shape: {@code read_vortex} is object_store-credentialed
+     * The read target for a DuckDB-engine split. For the `duckdb` (.db) format this is the
+     * ATTACH target from [resolveDuckDbAttachTarget]. For the single-file scan format
+     * (`vortex`) the same materialize-vs-streaming decision is reused, then wrapped as a
+     * [DuckDbAttachTarget.FileScan] carrying the scan function + extension so the executor
+     * reads via `read_vortex('path')` instead of ATTACHing a database — but WITHOUT the
+     * httpfs secret on the streaming s3 shape: `read_vortex` is object_store-credentialed
      * (`AWS_*` env), not secret-credentialed, so s3-streaming vortex reads need the lance-O1 env
-     * channel on the executing process. {@code lance} is a dataset *directory* and bypasses the
+     * channel on the executing process. `lance` is a dataset *directory* and bypasses the
      * materialize cache entirely (see below).
      */
     private fun resolveDuckDbReadTarget(
@@ -787,7 +785,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // conflict trigger first observed on this very path).
         if (DucklakeSessionProperties.FORMAT_LANCE.equals(split.fileFormat, ignoreCase = true)) {
             return DuckDbAttachTarget.FileScan(
-                    dataFileLocation.toString(), "__lance_scan", "lance", Optional.empty())
+                    dataFileLocation.toString(), "__lance_scan", "lance", null)
         }
         val base: DuckDbAttachTarget = resolveDuckDbAttachTarget(session, dataFileLocation, fileSystem, split)
         if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(split.fileFormat, ignoreCase = true)) {
@@ -803,7 +801,7 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         return when (base) {
             is DuckDbAttachTarget.LocalPath ->
-                DuckDbAttachTarget.FileScan(base.path.toAbsolutePath().toString(), scanFunction, extension, Optional.empty())
+                DuckDbAttachTarget.FileScan(base.path.toAbsolutePath().toString(), scanFunction, extension, null)
             // No DuckDbS3Config on the streaming shape: `read_vortex` binds through Rust
             // object_store, which NEVER consults DuckDB httpfs secrets (probed 2026-06-11 —
             // single-threaded read with only the secret present falls back to the EC2 metadata
@@ -812,16 +810,16 @@ class DucklakePageSourceProvider @Inject constructor(
             // Trino JVM's own env in-process (DuckDbS3Config.toObjectStoreEnv). Shipping the
             // secret anyway would just add pointless httpfs INSTALL + secret-create chatter.
             is DuckDbAttachTarget.HttpfsS3 ->
-                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, Optional.empty())
+                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, null)
             is DuckDbAttachTarget.FileScan -> base
         }
     }
 
     /**
-     * Decide whether to materialize the {@code .db} file to local tmp and ATTACH that
-     * path, or load DuckDB's httpfs extension and ATTACH the remote {@code s3://} URL
-     * directly. Driven by the {@code duckdb_read_mode} session property; {@code auto}
-     * (the default) consults the {@code ducklake.duckdb.auto-httpfs-threshold} config.
+     * Decide whether to materialize the `.db` file to local tmp and ATTACH that
+     * path, or load DuckDB's httpfs extension and ATTACH the remote `s3://` URL
+     * directly. Driven by the `duckdb_read_mode` session property; `auto`
+     * (the default) consults the `ducklake.duckdb.auto-httpfs-threshold` config.
      */
     private fun resolveDuckDbAttachTarget(
             session: ConnectorSession,
@@ -951,14 +949,14 @@ class DucklakePageSourceProvider @Inject constructor(
 
         /**
          * Whether the split carries any active position deletes — either external parquet/puffin
-         * delete files or inlined deletes from {@code ducklake_inlined_delete_<tableId>}.
+         * delete files or inlined deletes from `ducklake_inlined_delete_<tableId>`.
          *
-         * <p>When this returns {@code true}, the page-source pipeline must NOT push the query
+         * When this returns `true`, the page-source pipeline must NOT push the query
          * predicate down into the parquet reader or the DuckDB scan: doing so prunes row groups
          * / skips rows inside the underlying file, breaking the cumulative-offset math that
-         * {@link PositionalVirtualInjectingPageSource} and {@link DeleteRowFilterTransform} use to compute
+         * [PositionalVirtualInjectingPageSource] and [DeleteRowFilterTransform] use to compute
          * file-absolute positions for delete matching (B3b — see the bug trace and option-(B)
-         * fix in {@code .ai/kotlin-port/BEFORE-RESUME.md}).
+         * fix in `.ai/kotlin-port/BEFORE-RESUME.md`).
          */
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
             split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
@@ -989,7 +987,7 @@ class DucklakePageSourceProvider @Inject constructor(
                     exception)
 
         /**
-         * Build the constant block emitted by {@link io.trino.plugin.hive.TransformConnectorPageSource}
+         * Build the constant block emitted by [io.trino.plugin.hive.TransformConnectorPageSource]
          * for a column not present in the parquet body. Defaults to a single-position NULL block;
          * when the split carries a catalog-recorded partition value for this column (hive-style
          * external imports), parses the string value and projects it as a constant instead.

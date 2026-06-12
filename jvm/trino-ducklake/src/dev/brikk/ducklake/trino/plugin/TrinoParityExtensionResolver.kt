@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Resolves the `trino_parity.duckdb_extension` binary path at runtime.
  *
- *
  * Resolution order:
  *
  *  1. If the caller already has an explicit
@@ -40,7 +39,6 @@ import java.util.concurrent.atomic.AtomicReference
  *  1. If neither is available, return empty — caller decides how to fail.
  *
  *
- *
  * Platform detection from `os.name` / `os.arch`:
  * <pre>
  * Mac OS X        + aarch64/arm64 -> darwin-arm64
@@ -50,12 +48,10 @@ import java.util.concurrent.atomic.AtomicReference
  * Windows         + x86_64/amd64  -> windows-amd64
 </pre> *
  *
- *
  * The bundled binary path is keyed by the platform string. The Gradle
  * build's `bundleParityExtension` task currently writes only the host
  * platform's binary — multi-platform bundling needs a CI matrix that builds
  * the extension on each target. See `TODO-pushdown-duckdb.md`.
- *
  *
  * The Quack execution engine evaluates SQL server-side in a separate
  * process, so this resolver is meaningless there — the server can't read the
@@ -70,14 +66,16 @@ class TrinoParityExtensionResolver private constructor() {
         private const val RESOURCE_DIR: String = "dev/brikk/ducklake/trino/plugin/duckdb-extensions"
         private const val RESOURCE_FILE: String = "trino_parity.duckdb_extension"
 
-        private val CACHED: AtomicReference<Optional<String>?> = AtomicReference()
+        /** Result holder so the cache can distinguish "not resolved yet" from "resolved to nothing". */
+        private class Resolution(val path: String?)
+
+        private val CACHED: AtomicReference<Resolution?> = AtomicReference()
         private val RESOLVE_LOCK: Any = Any()
 
         /**
          * Returns the absolute path to the bundled extension for the host
          * platform, extracting on first call. Empty when no bundled binary
          * matches the host or extraction fails. Cached per process.
-         *
          *
          * Thread-safe via a double-checked synchronized region around the
          * extraction step: parallel tests / parallel split runners can all hit
@@ -87,18 +85,15 @@ class TrinoParityExtensionResolver private constructor() {
          * unlucky thread's empty Optional gets cached for the JVM lifetime.
          */
         internal fun resolveBundledExtensionPath(): String? {
-            val cached = CACHED.get()
-            if (cached != null) {
-                return cached.orElse(null)
-            }
+            CACHED.get()?.let { return it.path }
             return synchronized(RESOLVE_LOCK) {
                 val inner = CACHED.get()
                 if (inner != null) {
-                    inner.orElse(null)
+                    inner.path
                 }
                 else {
                     val resolved = doResolve()
-                    CACHED.set(Optional.ofNullable(resolved))
+                    CACHED.set(Resolution(resolved))
                     resolved
                 }
             }
@@ -110,14 +105,14 @@ class TrinoParityExtensionResolver private constructor() {
          * Linux testcontainer even though the JVM runs on macOS. Result is NOT
          * cached — different platforms have different paths.
          */
-        fun resolveBundledExtensionPathFor(platform: String): Optional<String> {
+        fun resolveBundledExtensionPathFor(platform: String): String? {
             return synchronized(RESOLVE_LOCK) {
                 val resourcePath = "$RESOURCE_DIR/$platform/$RESOURCE_FILE"
                 val url = TrinoParityExtensionResolver::class.java.classLoader.getResource(resourcePath)
                 if (url == null) {
                     log.info("trino_parity: no bundled extension for platform %s (resource %s missing)",
                             platform, resourcePath)
-                    Optional.empty<String>()
+                    null
                 }
                 else {
                     try {
@@ -125,14 +120,14 @@ class TrinoParityExtensionResolver private constructor() {
                         Files.createDirectories(tempDir)
                         val target = tempDir.resolve(RESOURCE_FILE)
                         extractAtomically(url, tempDir, target)
-                        Optional.of(target.toAbsolutePath().toString())
+                        target.toAbsolutePath().toString()
                     }
                     catch (e: IOException) {
                         // Pass the exception (not just e.message) so the cause chain / stack survives —
                         // Files.createDirectories/Files.copy IOExceptions often have a terse or null
                         // message, and this WARN is the only diagnostic before the call site degrades.
                         log.warn(e, "trino_parity: failed to extract bundled extension for platform %s", platform)
-                        Optional.empty<String>()
+                        null
                     }
                 }
             }

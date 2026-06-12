@@ -76,17 +76,17 @@ import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.types.pojo.ArrowType
 
 /**
- * Materializes one {@link VectorSchemaRoot} batch from DuckDB's Arrow export stream
- * into a Trino {@link Page}, dispatching per-column on the resolved Trino {@link Type}.
+ * Materializes one [VectorSchemaRoot] batch from DuckDB's Arrow export stream
+ * into a Trino [Page], dispatching per-column on the resolved Trino [Type].
  *
- * <p>Supported types are the full scalar surface plus the complex types {@code ARRAY}
- * (Arrow {@code List} / {@code FixedSizeList} — the latter is how Lance materializes embedding
- * columns), {@code ROW} (Arrow {@code Struct}, fields matched positionally), and {@code MAP}
- * (Arrow {@code Map}); complex types nest arbitrarily, and nested values cover every scalar the
+ * Supported types are the full scalar surface plus the complex types `ARRAY`
+ * (Arrow `List` / `FixedSizeList` — the latter is how Lance materializes embedding
+ * columns), `ROW` (Arrow `Struct`, fields matched positionally), and `MAP`
+ * (Arrow `Map`); complex types nest arbitrarily, and nested values cover every scalar the
  * column level does (timestamps, timestamptz, uuid, decimal included) via [appendNestedValue].
  * Scalar columns keep dedicated per-column loops (one type dispatch per column); complex columns
  * dispatch per value, which is unavoidable for nested data. Unsupported timestamp precisions and
- * unknown vector classes raise {@link io.trino.spi.StandardErrorCode#NOT_SUPPORTED}.
+ * unknown vector classes raise [io.trino.spi.StandardErrorCode.NOT_SUPPORTED].
  */
 internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
     private val columnTypes: List<Type> = columnTypes.toList()

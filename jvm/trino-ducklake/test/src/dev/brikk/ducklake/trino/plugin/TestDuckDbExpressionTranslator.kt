@@ -240,8 +240,8 @@ class TestDuckDbExpressionTranslator {
             varcharConst("x")
         )
 
-        val result: Optional<String> = DuckDbExpressionTranslator.translate(expression, ASSIGNMENTS)
-        assertThat(result).isEmpty
+        val result: String? = DuckDbExpressionTranslator.translate(expression, ASSIGNMENTS)
+        assertThat(result).isNull()
     }
 
     @Test

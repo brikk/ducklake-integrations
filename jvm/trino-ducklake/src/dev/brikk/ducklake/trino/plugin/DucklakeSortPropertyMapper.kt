@@ -27,7 +27,6 @@ import java.util.Locale
  * Translates DuckLake's catalog-stored sort spec into Trino
  * [LocalProperty] entries for the planner.
  *
- *
  * Trino interprets a `List<LocalProperty<ColumnHandle>>` as a
  * sequence: the table is sorted by the first property, then within ties by
  * the second, and so on. A *prefix* of the declared sequence is a
@@ -36,7 +35,6 @@ import java.util.Locale
  * skipping an entry in the middle is a lie. So when we cannot interpret a
  * sort key (unknown dialect, non-column expression, column missing at this
  * snapshot), we stop and return only the safe prefix.
- *
  *
  * Currently only the `duckdb` dialect is honored. DuckLake writers
  * store expression text verbatim in their dialect; without a dialect-aware

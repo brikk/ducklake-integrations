@@ -19,14 +19,14 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.type.Type
 
 /**
- * Pruning for files partitioned by Iceberg-compatible {@code bucket(N)} transforms.
+ * Pruning for files partitioned by Iceberg-compatible `bucket(N)` transforms.
  *
- * <p>Bucket pruning is only useful for *discrete* predicates: bucketing scrambles
- * value ordering, so a range predicate (e.g. {@code WHERE x > 10}) cannot exclude
- * any bucket. For equality / {@code IN} predicates we hash each constant and keep
+ * Bucket pruning is only useful for *discrete* predicates: bucketing scrambles
+ * value ordering, so a range predicate (e.g. `WHERE x > 10`) cannot exclude
+ * any bucket. For equality / `IN` predicates we hash each constant and keep
  * files whose stored bucket value matches at least one of the resulting buckets.
  *
- * <p>Conservative on every non-discrete shape: returns {@code true} (don't prune)
+ * Conservative on every non-discrete shape: returns `true` (don't prune)
  * to avoid false negatives.
  */
 object DucklakeBucketPartitionMatcher {

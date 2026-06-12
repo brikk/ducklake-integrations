@@ -148,7 +148,7 @@ class DucklakeMetadata(
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = requireNonNull(temporalPartitionEncoding, "temporalPartitionEncoding is null")!!
 
     constructor(catalog: DucklakeCatalog?, typeConverter: DucklakeTypeConverter?)
-            : this(catalog, typeConverter, DucklakeSnapshotResolver(catalog, OptionalLong.empty(), Optional.empty()), null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
+            : this(catalog, typeConverter, DucklakeSnapshotResolver(requireNonNull(catalog, "catalog is null")!!, null, null), null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
 
     constructor(catalog: DucklakeCatalog?, typeConverter: DucklakeTypeConverter?, snapshotResolver: DucklakeSnapshotResolver?)
             : this(catalog, typeConverter, snapshotResolver, null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
@@ -172,13 +172,13 @@ class DucklakeMetadata(
         }
 
         val queryVersion: Optional<ConnectorTableVersion> = if (endVersion.isPresent) endVersion else startVersion
-        var querySnapshotId: OptionalLong = OptionalLong.empty()
-        var querySnapshotTimestamp: Optional<Instant> = Optional.empty()
+        var querySnapshotId: Long? = null
+        var querySnapshotTimestamp: Instant? = null
         if (queryVersion.isPresent) {
             val version = queryVersion.get()
             when (version.pointerType) {
-                PointerType.TARGET_ID -> querySnapshotId = OptionalLong.of(getSnapshotIdFromVersion(version))
-                PointerType.TEMPORAL -> querySnapshotTimestamp = Optional.of(getSnapshotTimestampFromVersion(session, version))
+                PointerType.TARGET_ID -> querySnapshotId = getSnapshotIdFromVersion(version)
+                PointerType.TEMPORAL -> querySnapshotTimestamp = getSnapshotTimestampFromVersion(session, version)
                 else -> {}
             }
         }
@@ -981,13 +981,13 @@ class DucklakeMetadata(
 
     /**
      * Resolve the data file format for an INSERT (or the insert leg of a MERGE/UPDATE).
-     * <p>Precedence (N1):
-     * <ol>
-     *   <li>Session property {@code ducklake.data_file_format}, when explicitly set.</li>
-     *   <li>Format of the most recent active data file already in the table.</li>
-     *   <li>Connector default ({@code parquet}).</li>
-     * </ol>
-     * The CTAS-time {@code WITH (data_file_format = ...)} clause is not in this chain — it
+     * Precedence (N1):
+     *
+     *   - Session property `ducklake.data_file_format`, when explicitly set.
+     *   - Format of the most recent active data file already in the table.
+     *   - Connector default (`parquet`).
+     *
+     * The CTAS-time `WITH (data_file_format = ...)` clause is not in this chain — it
      * applies only to the materialization that creates the table. There is no per-table
      * persistence of the format yet (no schema-level extensible properties in DuckLake spec),
      * so rule 2 is what makes the natural CTAS-then-INSERT workflow keep a consistent format.
@@ -1599,8 +1599,7 @@ class DucklakeMetadata(
             val baseName: String = rawTableName.substring(0, separator)
             val suffix: String = rawTableName.substring(separator + 1)
             return DucklakeMetadataTableType.fromSuffix(suffix)
-                    .map { type -> MetadataTableName(baseName, type) }
-                    .orElse(null)
+                    ?.let { type -> MetadataTableName(baseName, type) }
         }
 
         private fun toColumnHandles(metadataColumns: List<ColumnMetadata>): Map<String, ColumnHandle>

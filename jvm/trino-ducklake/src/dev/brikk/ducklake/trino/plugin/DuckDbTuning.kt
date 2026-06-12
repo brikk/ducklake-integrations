@@ -14,8 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.airlift.units.DataSize
-import java.util.Optional
-import java.util.OptionalInt
 
 /**
  * Per-catalog DuckDB engine tuning applied at connection init by every
@@ -25,14 +23,14 @@ import java.util.OptionalInt
  */
 @JvmRecord
 data class DuckDbTuning(
-        @get:JvmName("memoryLimit") val memoryLimit: Optional<DataSize>,
-        @get:JvmName("threads") val threads: OptionalInt,
-        @get:JvmName("tempDirectory") val tempDirectory: Optional<String>,
-        @get:JvmName("tempDirectoryMaxSize") val tempDirectoryMaxSize: Optional<DataSize>,
+        @get:JvmName("memoryLimit") val memoryLimit: DataSize?,
+        @get:JvmName("threads") val threads: Int?,
+        @get:JvmName("tempDirectory") val tempDirectory: String?,
+        @get:JvmName("tempDirectoryMaxSize") val tempDirectoryMaxSize: DataSize?,
         @get:JvmName("enableObjectCache") val enableObjectCache: Boolean) {
     companion object {
         fun defaults(): DuckDbTuning {
-            return DuckDbTuning(Optional.empty(), OptionalInt.empty(), Optional.empty(), Optional.empty(), true)
+            return DuckDbTuning(null, null, null, null, true)
         }
     }
 }

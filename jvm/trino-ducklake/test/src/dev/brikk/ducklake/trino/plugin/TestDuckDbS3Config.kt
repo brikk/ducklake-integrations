@@ -60,7 +60,7 @@ class TestDuckDbS3Config {
         // No endpoint = AWS-default endpoint resolution; HTTPS is the right default.
         val config = DuckDbS3Config.fromCatalogConfig(mapOf("s3.region" to "us-east-1"))
 
-        assertThat(config.endpoint).isEmpty
+        assertThat(config.endpoint).isNull()
         assertThat(config.useSsl).isTrue()
     }
 
@@ -72,10 +72,10 @@ class TestDuckDbS3Config {
                 "s3.aws-access-key" to "",
                 "s3.aws-secret-key" to "  "))
 
-        assertThat(config.endpoint).isEmpty
-        assertThat(config.region).isEmpty
-        assertThat(config.accessKey).isEmpty
-        assertThat(config.secretKey).isEmpty
+        assertThat(config.endpoint).isNull()
+        assertThat(config.region).isNull()
+        assertThat(config.accessKey).isNull()
+        assertThat(config.secretKey).isNull()
     }
 
     @Test
@@ -141,10 +141,10 @@ class TestDuckDbS3Config {
         // Defensive — empty map should not throw. All fields absent, useSsl=true.
         val config = DuckDbS3Config.fromCatalogConfig(emptyMap())
 
-        assertThat(config.endpoint).isEmpty
-        assertThat(config.region).isEmpty
-        assertThat(config.accessKey).isEmpty
-        assertThat(config.secretKey).isEmpty
+        assertThat(config.endpoint).isNull()
+        assertThat(config.region).isNull()
+        assertThat(config.accessKey).isNull()
+        assertThat(config.secretKey).isNull()
         assertThat(config.pathStyleAccess).isFalse()
         assertThat(config.useSsl).isTrue()
     }
@@ -193,10 +193,10 @@ class TestDuckDbS3Config {
         // Catalog config may carry a scheme-less host:port (the DuckDB-secret form);
         // object_store wants a URL — the scheme is derived from useSsl.
         val httpsConfig = DuckDbS3Config(
-                java.util.Optional.of("s3.example.com"),
-                java.util.Optional.empty(),
-                java.util.Optional.empty(),
-                java.util.Optional.empty(),
+                "s3.example.com",
+                null,
+                null,
+                null,
                 false,
                 true)
         assertThat(httpsConfig.toObjectStoreEnv()["AWS_ENDPOINT"]).isEqualTo("https://s3.example.com")

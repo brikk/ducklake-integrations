@@ -43,7 +43,7 @@ import java.util.Optional
  * argument list, call [resolveSearchTable] for the catalog resolution + v1-scope guards, build
  * their output layout (table columns + score column(s)), and return [analysis].
  *
- * <p>Common scope, enforced here: every data file of the table must be lance-format, no
+ * Common scope, enforced here: every data file of the table must be lance-format, no
  * row-level deletes (file-based or inlined), and s3-resident datasets only on the Quack
  * execution engine — its sidecar container carries the `AWS_*` env that lance's object_store
  * needs ([DuckDbS3Config.toObjectStoreEnv], HANDOFF O1); the in-process engine would need the

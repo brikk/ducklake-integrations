@@ -294,7 +294,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>(),
                 listOf("CAST(\"ts\" AS VARCHAR) = '2024-06-15 05:00:00-07'"),
-                Optional.of("America/Los_Angeles"))
+                "America/Los_Angeles")
         InProcessDuckDbExecutor().execute(laMatch).use { ctx ->
             assertThat(countRows(ctx.arrowReader()))
                     .`as`("in-process: SET TimeZone='America/Los_Angeles' must take effect so the "
@@ -306,7 +306,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>(),
                 listOf("CAST(\"ts\" AS VARCHAR) = '2024-06-15 05:00:00-07'"),
-                Optional.of("America/Los_Angeles"))
+                "America/Los_Angeles")
         QuackDuckDbExecutor(quackServer!!.host, quackServer!!.mappedPort, quackServer!!.token, dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer.IN_CONTAINER_PARITY_EXTENSION_PATH)
                 .execute(laMatchQuack).use { ctx ->
             assertThat(countRows(ctx.arrowReader()))
@@ -321,7 +321,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>(),
                 listOf("CAST(\"ts\" AS VARCHAR) = '2024-06-15 20:00:00+08'"),
-                Optional.of("Asia/Singapore"))
+                "Asia/Singapore")
         InProcessDuckDbExecutor().execute(sg).use { ctx ->
             assertThat(countRows(ctx.arrowReader()))
                     .`as`("Singapore session zone produces a different rendering of the same instant")
@@ -337,7 +337,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>(),
                 listOf("CAST(\"ts\" AS VARCHAR) = '2024-06-15 20:00:00+08'"),
-                Optional.of("America/Los_Angeles"))
+                "America/Los_Angeles")
         InProcessDuckDbExecutor().execute(mismatched).use { ctx ->
             assertThat(countRows(ctx.arrowReader()))
                     .`as`("LA session zone must NOT render the instant the way Singapore does")
@@ -382,7 +382,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
                 DucklakeColumnHandle(2L, "name", VARCHAR, false))
         // Container path (bind mount): the host's sharedDir/scan.vortex is /data/scan.vortex.
         val quackReq = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan("/data/scan.vortex", "read_vortex", "vortex", Optional.empty()),
+                DuckDbAttachTarget.FileScan("/data/scan.vortex", "read_vortex", "vortex", null),
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>())
 

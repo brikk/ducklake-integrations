@@ -43,7 +43,6 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Objects.requireNonNull
 import java.util.Optional
-import java.util.OptionalLong
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
@@ -336,7 +335,7 @@ class DucklakePageSink(
         val relativePath = buildRelativePath(partitionValues, fileName)
         val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
         writtenFilePaths.add(filePath)
-        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        val partitionId = partitioner?.getPartitionId()
         return DuckDbArrowStreamFileWriter(
                 fileSystem,
                 filePath,
@@ -360,7 +359,7 @@ class DucklakePageSink(
         val relativePath = buildRelativePath(partitionValues, fileName)
         val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
         writtenFilePaths.add(filePath)
-        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        val partitionId = partitioner?.getPartitionId()
         return DuckDbArrowStreamFileWriter(
                 fileSystem,
                 filePath,
@@ -393,7 +392,7 @@ class DucklakePageSink(
                 Optional.empty(),
                 Optional.empty())
 
-        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        val partitionId = partitioner?.getPartitionId()
         return ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns, handle.allCatalogColumns)
     }
 
@@ -405,7 +404,7 @@ class DucklakePageSink(
         val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
         writtenFilePaths.add(filePath)
 
-        val partitionId = if (partitioner != null) OptionalLong.of(partitioner.getPartitionId()) else OptionalLong.empty()
+        val partitionId = partitioner?.getPartitionId()
 
         // Pick the writer impl based on the session-driven duckdb_writer_mode on the handle.
         if (DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM.equals(handle.duckDbWriterMode, ignoreCase = true)) {

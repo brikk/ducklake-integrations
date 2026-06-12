@@ -42,7 +42,6 @@ import io.trino.spi.type.VarcharType
  * float→double widening, timestamp-precision compatibility, decimal
  * precision/scale fit, exact-match otherwise).
  *
- *
  * Operates on Trino's [Type] hierarchy on both sides: the source side
  * is derived from the parquet schema by Trino's existing
  * [io.trino.parquet.ParquetTypeUtils] machinery, and the target side

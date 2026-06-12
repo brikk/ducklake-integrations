@@ -606,8 +606,8 @@ class DucklakeSplitManager @Inject constructor(
 
         /**
          * Reject snapshots that reference delete files in formats this connector cannot read.
-         * Today {@code parquet} positional delete files and {@code puffin} deletion-vector
-         * files (DuckLake's Roaring-bitmap format, written when {@code write_deletion_vectors}
+         * Today `parquet` positional delete files and `puffin` deletion-vector
+         * files (DuckLake's Roaring-bitmap format, written when `write_deletion_vectors`
          * is enabled) are both supported. Anything else fails the query rather than silently
          * skipping deletes — a missed delete returns rows that should not be visible.
          */
@@ -632,9 +632,9 @@ class DucklakeSplitManager @Inject constructor(
             DucklakePartitionValueParser.parseIdentity(type, value)
 
         /**
-         * Build the per-file {@code columnId -> partitionValue} map for IDENTITY-transform
+         * Build the per-file `columnId -> partitionValue` map for IDENTITY-transform
          * partition fields. Skip non-identity transforms — their stored value is derived
-         * (e.g. {@code year(date)} = 2024) and can't be projected back as the original
+         * (e.g. `year(date)` = 2024) and can't be projected back as the original
          * column. The page source provider uses this map to constant-fill partition
          * columns that don't appear in the parquet body.
          */

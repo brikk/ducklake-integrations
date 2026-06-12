@@ -31,13 +31,13 @@ import io.trino.spi.type.VarcharType.VARCHAR
 
 /**
  * Parses the string-encoded partition values stored in
- * {@code ducklake_file_partition_value.partition_value} into Trino native values.
+ * `ducklake_file_partition_value.partition_value` into Trino native values.
  * Shared by the split manager's partition-pruning path (compares the parsed value
  * against the query's pushdown domain) and the page source provider's
  * partition-column projection (constants the parsed value across the file).
  *
- * <p>Encoding contract is the DuckLake 1.0 calendar form for temporals
- * (handled by {@code DucklakeTemporalPartitionMatcher}); this helper covers
+ * Encoding contract is the DuckLake 1.0 calendar form for temporals
+ * (handled by `DucklakeTemporalPartitionMatcher`); this helper covers
  * identity-transform value parsing only.
  */
 object DucklakePartitionValueParser

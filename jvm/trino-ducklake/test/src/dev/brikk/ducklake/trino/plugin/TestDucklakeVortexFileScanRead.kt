@@ -62,7 +62,7 @@ class TestDucklakeVortexFileScanRead {
                 DucklakeColumnHandle(1L, "id", INTEGER, false),
                 DucklakeColumnHandle(2L, "name", VARCHAR, false))
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                DuckDbAttachTarget.FileScan(file.toString(), "read_vortex", "vortex", Optional.empty()),
+                DuckDbAttachTarget.FileScan(file.toString(), "read_vortex", "vortex", null),
                 projection,
                 TupleDomain.all<DucklakeColumnHandle>())
 

@@ -46,7 +46,7 @@ class TestDuckDbFilePageSource {
                 emptyList<Type>(),
                 TupleDomain.all(),
                 emptyList(),
-                Optional.empty())
+                null)
 
         assertThatThrownBy { pageSource.getNextSourcePage() }
                 .isInstanceOfSatisfying(TrinoException::class.java) { e ->

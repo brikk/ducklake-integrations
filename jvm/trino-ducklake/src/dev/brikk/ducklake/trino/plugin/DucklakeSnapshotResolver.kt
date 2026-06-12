@@ -29,36 +29,36 @@ import java.util.OptionalLong
  * query override > session properties > catalog defaults > current snapshot.
  */
 open class DucklakeSnapshotResolver(
-        catalog: DucklakeCatalog?,
-        catalogDefaultSnapshotId: OptionalLong?,
-        catalogDefaultSnapshotTimestamp: Optional<Instant>?) {
-    private val catalog: DucklakeCatalog = requireNotNull(catalog) { "catalog is null" }
-    private val catalogDefaultSnapshotId: OptionalLong = requireNotNull(catalogDefaultSnapshotId) { "catalogDefaultSnapshotId is null" }
-    private val catalogDefaultSnapshotTimestamp: Optional<Instant> = requireNotNull(catalogDefaultSnapshotTimestamp) { "catalogDefaultSnapshotTimestamp is null" }
+        catalog: DucklakeCatalog,
+        private val catalogDefaultSnapshotId: Long?,
+        private val catalogDefaultSnapshotTimestamp: Instant?) {
+    private val catalog: DucklakeCatalog = catalog
 
     init {
-        if (this.catalogDefaultSnapshotId.isPresent && this.catalogDefaultSnapshotTimestamp.isPresent) {
+        if (this.catalogDefaultSnapshotId != null && this.catalogDefaultSnapshotTimestamp != null) {
             throw TrinoException(INVALID_ARGUMENTS, "Catalog snapshot defaults cannot set both snapshot ID and snapshot timestamp")
         }
     }
 
     @Inject
     constructor(catalog: DucklakeCatalog, config: DucklakeConfig)
-            : this(catalog, config.getDefaultSnapshotId(), config.getDefaultSnapshotTimestamp())
+            : this(catalog,
+                    config.getDefaultSnapshotId().let { if (it.isPresent) it.asLong else null },
+                    config.getDefaultSnapshotTimestamp().orElse(null))
 
     fun resolveSnapshotId(session: ConnectorSession): Long {
-        return resolveSnapshotId(session, OptionalLong.empty(), Optional.empty())
+        return resolveSnapshotId(session, null, null)
     }
 
-    fun resolveSnapshotId(session: ConnectorSession, querySnapshotId: OptionalLong, querySnapshotTimestamp: Optional<Instant>): Long {
-        if (querySnapshotId.isPresent && querySnapshotTimestamp.isPresent) {
+    fun resolveSnapshotId(session: ConnectorSession, querySnapshotId: Long?, querySnapshotTimestamp: Instant?): Long {
+        if (querySnapshotId != null && querySnapshotTimestamp != null) {
             throw TrinoException(INVALID_ARGUMENTS, "Query snapshot reference cannot set both snapshot ID and snapshot timestamp")
         }
-        if (querySnapshotId.isPresent) {
-            return resolveSnapshotIdById(querySnapshotId.asLong)
+        if (querySnapshotId != null) {
+            return resolveSnapshotIdById(querySnapshotId)
         }
-        if (querySnapshotTimestamp.isPresent) {
-            return resolveSnapshotIdAtOrBefore(querySnapshotTimestamp.get())
+        if (querySnapshotTimestamp != null) {
+            return resolveSnapshotIdAtOrBefore(querySnapshotTimestamp)
         }
 
         val sessionSnapshotId = DucklakeSessionProperties.getReadSnapshotId(session)
@@ -73,11 +73,11 @@ open class DucklakeSnapshotResolver(
             return resolveSnapshotIdAtOrBefore(sessionSnapshotTimestamp.get())
         }
 
-        if (catalogDefaultSnapshotId.isPresent) {
-            return resolveSnapshotIdById(catalogDefaultSnapshotId.asLong)
+        if (catalogDefaultSnapshotId != null) {
+            return resolveSnapshotIdById(catalogDefaultSnapshotId)
         }
-        if (catalogDefaultSnapshotTimestamp.isPresent) {
-            return resolveSnapshotIdAtOrBefore(catalogDefaultSnapshotTimestamp.get())
+        if (catalogDefaultSnapshotTimestamp != null) {
+            return resolveSnapshotIdAtOrBefore(catalogDefaultSnapshotTimestamp)
         }
 
         return catalog.currentSnapshotId

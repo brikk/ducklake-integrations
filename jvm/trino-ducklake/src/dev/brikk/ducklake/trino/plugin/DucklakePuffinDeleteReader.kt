@@ -21,16 +21,16 @@ import java.nio.ByteOrder
 import java.util.zip.CRC32
 
 /**
- * Reader for DuckLake's {@code .puffin} deletion-vector files. Despite the
- * extension and {@code format='puffin'} metadata column, the file is NOT a
+ * Reader for DuckLake's `.puffin` deletion-vector files. Despite the
+ * extension and `format='puffin'` metadata column, the file is NOT a
  * standard Iceberg Puffin file — DuckLake writes only the
- * <em>deletion-vector blob bytes</em> to disk, with no surrounding PFA1
+ * *deletion-vector blob bytes* to disk, with no surrounding PFA1
  * magic, JSON footer, or blob framing. Mirror of upstream
- * {@code DuckLakeDeleteFilter::ScanDeletionVectorFile} →
- * {@code DuckLakeDeletionVectorData::FromBlob} in
- * {@code vendor/ducklake/src/storage/ducklake_deletion_vector.cpp}.
+ * `DuckLakeDeleteFilter::ScanDeletionVectorFile` →
+ * `DuckLakeDeletionVectorData::FromBlob` in
+ * `vendor/ducklake/src/storage/ducklake_deletion_vector.cpp`.
  *
- * <p>Blob layout (all length fields are 4 bytes):
+ * Blob layout (all length fields are 4 bytes):
  * <pre>
  *   bytes 0..3        vector_size              uint32 BIG-endian — length of (magic + bitmap_count + bitmaps),
  *                                              excluding vector_size itself and the trailing CRC
@@ -43,7 +43,7 @@ import java.util.zip.CRC32
  *   bytes (end-3)..end CRC32                   uint32 BIG-endian — checksum over magic+bitmap_count+bitmaps
  * </pre>
  *
- * <p>Row positions are reconstructed as {@code (high_bits << 32) | (low_bits & 0xFFFFFFFFL)}.
+ * Row positions are reconstructed as `(high_bits << 32) | (low_bits & 0xFFFFFFFFL)`.
  */
 object DucklakePuffinDeleteReader {
     private val DELETION_VECTOR_MAGIC = byteArrayOf(0xD1.toByte(), 0xD3.toByte(), 0x39.toByte(), 0x64.toByte())

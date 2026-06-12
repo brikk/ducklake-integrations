@@ -210,10 +210,10 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
                     // extension/scanFunction are connector-controlled constants (not user input).
                     stmt.execute("INSTALL ${target.extension}")
                     stmt.execute("LOAD ${target.extension}")
-                    if (target.s3Config.isPresent) {
+                    target.s3Config?.let { s3 ->
                         stmt.execute("INSTALL httpfs")
                         stmt.execute("LOAD httpfs")
-                        stmt.execute(target.s3Config.get().renderCreateSecretSql())
+                        stmt.execute(s3.renderCreateSecretSql())
                     }
                     "${target.scanFunction}('${target.path.replace("'", "''")}'${target.extraArgsSql})"
                 }
@@ -253,11 +253,8 @@ internal constructor(private val tuning: DuckDbTuning, private val parityExtensi
          * on the executor side reflects the JVM system default rather than Trino's
          * session zone.
          */
-        private fun applySessionTimeZone(stmt: Statement, zone: java.util.Optional<String>) {
-            if (zone.isEmpty) {
-                return
-            }
-            val z = zone.get()
+        private fun applySessionTimeZone(stmt: Statement, zone: String?) {
+            val z = zone ?: return
             // Single-quote escape: defence in depth — the normaliser only emits values
             // from a fixed grammar (IANA zone names, Etc/GMT±N, the original Trino
             // string for fractional offsets), none of which contain quotes, but the

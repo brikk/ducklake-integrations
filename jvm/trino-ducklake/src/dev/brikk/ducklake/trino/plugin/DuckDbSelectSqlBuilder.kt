@@ -14,20 +14,20 @@
 package dev.brikk.ducklake.trino.plugin
 
 /**
- * Builds the {@code SELECT ... FROM ... WHERE ...} statement the executors send
- * to DuckDB. Shared between {@link InProcessDuckDbExecutor} and
- * {@link QuackDuckDbExecutor} so both engines emit the same SQL — and so the
+ * Builds the `SELECT ... FROM ... WHERE ...` statement the executors send
+ * to DuckDB. Shared between [InProcessDuckDbExecutor] and
+ * [QuackDuckDbExecutor] so both engines emit the same SQL — and so the
  * generated SQL is unit-testable without spinning up a DuckDB connection.
  *
- * <p>WHERE is the conjunction of two sources:
- * <ul>
- *   <li>{@link DuckDbWhereClauseTranslator} on the request's
- *       {@code pushedPredicate} (range / equality predicates from
- *       {@code TupleDomain});</li>
- *   <li>each string in {@code pushedExpressions} — function-shape predicates
- *       already translated by {@link DuckDbExpressionTranslator} at plan time
- *       (e.g. {@code trino_lower("name") = 'apple'}).</li>
- * </ul>
+ * WHERE is the conjunction of two sources:
+ *
+ *   - [DuckDbWhereClauseTranslator] on the request's
+ *       `pushedPredicate` (range / equality predicates from
+ *       `TupleDomain`);
+ *   - each string in `pushedExpressions` — function-shape predicates
+ *       already translated by [DuckDbExpressionTranslator] at plan time
+ *       (e.g. `trino_lower("name") = 'apple'`).
+ *
  */
 object DuckDbSelectSqlBuilder {
     fun buildSelectSql(

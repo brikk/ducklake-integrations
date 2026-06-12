@@ -56,19 +56,19 @@ import java.util.Optional
 import java.util.OptionalLong
 
 /**
- * Implements {@code CALL <catalog>.system.add_files(...)} — registers
+ * Implements `CALL <catalog>.system.add_files(...)` — registers
  * pre-existing parquet files as DuckLake data files of a table without rewriting.
- * Mirrors upstream's {@code ducklake_add_data_files} table function.
+ * Mirrors upstream's `ducklake_add_data_files` table function.
  *
- * <p>v1 contract:
- * <ul>
- *   <li>Each entry in {@code FILES} is a concrete file path (no glob expansion yet).</li>
- *   <li>Parquet column names must match the table column names case-insensitively;
- *       reordering is permitted.</li>
- *   <li>Hive partitioning supports the IDENTITY transform only (path segments of the
- *       form {@code key=value/}). Files for tables with transform-based partition
- *       specs (year / month / etc.) are out of scope for v1.</li>
- * </ul>
+ * v1 contract:
+ *
+ *   - Each entry in `FILES` is a concrete file path (no glob expansion yet).
+ *   - Parquet column names must match the table column names case-insensitively;
+ *       reordering is permitted.
+ *   - Hive partitioning supports the IDENTITY transform only (path segments of the
+ *       form `key=value/`). Files for tables with transform-based partition
+ *       specs (year / month / etc.) are out of scope for v1.
+ *
  */
 class DucklakeAddFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
@@ -366,7 +366,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         // reads AWS_* process env instead (HANDOFF O1), so the httpfs + secret setup the config
         // triggers is pure overhead (and a concurrent-CREATE race on the Quack engine).
         val target = DuckDbAttachTarget.FileScan(
-                url, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE, Optional.empty())
+                url, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE, null)
         // Empty projection → `SELECT 1 FROM __lance_scan(...)`, one row per dataset row.
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
                 target, emptyList<DucklakeColumnHandle>(), TupleDomain.all<DucklakeColumnHandle>())
@@ -468,13 +468,13 @@ class DucklakeAddFilesProcedure @Inject constructor(
          *   [ Thrift FileMetaData ][ 4 bytes LE footer length ][ 4 bytes "PAR1" magic ]
          * </pre>
          *
-         * <p>This value is what DuckLake stores in {@code ducklake_data_file.footer_size}
-         * (matches the existing {@link FooterPrefetchingParquetDataSource} contract:
+         * This value is what DuckLake stores in `ducklake_data_file.footer_size`
+         * (matches the existing [FooterPrefetchingParquetDataSource] contract:
          * footer_size is the Thrift FileMetaData length only, excluding the 8-byte
-         * post-script). The {@code tail} must be a genuine file-end slice — the post-script
+         * post-script). The `tail` must be a genuine file-end slice — the post-script
          * is its last 8 bytes.
          *
-         * <p>Best-effort: any short slice, non-magic trailer, or parse error returns 0, in
+         * Best-effort: any short slice, non-magic trailer, or parse error returns 0, in
          * which case the read path falls back to its default blind tail read — i.e.
          * the previous behavior. Correctness is unaffected.
          */
@@ -505,7 +505,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         }
 
         /**
-         * Parse {@code key=value} segments out of a file path (hive-style layout).
+         * Parse `key=value` segments out of a file path (hive-style layout).
          * URL-decoded values are returned as their raw text — upstream casts to the
          * partition column's type at read time; we forward strings, matching today's
          * connector convention.
@@ -552,9 +552,9 @@ class DucklakeAddFilesProcedure @Inject constructor(
         }
 
         /**
-         * Adapter from Trino's {@link ParquetMetadata} to the legacy thrift
-         * {@link org.apache.parquet.format.FileMetaData} consumed by
-         * {@link DucklakeStatsExtractor}. Trino's view exposes the per-row-group block
+         * Adapter from Trino's [ParquetMetadata] to the legacy thrift
+         * [org.apache.parquet.format.FileMetaData] consumed by
+         * [DucklakeStatsExtractor]. Trino's view exposes the per-row-group block
          * metadata but the existing extractor needs the thrift form; this rebuilds the
          * pieces the extractor actually reads (row_groups[].columns[].meta_data with
          * statistics) and leaves unused fields default-initialized.

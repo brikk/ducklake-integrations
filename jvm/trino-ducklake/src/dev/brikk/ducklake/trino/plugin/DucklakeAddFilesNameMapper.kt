@@ -53,22 +53,22 @@ import java.util.Optional
 /**
  * Recursively matches a parquet file's schema against a DuckLake table's field
  * tree by case-insensitive name, type-checks each leaf, and emits a
- * {@link DucklakeNameMap} that records the source-name → target-field-id
- * mapping for the file. Mirrors upstream's {@code DuckLakeFileProcessor::MapColumns}
- * and {@code MapColumn} in {@code ducklake_add_data_files.cpp}.
+ * [DucklakeNameMap] that records the source-name → target-field-id
+ * mapping for the file. Mirrors upstream's `DuckLakeFileProcessor::MapColumns`
+ * and `MapColumn` in `ducklake_add_data_files.cpp`.
  *
- * <p>Modes:
- * <ul>
- *   <li>{@code allowMissing} — table columns absent from the file are allowed
+ * Modes:
+ *
+ *   - `allowMissing` — table columns absent from the file are allowed
  *       (NULL at read time) instead of throwing.
- *   <li>{@code ignoreExtraColumns} — parquet columns absent from the table
+ *   - `ignoreExtraColumns` — parquet columns absent from the table
  *       are silently skipped instead of throwing.
- *   <li>{@code hivePartitionValues} — pre-parsed {@code key=value} pairs from
+ *   - `hivePartitionValues` — pre-parsed `key=value` pairs from
  *       the file path. When the table has a column matching a key, the column
- *       is treated as a hive-partition column: it gets a {@code is_partition=true}
+ *       is treated as a hive-partition column: it gets a `is_partition=true`
  *       name-map entry and a partition value record, and need not exist in the
  *       parquet schema.
- * </ul>
+ *
  */
 internal class DucklakeAddFilesNameMapper(
         private val typeConverter: DucklakeTypeConverter,
@@ -92,12 +92,12 @@ internal class DucklakeAddFilesNameMapper(
     private val leafCounter: IntArray = intArrayOf(0)
 
     /**
-     * Result bundle returned from {@link #map}. {@code leafStatsTargets} lists
+     * Result bundle returned from [map]. `leafStatsTargets` lists
      * one entry per matched parquet leaf (in file leaf order) for
-     * {@link DucklakeStatsExtractor} to consume; skipped or hive-overridden
+     * [DucklakeStatsExtractor] to consume; skipped or hive-overridden
      * parquet leaves contribute no entry but still advance the underlying
-     * parquet column index so {@code parquetColumnIndex} on later targets
-     * stays aligned with {@code RowGroup.columns}.
+     * parquet column index so `parquetColumnIndex` on later targets
+     * stays aligned with `RowGroup.columns`.
      */
     data class Result(
             val nameMap: DucklakeNameMap,
@@ -107,7 +107,7 @@ internal class DucklakeAddFilesNameMapper(
     )
 
     /**
-     * One top-level parquet column matched to a DuckLake field. {@code parquetIndex}
+     * One top-level parquet column matched to a DuckLake field. `parquetIndex`
      * is the column's position in the parquet root schema (in file order), used to
      * align the existing stats extractor's positional column lookup.
      */
@@ -384,7 +384,7 @@ internal class DucklakeAddFilesNameMapper(
 
     /**
      * Best-effort parquet primitive → Trino type. Mirrors upstream's
-     * {@code DuckLakeParquetTypeChecker::DeriveLogicalType}. Errors raised here become
+     * `DuckLakeParquetTypeChecker::DeriveLogicalType`. Errors raised here become
      * "Failed to map column..." messages at the call site.
      */
     private fun parquetPrimitiveToTrino(type: PrimitiveType, parquetName: String): Type {
@@ -461,7 +461,7 @@ internal class DucklakeAddFilesNameMapper(
     companion object {
         /**
          * Number of primitive leaves in a parquet schema subtree — i.e., the number
-         * of {@code RowGroup.columns} entries this subtree contributes. Used to
+         * of `RowGroup.columns` entries this subtree contributes. Used to
          * advance the leaf-index counter past skipped or hive-overridden parquet
          * columns so subsequent stats targets stay aligned with the row group.
          */

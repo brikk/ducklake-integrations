@@ -22,7 +22,7 @@ import java.io.IOException
  * One open data-file writer for the Ducklake page sink. Each implementation owns its
  * underlying file-format machinery (ParquetWriter / DuckDB ATTACH+Appender / future
  * formats) and is responsible for producing a self-describing
- * {@link DucklakeWriteFragment} on close.
+ * [DucklakeWriteFragment] on close.
  */
 interface DucklakeFileWriter
 {
@@ -40,7 +40,7 @@ interface DucklakeFileWriter
 
     /**
      * Bytes currently retained in memory by this writer (buffered row groups, column
-     * writers, etc.). Surfaced to Trino via {@link ConnectorPageSink#getMemoryUsage}
+     * writers, etc.). Surfaced to Trino via [ConnectorPageSink.getMemoryUsage]
      * so the engine can account for sink-side heap pressure. Defaults to 0 for
      * writers that flush per-page.
      */

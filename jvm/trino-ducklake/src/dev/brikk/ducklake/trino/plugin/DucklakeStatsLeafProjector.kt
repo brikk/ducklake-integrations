@@ -22,16 +22,16 @@ import io.trino.spi.type.Type
 
 /**
  * Builds the flat list of parquet-leaf stats targets that
- * {@link DucklakeStatsExtractor} consumes, for the write path that funnels
+ * [DucklakeStatsExtractor] consumes, for the write path that funnels
  * through Trino's parquet writer (INSERT / CTAS / MERGE).
  *
- * <p>The walk mirrors Trino's parquet writer: depth-first over each
+ * The walk mirrors Trino's parquet writer: depth-first over each
  * top-level column's Trino type, descending STRUCT fields in declaration
  * order, ARRAY element, then MAP key/value. Trino's
- * {@code ParquetSchemaConverter} produces leaves in exactly this order,
- * which is what {@code RowGroup.columns} indexes against.
+ * `ParquetSchemaConverter` produces leaves in exactly this order,
+ * which is what `RowGroup.columns` indexes against.
  *
- * <p>Each emitted leaf carries the DuckLake catalog field_id at that path
+ * Each emitted leaf carries the DuckLake catalog field_id at that path
  * (top-level columnId for flat columns; the child column_id from the
  * catalog tree for nested leaves).
  */

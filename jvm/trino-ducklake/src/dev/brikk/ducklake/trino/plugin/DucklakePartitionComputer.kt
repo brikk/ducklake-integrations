@@ -65,14 +65,14 @@ object DucklakePartitionComputer {
             position: Int,
             transform: DucklakePartitionTransform,
             encoding: DucklakeTemporalPartitionEncoding): String? =
-            computePartitionValue(columnType, block, position, transform, OptionalInt.empty(), encoding)
+            computePartitionValue(columnType, block, position, transform, null, encoding)
 
     fun computePartitionValue(
             columnType: Type,
             block: Block,
             position: Int,
             transform: DucklakePartitionTransform,
-            arity: OptionalInt,
+            arity: Int?,
             encoding: DucklakeTemporalPartitionEncoding): String? {
         if (block.isNull(position)) {
             return null
@@ -83,10 +83,8 @@ object DucklakePartitionComputer {
         }
 
         if (transform.isBucket()) {
-            if (arity.isEmpty) {
-                throw IllegalArgumentException("BUCKET transform requires an arity")
-            }
-            return computeBucket(columnType, block, position, arity.getAsInt()).toString()
+            val n = arity ?: throw IllegalArgumentException("BUCKET transform requires an arity")
+            return computeBucket(columnType, block, position, n).toString()
         }
 
         return computeTemporalValue(columnType, block, position, transform, encoding)

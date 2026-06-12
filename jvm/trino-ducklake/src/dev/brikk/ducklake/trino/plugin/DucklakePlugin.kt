@@ -20,7 +20,6 @@ import io.trino.spi.connector.ConnectorFactory
 /**
  * Trino plugin for Ducklake lakehouse format.
  *
- *
  * Ducklake uses SQL-based metadata catalog (28 tables) and Parquet data files.
  * Supports snapshot-based MVCC, predicate pushdown, and schema evolution.
  */

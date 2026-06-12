@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import java.util.Locale
-import java.util.Optional
 
 enum class DucklakeMetadataTableType(private val suffix: String) {
     FILES("files"),
@@ -27,16 +26,16 @@ enum class DucklakeMetadataTableType(private val suffix: String) {
     }
 
     companion object {
-        fun fromSuffix(suffix: String?): Optional<DucklakeMetadataTableType> {
+        fun fromSuffix(suffix: String?): DucklakeMetadataTableType? {
             val normalized = requireNotNull(suffix) { "suffix is null" }
                     .lowercase(Locale.ENGLISH)
 
             for (value in entries) {
                 if (value.suffix == normalized) {
-                    return Optional.of(value)
+                    return value
                 }
             }
-            return Optional.empty()
+            return null
         }
     }
 }

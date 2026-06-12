@@ -24,7 +24,6 @@ import io.trino.spi.type.Type
 import org.apache.arrow.vector.ipc.ArrowReader
 import java.io.IOException
 import java.sql.SQLException
-import java.util.Optional
 
 /**
  * Reads rows from a single DuckDB-format data file via a configurable
@@ -34,13 +33,11 @@ import java.util.Optional
  * this page source iterates batch-by-batch and converts via
  * [DucklakeArrowToPageConverter].
  *
- *
  * The [DuckDbAttachTarget] (local materialized path vs httpfs S3 URL)
  * is resolved upstream by the page source provider's read-mode logic and
  * passed through to the executor — different executors interpret the target
  * differently (in-process opens the local file directly or loads httpfs;
  * Quack forwards the path to the server-side ATTACH).
- *
  *
  * Predicates flow as the file-stats / dynamic-filter intersection from the
  * split manager plus best-effort `WHERE` translation in
@@ -55,7 +52,7 @@ class DuckDbFilePageSource(
         columnTypes: List<Type>,
         effectivePredicate: TupleDomain<DucklakeColumnHandle>,
         pushedExpressions: List<String>,
-        duckDbTimeZone: Optional<String>) : ConnectorPageSource {
+        duckDbTimeZone: String?) : ConnectorPageSource {
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
             columns.toList(),

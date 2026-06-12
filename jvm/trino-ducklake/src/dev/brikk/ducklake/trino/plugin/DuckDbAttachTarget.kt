@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import java.nio.file.Path
-import java.util.Optional
 
 /**
  * What a [DuckDbFilePageSource] reads inside its per-split DuckDB instance.
@@ -58,6 +57,6 @@ sealed interface DuckDbAttachTarget {
             @get:JvmName("path") val path: String,
             @get:JvmName("scanFunction") val scanFunction: String,
             @get:JvmName("extension") val extension: String,
-            @get:JvmName("s3Config") val s3Config: Optional<DuckDbS3Config>,
+            @get:JvmName("s3Config") val s3Config: DuckDbS3Config?,
             @get:JvmName("extraArgsSql") val extraArgsSql: String = "") : DuckDbAttachTarget
 }

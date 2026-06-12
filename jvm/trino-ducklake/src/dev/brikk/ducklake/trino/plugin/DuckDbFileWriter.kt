@@ -62,25 +62,22 @@ import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.Optional
-import java.util.OptionalLong
 
 /**
  * Phase 1 DuckDB-format writer. Writes one DuckDB database file per
- * {@link DucklakeFileWriter} via the JDBC {@link DuckDBAppender} API:
+ * [DucklakeFileWriter] via the JDBC [DuckDBAppender] API:
  *
- * <ol>
- *   <li>Open an in-memory DuckDB session, {@code ATTACH} a fresh local temp file
- *       READ_WRITE, and {@code CREATE TABLE} matching the Trino schema.
- *   <li>Per page, walk the {@link Block}s and feed each row through the appender
- *       (one {@code beginRow}/{@code endRow} per Trino position).
- *   <li>On finish: close the appender and connection, then upload the local file to
- *       the destination via {@link TrinoFileSystem} so the result lands wherever
+ *   - Open an in-memory DuckDB session, `ATTACH` a fresh local temp file
+ *       READ_WRITE, and `CREATE TABLE` matching the Trino schema.
+ *   - Per page, walk the [Block]s and feed each row through the appender
+ *       (one `beginRow`/`endRow` per Trino position).
+ *   - On finish: close the appender and connection, then upload the local file to
+ *       the destination via [TrinoFileSystem] so the result lands wherever
  *       parquet would have. The local temp file is deleted after upload.
- * </ol>
  *
  * Phase 1 supports primitive scalar types only. Nested types and high-precision
- * timestamps fall through to {@link TrinoException} with {@link
- * io.trino.spi.StandardErrorCode#NOT_SUPPORTED}.
+ * timestamps fall through to [TrinoException] with
+ * [io.trino.spi.StandardErrorCode.NOT_SUPPORTED].
  */
 internal class DuckDbFileWriter
 @Throws(IOException::class)
@@ -89,7 +86,7 @@ constructor(
     private val remoteLocation: Location,
     private val relativePath: String,
     partitionValues: Map<Int, String?>,
-    private val partitionId: OptionalLong,
+    private val partitionId: Long?,
     columns: List<DucklakeColumnHandle>,
     localTempDir: Path,
 ) : DucklakeFileWriter {
@@ -333,15 +330,15 @@ constructor(
                 rowCount,
                 columnStats,
                 partitionValues,
-                if (partitionId.isPresent) partitionId.asLong else null)
+                partitionId)
     }
 
     /**
      * Run a single aggregate query against the freshly-written table to collect
      * per-column min/max/value_count, then derive null_count from the total row
      * count. The DuckLake DuckDB extension's introspection paths
-     * (e.g. {@code duckdb_tables()}, {@code TransformGlobalStats}) crash on data
-     * file rows whose {@code ducklake_column_stats} entries are missing or NULL,
+     * (e.g. `duckdb_tables()`, `TransformGlobalStats`) crash on data
+     * file rows whose `ducklake_column_stats` entries are missing or NULL,
      * so we always emit a row per column — even if no min/max can be computed
      * (e.g. for VARBINARY) — to keep cross-engine introspection working.
      */
@@ -401,8 +398,8 @@ constructor(
                     0L, // column_size_bytes — not readily available without per-block scan; safe at 0
                     valueCount,
                     nullCount,
-                    min.orElse(null),
-                    max.orElse(null),
+                    min,
+                    max,
                     false))
         }
         return result
@@ -473,7 +470,7 @@ constructor(
         /**
          * Format a JDBC-returned stat value into the DuckLake-string form the parquet
          * writer uses, so the catalog stays consistent across formats. See
-         * {@link DucklakeStatsExtractor#convertStatValue}.
+         * [DucklakeStatsExtractor.convertStatValue].
          */
     }
 }

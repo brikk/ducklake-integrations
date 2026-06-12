@@ -23,7 +23,6 @@ import org.apache.parquet.schema.Types
 /**
  * Builds a Parquet [MessageType] with `field_id` annotations from DuckLake column IDs.
  *
- *
  * DuckLake's spec states that `ducklake_column.column_id` corresponds to the Parquet
  * `field_id`. DuckDB uses these IDs for column mapping when reading Parquet files.
  * Trino's standard [io.trino.parquet.writer.ParquetSchemaConverter] does not set field IDs,

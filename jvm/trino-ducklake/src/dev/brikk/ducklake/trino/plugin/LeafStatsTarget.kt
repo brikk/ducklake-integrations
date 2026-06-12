@@ -20,7 +20,6 @@ import io.trino.spi.type.Type
  * the chunk maps to. Consumed by [DucklakeStatsExtractor] to emit
  * one `ducklake_file_column_stats` row per leaf.
  *
- *
  * `parquetColumnIndex` is the leaf's position in the file's
  * `RowGroup.columns` list — depth-first leaf order in the parquet
  * schema. For Trino-written files it advances 0, 1, 2 in step with the

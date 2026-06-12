@@ -34,7 +34,6 @@ import java.util.concurrent.ConcurrentMap
  * open them. Files are keyed by `(remotePath, fileSize)`; if the remote file is
  * rewritten with a different size at the same path the cache will re-fetch.
  *
- *
  * Phase 1 semantics — brutal and basic:
  *
  *  * One copy per key under `${java.io.tmpdir}/ducklake-read/`.

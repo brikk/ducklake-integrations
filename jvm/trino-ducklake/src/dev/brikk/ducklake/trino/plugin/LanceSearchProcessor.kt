@@ -26,7 +26,6 @@ import io.trino.spi.function.table.TableFunctionSplitProcessor
 import io.trino.spi.predicate.TupleDomain
 import java.io.IOException
 import java.sql.SQLException
-import java.util.Optional
 
 /**
  * Executes one [LanceSearchSplit] of any lance search table function: runs the matching DuckDB
@@ -90,7 +89,7 @@ internal class LanceSearchSplitProcessor(
                         datasetPath,
                         scanFunctionFor(handle),
                         DucklakeSessionProperties.FORMAT_LANCE,
-                        Optional.empty(),
+                        null,
                         renderExtraArgsSql(handle)),
                 handle.outputColumns,
                 TupleDomain.all())

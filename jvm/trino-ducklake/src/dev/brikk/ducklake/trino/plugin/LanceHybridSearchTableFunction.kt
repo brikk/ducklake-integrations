@@ -36,11 +36,11 @@ import io.trino.spi.type.VarcharType.VARCHAR
  * search over a DuckLake table whose data files are lance dataset directories, executed by the
  * DuckDB `lance` extension's `lance_hybrid_search` table function (Route A, Phase A3).
  *
- * <p>Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `VECTOR_COLUMN` + `QUERY_VEC` (the ANN half),
+ * Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `VECTOR_COLUMN` + `QUERY_VEC` (the ANN half),
  * `TEXT_COLUMN` + `QUERY` (the FTS half), `K` (default 10), `ALPHA` (optional vector-vs-text
  * weight in [0,1]; omitted → the extension's default blend), `PREFILTER` (default false).
  *
- * <p>Returns the table's columns plus `_distance` REAL, `_score` REAL (NULL for rows with no
+ * Returns the table's columns plus `_distance` REAL, `_score` REAL (NULL for rows with no
  * text match), and `_hybrid_score` REAL, descending by hybrid score. Fragments are searched
  * independently — wrap with `ORDER BY _hybrid_score DESC LIMIT k` for exact global top-k. v1
  * scope (local paths, all-lance, no deletes) is enforced by [AbstractLanceSearchTableFunction].

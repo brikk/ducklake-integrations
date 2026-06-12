@@ -93,7 +93,7 @@ open class DucklakePagePartitioner(
                     sourceBlock,
                     position,
                     mapping.field.transform,
-                    mapping.field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
+                    mapping.field.arity,
                     encoding)
             values[mapping.field.partitionKeyIndex] = value
         }
@@ -131,7 +131,7 @@ open class DucklakePagePartitioner(
                         mapping.sourceColumn.columnType,
                         sourceBlock,
                         mapping.field.transform,
-                        mapping.field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty())
+                        mapping.field.arity)
             }
         }
         @Suppress("UNCHECKED_CAST")
@@ -142,7 +142,7 @@ open class DucklakePagePartitioner(
             sourceType: Type,
             sourceBlock: Block,
             transform: DucklakePartitionTransform,
-            arity: OptionalInt): Block {
+            arity: Int?): Block {
         val builder = INTEGER.createBlockBuilder(null, sourceBlock.positionCount)
         for (position in 0 until sourceBlock.positionCount) {
             if (sourceBlock.isNull(position)) {

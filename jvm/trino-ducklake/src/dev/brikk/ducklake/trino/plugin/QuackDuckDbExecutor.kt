@@ -33,23 +33,23 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Out-of-process DuckDB executor reached via the Quack RPC protocol. The JDBC
- * client is still {@code duckdb_jdbc}: locally we install + load the quack
- * extension and ATTACH the remote server as a catalog. The {@code .db} file is
- * ATTACHed <em>server-side</em> via {@code quack_query_by_name(engine, …)},
+ * client is still `duckdb_jdbc`: locally we install + load the quack
+ * extension and ATTACH the remote server as a catalog. The `.db` file is
+ * ATTACHed *server-side* via `quack_query_by_name(engine, …)`,
  * because client-side catalog scope only sees the server's default catalog;
  * server-side ATTACHes are sibling catalogs invisible across the RPC seam.
  * Both ATTACH and SELECT therefore go through the wrapper.
  *
- * <p>The same Arrow stream surface as the in-process executor:
- * {@code DuckDBResultSet.arrowExportStream(...)} on the local driver still
+ * The same Arrow stream surface as the in-process executor:
+ * `DuckDBResultSet.arrowExportStream(...)` on the local driver still
  * exposes server-shipped rows as Arrow vectors, because the wrapper SQL is
- * locally one {@code TableFunction} call and the local DuckDB materialises
+ * locally one `TableFunction` call and the local DuckDB materialises
  * the result through its standard vector path.
  *
- * <p>ATTACH naming: server-side state is shared across all sessions on the
+ * ATTACH naming: server-side state is shared across all sessions on the
  * Quack server (DuckDB catalogs are instance-scoped). The alias is derived
  * from the absolute path so concurrent clients converge on the same name.
- * {@code IF NOT EXISTS} makes the ATTACH idempotent across both repeat
+ * `IF NOT EXISTS` makes the ATTACH idempotent across both repeat
  * invocations from the same client and competing clients that race to first.
  */
 internal class QuackDuckDbExecutor(
@@ -64,7 +64,7 @@ internal class QuackDuckDbExecutor(
      * Path is the SERVER-SIDE filesystem path inside the Quack DuckDB process,
      * where the trino_parity.duckdb_extension binary has been baked into the
      * container image or mounted via volume. The Quack server must be started
-     * with allow_unsigned_extensions enabled (e.g. {@code duckdb -unsigned}
+     * with allow_unsigned_extensions enabled (e.g. `duckdb -unsigned`
      * in the entrypoint).
      */
     constructor(host: String, port: Int, token: String, parityExtensionPath: String) :
@@ -169,11 +169,11 @@ internal class QuackDuckDbExecutor(
 
     /**
      * SQL the Quack server must run BEFORE the ATTACH to make the target
-     * reachable: nothing for {@link DuckDbAttachTarget.LocalPath} (the file is
+     * reachable: nothing for [DuckDbAttachTarget.LocalPath] (the file is
      * accessible via the server's filesystem mount), but for
-     * {@link DuckDbAttachTarget.HttpfsS3} we ship the {@code INSTALL httpfs} /
-     * {@code LOAD httpfs} / {@code CREATE SECRET IF NOT EXISTS (TYPE S3, ...)}
-     * sequence so the server can resolve the {@code s3://} URL itself. Each
+     * [DuckDbAttachTarget.HttpfsS3] we ship the `INSTALL httpfs` /
+     * `LOAD httpfs` / `CREATE SECRET IF NOT EXISTS (TYPE S3, ...)`
+     * sequence so the server can resolve the `s3://` URL itself. Each
      * statement is run via the wrapper.
      */
     private fun serverInitStatementsFor(target: DuckDbAttachTarget): List<String> = when (target) {
@@ -192,10 +192,10 @@ internal class QuackDuckDbExecutor(
         is DuckDbAttachTarget.FileScan -> buildList {
             add("INSTALL ${target.extension}")
             add("LOAD ${target.extension}")
-            if (target.s3Config.isPresent) {
+            target.s3Config?.let { s3 ->
                 add("INSTALL httpfs")
                 add("LOAD httpfs")
-                add(target.s3Config.get().renderCreateSecretSql())
+                add(s3.renderCreateSecretSql())
             }
         }
     }
@@ -258,13 +258,13 @@ internal class QuackDuckDbExecutor(
 
         /**
          * Retry-log label for a server-init statement: everything before the first paren,
-         * which for {@code CREATE SECRET ...} keeps the credentials out of the log.
+         * which for `CREATE SECRET ...` keeps the credentials out of the log.
          */
         private fun describeForRetry(innerSql: String): String =
             innerSql.substringBefore('(').trim()
 
         /**
-         * Execute the given inner SQL via the {@code quack_query_by_name} wrapper
+         * Execute the given inner SQL via the `quack_query_by_name` wrapper
          * and discard the result rows. Used for DDL-style statements (ATTACH,
          * INSTALL, LOAD, CREATE SECRET) that the Quack server still surfaces as
          * a single-row result by its wire-protocol contract.
@@ -280,24 +280,24 @@ internal class QuackDuckDbExecutor(
 
         /**
          * Wrap an arbitrary SQL string for server-side execution via the
-         * {@code quack_query_by_name} table function. The FROM-clause form is
+         * `quack_query_by_name` table function. The FROM-clause form is
          * usable everywhere a result set is consumed (driver-level
-         * {@code executeQuery}, {@code arrowExportStream}, etc.) — the {@code CALL}
+         * `executeQuery`, `arrowExportStream`, etc.) — the `CALL`
          * form would also work for fire-and-forget statements but isn't valid
          * inside another query, so the FROM form is consistently used. The first
          * function arg is the local catalog identifier the client uses to address
          * this Quack server; the second is the SQL the server runs against its own
-         * default {@code Connection}.
+         * default `Connection`.
          */
         private fun wrapAsSelect(innerSql: String): String =
             "SELECT * FROM system.main.quack_query_by_name('$ENGINE_CATALOG', '${escapeLiteral(innerSql)}')"
 
         /**
-         * Derive a stable server-side ATTACH alias from the {@code .db} path so
-         * concurrent clients agree on the same name and {@code IF NOT EXISTS}
+         * Derive a stable server-side ATTACH alias from the `.db` path so
+         * concurrent clients agree on the same name and `IF NOT EXISTS`
          * makes the ATTACH idempotent. Prefix + truncated SHA-256 keeps the alias
          * SQL-safe and bounded; alphanumeric only because DuckDB unquoted
-         * identifiers reject the {@code -} characters base16 produces.
+         * identifiers reject the `-` characters base16 produces.
          */
         private fun serverAttachAlias(target: DuckDbAttachTarget): String {
             val key: String = when (target) {
@@ -328,21 +328,18 @@ internal class QuackDuckDbExecutor(
         private val TIMEZONE_FAILURE_WARNED = ConcurrentHashMap<String, Boolean>()
 
         /**
-         * Best-effort server-side {@code SET TimeZone = '<zone>'} via
-         * {@code quack_query_by_name}. The Quack server holds a long-lived DuckDB
-         * instance across many client RPCs, but each {@code quack_query_by_name}
-         * call lands in the same server-side {@code Connection} for this client
+         * Best-effort server-side `SET TimeZone = '<zone>'` via
+         * `quack_query_by_name`. The Quack server holds a long-lived DuckDB
+         * instance across many client RPCs, but each `quack_query_by_name`
+         * call lands in the same server-side `Connection` for this client
          * session (verified empirically in
-         * {@code ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity}), so the
-         * setting persists for the subsequent SELECT in the same {@link #execute}
-         * call. Failure handling mirrors {@link InProcessDuckDbExecutor}: one-shot
+         * `ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity`), so the
+         * setting persists for the subsequent SELECT in the same [execute]
+         * call. Failure handling mirrors [InProcessDuckDbExecutor]: one-shot
          * WARN per normalised zone, proceed without setting.
          */
-        private fun applyServerSideTimeZone(stmt: Statement, zone: java.util.Optional<String>) {
-            if (zone.isEmpty) {
-                return
-            }
-            val z = zone.get()
+        private fun applyServerSideTimeZone(stmt: Statement, zone: String?) {
+            val z = zone ?: return
             val innerSql = "SET TimeZone = '${escapeLiteral(z)}'"
             try {
                 drainWrappedQuery(stmt, innerSql)

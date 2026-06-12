@@ -30,10 +30,10 @@ class DuckDbTuningSql private constructor() {
             out.add("SET http_keep_alive = true")
             out.add("SET http_retries = 5")
             out.add("SET enable_object_cache = ${tuning.enableObjectCache}")
-            tuning.memoryLimit.ifPresent { v -> out.add("SET memory_limit = '$v'") }
-            tuning.threads.ifPresent { v -> out.add("SET threads = $v") }
-            tuning.tempDirectory.ifPresent { v -> out.add("SET temp_directory = '${v.replace("'", "''")}'") }
-            tuning.tempDirectoryMaxSize.ifPresent { v -> out.add("SET max_temp_directory_size = '$v'") }
+            tuning.memoryLimit?.let { v -> out.add("SET memory_limit = '$v'") }
+            tuning.threads?.let { v -> out.add("SET threads = $v") }
+            tuning.tempDirectory?.let { v -> out.add("SET temp_directory = '${v.replace("'", "''")}'") }
+            tuning.tempDirectoryMaxSize?.let { v -> out.add("SET max_temp_directory_size = '$v'") }
             return out
         }
 

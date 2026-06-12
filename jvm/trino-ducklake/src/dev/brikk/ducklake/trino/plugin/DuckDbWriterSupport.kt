@@ -119,59 +119,59 @@ internal object DuckDbWriterSupport {
         throw TrinoException(NOT_SUPPORTED, "$writerLabel does not yet support type: $type")
     }
 
-    /** Format a column min/max stat value for persistence, or empty when not representable. */
-    fun formatStatValue(type: Type, value: Any?): Optional<String> {
+    /** Format a column min/max stat value for persistence, or null when not representable. */
+    fun formatStatValue(type: Type, value: Any?): String? {
         if (value == null) {
-            return Optional.empty()
+            return null
         }
         if (type == BOOLEAN) {
-            return Optional.of(if (value as Boolean) "true" else "false")
+            return if (value as Boolean) "true" else "false"
         }
         if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
-            return Optional.of((value as Number).toLong().toString())
+            return (value as Number).toLong().toString()
         }
         if (type == REAL) {
             val f: Float = (value as Number).toFloat()
-            return if (f.isNaN()) Optional.empty() else Optional.of(f.toString())
+            return if (f.isNaN()) null else f.toString()
         }
         if (type == DOUBLE) {
             val d: Double = (value as Number).toDouble()
-            return if (d.isNaN()) Optional.empty() else Optional.of(d.toString())
+            return if (d.isNaN()) null else d.toString()
         }
         if (type is DecimalType) {
             val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
-            return Optional.of(bd.toPlainString())
+            return bd.toPlainString()
         }
         if (type == DATE) {
             if (value is java.sql.Date) {
-                return Optional.of(value.toLocalDate().toString())
+                return value.toLocalDate().toString()
             }
             if (value is LocalDate) {
-                return Optional.of(value.toString())
+                return value.toString()
             }
-            return Optional.of(value.toString())
+            return value.toString()
         }
         if (type is TimestampType) {
             if (value is LocalDateTime) {
-                return Optional.of(value.toString())
+                return value.toString()
             }
             if (value is java.sql.Timestamp) {
-                return Optional.of(value.toLocalDateTime().toString())
+                return value.toLocalDateTime().toString()
             }
-            return Optional.of(value.toString())
+            return value.toString()
         }
         if (type is TimestampWithTimeZoneType) {
             if (value is OffsetDateTime) {
-                return Optional.of(value.toInstant().toString())
+                return value.toInstant().toString()
             }
             if (value is java.sql.Timestamp) {
-                return Optional.of(value.toInstant().toString())
+                return value.toInstant().toString()
             }
-            return Optional.of(value.toString())
+            return value.toString()
         }
         if (type is VarcharType) {
-            return Optional.of(value.toString())
+            return value.toString()
         }
-        return Optional.of(value.toString())
+        return value.toString()
     }
 }

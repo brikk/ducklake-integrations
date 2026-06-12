@@ -305,7 +305,7 @@ internal class TestDucklakePartitionComputer {
         val block = builder.build()
         val value = DucklakePartitionComputer.computePartitionValue(
                 INTEGER, block, 0, DucklakePartitionTransform.BUCKET,
-                java.util.OptionalInt.of(100), DucklakeTemporalPartitionEncoding.CALENDAR)
+                100, DucklakeTemporalPartitionEncoding.CALENDAR)
         assertThat(value).isEqualTo("79")
     }
 
@@ -317,7 +317,7 @@ internal class TestDucklakePartitionComputer {
         org.assertj.core.api.Assertions.assertThatThrownBy {
             DucklakePartitionComputer.computePartitionValue(
                     INTEGER, block, 0, DucklakePartitionTransform.BUCKET,
-                    java.util.OptionalInt.empty(), DucklakeTemporalPartitionEncoding.CALENDAR)
+                    null, DucklakeTemporalPartitionEncoding.CALENDAR)
         }
                 .isInstanceOf(IllegalArgumentException::class.java)
                 .hasMessageContaining("BUCKET")

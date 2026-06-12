@@ -107,8 +107,7 @@ internal class TestingDucklakeQuackEngineServer(
                 ?.let(Path::of)
         val binary: Path = configured
             ?: TrinoParityExtensionResolver.resolveBundledExtensionPathFor(containerPlatform())
-                    .map { Path.of(it) }
-                    .orElse(null)
+                    ?.let(Path::of)
             ?: return false
         if (!Files.isRegularFile(binary)) {
             return false

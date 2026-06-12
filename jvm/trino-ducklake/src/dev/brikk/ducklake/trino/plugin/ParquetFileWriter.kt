@@ -24,18 +24,17 @@ import org.apache.parquet.format.FileMetaData
 import org.apache.parquet.format.Util
 import java.io.IOException
 import java.io.OutputStream
-import java.util.OptionalLong
 
 /**
- * {@link DucklakeFileWriter} that delegates to Trino's {@link ParquetWriter}, streaming
- * directly to the destination via {@link TrinoOutputFile} (no local staging).
+ * [DucklakeFileWriter] that delegates to Trino's [ParquetWriter], streaming
+ * directly to the destination via [TrinoOutputFile] (no local staging).
  */
 class ParquetFileWriter(
     private val parquetWriter: ParquetWriter,
     private val outputStream: OutputStream,
     private val relativePath: String,
     partitionValues: Map<Int, String?>,
-    private val partitionId: OptionalLong,
+    private val partitionId: Long?,
     columns: List<DucklakeColumnHandle>,
     allCatalogColumns: List<DucklakeColumn>)
         : DucklakeFileWriter {
@@ -92,7 +91,7 @@ class ParquetFileWriter(
                 recordCount,
                 columnStats,
                 partitionValues,
-                if (partitionId.isPresent) partitionId.asLong else null)
+                partitionId)
     }
 
     override fun abort() {

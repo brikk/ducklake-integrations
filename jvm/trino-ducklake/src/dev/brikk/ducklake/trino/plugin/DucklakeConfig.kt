@@ -146,11 +146,11 @@ class DucklakeConfig {
     }
 
     /**
-     * @deprecated DuckLake 1.0 settled on calendar encoding for {@code
-     * ducklake_file_partition_value.partition_value} (spec PR
+     * @deprecated DuckLake 1.0 settled on calendar encoding for
+     * `ducklake_file_partition_value.partition_value` (spec PR
      * <a href="https://github.com/duckdb/ducklake-web/pull/349">duckdb/ducklake-web#349</a>);
      * the epoch path is retained but no longer expected. Leave on the default
-     * ({@code calendar}) for spec-conformant catalogs. Will be removed once a future
+     * (`calendar`) for spec-conformant catalogs. Will be removed once a future
      * spec revision either confirms calendar permanently or formally reintroduces
      * epoch as an alternate.
      */
@@ -178,7 +178,7 @@ class DucklakeConfig {
     }
 
     /**
-     * @deprecated Companion to {@link #setTemporalPartitionEncoding(String)}; see that
+     * @deprecated Companion to [setTemporalPartitionEncoding]; see that
      * setter's note for the DuckLake 1.0 spec resolution. Leniency only matters when
      * epoch and calendar interpretations diverge, which a v1-conformant catalog never
      * triggers.
@@ -324,10 +324,10 @@ class DucklakeConfig {
 
     fun toDuckDbTuning(): DuckDbTuning {
         return DuckDbTuning(
-                Optional.ofNullable<DataSize>(duckdbMemoryLimit),
-                if (duckdbThreads == null) java.util.OptionalInt.empty() else java.util.OptionalInt.of(duckdbThreads!!),
-                Optional.ofNullable<String>(duckdbTempDirectory),
-                Optional.ofNullable<DataSize>(duckdbTempDirectoryMaxSize),
+                duckdbMemoryLimit,
+                duckdbThreads,
+                duckdbTempDirectory,
+                duckdbTempDirectoryMaxSize,
                 duckdbEnableObjectCache)
     }
 

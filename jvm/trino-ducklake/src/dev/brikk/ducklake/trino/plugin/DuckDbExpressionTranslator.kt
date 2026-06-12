@@ -342,8 +342,7 @@ class DuckDbExpressionTranslator private constructor() {
                     // WHERE clause and cause applyFilter to report progress when there is none.
                     continue
                 }
-                val translated = translate(conjunct, assignments, session)
-                translated.ifPresent(out::add)
+                translate(conjunct, assignments, session)?.let(out::add)
             }
             return out.toList()
         }
@@ -371,19 +370,19 @@ class DuckDbExpressionTranslator private constructor() {
          */
         fun translate(
                 expression: ConnectorExpression,
-                assignments: Map<String, ColumnHandle>): Optional<String> =
+                assignments: Map<String, ColumnHandle>): String? =
                 translate(expression, assignments, null)
 
         fun translate(
                 expression: ConnectorExpression,
                 assignments: Map<String, ColumnHandle>,
-                session: ConnectorSession?): Optional<String> {
+                session: ConnectorSession?): String? {
             return try {
-                Optional.ofNullable(translateOrNull(expression, assignments, session))
+                translateOrNull(expression, assignments, session)
             }
             catch (ignored: RuntimeException) {
                 // Defensive: any unexpected RuntimeException from a sub-translator => fail safe.
-                Optional.empty()
+                null
             }
         }
 

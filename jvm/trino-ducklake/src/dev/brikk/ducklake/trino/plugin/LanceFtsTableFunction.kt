@@ -34,11 +34,11 @@ import io.trino.spi.type.VarcharType.VARCHAR
  * extension's `lance_fts` table function (Route A, Phase A3). Works on unindexed datasets
  * (brute-force; an FTS index, when present in the dataset, accelerates it transparently).
  *
- * <p>Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `COLUMN_NAME` (a VARCHAR column), `QUERY` (the
+ * Arguments: `SCHEMA_NAME`, `TABLE_NAME`, `COLUMN_NAME` (a VARCHAR column), `QUERY` (the
  * match query), `K` (default 10), `PREFILTER` (default false — see TODO-lance O2; note that
  * prefiltering changes BM25 corpus statistics, so scores differ from post-filtering).
  *
- * <p>Returns only matching rows: the table's columns plus a synthetic `_score` REAL column,
+ * Returns only matching rows: the table's columns plus a synthetic `_score` REAL column,
  * descending (higher = better match). The shipped extension treats `k` as best-effort — output
  * may exceed `k` — and each dataset fragment is searched independently, so wrap with
  * `ORDER BY _score DESC LIMIT k` for exact top-k semantics. v1 scope (local paths, all-lance,

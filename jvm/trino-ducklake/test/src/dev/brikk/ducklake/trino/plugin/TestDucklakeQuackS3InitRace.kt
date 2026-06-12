@@ -71,7 +71,7 @@ class TestDucklakeQuackS3InitRace {
     @Test
     fun concurrentVortexS3FileScansDoNotConflictOnSecretCreation() {
         val failures = runConcurrently(DuckDbAttachTarget.FileScan(
-                VORTEX_URL, "read_vortex", "vortex", Optional.of(s3Config())))
+                VORTEX_URL, "read_vortex", "vortex", s3Config()))
         assertThat(failures)
                 .`as`("concurrent s3 vortex FileScans against one Quack server (each ships "
                         + "the shared-secret CREATE server-side)")
