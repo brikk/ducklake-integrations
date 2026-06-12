@@ -170,48 +170,30 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
      * Convert Trino type to Ducklake type string (for write operations)
      */
     open fun toDucklakeType(trinoType: Type): String {
-        if (trinoType == BooleanType.BOOLEAN) {
-            return "boolean"
-        }
-        if (trinoType == TinyintType.TINYINT) {
-            return "int8"
-        }
-        if (trinoType == SmallintType.SMALLINT) {
-            return "int16"
-        }
-        if (trinoType == IntegerType.INTEGER) {
-            return "int32"
-        }
-        if (trinoType == BigintType.BIGINT) {
-            return "int64"
-        }
-        if (trinoType == RealType.REAL) {
-            return "float32"
-        }
-        if (trinoType == DoubleType.DOUBLE) {
-            return "float64"
-        }
-        if (trinoType is DecimalType) {
-            return "decimal(${trinoType.precision},${trinoType.scale})"
-        }
-        if (trinoType == DateType.DATE) {
-            return "date"
-        }
-        if (trinoType is TimestampType) {
-            return when (trinoType.precision) {
-                0 -> "timestamp_s"
-                3 -> "timestamp_ms"
-                6 -> "timestamp"
-                9 -> "timestamp_ns"
-                // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
-                // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
-                // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
-                else -> throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported timestamp precision ${trinoType.precision} for DuckLake write; supported precisions are 0, 3, 6, 9")
+        when (trinoType) {
+            BooleanType.BOOLEAN -> return "boolean"
+            TinyintType.TINYINT -> return "int8"
+            SmallintType.SMALLINT -> return "int16"
+            IntegerType.INTEGER -> return "int32"
+            BigintType.BIGINT -> return "int64"
+            RealType.REAL -> return "float32"
+            DoubleType.DOUBLE -> return "float64"
+            is DecimalType -> return "decimal(${trinoType.precision},${trinoType.scale})"
+            DateType.DATE -> return "date"
+            is TimestampType -> {
+                return when (trinoType.precision) {
+                    0 -> "timestamp_s"
+                    3 -> "timestamp_ms"
+                    6 -> "timestamp"
+                    9 -> "timestamp_ns"
+                    // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
+                    // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
+                    // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
+                    else -> throw TrinoException(NOT_SUPPORTED,
+                            "Unsupported timestamp precision ${trinoType.precision} for DuckLake write; supported precisions are 0, 3, 6, 9")
+                }
             }
-        }
-        if (trinoType is TimestampWithTimeZoneType) {
-            return "timestamptz"
+            is TimestampWithTimeZoneType -> return "timestamptz"
         }
         // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather
         // than silently coercing to micros (which would read back as TIME(6) / a changed precision).

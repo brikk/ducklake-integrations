@@ -190,95 +190,97 @@ constructor(
             appender.appendNull()
             return
         }
-        if (type == BOOLEAN) {
-            appender.append(BOOLEAN.getBoolean(block, position))
-            return
-        }
-        if (type == TINYINT) {
-            appender.append(TINYINT.getByte(block, position).toByte())
-            return
-        }
-        if (type == SMALLINT) {
-            appender.append(SMALLINT.getShort(block, position).toShort())
-            return
-        }
-        if (type == INTEGER) {
-            appender.append(INTEGER.getInt(block, position))
-            return
-        }
-        if (type == BIGINT) {
-            appender.append(BIGINT.getLong(block, position))
-            return
-        }
-        if (type == REAL) {
-            appender.append(intBitsToFloat(REAL.getInt(block, position)))
-            return
-        }
-        if (type == DOUBLE) {
-            appender.append(DOUBLE.getDouble(block, position))
-            return
-        }
-        if (type == DATE) {
-            // Trino DATE is days since 1970-01-01
-            val days = DATE.getInt(block, position)
-            appender.append(LocalDate.ofEpochDay(days.toLong()))
-            return
-        }
-        if (type == VARBINARY) {
-            val bytes: ByteArray = VARBINARY.getSlice(block, position).bytes
-            appender.append(bytes)
-            return
-        }
-        if (type == UUID) {
-            appender.append(trinoUuidToJavaUuid(UUID.getSlice(block, position)))
-            return
-        }
-        if (type is DecimalType) {
-            val value: BigDecimal
-            if (type.isShort) {
-                val unscaled = type.getLong(block, position)
-                value = BigDecimal.valueOf(unscaled, type.scale)
-            }
-            else {
-                val unscaled = type.getObject(block, position) as Int128
-                value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.scale)
-            }
-            appender.append(value)
-            return
-        }
-        if (type is TimestampType) {
-            if (type.isShort) {
-                val micros = type.getLong(block, position)
-                appender.append(microsToLocalDateTime(micros))
+        when (type) {
+            BOOLEAN -> {
+                appender.append(BOOLEAN.getBoolean(block, position))
                 return
             }
-            val ts = type.getObject(block, position) as LongTimestamp
-            appender.append(microsToLocalDateTime(ts.epochMicros)
-                    .plusNanos((ts.picosOfMicro / 1_000).toLong()))
-            return
-        }
-        if (type is TimestampWithTimeZoneType) {
-            val instant: Instant
-            if (type.isShort) {
-                val packed = type.getLong(block, position)
-                instant = Instant.ofEpochMilli(unpackMillisUtc(packed))
+            TINYINT -> {
+                appender.append(TINYINT.getByte(block, position).toByte())
+                return
             }
-            else {
-                // LongTimestampWithTimeZone carries epochMillis + picosOfMilli. DuckDB TIMESTAMPTZ
-                // is microsecond precision, so carry the sub-millisecond nanos (picos/1000) through
-                // instead of truncating to whole milliseconds — otherwise TIMESTAMP(6)/(9) WITH TIME
-                // ZONE silently loses its micros. Mirrors the Arrow writer's populateTimestampTzVector
-                // and the sibling TIMESTAMP long path above.
-                val ts = type.getObject(block, position) as LongTimestampWithTimeZone
-                instant = Instant.ofEpochMilli(ts.epochMillis)
-                        .plusNanos((ts.picosOfMilli / 1_000).toLong())
+            SMALLINT -> {
+                appender.append(SMALLINT.getShort(block, position).toShort())
+                return
             }
-            appender.append(OffsetDateTime.ofInstant(instant, ZoneOffset.UTC))
-            return
-        }
-        if (type is VarcharType) {
-            appender.append(type.getSlice(block, position).toStringUtf8())
-            return
+            INTEGER -> {
+                appender.append(INTEGER.getInt(block, position))
+                return
+            }
+            BIGINT -> {
+                appender.append(BIGINT.getLong(block, position))
+                return
+            }
+            REAL -> {
+                appender.append(intBitsToFloat(REAL.getInt(block, position)))
+                return
+            }
+            DOUBLE -> {
+                appender.append(DOUBLE.getDouble(block, position))
+                return
+            }
+            DATE -> {
+                // Trino DATE is days since 1970-01-01
+                val days = DATE.getInt(block, position)
+                appender.append(LocalDate.ofEpochDay(days.toLong()))
+                return
+            }
+            VARBINARY -> {
+                val bytes: ByteArray = VARBINARY.getSlice(block, position).bytes
+                appender.append(bytes)
+                return
+            }
+            UUID -> {
+                appender.append(trinoUuidToJavaUuid(UUID.getSlice(block, position)))
+                return
+            }
+            is DecimalType -> {
+                val value: BigDecimal
+                if (type.isShort) {
+                    val unscaled = type.getLong(block, position)
+                    value = BigDecimal.valueOf(unscaled, type.scale)
+                }
+                else {
+                    val unscaled = type.getObject(block, position) as Int128
+                    value = BigDecimal(BigInteger(unscaled.toBigEndianBytes()), type.scale)
+                }
+                appender.append(value)
+                return
+            }
+            is TimestampType -> {
+                if (type.isShort) {
+                    val micros = type.getLong(block, position)
+                    appender.append(microsToLocalDateTime(micros))
+                    return
+                }
+                val ts = type.getObject(block, position) as LongTimestamp
+                appender.append(microsToLocalDateTime(ts.epochMicros)
+                        .plusNanos((ts.picosOfMicro / 1_000).toLong()))
+                return
+            }
+            is TimestampWithTimeZoneType -> {
+                val instant: Instant
+                if (type.isShort) {
+                    val packed = type.getLong(block, position)
+                    instant = Instant.ofEpochMilli(unpackMillisUtc(packed))
+                }
+                else {
+                    // LongTimestampWithTimeZone carries epochMillis + picosOfMilli. DuckDB TIMESTAMPTZ
+                    // is microsecond precision, so carry the sub-millisecond nanos (picos/1000) through
+                    // instead of truncating to whole milliseconds — otherwise TIMESTAMP(6)/(9) WITH TIME
+                    // ZONE silently loses its micros. Mirrors the Arrow writer's populateTimestampTzVector
+                    // and the sibling TIMESTAMP long path above.
+                    val ts = type.getObject(block, position) as LongTimestampWithTimeZone
+                    instant = Instant.ofEpochMilli(ts.epochMillis)
+                            .plusNanos((ts.picosOfMilli / 1_000).toLong())
+                }
+                appender.append(OffsetDateTime.ofInstant(instant, ZoneOffset.UTC))
+                return
+            }
+            is VarcharType -> {
+                appender.append(type.getSlice(block, position).toStringUtf8())
+                return
+            }
         }
         throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
     }

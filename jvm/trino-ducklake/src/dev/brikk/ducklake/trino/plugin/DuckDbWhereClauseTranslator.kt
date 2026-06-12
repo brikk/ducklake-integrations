@@ -174,66 +174,70 @@ internal object DuckDbWhereClauseTranslator {
         if (value == null) {
             return null
         }
-        if (type == BOOLEAN) {
-            return if ((value as Boolean)) "TRUE" else "FALSE"
-        }
-        if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
-            // Trino stores all integer-family values as long.
-            return (value as Long).toString()
-        }
-        if (type == REAL) {
-            // Trino REAL is encoded as the float bits in a long.
-            val f = java.lang.Float.intBitsToFloat((value as Long).toInt())
-            if (java.lang.Float.isFinite(f)) {
-                return f.toString()
+        when (type) {
+            BOOLEAN -> return if ((value as Boolean)) "TRUE" else "FALSE"
+            TINYINT, SMALLINT, INTEGER, BIGINT -> {
+                // Trino stores all integer-family values as long.
+                return (value as Long).toString()
             }
-            return null
-        }
-        if (type == DOUBLE) {
-            val d = value as Double
-            if (java.lang.Double.isFinite(d)) {
-                return d.toString()
-            }
-            return null
-        }
-        if (type is DecimalType) {
-            val decimalType: DecimalType = type
-            val bd: BigDecimal
-            if (decimalType.isShort) {
-                bd = BigDecimal.valueOf(value as Long, decimalType.scale)
-            }
-            else {
-                val i128 = value as Int128
-                bd = BigDecimal(BigInteger(i128.toBigEndianBytes()), decimalType.scale)
-            }
-            return bd.toPlainString()
-        }
-        if (type == DATE) {
-            val days = value as Long
-            val date = LocalDate.ofEpochDay(days)
-            // DuckDB's DATE literal parser rejects the signed/extended forms LocalDate emits for
-            // years <1 (BC, '-') or >9999 ('+'); leave such values unpushed so Trino evaluates them.
-            if (date.year !in 1..9999) {
+            REAL -> {
+                // Trino REAL is encoded as the float bits in a long.
+                val f = java.lang.Float.intBitsToFloat((value as Long).toInt())
+                if (java.lang.Float.isFinite(f)) {
+                    return f.toString()
+                }
                 return null
             }
-            return "DATE '$date'"
-        }
-        if (type is TimestampType && type.isShort) {
-            val micros = value as Long
-            val epochSeconds = floorDiv(micros, 1_000_000L)
-            val nanoOfSecond = (floorMod(micros, 1_000_000L) * 1_000L).toInt()
-            val ldt = LocalDateTime.ofEpochSecond(epochSeconds, nanoOfSecond, ZoneOffset.UTC)
-            // TIMESTAMP_MICROS uses the year-of-era pattern `yyyy`, which silently renders a BC
-            // year as a positive year (wrong instant, no era marker) and emits a leading '+' past
-            // 9999. Leave out-of-range temporal literals unpushed rather than mis-compare.
-            if (ldt.year !in 1..9999) {
+            DOUBLE -> {
+                val d = value as Double
+                if (java.lang.Double.isFinite(d)) {
+                    return d.toString()
+                }
                 return null
             }
-            return "TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'"
-        }
-        if (type is VarcharType) {
-            val slice = value as Slice
-            return "'" + slice.toStringUtf8().replace("'", "''") + "'"
+            is DecimalType -> {
+                val decimalType: DecimalType = type
+                val bd: BigDecimal
+                if (decimalType.isShort) {
+                    bd = BigDecimal.valueOf(value as Long, decimalType.scale)
+                }
+                else {
+                    val i128 = value as Int128
+                    bd = BigDecimal(BigInteger(i128.toBigEndianBytes()), decimalType.scale)
+                }
+                return bd.toPlainString()
+            }
+            DATE -> {
+                val days = value as Long
+                val date = LocalDate.ofEpochDay(days)
+                // DuckDB's DATE literal parser rejects the signed/extended forms LocalDate emits for
+                // years <1 (BC, '-') or >9999 ('+'); leave such values unpushed so Trino evaluates them.
+                if (date.year !in 1..9999) {
+                    return null
+                }
+                return "DATE '$date'"
+            }
+            is TimestampType -> {
+                if (!type.isShort) {
+                    // Long (picosecond-precision) timestamps are never pushed.
+                    return null
+                }
+                val micros = value as Long
+                val epochSeconds = floorDiv(micros, 1_000_000L)
+                val nanoOfSecond = (floorMod(micros, 1_000_000L) * 1_000L).toInt()
+                val ldt = LocalDateTime.ofEpochSecond(epochSeconds, nanoOfSecond, ZoneOffset.UTC)
+                // TIMESTAMP_MICROS uses the year-of-era pattern `yyyy`, which silently renders a BC
+                // year as a positive year (wrong instant, no era marker) and emits a leading '+' past
+                // 9999. Leave out-of-range temporal literals unpushed rather than mis-compare.
+                if (ldt.year !in 1..9999) {
+                    return null
+                }
+                return "TIMESTAMP '" + TIMESTAMP_MICROS.format(ldt) + "'"
+            }
+            is VarcharType -> {
+                val slice = value as Slice
+                return "'" + slice.toStringUtf8().replace("'", "''") + "'"
+            }
         }
         return null
     }

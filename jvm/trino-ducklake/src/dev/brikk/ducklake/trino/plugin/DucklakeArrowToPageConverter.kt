@@ -110,151 +110,153 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
 
         private fun convertColumn(type: Type, vector: FieldVector, rowCount: Int): Block {
             val builder: BlockBuilder = type.createBlockBuilder(null, rowCount)
-            if (type == BOOLEAN) {
-                val v = vector as BitVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        BOOLEAN.writeBoolean(builder, v.get(i) != 0)
-                    }
-                }
-            }
-            else if (type == TINYINT) {
-                val v = vector as TinyIntVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        TINYINT.writeLong(builder, v.get(i).toLong())
+            when (type) {
+                BOOLEAN -> {
+                    val v = vector as BitVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            BOOLEAN.writeBoolean(builder, v.get(i) != 0)
+                        }
                     }
                 }
-            }
-            else if (type == SMALLINT) {
-                val v = vector as SmallIntVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        SMALLINT.writeLong(builder, v.get(i).toLong())
-                    }
-                }
-            }
-            else if (type == INTEGER) {
-                val v = vector as IntVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        INTEGER.writeLong(builder, v.get(i).toLong())
+                TINYINT -> {
+                    val v = vector as TinyIntVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            TINYINT.writeLong(builder, v.get(i).toLong())
+                        }
                     }
                 }
-            }
-            else if (type == BIGINT) {
-                val v = vector as BigIntVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        BIGINT.writeLong(builder, v.get(i))
-                    }
-                }
-            }
-            else if (type == REAL) {
-                val v = vector as Float4Vector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        REAL.writeLong(builder, v.get(i).toRawBits().toLong())
+                SMALLINT -> {
+                    val v = vector as SmallIntVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            SMALLINT.writeLong(builder, v.get(i).toLong())
+                        }
                     }
                 }
-            }
-            else if (type == DOUBLE) {
-                val v = vector as Float8Vector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        DOUBLE.writeDouble(builder, v.get(i))
-                    }
-                }
-            }
-            else if (type == DATE) {
-                val v = vector as DateDayVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        DATE.writeLong(builder, v.get(i).toLong())
+                INTEGER -> {
+                    val v = vector as IntVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            INTEGER.writeLong(builder, v.get(i).toLong())
+                        }
                     }
                 }
-            }
-            else if (type == VARBINARY) {
-                val v = vector as VarBinaryVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        VARBINARY.writeSlice(builder, Slices.wrappedBuffer(*v.get(i)))
-                    }
-                }
-            }
-            else if (type is VarcharType) {
-                val v = vector as VarCharVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        type.writeSlice(builder, Slices.wrappedBuffer(*v.get(i)))
+                BIGINT -> {
+                    val v = vector as BigIntVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            BIGINT.writeLong(builder, v.get(i))
+                        }
                     }
                 }
-            }
-            else if (type is DecimalType) {
-                writeDecimalColumn(type, vector as DecimalVector, builder, rowCount)
-            }
-            else if (type is TimestampType) {
-                writeTimestampColumn(type, vector, builder, rowCount)
-            }
-            else if (type is TimestampWithTimeZoneType) {
-                writeTimestampTzColumn(type, vector, builder, rowCount)
-            }
-            else if (type == UuidType.UUID) {
-                // DuckDB exports UUID columns as Utf8 (the printed hex form), not
-                // FixedSizeBinary(16) — verified empirically against the in-process
-                // DuckDB JDBC driver. Parse the string and convert to Trino's
-                // 16-byte big-endian UUID Slice.
-                val v = vector as VarCharVector
-                for (i in 0 until rowCount) {
-                    if (v.isNull(i)) {
-                        builder.appendNull()
-                    }
-                    else {
-                        val s = String(v.get(i), Charsets.UTF_8)
-                        UuidType.UUID.writeSlice(builder, UuidType.javaUuidToTrinoUuid(java.util.UUID.fromString(s)))
+                REAL -> {
+                    val v = vector as Float4Vector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            REAL.writeLong(builder, v.get(i).toRawBits().toLong())
+                        }
                     }
                 }
-            }
-            else if (type is ArrayType || type is RowType || type is MapType) {
-                // ARRAY arrives as Arrow List (or FixedSizeList — how lance materializes
-                // embeddings), ROW as Struct (fields positional), MAP as Map (list of key/value
-                // entry structs). Contents go through the recursive appendNestedValue machinery.
-                writeComplexColumn(type, vector, builder, rowCount)
-            }
-            else {
-                throw TrinoException(
-                        NOT_SUPPORTED,
-                        "DuckDB-format reader does not yet support type: $type")
+                DOUBLE -> {
+                    val v = vector as Float8Vector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            DOUBLE.writeDouble(builder, v.get(i))
+                        }
+                    }
+                }
+                DATE -> {
+                    val v = vector as DateDayVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            DATE.writeLong(builder, v.get(i).toLong())
+                        }
+                    }
+                }
+                VARBINARY -> {
+                    val v = vector as VarBinaryVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            VARBINARY.writeSlice(builder, Slices.wrappedBuffer(*v.get(i)))
+                        }
+                    }
+                }
+                is VarcharType -> {
+                    val v = vector as VarCharVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            type.writeSlice(builder, Slices.wrappedBuffer(*v.get(i)))
+                        }
+                    }
+                }
+                is DecimalType -> {
+                    writeDecimalColumn(type, vector as DecimalVector, builder, rowCount)
+                }
+                is TimestampType -> {
+                    writeTimestampColumn(type, vector, builder, rowCount)
+                }
+                is TimestampWithTimeZoneType -> {
+                    writeTimestampTzColumn(type, vector, builder, rowCount)
+                }
+                UuidType.UUID -> {
+                    // DuckDB exports UUID columns as Utf8 (the printed hex form), not
+                    // FixedSizeBinary(16) — verified empirically against the in-process
+                    // DuckDB JDBC driver. Parse the string and convert to Trino's
+                    // 16-byte big-endian UUID Slice.
+                    val v = vector as VarCharVector
+                    for (i in 0 until rowCount) {
+                        if (v.isNull(i)) {
+                            builder.appendNull()
+                        }
+                        else {
+                            val s = String(v.get(i), Charsets.UTF_8)
+                            UuidType.UUID.writeSlice(builder, UuidType.javaUuidToTrinoUuid(java.util.UUID.fromString(s)))
+                        }
+                    }
+                }
+                is ArrayType, is RowType, is MapType -> {
+                    // ARRAY arrives as Arrow List (or FixedSizeList — how lance materializes
+                    // embeddings), ROW as Struct (fields positional), MAP as Map (list of key/value
+                    // entry structs). Contents go through the recursive appendNestedValue machinery.
+                    writeComplexColumn(type, vector, builder, rowCount)
+                }
+                else -> {
+                    throw TrinoException(
+                            NOT_SUPPORTED,
+                            "DuckDB-format reader does not yet support type: $type")
+                }
             }
             return builder.build()
         }
@@ -465,51 +467,53 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
         private fun writeTimestampColumn(type: TimestampType, vector: FieldVector, builder: BlockBuilder, rowCount: Int) {
             // Trino stores TIMESTAMP at micros-since-epoch in a long for precision <= 6,
             // and as LongTimestamp(micros, picosOfMicro) for precision <= 9.
-            if (vector is TimeStampSecVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+            when (vector) {
+                is TimeStampSecVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        val micros = Math.multiplyExact(vector.get(i), 1_000_000L)
+                        writeTimestampMicrosWithRemainder(type, builder, micros, 0)
                     }
-                    val micros = Math.multiplyExact(vector.get(i), 1_000_000L)
-                    writeTimestampMicrosWithRemainder(type, builder, micros, 0)
                 }
-            }
-            else if (vector is TimeStampMilliVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampMilliVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        val micros = Math.multiplyExact(vector.get(i), 1_000L)
+                        writeTimestampMicrosWithRemainder(type, builder, micros, 0)
                     }
-                    val micros = Math.multiplyExact(vector.get(i), 1_000L)
-                    writeTimestampMicrosWithRemainder(type, builder, micros, 0)
                 }
-            }
-            else if (vector is TimeStampMicroVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampMicroVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        writeTimestampMicrosWithRemainder(type, builder, vector.get(i), 0)
                     }
-                    writeTimestampMicrosWithRemainder(type, builder, vector.get(i), 0)
                 }
-            }
-            else if (vector is TimeStampNanoVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampNanoVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        val nanos = vector.get(i)
+                        val micros = Math.floorDiv(nanos, 1_000L)
+                        val picosOfMicro = (Math.floorMod(nanos, 1_000L) * 1_000L).toInt()
+                        writeTimestampMicrosWithRemainder(type, builder, micros, picosOfMicro)
                     }
-                    val nanos = vector.get(i)
-                    val micros = Math.floorDiv(nanos, 1_000L)
-                    val picosOfMicro = (Math.floorMod(nanos, 1_000L) * 1_000L).toInt()
-                    writeTimestampMicrosWithRemainder(type, builder, micros, picosOfMicro)
                 }
-            }
-            else {
-                throw TrinoException(
-                        NOT_SUPPORTED,
-                        "Unsupported Arrow timestamp vector for Trino type $type: ${vector.javaClass.simpleName}")
+                else -> {
+                    throw TrinoException(
+                            NOT_SUPPORTED,
+                            "Unsupported Arrow timestamp vector for Trino type $type: ${vector.javaClass.simpleName}")
+                }
             }
         }
 
@@ -541,52 +545,54 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
             // we control, but the converter stays robust for any future Arrow
             // producer that didn't set the field.
             val zone = resolveTimeZoneKey(vector)
-            if (vector is TimeStampSecTZVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+            when (vector) {
+                is TimeStampSecTZVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        writeTimestampTz(type, builder, Math.multiplyExact(vector.get(i), 1_000L), 0, zone)
                     }
-                    writeTimestampTz(type, builder, Math.multiplyExact(vector.get(i), 1_000L), 0, zone)
                 }
-            }
-            else if (vector is TimeStampMilliTZVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampMilliTZVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        writeTimestampTz(type, builder, vector.get(i), 0, zone)
                     }
-                    writeTimestampTz(type, builder, vector.get(i), 0, zone)
                 }
-            }
-            else if (vector is TimeStampMicroTZVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampMicroTZVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        val micros = vector.get(i)
+                        val millis = Math.floorDiv(micros, 1_000L)
+                        val picosOfMilli = (Math.floorMod(micros, 1_000L) * 1_000_000L).toInt()
+                        writeTimestampTz(type, builder, millis, picosOfMilli, zone)
                     }
-                    val micros = vector.get(i)
-                    val millis = Math.floorDiv(micros, 1_000L)
-                    val picosOfMilli = (Math.floorMod(micros, 1_000L) * 1_000_000L).toInt()
-                    writeTimestampTz(type, builder, millis, picosOfMilli, zone)
                 }
-            }
-            else if (vector is TimeStampNanoTZVector) {
-                for (i in 0 until rowCount) {
-                    if (vector.isNull(i)) {
-                        builder.appendNull()
-                        continue
+                is TimeStampNanoTZVector -> {
+                    for (i in 0 until rowCount) {
+                        if (vector.isNull(i)) {
+                            builder.appendNull()
+                            continue
+                        }
+                        val nanos = vector.get(i)
+                        val millis = Math.floorDiv(nanos, 1_000_000L)
+                        val picosOfMilli = (Math.floorMod(nanos, 1_000_000L) * 1_000L).toInt()
+                        writeTimestampTz(type, builder, millis, picosOfMilli, zone)
                     }
-                    val nanos = vector.get(i)
-                    val millis = Math.floorDiv(nanos, 1_000_000L)
-                    val picosOfMilli = (Math.floorMod(nanos, 1_000_000L) * 1_000L).toInt()
-                    writeTimestampTz(type, builder, millis, picosOfMilli, zone)
                 }
-            }
-            else {
-                throw TrinoException(
-                        NOT_SUPPORTED,
-                        "Unsupported Arrow timestamp_tz vector for Trino type $type: ${vector.javaClass.simpleName}")
+                else -> {
+                    throw TrinoException(
+                            NOT_SUPPORTED,
+                            "Unsupported Arrow timestamp_tz vector for Trino type $type: ${vector.javaClass.simpleName}")
+                }
             }
         }
 

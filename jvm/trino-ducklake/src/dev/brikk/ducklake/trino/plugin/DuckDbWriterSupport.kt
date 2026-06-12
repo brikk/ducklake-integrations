@@ -51,53 +51,29 @@ internal object DuckDbWriterSupport {
 
     /** Map a Trino [Type] to its DuckDB SQL type keyword for `CREATE TABLE`. */
     fun toDuckDbSqlType(type: Type, writerLabel: String): String {
-        if (type == BOOLEAN) {
-            return "BOOLEAN"
-        }
-        if (type == TINYINT) {
-            return "TINYINT"
-        }
-        if (type == SMALLINT) {
-            return "SMALLINT"
-        }
-        if (type == INTEGER) {
-            return "INTEGER"
-        }
-        if (type == BIGINT) {
-            return "BIGINT"
-        }
-        if (type == REAL) {
-            return "REAL"
-        }
-        if (type == DOUBLE) {
-            return "DOUBLE"
-        }
-        if (type == DATE) {
-            return "DATE"
-        }
-        if (type == VARBINARY) {
-            return "BLOB"
-        }
-        if (type is DecimalType) {
-            return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
-        }
-        if (type is TimestampType) {
-            return when (type.precision) {
-                0 -> "TIMESTAMP_S"
-                3 -> "TIMESTAMP_MS"
-                6 -> "TIMESTAMP"
-                9 -> "TIMESTAMP_NS"
-                else -> "TIMESTAMP"
+        when (type) {
+            BOOLEAN -> return "BOOLEAN"
+            TINYINT -> return "TINYINT"
+            SMALLINT -> return "SMALLINT"
+            INTEGER -> return "INTEGER"
+            BIGINT -> return "BIGINT"
+            REAL -> return "REAL"
+            DOUBLE -> return "DOUBLE"
+            DATE -> return "DATE"
+            VARBINARY -> return "BLOB"
+            is DecimalType -> return format(Locale.ROOT, "DECIMAL(%d,%d)", type.precision, type.scale)
+            is TimestampType -> {
+                return when (type.precision) {
+                    0 -> "TIMESTAMP_S"
+                    3 -> "TIMESTAMP_MS"
+                    6 -> "TIMESTAMP"
+                    9 -> "TIMESTAMP_NS"
+                    else -> "TIMESTAMP"
+                }
             }
-        }
-        if (type is TimestampWithTimeZoneType) {
-            return "TIMESTAMPTZ"
-        }
-        if (type is VarcharType) {
-            return "VARCHAR"
-        }
-        if (type == UuidType.UUID) {
-            return "UUID"
+            is TimestampWithTimeZoneType -> return "TIMESTAMPTZ"
+            is VarcharType -> return "VARCHAR"
+            UuidType.UUID -> return "UUID"
         }
         return toDuckDbComplexSqlType(type, writerLabel)
     }
@@ -124,53 +100,49 @@ internal object DuckDbWriterSupport {
         if (value == null) {
             return null
         }
-        if (type == BOOLEAN) {
-            return if (value as Boolean) "true" else "false"
-        }
-        if (type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT) {
-            return (value as Number).toLong().toString()
-        }
-        if (type == REAL) {
-            val f: Float = (value as Number).toFloat()
-            return if (f.isNaN()) null else f.toString()
-        }
-        if (type == DOUBLE) {
-            val d: Double = (value as Number).toDouble()
-            return if (d.isNaN()) null else d.toString()
-        }
-        if (type is DecimalType) {
-            val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
-            return bd.toPlainString()
-        }
-        if (type == DATE) {
-            if (value is java.sql.Date) {
-                return value.toLocalDate().toString()
+        when (type) {
+            BOOLEAN -> return if (value as Boolean) "true" else "false"
+            TINYINT, SMALLINT, INTEGER, BIGINT -> return (value as Number).toLong().toString()
+            REAL -> {
+                val f: Float = (value as Number).toFloat()
+                return if (f.isNaN()) null else f.toString()
             }
-            if (value is LocalDate) {
+            DOUBLE -> {
+                val d: Double = (value as Number).toDouble()
+                return if (d.isNaN()) null else d.toString()
+            }
+            is DecimalType -> {
+                val bd: BigDecimal = value as? BigDecimal ?: BigDecimal(value.toString())
+                return bd.toPlainString()
+            }
+            DATE -> {
+                if (value is java.sql.Date) {
+                    return value.toLocalDate().toString()
+                }
+                if (value is LocalDate) {
+                    return value.toString()
+                }
                 return value.toString()
             }
-            return value.toString()
-        }
-        if (type is TimestampType) {
-            if (value is LocalDateTime) {
+            is TimestampType -> {
+                if (value is LocalDateTime) {
+                    return value.toString()
+                }
+                if (value is java.sql.Timestamp) {
+                    return value.toLocalDateTime().toString()
+                }
                 return value.toString()
             }
-            if (value is java.sql.Timestamp) {
-                return value.toLocalDateTime().toString()
+            is TimestampWithTimeZoneType -> {
+                if (value is OffsetDateTime) {
+                    return value.toInstant().toString()
+                }
+                if (value is java.sql.Timestamp) {
+                    return value.toInstant().toString()
+                }
+                return value.toString()
             }
-            return value.toString()
-        }
-        if (type is TimestampWithTimeZoneType) {
-            if (value is OffsetDateTime) {
-                return value.toInstant().toString()
-            }
-            if (value is java.sql.Timestamp) {
-                return value.toInstant().toString()
-            }
-            return value.toString()
-        }
-        if (type is VarcharType) {
-            return value.toString()
+            is VarcharType -> return value.toString()
         }
         return value.toString()
     }

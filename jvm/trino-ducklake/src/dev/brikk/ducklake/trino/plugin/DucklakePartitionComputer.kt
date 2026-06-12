@@ -91,30 +91,18 @@ object DucklakePartitionComputer {
     }
 
     private fun computeIdentityValue(type: Type, block: Block, position: Int): String {
-        if (type is DateType) {
-            val days = DATE.getInt(block, position)
-            return LocalDate.ofEpochDay(days.toLong()).toString()
-        }
-        if (type == BOOLEAN) {
-            return BOOLEAN.getBoolean(block, position).toString()
-        }
-        if (type == TINYINT) {
-            return TINYINT.getLong(block, position).toString()
-        }
-        if (type == SMALLINT) {
-            return SMALLINT.getLong(block, position).toString()
-        }
-        if (type == INTEGER) {
-            return INTEGER.getInt(block, position).toString()
-        }
-        if (type == BIGINT) {
-            return BIGINT.getLong(block, position).toString()
-        }
-        if (type == REAL) {
-            return REAL.getFloat(block, position).toString()
-        }
-        if (type == DOUBLE) {
-            return DOUBLE.getDouble(block, position).toString()
+        when (type) {
+            is DateType -> {
+                val days = DATE.getInt(block, position)
+                return LocalDate.ofEpochDay(days.toLong()).toString()
+            }
+            BOOLEAN -> return BOOLEAN.getBoolean(block, position).toString()
+            TINYINT -> return TINYINT.getLong(block, position).toString()
+            SMALLINT -> return SMALLINT.getLong(block, position).toString()
+            INTEGER -> return INTEGER.getInt(block, position).toString()
+            BIGINT -> return BIGINT.getLong(block, position).toString()
+            REAL -> return REAL.getFloat(block, position).toString()
+            DOUBLE -> return DOUBLE.getDouble(block, position).toString()
         }
         // VARCHAR and other string-like types
         return type.getSlice(block, position).toStringUtf8()
