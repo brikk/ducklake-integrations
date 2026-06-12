@@ -340,6 +340,62 @@ Both executors set `SET TimeZone = '<session_zone>'` on attach (required for Tie
 
 **User-visible behaviour change (chunk 3.5):** `SELECT timestamptz_col FROM duckdb_format_table` renders in the session zone — matching how Iceberg / Hive / parquet `isAdjustedToUtc=true` connectors return WTZ. The connector's Arrow-to-Page converter resolves the TimeZone from the Arrow schema TZ instead of hardcoding UTC. Parquet-format reads through Trino's standard parquet reader still render in UTC (upstream Trino behaviour); mixed-format tables show this asymmetry today.
 
+**Complex types** (`ROW`/`MAP`/`ARRAY`, nested arbitrarily) read and write through the
+duckdb-format path. List *elements* are limited to scalars on write; complex columns get
+value/null-count stats only (no min/max).
+
+## Vortex Data Files (EXPERIMENTAL)
+
+> **Experimental**, like the other non-parquet formats.
+
+`data_file_format = 'vortex'` writes each CTAS/INSERT payload as a single
+[Vortex](https://vortex.dev) file via DuckDB's `vortex` extension (`COPY ... (FORMAT vortex)`),
+and reads dispatch through the same DuckDB execution engine as the `.db` format — but via the
+`read_vortex('<path>')` table function instead of an ATTACH. TupleDomain predicates render into
+the scan's `WHERE` and evaluate inside DuckDB.
+
+- **Types:** scalars, `ARRAY` of scalar, and `ROW` columns round-trip (NULL rows included).
+  **`MAP` writes are rejected at schema time** — the DuckDB vortex extension fails *natively*
+  (crash/hang, not an error) on MAP COPY (probed 2026-06-11); use parquet or duckdb format for
+  MAP columns.
+- **Read modes:** the `.db` format's materialize-vs-httpfs decision is reused. Sub-threshold s3
+  files download through Trino's filesystem (credentials handled by Trino). **Streaming s3 reads
+  need the `AWS_*` env channel** on the executing process: `read_vortex` binds through Rust
+  `object_store`, which ignores DuckDB httpfs secrets — same channel as lance, see
+  [README-lance-format.md § S3 datasets](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel).
+  (The vortex COPY *write* path goes through Trino's filesystem upload and needs no env.)
+
+## Lance Data Files & Vector Search (EXPERIMENTAL)
+
+> **Experimental**, like the other non-parquet formats.
+
+`data_file_format = 'lance'` stores each write as a [Lance](https://lancedb.github.io/lance/)
+**dataset directory** and enables three search table functions over the table's lance data:
+
+```sql
+SELECT id, title, _distance
+FROM TABLE(ducklake.system.lance_vector_search(
+        schema_name => 'vectors', table_name => 'docs',
+        column_name => 'emb', query_vec => ARRAY[0.12, 0.85], k => 10))
+ORDER BY _distance LIMIT 10;
+```
+
+| Capability | Notes |
+|---|---|
+| CTAS / INSERT (`data_file_format='lance'`) | Scalars + `ARRAY` of scalar; embedding columns (`ARRAY(REAL)`) round-trip into `lance_vector_search`. `ROW` writes are gated (upstream NULL-struct loss), `MAP` unsupported by lance < format 2.2 — register externally-written datasets via `add_files` instead. |
+| Reads | `__lance_scan('<dataset dir>')` through the DuckDB engine; TupleDomain pushdown; full complex-type reads |
+| `add_files(file_format => 'lance')` | Register externally-produced lance datasets (the embedding-pipeline route) |
+| `lance_vector_search` | k-NN over an embedding column; appends `_distance` |
+| `lance_fts` | BM25 full-text (no index required); appends `_score` |
+| `lance_hybrid_search` | Combined vector + text with optional `alpha`; appends `_distance`, `_score`, `_hybrid_score` |
+| Search pushdown | `WHERE` / `ORDER BY <score> LIMIT n` / projection push down (`prefilter => true` for filter-then-search semantics) |
+| s3 datasets | Quack engine + `AWS_*` sidecar env (lance ignores DuckDB secrets) |
+| Upstream churn guard | `TestLanceExtensionCanary` pins the verified extension build |
+
+**Full reference — arguments, exact-top-k recipe, prefilter pushability, s3 channel, gates:**
+[`README-lance-format.md`](README-lance-format.md). Architecture decision (DuckDB extension vs
+lance-core JNI): [`dev-docs/REPORT-lance-route-a-vs-b.md`](dev-docs/REPORT-lance-route-a-vs-b.md).
+
 ## Table Properties
 
 Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (...)`.
@@ -347,7 +403,7 @@ Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (.
 | Property | Type | Description |
 |----------|------|-------------|
 | `partitioned_by` | `ARRAY(VARCHAR)` | Partition columns with optional transform, e.g. `ARRAY['region', 'year(event_date)', 'bucket(4, customer_id)']`. See [Partitioning](#partitioning). |
-| `data_file_format` | `VARCHAR` | Data file format for this table's CTAS payload: `'parquet'` (default) or `'duckdb'`. Overrides the session-level `data_file_format` for this CREATE only. |
+| `data_file_format` | `VARCHAR` | Data file format for this table's CTAS payload: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Overrides the session-level `data_file_format` for this CREATE only. |
 | `location` | `VARCHAR` | Per-table storage path landed in `ducklake_table.path`. Values with a URI scheme (`s3://`, `gs://`, `file://`, `abfss://`, ...) are stored absolute (`path_is_relative=false`); other values are stored relative to the schema's data path. Trailing slash is appended if missing; `..` segments are rejected. Defaults to `<tableName>/`. |
 
 Example:
@@ -431,6 +487,9 @@ The connector is tested for bidirectional compatibility with DuckDB:
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
 | `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
 | `ducklake.duckdb.auto-httpfs-threshold` | No | `64MiB` | **EXPERIMENTAL.** File-size threshold for the `auto` setting of `duckdb_read_mode`. Files at or above this size stream via httpfs; smaller files materialize to local tmp. No effect when `data_file_format` is `parquet`. |
+| `ducklake.execution-engine` | No | in-process | **EXPERIMENTAL.** DuckDB execution engine for non-parquet splits: in-process (default) or `quack` (out-of-process sidecar over Quack RPC; requires the `ducklake.quack.*` properties below). |
+| `ducklake.quack.host` / `ducklake.quack.port` / `ducklake.quack.token` | With `quack` | — | **EXPERIMENTAL.** Quack sidecar endpoint + auth token. For lance/vortex s3 datasets, the sidecar container's environment also carries the `AWS_*` credential channel (see [README-lance-format.md](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel)). |
+| `ducklake.duckdb.parity-extension-path` | No | bundled | Filesystem path to the `trino_parity.duckdb_extension` binary; overrides the platform-matched binary bundled into the plugin jar. REQUIRED (server-side path) when the Quack engine is used. |
 | `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
 | `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
 
@@ -440,7 +499,7 @@ The connector is tested for bidirectional compatibility with DuckDB:
 |----------|---------|-------------|
 | `read_snapshot_id` | — | Pin reads in this session to a snapshot ID |
 | `read_snapshot_timestamp` | — | Pin reads in this session to an ISO-8601 instant |
-| `data_file_format` | session-inherited | `'parquet'` or `'duckdb'`. Controls the format of writes (CTAS / INSERT) in this session. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). The table-level `data_file_format` property overrides this for a specific `CREATE`. `'duckdb'` is **EXPERIMENTAL**. |
+| `data_file_format` | session-inherited | `'parquet'`, `'duckdb'`, `'vortex'`, or `'lance'`. Controls the format of writes (CTAS / INSERT) in this session. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). The table-level `data_file_format` property overrides this for a specific `CREATE`. All non-parquet formats are **EXPERIMENTAL**. |
 | `duckdb_writer_mode` | `arrow_stream` | **EXPERIMENTAL.** `'arrow_stream'` (default, columnar) or `'appender'` (JDBC Appender; kept for comparison). No effect when `data_file_format` is `parquet`. |
 | `duckdb_read_mode` | `httpfs` | **EXPERIMENTAL.** Read strategy for duckdb-format data files: `'httpfs'` (DuckDB streams blocks from S3), `'materialize'` (download `.db` to local tmp then ATTACH), or `'auto'` (per-file decision against `ducklake.duckdb.auto-httpfs-threshold`). No effect when `data_file_format` is `parquet`. |
 | `pushdown_timestamp_with_timezone` | `true` | Enable function pushdown of date/time predicates over `TIMESTAMP WITH TIME ZONE` columns on the duckdb-format read path (Tier C). On by default. Requires successful `SET TimeZone` on attach — automatic for all named IANA zones and integer-hour offsets; fractional bare-offset session zones get a one-shot WARN and pushdown silently degrades to Trino-side evaluation. Set to `false` to keep these predicates above the scan. See [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md). |
@@ -532,6 +591,14 @@ research item.
   The user-visible WTZ rendering change (session-zone instead of UTC) applies to
   duckdb-format reads only; parquet-format reads through Trino's standard reader
   still render WTZ in UTC.
+- Vortex and lance formats are **EXPERIMENTAL** with format-specific write gates from upstream
+  issues: vortex rejects `MAP` columns at schema time (native failure in the vortex extension's
+  MAP COPY), lance rejects `ROW` columns at schema time (NULL-struct loss in the arrow-scan →
+  lance COPY leg). Reads of externally-written files with those types work. Streaming s3 reads
+  of both formats require the `AWS_*` env credential channel (Rust `object_store` ignores
+  DuckDB httpfs secrets) — see [README-lance-format.md](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel).
+- The lance search table functions reject (v1): mixed-format tables, tables with row-level
+  deletes, and s3-resident datasets on the in-process engine (Quack-only).
 
 ## Additional Documentation
 
@@ -539,6 +606,9 @@ research item.
 - [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
 - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
 - [Pushdown reference (DuckDB-format reads)](README-duckdb-format-pushdown-reference.md) — complete current surface: predicate/pruning, operators, transforms, all ~95 functions
+- [Lance format & vector search reference](README-lance-format.md) — search function arguments, exact-top-k recipe, prefilter semantics, s3 channel, write gates, upstream canary
 - [TODO for pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
 - [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
+- [TODO for lance](dev-docs/TODO-lance.md) / [TODO for vortex](dev-docs/TODO-vortex.md) — format trackers incl. probe findings and the Route A/B decision record
+- [Lance Route A-vs-B benchmark](dev-docs/REPORT-lance-route-a-vs-b.md) — why the DuckDB-extension architecture stays primary
 - [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail

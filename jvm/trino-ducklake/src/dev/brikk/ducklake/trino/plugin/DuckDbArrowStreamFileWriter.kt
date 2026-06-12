@@ -90,7 +90,6 @@ import org.duckdb.DuckDBConnection
 import java.io.IOException
 import java.lang.Float.intBitsToFloat
 import java.lang.Math.floorDiv
-import java.lang.Math.floorMod
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.nio.charset.StandardCharsets
@@ -98,10 +97,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
 import java.sql.SQLException
-import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneOffset
 import java.util.ArrayList
 import java.util.Comparator
 import java.util.Optional
@@ -1077,16 +1073,5 @@ constructor(
             }
         }
 
-        @Suppress("unused")
-        private fun nanosFloor(instant: Instant): Instant {
-            return instant
-        }
-
-        @Suppress("unused")
-        private fun microsToLocalDateTime(epochMicros: Long): LocalDateTime {
-            val epochSecond: Long = floorDiv(epochMicros, 1_000_000L)
-            val nanoOfSecond: Int = (floorMod(epochMicros, 1_000_000L)).toInt() * 1_000
-            return LocalDateTime.ofEpochSecond(epochSecond, nanoOfSecond, ZoneOffset.UTC)
-        }
     }
 }
