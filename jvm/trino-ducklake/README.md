@@ -383,7 +383,7 @@ ORDER BY _distance LIMIT 10;
 
 | Capability | Notes |
 |---|---|
-| CTAS / INSERT (`data_file_format='lance'`) | Scalars + `ARRAY` of scalar; embedding columns (`ARRAY(REAL)`) round-trip into `lance_vector_search`. `ROW` writes are gated (upstream NULL-struct loss), `MAP` unsupported by lance < format 2.2 — register externally-written datasets via `add_files` instead. |
+| CTAS / INSERT (`data_file_format='lance'`) | Scalars + `ARRAY` of scalar; embedding columns (`ARRAY(REAL)`) round-trip into `lance_vector_search`. `ROW` writes are gated (upstream NULL-struct loss) and `MAP` writes are gated at schema time (lance < format 2.2 fails the COPY at close) — register externally-written datasets via `add_files` instead. |
 | Reads | `__lance_scan('<dataset dir>')` through the DuckDB engine; TupleDomain pushdown; full complex-type reads |
 | `add_files(file_format => 'lance')` | Register externally-produced lance datasets (the embedding-pipeline route) |
 | `lance_vector_search` | k-NN over an embedding column; appends `_distance` |
@@ -597,8 +597,9 @@ research item.
   still render WTZ in UTC.
 - Vortex and lance formats are **EXPERIMENTAL** with format-specific write gates from upstream
   issues: vortex rejects `MAP` columns at schema time (native failure in the vortex extension's
-  MAP COPY), lance rejects `ROW` columns at schema time (NULL-struct loss in the arrow-scan →
-  lance COPY leg). Reads of externally-written files with those types work. Streaming s3 reads
+  MAP COPY), lance rejects `ROW` columns (NULL-struct loss in the arrow-scan → lance COPY leg)
+  and `MAP` columns (the installed lance extension needs file format 2.2+ and otherwise fails
+  the COPY at close) at schema time. Reads of externally-written files with those types work. Streaming s3 reads
   of both formats require the `AWS_*` env credential channel (Rust `object_store` ignores
   DuckDB httpfs secrets) — see [README-lance-format.md](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel).
 - The lance search table functions reject (v1): mixed-format tables, tables with row-level

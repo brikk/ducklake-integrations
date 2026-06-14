@@ -134,7 +134,6 @@ class TestDucklakeLanceFormat : AbstractDucklakeIntegrationTest() {
      * COPY preserves struct nulls and the same arrow stream into a `.db` preserves them, so
      * the loss is specific to the arrow-scan → lance COPY leg). Until that upstream interplay
      * is fixed, the writer rejects ROW at schema time rather than silently rewriting NULLs.
-     * (MAP needs no gate — lance itself errors cleanly: "Map ... only in Lance format 2.2+".)
      */
     @Test
     fun rowColumnIsRejectedForLanceWrites() {
@@ -144,6 +143,23 @@ class TestDucklakeLanceFormat : AbstractDucklakeIntegrationTest() {
                     + "SELECT CAST(ROW(10, 'alpha') AS ROW(i INTEGER, s VARCHAR)) AS st")
         }.hasMessageContaining("lance write of ROW columns is not supported")
         tryDropTable("lance_row")
+    }
+
+    /**
+     * MAP writes are gated for lance: the installed lance extension needs file format 2.2+ for
+     * MAP and otherwise fails the COPY at close — surfaced only as an opaque "Failed to close
+     * writer" (probed 2026-06-14, contradicting an earlier assumption that lance errored cleanly
+     * upfront). The writer now rejects MAP at schema time, matching the vortex-MAP / lance-ROW
+     * gates, so the user gets a clear, actionable message.
+     */
+    @Test
+    fun mapColumnIsRejectedForLanceWrites() {
+        assumeLanceExtensionAvailable()
+        org.assertj.core.api.Assertions.assertThatThrownBy {
+            computeActual("CREATE TABLE lance_map WITH (data_file_format = 'lance') AS "
+                    + "SELECT MAP(ARRAY['a'], ARRAY[1]) AS mp")
+        }.hasMessageContaining("lance write of MAP columns is not supported")
+        tryDropTable("lance_map")
     }
 
     private fun assumeLanceExtensionAvailable() {

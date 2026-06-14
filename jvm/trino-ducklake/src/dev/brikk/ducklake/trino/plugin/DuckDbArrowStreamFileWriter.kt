@@ -167,17 +167,24 @@ constructor(
     private var closed: Boolean = false
 
     init {
-        // The vortex COPY path natively crashes or hangs the process on MAP data (probed
-        // 2026-06-11, vortex extension on DuckDB 1.5.3 — memory corruption, not a clean error),
-        // so MAP anywhere in a column type is rejected up front for vortex. Lance rejects MAP
-        // itself with a clean versioned error ("Map ... only supported in Lance file format
-        // 2.2+"), and the .db path supports MAP fully — neither needs this gate.
-        if (isVortex) {
+        // MAP columns are rejected up front for BOTH vortex and lance:
+        //  - vortex: the COPY path natively crashes or hangs the process on MAP data (probed
+        //    2026-06-11, vortex extension on DuckDB 1.5.3 — memory corruption, not a clean error).
+        //  - lance: the lance file format requires version 2.2+ for MAP; the installed extension
+        //    fails the COPY at close (surfaced only as an opaque "Failed to close writer" — probed
+        //    2026-06-14, NOT the clean upfront error an earlier comment assumed), so gate it here
+        //    for a clear message. Externally-written lance datasets with MAP can still be read via
+        //    add_files. The .db path supports MAP fully and needs no gate.
+        if (isVortex || isLance) {
+            val formatLabel = if (isVortex) "vortex" else "lance"
+            val reason = if (isVortex)
+                "the DuckDB vortex extension fails natively on MAP COPY"
+            else
+                "the lance file format requires version 2.2+ for MAP and the COPY fails at close otherwise"
             for (col in columns) {
                 if (DuckDbComplexVectorWriter.containsMapType(col.columnType)) {
                     throw TrinoException(NOT_SUPPORTED,
-                            "vortex write of MAP columns is not supported (the DuckDB vortex "
-                                    + "extension fails natively on MAP COPY); column "
+                            "$formatLabel write of MAP columns is not supported ($reason); column "
                                     + "'${col.columnName}' has type ${col.columnType}. Use the "
                                     + "parquet or duckdb data_file_format for MAP columns.")
                 }

@@ -219,7 +219,10 @@ big-ticket degraded-type item; engine-level type features.
 - Vortex: type audit beyond scalars/ARRAY/ROW; verify the extension actually *exploits* pushed
   predicates (the WHERE renders; whether vortex skips decompression is unmeasured).
 - Upstream watches (canary-driven retests on extension bumps): vortex MAP COPY native crash;
-  lance arrow-scan NULL-ROW morph; lance MAP needs format 2.2; lance FTS k is best-effort.
+  lance arrow-scan NULL-ROW morph; lance MAP needs format 2.2 (now GATED at schema time —
+  2026-06-14 — it failed opaquely as "Failed to close writer", not the clean upfront error an
+  old comment assumed; `TestDucklakeLanceFormat.mapColumnIsRejectedForLanceWrites`); lance FTS
+  k is best-effort.
 - `add_files` lance `record_count` full-scan cost on huge datasets.
 - Cross-dialect view transpilation (research item).
 - DuckDB-equivalent virtual columns (`rowid`, `snapshot_id`) — TODO-READ-MODE box.
