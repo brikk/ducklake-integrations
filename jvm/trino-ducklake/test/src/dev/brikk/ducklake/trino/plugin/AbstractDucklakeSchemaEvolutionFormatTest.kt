@@ -222,6 +222,50 @@ abstract class AbstractDucklakeSchemaEvolutionFormatTest : AbstractDucklakeInteg
         }
     }
 
+    @Test
+    fun deleteAfterAddColumnFiltersCorrectlyAcrossGenerations() {
+        // DELETE/UPDATE drive a merge scan that requests $row_id (positional) alongside the
+        // data columns — the same read path the schema-evolution name resolution rewrites.
+        // This pins that row-level CRUD composes with evolution on non-parquet data.
+        val table = "se_delete"
+        try {
+            createFormatTableAs(table, "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
+            computeActual("ALTER TABLE $table ADD COLUMN score INTEGER")
+            computeActual("INSERT INTO $table VALUES (4, 'd', 40), (5, 'e', 50)")
+
+            // Delete spans the pre-add file (id 1-3, score NULL) and the post-add file (4-5).
+            computeActual("DELETE FROM $table WHERE id IN (2, 4)")
+
+            val rows = computeActual("SELECT id, name, score FROM $table ORDER BY id").materializedRows
+            assertThat(rows.map { (it.getField(0) as Number).toLong() }).containsExactly(1L, 3L, 5L)
+            assertThat(rows.map { it.getField(2) }).containsExactly(null, null, 50)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun updateAfterRenameColumnRewritesUnderCurrentSchema() {
+        val table = "se_update"
+        try {
+            createFormatTableAs(table,
+                    "SELECT * FROM (VALUES (1, 'alice', 10), (2, 'bob', 20)) AS t(id, name, score)")
+            computeActual("ALTER TABLE $table RENAME COLUMN name TO full_name")
+
+            // UPDATE reads the old file (name under its old physical name) and rewrites the
+            // matched rows into a NEW file at the current schema.
+            computeActual("UPDATE $table SET score = score + 100 WHERE full_name = 'alice'")
+
+            val rows = computeActual("SELECT id, full_name, score FROM $table ORDER BY id").materializedRows
+            assertThat(rows.map { it.getField(1) as String }).containsExactly("alice", "bob")
+            assertThat(rows.map { it.getField(2) as Int }).containsExactly(110, 20)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     private fun snapshotId(table: String): Long =
             computeScalar("SELECT max(snapshot_id) FROM \"$table\$snapshots\"") as Long
 }

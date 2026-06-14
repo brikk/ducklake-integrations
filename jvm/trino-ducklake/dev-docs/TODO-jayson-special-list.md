@@ -120,6 +120,19 @@ duckdb format (ART indexes in the .db files) and future formats plug into the sa
 not a lance one-off. Catalog representation, DDL/procedure surface, and when indexing runs
 (synchronous on write vs maintenance op) are the design questions.
 
+⚠️ SCOPED 2026-06-14 — **DECISION NEEDED, see dev-docs/RESEARCH-lance-index-lifecycle.md.**
+Live-probed the installed lance extension: **there is NO index-creation function** — indexes
+must be built externally (Python lance) and arrive via `add_files`. `__lance_optimize_index`
+optimizes a *pre-existing* index only; the genuinely-callable ops are `__lance_compact_files`
++ `__lance_cleanup_old_versions` (dataset maintenance — really F6, and they MUTATE the dataset
+in place, raising a snapshot-safety question). All are table functions → run through the
+existing executor, no non-SELECT path needed. So a Trino-only "create + maintain an index"
+story is NOT deliverable today; the .db ART-index angle doesn't fit DuckLake's many-small-files
+model either. Did NOT build speculative procedures (creation blocked + maintenance safety
+unresolved). The doc frames the part-2 `ducklake_index` spec-change design + 4 direction
+options for Jayson. Re-probe on lance extension bumps (TestLanceExtensionCanary is the
+trip-wire).
+
 ### F4. Row-level CRUD over non-parquet data files
 
 Verification spike from T1 first; then fix whatever it finds (write-side may need to accept or
