@@ -272,6 +272,7 @@ operators and functions are not available through Trino.
 | RENAME SCHEMA | Yes | Tables/views/macros follow; data stays in place; DuckDB cross-engine verified |
 | COMMENT ON TABLE | Yes | Stored as the `comment` tag in `ducklake_tag`; visible to DuckDB |
 | COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
+| DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Flush inlined data to files first (DuckLake `flush_inlined_data`, or `data_inlining_row_limit = 0`). Reads over inlined+file mixes work. |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
 | ALTER TABLE ADD/DROP FIELD | No | Nested struct field manipulation |
 | ANALYZE | No | Statistics are read-only from the catalog |

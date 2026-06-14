@@ -68,6 +68,15 @@ Known open boxes that belong here: views across all catalog backends (TODO-READ-
 DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
 concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
 
+✅ T2-B DONE 2026-06-14 — the grid's named inlined-interplay cell: a table with BOTH inlined
+rows (DuckDB-written) AND a non-parquet data file (Trino-written). READ composes fine
+(inlined split + lance data-file split union correctly — `TestDucklakeInlinedNonParquetInterplay`).
+But DELETE/UPDATE/MERGE failed with an opaque "Column not found: $row_id" — the inlined page
+source filtered `isVirtual()` columns but not the MERGE `$row_id` (which is `isRowIdColumn()`,
+not a VirtualKind), and this connector's merge sink can't tombstone an inlined row anyway (no
+data_file_id/position). Now GATED in `beginMerge` with a clear "flush inlined data first"
+error. (Pre-existing on ALL tables with inlined rows, not just the non-parquet mix.)
+
 ✅ T2-A DONE 2026-06-14 — the branch-hunt's first big find: **schema evolution was totally
 broken on non-parquet data**. CTAS into duckdb/vortex/lance + any `ALTER TABLE ADD/RENAME/DROP
 COLUMN` made the table UNREADABLE ("column not found") — the DuckDB-engine read projected

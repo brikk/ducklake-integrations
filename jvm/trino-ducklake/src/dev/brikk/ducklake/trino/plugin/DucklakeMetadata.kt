@@ -1092,6 +1092,22 @@ class DucklakeMetadata(
 
         updateCaseColumns.values.forEach { rejectVirtualColumnWrites(it) }
 
+        // Gate DELETE/UPDATE/MERGE on tables that still hold live inlined rows. The merge scan
+        // requests the $row_id of every scanned row, but inlined rows have no data file / file
+        // position, and this connector's merge sink only writes parquet positional delete files
+        // keyed by (data_file_id, position) — it has no way to tombstone an inlined row. Rather
+        // than fail mid-scan with an opaque "Column not found: $row_id" from the inlined page
+        // source, reject early with guidance. Flushing the inlined data to files (DuckLake's
+        // flush_inlined_data, or data_inlining_row_limit = 0 then a rewrite) makes the rows
+        // file-resident and DELETE/UPDATE/MERGE work normally.
+        if (catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId).any { it.hasLiveRows }) {
+            throw TrinoException(NOT_SUPPORTED,
+                    "DELETE/UPDATE/MERGE is not supported while ${handle.schemaName}.${handle.tableName} has " +
+                            "inlined rows (rows written below DuckLake's data_inlining_row_limit). Flush the " +
+                            "inlined data to files first (e.g. DuckLake's flush_inlined_data procedure, or set " +
+                            "data_inlining_row_limit = 0).")
+        }
+
         // Build insert handle for UPDATE support (delete+insert pattern)
         val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
                 .filter { col -> col.parentColumn == null }
