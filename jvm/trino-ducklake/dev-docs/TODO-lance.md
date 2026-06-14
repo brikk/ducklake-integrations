@@ -212,6 +212,10 @@ Leans on DuckDB as the single execution engine for non-parquet formats, exactly 
 
 ## Route B — direct via `lance-core` JNI (extend the vendored `lance-trino` plugin)
 
+**MOOT (2026-06-12): the A-vs-B benchmark decided for Route A as primary — do NOT fork
+lance-trino. See REPORT-lance-route-a-vs-b.md (dev-docs/archive/) for the record. The boxes
+below are retained for the historical option only; none are planned.**
+
 Native path, no DuckDB indirection; full vector/FTS/index surface (`nearest`, `fullTextQuery`, `prefilter`, `useScalarIndex`, `substraitAggregate`, `setColumnOrderings`) sits in `org.lance.ipc.ScanOptions.Builder` — the vendored plugin wires only 5 of 16. See RESEARCH §4.2 for the full surface.
 
 **Prereqs:**

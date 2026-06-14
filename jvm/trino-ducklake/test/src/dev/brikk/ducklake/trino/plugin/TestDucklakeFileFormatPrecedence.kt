@@ -129,22 +129,41 @@ open class TestDucklakeFileFormatPrecedence : AbstractDucklakeIntegrationTest() 
 
     @Test
     fun testEmptyCtasProducesNoFiles() {
-        // CTAS that selects zero rows produces zero data files — rule (c) on the
-        // next INSERT therefore has nothing to match and falls through to default.
+        // CTAS that selects zero rows produces zero data files. The explicit WITH clause
+        // is persisted as the table-scoped declared format, so the next INSERT honors it
+        // even though there is no prior data file for rule (c) to match — the user's
+        // declaration survives an empty materialization (it used to fall through to the
+        // connector default, the same lost-declaration bug as empty CREATE TABLE + INSERT).
         computeActual(sessionWith(FORMAT_DUCKDB),
                 "CREATE TABLE test_schema.empty_ctas WITH (data_file_format = 'duckdb') AS " +
                         "SELECT 1 AS id WHERE 1 = 0")
         try {
             assertThat(filesByFormat("empty_ctas")).isEmpty()
 
-            // Plain INSERT, session unset → connector default parquet (no prior file
-            // to inherit from). This is the documented edge case in N1 — the user's
-            // CTAS-time intent doesn't carry through an empty materialization.
             computeActual("INSERT INTO test_schema.empty_ctas VALUES (10), (20)")
-            assertAllFilesAre("empty_ctas", FORMAT_PARQUET)
+            assertAllFilesAre("empty_ctas", FORMAT_DUCKDB)
         }
         finally {
             tryDropTable("test_schema.empty_ctas")
+        }
+    }
+
+    @Test
+    fun testEmptySessionCtasFallsBackToDefault() {
+        // The undeclared variant of the empty-CTAS edge: a session-format CTAS persists
+        // nothing, so an empty materialization leaves no trace of the session intent and
+        // the next plain INSERT falls through to the connector default. This is the
+        // documented N1 edge — per-session intent doesn't outlive the statement.
+        computeActual(sessionWith(FORMAT_DUCKDB),
+                "CREATE TABLE test_schema.empty_session_ctas AS SELECT 1 AS id WHERE 1 = 0")
+        try {
+            assertThat(filesByFormat("empty_session_ctas")).isEmpty()
+
+            computeActual("INSERT INTO test_schema.empty_session_ctas VALUES (10), (20)")
+            assertAllFilesAre("empty_session_ctas", FORMAT_PARQUET)
+        }
+        finally {
+            tryDropTable("test_schema.empty_session_ctas")
         }
     }
 
@@ -394,6 +413,53 @@ open class TestDucklakeFileFormatPrecedence : AbstractDucklakeIntegrationTest() 
         finally {
             tryDropTable("test_schema.cross_duck")
             tryDropTable("test_schema.cross_parq")
+        }
+    }
+
+    // ==================== Declared-format persistence ====================
+    // An explicit WITH (data_file_format = ...) is persisted as the table-scoped
+    // `data_file_format` setting in ducklake_metadata, so it outlives the statement
+    // that created the table. Session-CTAS tables persist nothing and keep pure
+    // latest-file inheritance (testFlipStaysFlipped above).
+
+    @Test
+    fun testInsertIntoEmptyDeclaredFormatTable() {
+        // The bug this persistence fixes: CREATE TABLE (no CTAS) declares duckdb, the
+        // first INSERT used to fall back to parquet because the still-empty table had
+        // no latest data file to inherit from.
+        computeActual("CREATE TABLE test_schema.declared_empty (id INTEGER) " +
+                "WITH (data_file_format = 'duckdb')")
+        try {
+            computeActual("INSERT INTO test_schema.declared_empty VALUES (1)")
+            assertFileCountByFormat("declared_empty", 1, 0)
+
+            computeActual("INSERT INTO test_schema.declared_empty VALUES (2)")
+            assertFileCountByFormat("declared_empty", 2, 0)
+        }
+        finally {
+            tryDropTable("test_schema.declared_empty")
+        }
+    }
+
+    @Test
+    fun testDeclaredFormatPinsPlainInsertsAfterSessionFlip() {
+        // Contrast with testFlipStaysFlipped: on a DECLARED table the declaration beats
+        // the latest-file rule, so a session-forced parquet file doesn't change what
+        // plain INSERTs write afterwards. Session still beats the declaration (rule b).
+        computeActual(sessionWith(FORMAT_PARQUET),
+                "CREATE TABLE test_schema.declared_pins WITH (data_file_format = 'duckdb') AS SELECT 1 AS id")
+        try {
+            assertFileCountByFormat("declared_pins", 1, 0)
+
+            computeActual(sessionWith(FORMAT_PARQUET),
+                    "INSERT INTO test_schema.declared_pins VALUES (2)")
+            assertFileCountByFormat("declared_pins", 1, 1)
+
+            computeActual("INSERT INTO test_schema.declared_pins VALUES (3)")
+            assertFileCountByFormat("declared_pins", 2, 1)
+        }
+        finally {
+            tryDropTable("test_schema.declared_pins")
         }
     }
 

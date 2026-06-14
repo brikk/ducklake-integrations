@@ -19,11 +19,13 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import dev.brikk.ducklake.catalog.SnapshotRange.activeAt
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_TAG
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_NAME_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_COLUMN
@@ -37,6 +39,7 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_SORT_INFO
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE_COLUMN_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE_STATS
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TAG
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_VIEW
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnMappingRecord
 import dev.brikk.ducklake.catalog.schema.tables.records.DucklakeColumnRecord
@@ -1449,6 +1452,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         columns: List<TableColumnSpec>,
         partitionSpec: List<PartitionFieldSpec>?,
         location: TableLocationSpec?,
+        dataFileFormat: String?,
     ) {
         val tab = DUCKLAKE_TABLE.`as`("tab")
         val partinfo = DUCKLAKE_PARTITION_INFO.`as`("partinfo")
@@ -1513,9 +1517,33 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 }
             }
 
+            // 5. Persist the declared data file format as a table-scoped setting. Unversioned
+            // (no snapshot range) like upstream's set_option rows; upstream DuckDB loads
+            // table-scoped settings into an untyped options map at ATTACH, so the key is
+            // interop-safe even though only this connector consumes it.
+            if (dataFileFormat != null) {
+                val meta = DUCKLAKE_METADATA.`as`("meta")
+                ctx.insertInto(meta)
+                    .set(meta.KEY, TABLE_DATA_FILE_FORMAT_KEY)
+                    .set(meta.VALUE, dataFileFormat)
+                    .set(meta.SCOPE, TABLE_SETTING_SCOPE)
+                    .set(meta.SCOPE_ID, tableId)
+                    .execute()
+            }
+
             tx.incrementSchemaVersion(tableId)
             tx.recordChange(WriteChange.CreatedTable(schemaId, schemaName, tableName))
         }
+    }
+
+    override fun getTableDataFileFormat(tableId: Long): String? {
+        val meta = DUCKLAKE_METADATA.`as`("meta")
+        return dsl.select(meta.VALUE)
+            .from(meta)
+            .where(meta.KEY.eq(TABLE_DATA_FILE_FORMAT_KEY))
+            .and(meta.SCOPE.eq(TABLE_SETTING_SCOPE))
+            .and(meta.SCOPE_ID.eq(tableId))
+            .fetchOne(meta.VALUE)
     }
 
     /**
@@ -1626,9 +1654,294 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                     .and(partinfo.END_SNAPSHOT.isNull),
             )
 
+            // Table-scoped settings rows are unversioned, so remove them outright (table ids
+            // are never reused; a leftover row would be junk, not a time-travel artifact).
+            val meta = DUCKLAKE_METADATA.`as`("meta")
+            metadata.execute(
+                ctx,
+                ctx.deleteFrom(meta)
+                    .where(meta.SCOPE.eq(TABLE_SETTING_SCOPE))
+                    .and(meta.SCOPE_ID.eq(tableId)),
+            )
+
             tx.incrementSchemaVersion(tableId)
             tx.recordChange(WriteChange.DroppedTable(tableId))
         }
+    }
+
+    override fun renameTable(tableId: Long, targetSchemaName: String, newTableName: String) {
+        val tab = DUCKLAKE_TABLE.`as`("tab")
+        executeWriteTransaction("rename table $tableId to $targetSchemaName.$newTableName") { tx ->
+            val ctx = tx.dsl()
+
+            val existing = metadata.fetchOne(
+                ctx,
+                ctx.selectFrom(tab)
+                    .where(tab.TABLE_ID.eq(tableId))
+                    .and(activeAt(tab, tx.getCurrentSnapshotId())),
+            ) ?: throw RuntimeException("Table not found: $tableId")
+
+            val targetSchemaId = tx.resolveSchemaId(targetSchemaName)
+            if (targetSchemaId != existing.get(tab.SCHEMA_ID)) {
+                // Table data paths are SCHEMA-relative (resolved as schemaPath + tablePath), so
+                // re-pointing schema_id would leave the data files unreachable under the new
+                // schema's path. Upstream has no cross-schema rename either.
+                throw RuntimeException(
+                    "Renaming a table across schemas is not supported: table data paths are schema-relative")
+            }
+            val clash = metadata.fetchOne(
+                ctx,
+                ctx.select(tab.TABLE_ID)
+                    .from(tab)
+                    .where(tab.SCHEMA_ID.eq(targetSchemaId))
+                    .and(tab.TABLE_NAME.eq(newTableName))
+                    .and(activeAt(tab, tx.getCurrentSnapshotId())),
+            )
+            if (clash != null) {
+                throw RuntimeException("Table already exists: $targetSchemaName.$newTableName")
+            }
+
+            // End-snapshot the current version; re-insert under the same table_id/uuid/path —
+            // only name (and possibly schema_id) change, so data files and history stay put.
+            metadata.execute(
+                ctx,
+                ctx.update(tab)
+                    .set(tab.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(tab.TABLE_ID.eq(tableId))
+                    .and(tab.END_SNAPSHOT.isNull),
+            )
+            ctx.insertInto(tab)
+                .set(tab.TABLE_ID, tableId)
+                .set(tab.TABLE_UUID, existing.get(tab.TABLE_UUID))
+                .set(tab.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(tab.SCHEMA_ID, targetSchemaId)
+                .set(tab.TABLE_NAME, newTableName)
+                .set(tab.PATH, existing.get(tab.PATH))
+                .set(tab.PATH_IS_RELATIVE, existing.get(tab.PATH_IS_RELATIVE))
+                .execute()
+
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    override fun renameSchema(schemaName: String, newName: String) {
+        val sch = DUCKLAKE_SCHEMA.`as`("sch")
+        val tab = DUCKLAKE_TABLE.`as`("tab")
+        val view = DUCKLAKE_VIEW.`as`("view")
+        val macro = DUCKLAKE_MACRO.`as`("macro")
+        executeWriteTransaction("rename schema $schemaName to $newName") { tx ->
+            val ctx = tx.dsl()
+            val schemaId = tx.resolveSchemaId(schemaName)
+
+            val existing = metadata.fetchOne(
+                ctx,
+                ctx.selectFrom(sch)
+                    .where(sch.SCHEMA_ID.eq(schemaId))
+                    .and(activeAt(sch, tx.getCurrentSnapshotId())),
+            ) ?: throw RuntimeException("Schema not found: $schemaName")
+
+            val clash = metadata.fetchOne(
+                ctx,
+                ctx.select(sch.SCHEMA_ID)
+                    .from(sch)
+                    .where(sch.SCHEMA_NAME.eq(newName))
+                    .and(activeAt(sch, tx.getCurrentSnapshotId())),
+            )
+            if (clash != null) {
+                throw RuntimeException("Schema already exists: $newName")
+            }
+
+            // ducklake_schema has a PRIMARY KEY on schema_id (upstream DDL), so a rename
+            // cannot be a same-id versioned-row replacement like table renames. Instead the
+            // renamed schema gets a NEW schema_id — old row end-snapshotted, so time travel
+            // keeps resolving the old name — and every active table/view/macro row in it is
+            // re-pointed via its own versioned-row replacement (those tables have no PK).
+            // The new schema row keeps the OLD path, so schema-relative table paths resolve
+            // unchanged and no data moves. Recorded as dropped+created: upstream's change
+            // vocabulary has no schema-rename type (its parser throws on unknown types), and
+            // that pair is the honest conflict surface either way.
+            val newSchemaId = tx.allocateCatalogId()
+            tx.recordChange(WriteChange.DroppedSchema(schemaId, schemaName))
+            tx.recordChange(WriteChange.CreatedSchema(newName))
+
+            metadata.execute(
+                ctx,
+                ctx.update(sch)
+                    .set(sch.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(sch.SCHEMA_ID.eq(schemaId))
+                    .and(sch.END_SNAPSHOT.isNull),
+            )
+            ctx.insertInto(sch)
+                .set(sch.SCHEMA_ID, newSchemaId)
+                .set(sch.SCHEMA_UUID, UUID.fromString(newCatalogUuid()))
+                .set(sch.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(sch.SCHEMA_NAME, newName)
+                .set(sch.PATH, existing.get(sch.PATH))
+                .set(sch.PATH_IS_RELATIVE, existing.get(sch.PATH_IS_RELATIVE))
+                .execute()
+
+            val activeTables = metadata.fetch(
+                ctx,
+                ctx.selectFrom(tab)
+                    .where(tab.SCHEMA_ID.eq(schemaId))
+                    .and(activeAt(tab, tx.getCurrentSnapshotId())),
+            )
+            for (t in activeTables) {
+                val tableId = t.get(tab.TABLE_ID)!!
+                metadata.execute(
+                    ctx,
+                    ctx.update(tab)
+                        .set(tab.END_SNAPSHOT, tx.getNewSnapshotId())
+                        .where(tab.TABLE_ID.eq(tableId))
+                        .and(tab.END_SNAPSHOT.isNull),
+                )
+                ctx.insertInto(tab)
+                    .set(tab.TABLE_ID, tableId)
+                    .set(tab.TABLE_UUID, t.get(tab.TABLE_UUID))
+                    .set(tab.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(tab.SCHEMA_ID, newSchemaId)
+                    .set(tab.TABLE_NAME, t.get(tab.TABLE_NAME))
+                    .set(tab.PATH, t.get(tab.PATH))
+                    .set(tab.PATH_IS_RELATIVE, t.get(tab.PATH_IS_RELATIVE))
+                    .execute()
+                tx.recordChange(WriteChange.AlteredTable(tableId))
+            }
+
+            val activeViews = metadata.fetch(
+                ctx,
+                ctx.selectFrom(view)
+                    .where(view.SCHEMA_ID.eq(schemaId))
+                    .and(activeAt(view, tx.getCurrentSnapshotId())),
+            )
+            for (v in activeViews) {
+                val viewId = v.get(view.VIEW_ID)!!
+                metadata.execute(
+                    ctx,
+                    ctx.update(view)
+                        .set(view.END_SNAPSHOT, tx.getNewSnapshotId())
+                        .where(view.VIEW_ID.eq(viewId))
+                        .and(view.END_SNAPSHOT.isNull),
+                )
+                ctx.insertInto(view)
+                    .set(view.VIEW_ID, viewId)
+                    .set(view.VIEW_UUID, v.get(view.VIEW_UUID))
+                    .set(view.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(view.SCHEMA_ID, newSchemaId)
+                    .set(view.VIEW_NAME, v.get(view.VIEW_NAME))
+                    .set(view.DIALECT, v.get(view.DIALECT))
+                    .set(view.SQL, v.get(view.SQL))
+                    .set(view.COLUMN_ALIASES, v.get(view.COLUMN_ALIASES))
+                    .execute()
+                tx.recordChange(WriteChange.AlteredView(viewId))
+            }
+
+            // Macros also carry schema_id. This connector never creates them, but a DuckDB
+            // writer may have; their impl/parameter rows key on macro_id, so re-pointing the
+            // ducklake_macro row is the whole move. No macro-alter change type exists — the
+            // schema-level dropped+created already covers the conflict surface.
+            val activeMacros = metadata.fetch(
+                ctx,
+                ctx.selectFrom(macro)
+                    .where(macro.SCHEMA_ID.eq(schemaId))
+                    .and(activeAt(macro, tx.getCurrentSnapshotId())),
+            )
+            for (m in activeMacros) {
+                val macroId = m.get(macro.MACRO_ID)
+                metadata.execute(
+                    ctx,
+                    ctx.update(macro)
+                        .set(macro.END_SNAPSHOT, tx.getNewSnapshotId())
+                        .where(macro.SCHEMA_ID.eq(schemaId))
+                        .and(macro.MACRO_ID.eq(macroId))
+                        .and(macro.END_SNAPSHOT.isNull),
+                )
+                ctx.insertInto(macro)
+                    .set(macro.SCHEMA_ID, newSchemaId)
+                    .set(macro.MACRO_ID, macroId)
+                    .set(macro.MACRO_NAME, m.get(macro.MACRO_NAME))
+                    .set(macro.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .execute()
+            }
+
+            tx.incrementSchemaVersion()
+        }
+    }
+
+    override fun setTableComment(tableId: Long, comment: String?) {
+        val tag = DUCKLAKE_TAG.`as`("tag")
+        executeWriteTransaction("set comment on table $tableId") { tx ->
+            val ctx = tx.dsl()
+            metadata.execute(
+                ctx,
+                ctx.update(tag)
+                    .set(tag.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(tag.OBJECT_ID.eq(tableId))
+                    .and(tag.KEY.eq(COMMENT_TAG_KEY))
+                    .and(tag.END_SNAPSHOT.isNull),
+            )
+            if (comment != null) {
+                ctx.insertInto(tag)
+                    .set(tag.OBJECT_ID, tableId)
+                    .set(tag.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(tag.KEY, COMMENT_TAG_KEY)
+                    .set(tag.VALUE, comment)
+                    .execute()
+            }
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    override fun getTableComment(tableId: Long, snapshotId: Long): String? {
+        val tag = DUCKLAKE_TAG.`as`("tag")
+        return dsl.select(tag.VALUE)
+            .from(tag)
+            .where(tag.OBJECT_ID.eq(tableId))
+            .and(tag.KEY.eq(COMMENT_TAG_KEY))
+            .and(activeAt(tag, snapshotId))
+            .fetchOne(tag.VALUE)
+    }
+
+    override fun setColumnComment(tableId: Long, columnId: Long, comment: String?) {
+        val ctag = DUCKLAKE_COLUMN_TAG.`as`("ctag")
+        executeWriteTransaction("set comment on column $columnId of table $tableId") { tx ->
+            val ctx = tx.dsl()
+            metadata.execute(
+                ctx,
+                ctx.update(ctag)
+                    .set(ctag.END_SNAPSHOT, tx.getNewSnapshotId())
+                    .where(ctag.TABLE_ID.eq(tableId))
+                    .and(ctag.COLUMN_ID.eq(columnId))
+                    .and(ctag.KEY.eq(COMMENT_TAG_KEY))
+                    .and(ctag.END_SNAPSHOT.isNull),
+            )
+            if (comment != null) {
+                ctx.insertInto(ctag)
+                    .set(ctag.TABLE_ID, tableId)
+                    .set(ctag.COLUMN_ID, columnId)
+                    .set(ctag.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                    .set(ctag.KEY, COMMENT_TAG_KEY)
+                    .set(ctag.VALUE, comment)
+                    .execute()
+            }
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    override fun getColumnComments(tableId: Long, snapshotId: Long): Map<Long, String> {
+        val ctag = DUCKLAKE_COLUMN_TAG.`as`("ctag")
+        return dsl.select(ctag.COLUMN_ID, ctag.VALUE)
+            .from(ctag)
+            .where(ctag.TABLE_ID.eq(tableId))
+            .and(ctag.KEY.eq(COMMENT_TAG_KEY))
+            .and(activeAt(ctag, snapshotId))
+            .fetch()
+            .mapNotNull { r ->
+                val columnId = r.get(ctag.COLUMN_ID) ?: return@mapNotNull null
+                val value = r.get(ctag.VALUE) ?: return@mapNotNull null
+                columnId to value
+            }
+            .toMap()
     }
 
     override fun addColumn(tableId: Long, column: TableColumnSpec) {
@@ -2174,6 +2487,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     companion object {
         private val log: System.Logger = System.getLogger(JdbcDucklakeCatalog::class.java.name)
         private const val CONFLICT_CHANGE_SUMMARY_LIMIT = 10
+
+        // Table-scoped ducklake_metadata setting persisted at CREATE TABLE when the user
+        // declares WITH (data_file_format = ...); read back by write-format resolution.
+        private const val TABLE_DATA_FILE_FORMAT_KEY = "data_file_format"
+        private const val TABLE_SETTING_SCOPE = "table"
+
+        // Tag key upstream COMMENT ON writes into ducklake_tag / ducklake_column_tag.
+        private const val COMMENT_TAG_KEY = "comment"
 
         // Optimistic-retry tuning. Defaults match the upstream DuckLake C++ extension
         // (`ducklake_max_retry_count` / `retry_wait_ms` / `retry_backoff` in

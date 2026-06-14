@@ -112,7 +112,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             // ducklake_types.cpp: int128 <-> HUGEINT, uint128 <-> UHUGEINT). int128 fits in
             // DECIMAL(38, 0) for all but the extreme edges of its ±1.7e38 range; uint128's
             // 0..3.4e38 range exceeds any Trino decimal, so we degrade it to VARCHAR (data
-            // preserved as text, no numeric ops). See dev-docs/COMPARE-pg_ducklake.md B3.
+            // preserved as text, no numeric ops). See dev-docs/archive/COMPARE-pg_ducklake.md B3.
             "int128" -> DecimalType.createDecimalType(38, 0)
             "uint128" -> VarcharType.VARCHAR
 

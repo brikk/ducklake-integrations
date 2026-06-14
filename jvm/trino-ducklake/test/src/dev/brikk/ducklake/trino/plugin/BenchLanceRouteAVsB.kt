@@ -40,7 +40,7 @@ import kotlin.random.Random
  * Measures COLD (fresh engine, first query — where the extension indirection is likeliest to
  * lose) and WARM (per-query latency after warmup) over a brute-force (unindexed) search, which
  * both engines execute as the same flat scan + top-k. Results print to stdout; they are recorded
- * in dev-docs/REPORT-lance-route-a-vs-b.md with the decision.
+ * in dev-docs/archive/REPORT-lance-route-a-vs-b.md with the decision.
  *
  * NOT part of the suite: gated on `-Dducklake.bench`, run manually:
  * ```

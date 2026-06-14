@@ -63,7 +63,7 @@ open class TestDucklakeCrossEngineCatalogMetadata
      * function errors (not just the offending row). This test exercises every kind we currently
      * emit from Trino write paths: `created_schema`, `created_table`,
      * `inserted_into_table`, `deleted_from_table`, `altered_table`,
-     * `dropped_table`, `dropped_schema`. See `dev-docs/COMPARE-pg_ducklake.md` B1
+     * `dropped_table`, `dropped_schema`. See `dev-docs/archive/COMPARE-pg_ducklake.md` B1
      * and `third_party/ducklake/src/storage/ducklake_transaction_changes.cpp`.
      */
     @Test

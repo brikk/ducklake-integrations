@@ -12,7 +12,7 @@ import org.apache.doris.connector.api.ConnectorType
  *
  * Unsupported / degraded mappings are marked `DEGRADED` in comments and mirror the
  * choices the Trino plugin makes — see `DucklakeTypeConverter` and the cross-engine
- * compatibility notes in `dev-docs/COMPARE-pg_ducklake.md`.
+ * compatibility notes in `dev-docs/archive/COMPARE-pg_ducklake.md`.
  */
 internal object DuckLakeTypeMapping {
 

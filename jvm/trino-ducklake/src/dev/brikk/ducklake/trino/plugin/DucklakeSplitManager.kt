@@ -480,9 +480,19 @@ class DucklakeSplitManager @Inject constructor(
                     if (partEntry.isEmpty) {
                         continue
                     }
-                    val partValue: String = partEntry.get().partitionValue
-                        ?: // Null partition value — can only match IS NULL predicates, don't prune
+                    val partValue: String? = partEntry.get().partitionValue
+                    if (partValue == null) {
+                        // NULL partition value: every row's source value is NULL (transforms map
+                        // NULL to NULL), so a domain that excludes NULL definitively excludes the
+                        // file. This is the ENFORCED predicate — the engine adds no residual
+                        // filter — so merely "not pruning" would leak the file's NULL rows into
+                        // `col = 'x'` results (caught by TestDucklakePartitionedWriteFormats'
+                        // NULL-region INSERT). A null-allowing domain keeps the file.
+                        if (!domain.isNullAllowed) {
+                            return@removeIf true
+                        }
                         continue
+                    }
                     if (!partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)) {
                         return@removeIf true // this transform excludes the file
                     }

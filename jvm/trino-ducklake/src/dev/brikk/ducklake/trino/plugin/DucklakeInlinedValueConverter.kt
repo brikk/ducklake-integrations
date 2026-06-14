@@ -115,7 +115,7 @@ object DucklakeInlinedValueConverter {
         if (elementType is ArrayType || elementType is MapType || elementType is RowType) {
             throw UnsupportedOperationException(
                     "Inlined data reads for nested list/struct/map element types are not yet supported " +
-                            "(see dev-docs/COMPARE-pg_ducklake.md B2); element type: " + elementType.displayName
+                            "(see dev-docs/archive/COMPARE-pg_ducklake.md B2); element type: " + elementType.displayName
             )
         }
 

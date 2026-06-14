@@ -95,6 +95,15 @@ interface DucklakeCatalog {
     fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String?
 
     /**
+     * The table's DECLARED data file format: the table-scoped `data_file_format` setting in
+     * `ducklake_metadata` (scope = 'table', scope_id = tableId), persisted when the table was
+     * created with an explicit `WITH (data_file_format = ...)`. Null when the table never
+     * declared a format — writes then fall back to latest-data-file inheritance. Settings rows
+     * are unversioned (no snapshot range), matching upstream's table-scoped option semantics.
+     */
+    fun getTableDataFileFormat(tableId: Long): String?
+
+    /**
      * Find data file IDs whose column statistics overlap with the given range.
      * Used for predicate pushdown — files outside the range are pruned.
      */
@@ -241,6 +250,12 @@ interface DucklakeCatalog {
      * `<tableName>/` relative path. The catalog stores it verbatim;
      * callers (e.g. the Trino connector's `DucklakeTableProperties`)
      * are responsible for trailing-slash, traversal, and scheme normalization.
+     *
+     * `dataFileFormat`, when present, is persisted as the table-scoped
+     * `data_file_format` setting in `ducklake_metadata` (same transaction), so later
+     * INSERTs into the still-empty table resolve the declared format instead of falling
+     * back to the connector default. Upstream DuckDB loads table-scoped settings into an
+     * untyped options map at ATTACH, so the extra key is interop-safe.
      */
     fun createTable(
         schemaName: String,
@@ -248,6 +263,7 @@ interface DucklakeCatalog {
         columns: List<TableColumnSpec>,
         partitionSpec: List<PartitionFieldSpec>?,
         location: TableLocationSpec?,
+        dataFileFormat: String? = null,
     )
 
     /**
@@ -256,6 +272,48 @@ interface DucklakeCatalog {
      * Creates a new snapshot atomically.
      */
     fun dropTable(schemaName: String, tableName: String)
+
+    /**
+     * Rename a table within its schema. End-snapshots the current `ducklake_table` row and
+     * inserts a new version with the same table_id, uuid, and path — data files and history
+     * are untouched; the table's data directory keeps its original name. Recorded as
+     * `altered_table` (upstream's vocabulary for renames). Creates a new snapshot atomically.
+     * Fails when the target name is already taken, and rejects a `targetSchemaName` other
+     * than the table's own — table data paths are schema-relative, so a cross-schema move
+     * would leave the data unreachable.
+     */
+    fun renameTable(tableId: Long, targetSchemaName: String, newTableName: String)
+
+    /**
+     * Rename a schema. `ducklake_schema` carries a PRIMARY KEY on schema_id, so the renamed
+     * schema gets a NEW schema_id (old row end-snapshotted — time travel keeps the old name)
+     * and every active table/view/macro row is re-pointed to it via versioned-row
+     * replacement. The new schema row keeps the OLD path, so schema-relative table paths
+     * resolve unchanged and no data moves. Recorded as `dropped_schema` + `created_schema` —
+     * upstream's change-type vocabulary has no schema-rename entry, and that pair yields the
+     * right conflict surface. Creates a new snapshot atomically. Fails when the target name
+     * is already taken.
+     */
+    fun renameSchema(schemaName: String, newName: String)
+
+    /**
+     * Set (or clear, with null) a table's comment: the versioned `comment` tag in
+     * `ducklake_tag` keyed by the table id — the same storage upstream's COMMENT ON uses,
+     * so comments round-trip cross-engine. Recorded as `altered_table`.
+     */
+    fun setTableComment(tableId: Long, comment: String?)
+
+    /** The table's `comment` tag active at the snapshot, or null. */
+    fun getTableComment(tableId: Long, snapshotId: Long): String?
+
+    /**
+     * Set (or clear, with null) a column's comment: the versioned `comment` tag in
+     * `ducklake_column_tag` keyed by (table id, column id). Recorded as `altered_table`.
+     */
+    fun setColumnComment(tableId: Long, columnId: Long, comment: String?)
+
+    /** Active column `comment` tags at the snapshot, keyed by column id. */
+    fun getColumnComments(tableId: Long, snapshotId: Long): Map<Long, String>
 
     /**
      * Add a column to a table. Creates a new ducklake_column row with a new column_id.

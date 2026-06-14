@@ -594,7 +594,7 @@ class DuckDbExpressionTranslator private constructor() {
          * `Call($not, [Call($like, ...)])` and is handled by the existing
          * `$not` branch recursing into us. Wildcards (`%`, `_`),
          * ESCAPE semantics, and NULL handling are aligned between DuckDB and Trino
-         * (see `dev-docs/RESEARCH-function-mapping.md`), so a direct emit is
+         * (see `dev-docs/archive/RESEARCH-function-mapping.md`), so a direct emit is
          * lossless. Returns null when value/pattern is not translatable (including
          * NULL pattern, dynamic pattern expression, etc.).
          */

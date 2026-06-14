@@ -126,7 +126,7 @@ not covered). **Parity — no action.**
 
 ### Documents touched this run
 
-- `jvm/trino-ducklake/dev-docs/COMPARE-datafusion-ducklake.md` —
+- `jvm/trino-ducklake/dev-docs/archive/COMPARE-datafusion-ducklake.md` —
   refresh-date header; TL;DR rewritten to reflect that Rust is no
   longer purely read-focused; three new capability rows (row lineage,
   maintenance ops, multi-tenant catalog isolation); writer-DDL bug note
@@ -648,9 +648,9 @@ similarly. **RESEARCH-TODO added** — see
 
 ### Working docs updated this run
 
-- `jvm/trino-ducklake/dev-docs/COMPARE-datafusion-ducklake.md` — refresh
+- `jvm/trino-ducklake/dev-docs/archive/COMPARE-datafusion-ducklake.md` — refresh
   header + Stats row rewrite + test LOC bump.
-- `jvm/trino-ducklake/dev-docs/COMPARE-pg_ducklake.md` — refresh header +
+- `jvm/trino-ducklake/dev-docs/archive/COMPARE-pg_ducklake.md` — refresh header +
   `table_path` row + inlined MAX(schema_version) confirmation +
   streaming-flush note + direct-insert fast-path expansion.
 - `jvm/trino-ducklake/dev-docs/TODO-WRITE-MODE.md` — Top Priorities

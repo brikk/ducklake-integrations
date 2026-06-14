@@ -57,12 +57,12 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
 - [x] Executor-level end-to-end test (`TestDucklakeVortexFileScanRead`): write a `.vortex` file,
   read it back via a FileScan target through the real in-process executor; network-gated
   (`assumeTrue`) so offline/unsupported-platform CI skips. Passes on osx_amd64. Commit `ded8c9e`.
-- [ ] **Remaining: full SQL-level read through the catalog.** Needs a `file_format='vortex'` data
-  file registered in a DuckLake catalog so a `SELECT` exercises `createPageSource` dispatch
-  end-to-end. Blocked on either V3 (a vortex writer) or extending `add_files` to register an
-  external `.vortex` file with `file_format='vortex'`. **The `add_files` route is likely the cheaper
-  test enabler than a full writer** — needs add_files to accept a `file_format` arg, skip the
-  parquet-footer validation for non-parquet, and source row-count/path from the catalog/DuckDB.
+- [x] **Full SQL-level read through the catalog.** Satisfied by the V3 CTAS work (the writer
+  produces the catalog row a `SELECT` needs — see the V3 note below). And the `add_files`
+  route now exists too (2026-06-12): `CALL system.add_files(..., file_format => 'vortex')`
+  registers an externally-written `.vortex` file opaquely (row count scanned via
+  `read_vortex`, real file size, no stats/name map — `TestDucklakeVortexAddFiles`), the
+  exact same shape as lance registration.
 - [ ] Type mapping: probe confirmed INTEGER/VARCHAR/DECIMAL round-trip; audit richer Vortex
   encodings through `DucklakeArrowToPageConverter` once the SQL-level read path is testable.
 - [x] Quack-engine vortex — server-side INSTALL/LOAD + `FROM read_vortex` without an ATTACH alias;

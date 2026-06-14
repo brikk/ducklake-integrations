@@ -43,7 +43,7 @@ import java.util.Optional
  * so `INSTALL lance` fails on an Intel mac and the test skips (`assumeTrue`). It RUNS on an
  * Apple-Silicon (osx_arm64) box or the linux quack container. The shipped extension's scan table
  * function is `__lance_scan` (double-underscore), not `lance_scan`.
- * See dev-docs/HANDOFF-lance-route-a.md.
+ * See dev-docs/archive/HANDOFF-lance-route-a.md.
  */
 class TestDucklakeLanceFileScanRead {
     @Test

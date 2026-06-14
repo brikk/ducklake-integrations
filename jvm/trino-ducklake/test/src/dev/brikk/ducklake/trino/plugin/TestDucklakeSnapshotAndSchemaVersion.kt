@@ -28,7 +28,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  *  *
  * `ducklake_snapshot_changes` captures every DDL operation in spec form
  * (`created_table:"schema"."name"`). DuckDB's `ParseCatalogEntry` relies
- * on the quoted, dotted form — see dev-docs/COMPARE-pg_ducklake.md B1.
+ * on the quoted, dotted form — see dev-docs/archive/COMPARE-pg_ducklake.md B1.
  *  *
  * `ducklake_schema_versions` advances on every schema-changing DDL and stays
  * fixed across pure-DML INSERT/UPDATE/DELETE/MERGE. `schema_version` is
@@ -65,7 +65,7 @@ class TestDucklakeSnapshotAndSchemaVersion
             assertThat(changes.rowCount).isGreaterThan(0)
             val changeMade = changes.materializedRows[0].getField(0).toString()
             // Spec form is `created_table:"schema"."name"` — upstream's ParseCatalogEntry expects
-            // both parts quoted and separated by a dot. See dev-docs/COMPARE-pg_ducklake.md B1.
+            // both parts quoted and separated by a dot. See dev-docs/archive/COMPARE-pg_ducklake.md B1.
             assertThat(changeMade).contains("created_table:\"test_schema\".\"snapshot_test\"")
         }
         finally {

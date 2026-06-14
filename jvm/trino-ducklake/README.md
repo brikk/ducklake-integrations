@@ -246,11 +246,11 @@ operators and functions are not available through Trino.
 
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
-| INSERT INTO | Yes | Writes Parquet files (ZSTD compression) |
+| INSERT INTO | Yes | Writes Parquet files (ZSTD compression) by default; inherits the table's declared or latest data file format |
 | CREATE TABLE AS SELECT | Yes | |
-| DELETE | Yes | Writes Parquet positional delete files |
-| UPDATE | Yes | Atomic delete + insert in one snapshot |
-| MERGE INTO | Yes | WHEN MATCHED THEN UPDATE/DELETE + WHEN NOT MATCHED THEN INSERT |
+| DELETE | Yes | Writes Parquet positional delete files; verified against parquet, duckdb, vortex, and lance data files |
+| UPDATE | Yes | Atomic delete + insert in one snapshot; rewritten rows inherit the table's data file format (all four formats verified) |
+| MERGE INTO | Yes | WHEN MATCHED THEN UPDATE/DELETE + WHEN NOT MATCHED THEN INSERT; verified against all four data file formats |
 | CREATE SCHEMA | Yes | |
 | DROP SCHEMA | Yes | Non-empty schema drop rejected |
 | CREATE TABLE | Yes | Supports nested types and partition spec |
@@ -263,17 +263,17 @@ operators and functions are not available through Trino.
 | ALTER TABLE ADD COLUMN | Yes | Supports nested types |
 | ALTER TABLE DROP COLUMN | Yes | |
 | ALTER TABLE RENAME COLUMN | Yes | Field-ID based; existing files read correctly |
-| Partitioned writes | Yes | Identity and temporal transforms |
+| Partitioned writes | Yes | Identity and temporal transforms; verified for parquet, duckdb, vortex, and lance data files (hive-style `key=value/` paths per format) |
 | Bucket partitioned writes | Yes | `partitioned_by = ARRAY['bucket(N, col)']`; Iceberg-compatible Murmur3 hash |
-| Register existing parquet files (`add_files`) | Yes | `CALL system.add_files(...)`; IDENTITY hive partitioning supported |
+| Register existing files (`add_files`) | Yes | `CALL system.add_files(...)`; parquet (IDENTITY hive partitioning supported), lance dataset directories, and vortex files (`file_format => 'lance'`/`'vortex'`) |
 | Cross-engine Parquet compatibility | Yes | `field_id` annotations for DuckDB interop |
 | Concurrent conflict detection | Yes | Snapshot lineage check; aborts on stale base |
+| RENAME TABLE | Yes | Same-schema only (table data paths are schema-relative, so cross-schema moves are rejected) |
+| RENAME SCHEMA | Yes | Tables/views/macros follow; data stays in place; DuckDB cross-engine verified |
+| COMMENT ON TABLE | Yes | Stored as the `comment` tag in `ducklake_tag`; visible to DuckDB |
+| COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
 | ALTER TABLE ADD/DROP FIELD | No | Nested struct field manipulation |
-| RENAME TABLE | No | |
-| RENAME SCHEMA | No | |
-| COMMENT ON TABLE | No | |
-| COMMENT ON COLUMN | No | |
 | ANALYZE | No | Statistics are read-only from the catalog |
 | Sorted writes | No | Trino-written files are unsorted |
 
@@ -394,7 +394,7 @@ ORDER BY _distance LIMIT 10;
 
 **Full reference — arguments, exact-top-k recipe, prefilter pushability, s3 channel, gates:**
 [`README-lance-format.md`](README-lance-format.md). Architecture decision (DuckDB extension vs
-lance-core JNI): [`dev-docs/REPORT-lance-route-a-vs-b.md`](dev-docs/REPORT-lance-route-a-vs-b.md).
+lance-core JNI): [`dev-docs/archive/REPORT-lance-route-a-vs-b.md`](dev-docs/archive/REPORT-lance-route-a-vs-b.md).
 
 ## Table Properties
 
@@ -403,7 +403,7 @@ Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (.
 | Property | Type | Description |
 |----------|------|-------------|
 | `partitioned_by` | `ARRAY(VARCHAR)` | Partition columns with optional transform, e.g. `ARRAY['region', 'year(event_date)', 'bucket(4, customer_id)']`. See [Partitioning](#partitioning). |
-| `data_file_format` | `VARCHAR` | Data file format for this table's CTAS payload: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Overrides the session-level `data_file_format` for this CREATE only. |
+| `data_file_format` | `VARCHAR` | The table's DECLARED data file format: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Beats the session property at CREATE time and is persisted as a table-scoped setting in `ducklake_metadata`, so later plain INSERTs (including into a still-empty `CREATE TABLE`) keep writing the declared format. Undeclared tables instead inherit the format of their most recent data file. |
 | `location` | `VARCHAR` | Per-table storage path landed in `ducklake_table.path`. Values with a URI scheme (`s3://`, `gs://`, `file://`, `abfss://`, ...) are stored absolute (`path_is_relative=false`); other values are stored relative to the schema's data path. Trailing slash is appended if missing; `..` segments are rejected. Defaults to `<tableName>/`. |
 
 Example:
@@ -429,7 +429,7 @@ operates on whichever DuckLake catalog you invoke through.
 
 | Procedure | Description |
 |-----------|-------------|
-| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning])` | Register pre-existing parquet files as data files of an existing DuckLake table without rewriting. Mirrors upstream's `ducklake_add_data_files`. |
+| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map, unpartitioned tables only). |
 
 ### `add_files`
 
@@ -583,7 +583,10 @@ research item.
   `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
 - Puffin deletion vectors (DuckLake's Roaring-bitmap delete files, written when
   `write_deletion_vectors=true`) are read but not written. Trino-side DELETE/UPDATE/MERGE
-  always emits parquet positional delete files.
+  always emits DuckLake-spec parquet positional delete files (`(file_path, pos)` with
+  file-local positions — readable by DuckDB), regardless of the data file format —
+  position-delete filtering is verified against parquet, duckdb, vortex, and lance data
+  files, and the Trino-deletes-then-DuckDB-reads direction is cross-engine tested.
 - The duckdb-format data file path (`data_file_format = 'duckdb'`) is **EXPERIMENTAL**.
   Read modes (`materialize` / `httpfs` / `auto`), writer modes (`arrow_stream` / `appender`),
   function pushdown, and Tier C TIMESTAMP-WITH-TIME-ZONE semantics are all wired and
@@ -610,5 +613,5 @@ research item.
 - [TODO for pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
 - [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
 - [TODO for lance](dev-docs/TODO-lance.md) / [TODO for vortex](dev-docs/TODO-vortex.md) — format trackers incl. probe findings and the Route A/B decision record
-- [Lance Route A-vs-B benchmark](dev-docs/REPORT-lance-route-a-vs-b.md) — why the DuckDB-extension architecture stays primary
+- [Lance Route A-vs-B benchmark](dev-docs/archive/REPORT-lance-route-a-vs-b.md) — why the DuckDB-extension architecture stays primary
 - [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail

@@ -3,7 +3,7 @@
 Companion to the [README's Lance section](README.md#lance-data-files--vector-search-experimental).
 Everything here is shipped and tested; the lance path as a whole is **EXPERIMENTAL** (surface may
 evolve). Engine: the DuckDB `lance` extension (Route A — the
-[A-vs-B benchmark](dev-docs/REPORT-lance-route-a-vs-b.md) validated this architecture against
+[A-vs-B benchmark](dev-docs/archive/REPORT-lance-route-a-vs-b.md) validated this architecture against
 direct lance-core JNI: warm-latency parity, comparable cold start).
 
 ## Storage model
@@ -130,5 +130,5 @@ served build drifts from the verified pin — see the class doc for the bump wor
 ## More detail
 
 - [dev-docs/TODO-lance.md](dev-docs/TODO-lance.md) — feature tracker, probe findings, Route A/B decision record
-- [dev-docs/REPORT-lance-route-a-vs-b.md](dev-docs/REPORT-lance-route-a-vs-b.md) — the benchmark behind "Route A is primary"
-- [dev-docs/HANDOFF-lance-route-a.md](dev-docs/HANDOFF-lance-route-a.md) — the full build log (closed)
+- [dev-docs/archive/REPORT-lance-route-a-vs-b.md](dev-docs/archive/REPORT-lance-route-a-vs-b.md) — the benchmark behind "Route A is primary"
+- [dev-docs/archive/HANDOFF-lance-route-a.md](dev-docs/archive/HANDOFF-lance-route-a.md) — the full build log (closed)

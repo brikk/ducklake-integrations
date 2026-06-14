@@ -238,6 +238,9 @@ class DucklakeMetadata(
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
+        val columnComments: Map<Long, String> = catalog.getColumnComments(
+                ducklakeTableHandle.tableId,
+                ducklakeTableHandle.snapshotId)
 
         val columnMetadata: ImmutableList.Builder<ColumnMetadata> = ImmutableList.builder()
         for (column in columns) {
@@ -245,6 +248,7 @@ class DucklakeMetadata(
                     .setName(column.columnName)
                     .setType(typeConverter.toTrinoType(column.columnType))
                     .setNullable(column.nullsAllowed)
+                    .setComment(Optional.ofNullable(columnComments[column.columnId]))
                     .build())
         }
         // Hidden virtual columns must be present here (with hidden=true) to be resolvable by
@@ -261,7 +265,11 @@ class DucklakeMetadata(
 
         return ConnectorTableMetadata(
                 ducklakeTableHandle.getSchemaTableName(),
-                columnMetadata.build())
+                columnMetadata.build(),
+                mapOf(),
+                Optional.ofNullable(catalog.getTableComment(
+                        ducklakeTableHandle.tableId,
+                        ducklakeTableHandle.snapshotId)))
     }
 
     override fun getTableProperties(session: ConnectorSession, table: ConnectorTableHandle): ConnectorTableProperties
@@ -762,7 +770,8 @@ class DucklakeMetadata(
                 tableName.tableName,
                 columnSpecs,
                 partitionSpec,
-                location
+                location,
+                DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
             )
         }
     }
@@ -799,6 +808,43 @@ class DucklakeMetadata(
     {
         val handle = tableHandle as DucklakeTableHandle
         translateCatalogExceptions { catalog.dropTable(handle.schemaName, handle.tableName) }
+    }
+
+    override fun renameTable(session: ConnectorSession, tableHandle: ConnectorTableHandle, newTableName: SchemaTableName)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        if (!newTableName.schemaName.equals(handle.schemaName, ignoreCase = true)) {
+            // Table data paths are schema-relative in DuckLake, so a cross-schema move would
+            // leave the table's data files unreachable. Upstream has no cross-schema rename.
+            throw TrinoException(NOT_SUPPORTED,
+                    "Renaming a table across schemas is not supported: table data paths are schema-relative")
+        }
+        translateCatalogExceptions {
+            catalog.renameTable(handle.tableId, newTableName.schemaName, newTableName.tableName)
+        }
+    }
+
+    override fun renameSchema(session: ConnectorSession, source: String, target: String)
+    {
+        translateCatalogExceptions { catalog.renameSchema(source, target) }
+    }
+
+    override fun setTableComment(session: ConnectorSession, tableHandle: ConnectorTableHandle, comment: Optional<String>)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        translateCatalogExceptions { catalog.setTableComment(handle.tableId, comment.orElse(null)) }
+    }
+
+    override fun setColumnComment(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnHandle, comment: Optional<String>)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        val columnHandle = column as DucklakeColumnHandle
+        if (columnHandle.isVirtual() || columnHandle.isRowIdColumn()) {
+            throw TrinoException(NOT_SUPPORTED, "Cannot comment on virtual column: ${columnHandle.columnName}")
+        }
+        translateCatalogExceptions {
+            catalog.setColumnComment(handle.tableId, columnHandle.columnId, comment.orElse(null))
+        }
     }
 
     // ==================== ALTER TABLE ====================
@@ -902,13 +948,20 @@ class DucklakeMetadata(
 
         val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
 
+        // An explicit WITH (data_file_format = ...) is a declaration on the table itself, so
+        // it persists as the table-scoped setting (consulted by resolveWriteFormat for every
+        // later INSERT). A session-derived CTAS format is per-session intent and is NOT
+        // persisted — those tables keep latest-data-file inheritance (testFlipStaysFlipped).
+        val declaredFormat: String? = DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
+
         translateCatalogExceptions {
             catalog.createTable(
                 tableName.schemaName,
                 tableName.tableName,
                 columnSpecs,
                 partitionSpec,
-                location
+                location,
+                declaredFormat
             )
         }
 
@@ -938,8 +991,7 @@ class DucklakeMetadata(
         // "match latest existing data file" rule that drives INSERT inheritance can't
         // apply here because the table is fresh — there are no prior data files.
         // (See N1 in TODO-duckdb-lake-format.md.)
-        val tablePropertyFormat: String? = DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
-        val fileFormat: String = tablePropertyFormat
+        val fileFormat: String = declaredFormat
                 ?: DucklakeSessionProperties.getDataFileFormat(session)
                         .orElse(DucklakeSessionProperties.FORMAT_PARQUET)
 
@@ -984,19 +1036,24 @@ class DucklakeMetadata(
      * Precedence (N1):
      *
      *   - Session property `ducklake.data_file_format`, when explicitly set.
-     *   - Format of the most recent active data file already in the table.
+     *   - The table's DECLARED format: the table-scoped `data_file_format` setting in
+     *     `ducklake_metadata`, persisted when the table was created with an explicit
+     *     `WITH (data_file_format = ...)`. This is what makes INSERT into a still-empty
+     *     declared-format table write that format instead of the connector default.
+     *   - Format of the most recent active data file already in the table — the rule that
+     *     keeps the natural session-CTAS-then-INSERT workflow on a consistent format, and
+     *     gives UNdeclared tables flip-stays-flipped semantics (testFlipStaysFlipped).
      *   - Connector default (`parquet`).
-     *
-     * The CTAS-time `WITH (data_file_format = ...)` clause is not in this chain — it
-     * applies only to the materialization that creates the table. There is no per-table
-     * persistence of the format yet (no schema-level extensible properties in DuckLake spec),
-     * so rule 2 is what makes the natural CTAS-then-INSERT workflow keep a consistent format.
      */
     private fun resolveWriteFormat(session: ConnectorSession, tableId: Long, snapshotId: Long): String
     {
         val sessionFormat: Optional<String> = DucklakeSessionProperties.getDataFileFormat(session)
         if (sessionFormat.isPresent) {
             return sessionFormat.get()
+        }
+        val declaredFormat: String? = catalog.getTableDataFileFormat(tableId)
+        if (declaredFormat != null) {
+            return declaredFormat
         }
         val latestFormat: String? = catalog.getLatestDataFileFormat(tableId, snapshotId)
         if (latestFormat != null) {
@@ -1090,7 +1147,8 @@ class DucklakeMetadata(
                         df.dataFileId,
                         df.rowIdStart,
                         df.recordCount,
-                        deletePathsByFileId.getOrDefault(df.dataFileId, emptyList())) }
+                        deletePathsByFileId.getOrDefault(df.dataFileId, emptyList()),
+                        pathResolver!!.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)) }
                 .collect(toImmutableList())
 
         return DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges)

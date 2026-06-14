@@ -36,7 +36,7 @@ import java.util.function.Consumer
  * twice — inlined via `data_inlining_row_limit=100` and again flushed to Parquet via
  * `0` — and checks both outcomes against the same assertion closure. See
  * `DucklakeInlinedValueConverter.parseDucklakeListText` for the inlined-path contract
- * and `dev-docs/COMPARE-pg_ducklake.md` B2 for background.
+ * and `dev-docs/archive/COMPARE-pg_ducklake.md` B2 for background.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Execution(ExecutionMode.SAME_THREAD)

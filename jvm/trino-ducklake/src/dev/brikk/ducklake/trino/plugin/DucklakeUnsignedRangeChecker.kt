@@ -33,7 +33,7 @@ import io.trino.spi.type.SmallintType
  * DECIMAL(20, 0)); without this checker, a write of e.g. SMALLINT 300 into a uint8 column
  * would silently wrap to 44 inside DuckDB because Parquet carries only the physical
  * primitive type, not the logical unsigned bound. See
- * dev-docs/COMPARE-pg_ducklake.md B5.
+ * dev-docs/archive/COMPARE-pg_ducklake.md B5.
  *
  * Built once per page sink and short-circuits to a no-op when no column in the table
  * is unsigned (the overwhelmingly common case). When unsigned columns are present, only

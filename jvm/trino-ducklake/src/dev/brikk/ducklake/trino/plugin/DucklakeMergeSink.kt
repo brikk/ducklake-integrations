@@ -34,6 +34,7 @@ import io.trino.spi.connector.ConnectorPageSink
 import io.trino.spi.connector.MergePage
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
+import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
 import java.io.IOException
 import java.io.OutputStream
@@ -47,8 +48,9 @@ import java.util.concurrent.CompletableFuture.completedFuture
 
 /**
  * Merge sink for DuckLake DELETE/UPDATE/MERGE operations.
- * Collects deleted row IDs grouped by data file, writes Parquet delete files,
- * and delegates inserts to the standard DucklakePageSink.
+ * Collects deleted row IDs grouped by data file, writes DuckLake-spec parquet delete files —
+ * `(file_path, pos)` with FILE-LOCAL positions, the shape DuckDB's reader requires — and
+ * delegates inserts to the standard DucklakePageSink.
  */
 open class DucklakeMergeSink(
         private val mergeHandle: DucklakeMergeTableHandle,
@@ -158,16 +160,29 @@ open class DucklakeMergeSink(
         // every still-deleted position or rows resurrect. record_count is decremented by
         // newDeleteCount (positions truly new this commit), since the prior file's positions
         // were already deducted when it was first committed.
-        val existingDeleteFilePaths: List<String> = findExistingDeleteFilePaths(dataFileId)
+        //
+        // Everything is normalized to FILE-LOCAL positions: this sink writes DuckLake-spec
+        // `(file_path, pos)` delete files — the only shape DuckDB's reader accepts (it rejects
+        // the connector's legacy single-column `row_id` files outright, which made every
+        // Trino-deleted table unreadable cross-engine until TestDucklakeCrossEngineTrinoDeleteRead
+        // caught it). Legacy `row_id` files carry GLOBAL ids and are rebased by rowIdStart.
+        val range: DataFileRange = checkNotNull(findDataFileRange(dataFileId)) {
+            "No data file range for data file $dataFileId"
+        }
         val unionPositions: LinkedHashSet<Long> = LinkedHashSet()
-        for (existingPath in existingDeleteFilePaths) {
-            val priorPositions: Set<Long> = DucklakeDeleteFileReader.readPositions(
+        for (existingPath in range.existingDeleteFilePaths) {
+            val prior = DucklakeDeleteFileReader.readPositions(
                     fileSystem,
                     existingPath,
                     0L,
                     parquetReaderOptions,
                     fileFormatDataSourceStats)
-            unionPositions.addAll(priorPositions)
+            if (prior.global) {
+                prior.values.forEach { rowId -> unionPositions.add(rowId - range.rowIdStart) }
+            }
+            else {
+                unionPositions.addAll(prior.values)
+            }
         }
         // rowIds are disjoint from prior positions by engine invariant: the SELECT phase of
         // DELETE/UPDATE/MERGE only sees rows that aren't already tombstoned, so the engine
@@ -175,7 +190,7 @@ open class DucklakeMergeSink(
         // still go through a set to defend against pathological input rather than relying on
         // engine semantics for correctness of the size math.
         val preNewSize: Long = unionPositions.size.toLong()
-        unionPositions.addAll(rowIds)
+        rowIds.forEach { rowId -> unionPositions.add(rowId - range.rowIdStart) }
         val totalPositions: Long = unionPositions.size.toLong()
         val newDeleteCount: Long = totalPositions - preNewSize
 
@@ -186,8 +201,10 @@ open class DucklakeMergeSink(
         val outputFile = fileSystem.newOutputFile(filePath)
         val outputStream: OutputStream = outputFile.create()
 
-        val columnNames: List<String> = ImmutableList.of("row_id")
-        val columnTypes: List<Type> = ImmutableList.of(BIGINT)
+        val columnNames: List<String> = ImmutableList.of(
+                DucklakeDeleteFileReader.SPEC_FILE_PATH_COLUMN,
+                DucklakeDeleteFileReader.SPEC_POSITION_COLUMN)
+        val columnTypes: List<Type> = ImmutableList.of(VARCHAR, BIGINT)
 
         val schemaConverter = ParquetSchemaConverter(
                 columnTypes, columnNames, false, false)
@@ -207,12 +224,16 @@ open class DucklakeMergeSink(
         val fileMetaData: org.apache.parquet.format.FileMetaData
         val fileSize: Long
         try {
-            val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, totalPositions.toInt())
+            val dataFilePathSlice: Slice = Slices.utf8Slice(range.dataFilePath)
+            val pathBuilder: io.trino.spi.block.BlockBuilder = VARCHAR.createBlockBuilder(null, totalPositions.toInt())
+            val posBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, totalPositions.toInt())
             for (position in unionPositions) {
-                BIGINT.writeLong(blockBuilder, position)
+                VARCHAR.writeSlice(pathBuilder, dataFilePathSlice)
+                BIGINT.writeLong(posBuilder, position)
             }
-            val block: Block = blockBuilder.build()
-            parquetWriter.write(Page(block.positionCount, block))
+            val pathBlock: Block = pathBuilder.build()
+            val posBlock: Block = posBuilder.build()
+            parquetWriter.write(Page(pathBlock.positionCount, pathBlock, posBlock))
             parquetWriter.close()
             fileMetaData = parquetWriter.getFileMetaData()
             fileSize = parquetWriter.estimatedWrittenBytes
@@ -234,7 +255,7 @@ open class DucklakeMergeSink(
         }
 
         log.debug("Wrote delete file %s with %d total positions (%d new this commit, %d superseded from %d prior file(s)) for data file %d",
-                filePath, totalPositions, newDeleteCount, preNewSize, existingDeleteFilePaths.size, dataFileId)
+                filePath, totalPositions, newDeleteCount, preNewSize, range.existingDeleteFilePaths.size, dataFileId)
 
         return DucklakeDeleteFragment(
                 dataFileId,
@@ -245,14 +266,8 @@ open class DucklakeMergeSink(
                 newDeleteCount)
     }
 
-    private fun findExistingDeleteFilePaths(dataFileId: Long): List<String> {
-        for (range in mergeHandle.dataFileRanges) {
-            if (range.dataFileId == dataFileId) {
-                return range.existingDeleteFilePaths
-            }
-        }
-        return emptyList()
-    }
+    private fun findDataFileRange(dataFileId: Long): DataFileRange? =
+            mergeHandle.dataFileRanges.firstOrNull { it.dataFileId == dataFileId }
 
     override fun abort() {
         insertSink.abort()

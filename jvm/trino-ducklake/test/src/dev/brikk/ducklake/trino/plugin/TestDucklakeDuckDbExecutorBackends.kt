@@ -144,7 +144,7 @@ internal class TestDucklakeDuckDbExecutorBackends {
          * graceful skip already used by `quackBackendReadsVortexViaFileScan`, so these
          * in-process-vs-Quack parity tests skip cleanly off-platform instead of hard-failing (full
          * coverage still runs on a matching-arch host / CI). See the task note in
-         * dev-docs/HANDOFF-lance-route-a.md (env caveat).
+         * dev-docs/archive/HANDOFF-lance-route-a.md (env caveat).
          */
         private fun assumeQuackParityExtensionLoadable() {
             val probe = DucklakeDuckDbExecutor.ExecutionRequest(

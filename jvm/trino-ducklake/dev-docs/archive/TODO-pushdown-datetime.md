@@ -190,7 +190,7 @@ What's left for future chunks:
 | `test/src/dev/brikk/ducklake/trino/plugin/TestTrinoFunctionAliases.java` | Add semantic fixtures for every new macro (one or more `c("...", new NameArity(name, arity), "SELECT trino_<name>(...)", expected)` row per entry). The `testMetaMatchesFixtures` parity guard will fail CI otherwise. Pick fixture inputs from the corpus in `PLAN-pushdown-datetime.md` — DST transitions, calendar boundaries, ISO-year ≠ calendar-year. |
 | `test/src/dev/brikk/ducklake/trino/plugin/TestDuckDbExpressionTranslator.java` | New tests pinning the type gate. At minimum: `year(DATE col)` pushes; `year(TIMESTAMP col)` pushes; `year(TIMESTAMP WITH TIME ZONE col)` does NOT push (whole conjunct dropped). Same triad for `date_trunc`, `date_diff`. Plus one positive test per new function shape. |
 | `test/src/dev/brikk/ducklake/trino/plugin/TestDucklakeDuckDbReadMode.java` | Add 2–3 end-to-end tests against the duckdb-format read path. Suggested: `WHERE day_of_week(date_col) = 7` (ISO Sunday — pins the `isodow` macro choice); `WHERE iso_year(date_col) = 2025 AND year(date_col) = 2024` (ISO ≠ calendar smoking gun, `2024-12-30`); `WHERE hour(ts_col) = 22 AND year(ts_col) = 2024` on a TIMESTAMP (no TZ) column to pin Tier B. |
-| `dev-docs/RESEARCH-function-mapping.md` | Flip the "Done" column for every function shipped. Use the same `yes step 4` flag convention added for LIKE in step 1. |
+| `dev-docs/archive/RESEARCH-function-mapping.md` | Flip the "Done" column for every function shipped. Use the same `yes step 4` flag convention added for LIKE in step 1. |
 | `dev-docs/TODO-pushdown-duckdb.md` | Update step-3 line's "Not yet shipped" list. Update the catalog totals in the "Round 6+" header. |
 | **This file** | Mark Chunk 1 row in the Status section as `✅ shipped` with PR / commit ref. |
 
@@ -325,7 +325,7 @@ The `ProbeDuckDbTimeZoneHandling#probeQ4b_quackContainerParity` empirically esta
 | `test/src/dev/brikk/ducklake/trino/plugin/TestDuckDbExpressionTranslator.java` | Unit tests pinning the property gate: with property off, `year(timestamptz_col)` does NOT push; with on, it does. |
 | `test/src/dev/brikk/ducklake/trino/plugin/TestDucklakeDuckDbReadMode.java` | E2e: TIMESTAMPTZ column, session zone = Singapore, `WHERE year(ts) = 2025` with the literal at `2024-12-31 22:00 UTC`. Run twice — property off (Trino re-evaluates above scan, still returns the right row) and property on (DuckDB pushes, still returns the right row). Same result, different code path. |
 | `test/src/dev/brikk/ducklake/trino/plugin/ProbeDuckDbTimeZoneHandling.java` | **Delete this file.** All findings are now baked into shipped tests + REPORT. Matches the `ProbeConcatNullHandling` precedent. |
-| `dev-docs/RESEARCH-function-mapping.md` | Flip "Done" column for Tier C entries. |
+| `dev-docs/archive/RESEARCH-function-mapping.md` | Flip "Done" column for Tier C entries. |
 | `dev-docs/TODO-pushdown-duckdb.md` | Step 4 → ✅ shipped. Update catalog totals. |
 | `PLAN-pushdown-datetime.md` (sibling in archive/) | Add a "Shipped" section pointing at the commits / PR. |
 | **This file** | Chunk 3 → `✅ shipped`. |

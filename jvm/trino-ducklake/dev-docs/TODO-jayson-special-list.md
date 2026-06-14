@@ -5,6 +5,16 @@ trackers + code greps; group labels are his, paragraph text is the sweep verbati
 *"I want completion, edges filled, test verified."* Suggested split: **one agent on the TEST
 side, one agent on the FEATURE side**, hygiene items as low-risk fillers for either.
 
+**Status 2026-06-12 (first pass, this branch):** T1 both spikes DONE — and they found real
+bugs (see inline ✅ notes): merge-scan pushdown silently tombstoned the WRONG rows on .db
+data; the delete filter's dual rowId/offset check phantom-deleted rows; declared
+`data_file_format` was lost on empty CREATE TABLE + INSERT; NULL-partition splits leaked
+rows through enforced identity predicates; and Trino's legacy `row_id` delete files were
+UNREADABLE by DuckDB (now spec-shaped `(file_path, pos)`, cross-engine round-trip tested
+both directions). F1 (RENAME TABLE same-schema, RENAME SCHEMA, COMMENT ON TABLE/COLUMN —
+cross-engine verified) and F2 (vortex add_files) shipped. H1 archive sweep done. Open from
+this list: T2, F3, F4 gate-revisit, F5 interplay item, F6–F11, H2–H3.
+
 Ground rules carried over from the same conversation:
 - Parquet is NOT more important than the other formats — duckdb/vortex/lance coverage and
   capability matter equally.
@@ -27,8 +37,22 @@ Two cross-cutting unknowns, flagged because nothing in the trackers names them:
    contiguous), but a grep finds **zero** e2e tests pairing DELETE with a non-parquet data
    format — every delete test is parquet-data. Status: wired-looking, unverified. That's a
    half-day verification spike, and until it runs the README must not claim it.
+   ✅ DONE 2026-06-12 — `AbstractDucklakeRowLevelFormatTest` + per-format suites (duckdb/
+   vortex/lance, 25 tests). "Wired-looking" was right to distrust: the merge scan kept
+   predicate pushdown ON (the contiguity guard ignored the MERGE `$row_id`), so DELETE
+   tombstoned the WRONG rows on .db data; and the delete filter's check-both-vocabularies
+   set phantom-deleted rows whenever `rowIdStart < recordCount`. Both fixed
+   (`DucklakePageSourceProvider`), plus the merge sink now writes DuckLake-spec
+   `(file_path, pos)` delete files — DuckDB rejected the legacy `row_id` shape outright
+   (`TestDucklakeCrossEngineTrinoDeleteRead` pins both directions). README claims updated.
 2. **Partitioned CTAS/INSERT with non-parquet formats.** The writers all accept partition
    values, so plumbing exists — also zero tests.
+   ✅ DONE 2026-06-12 — `TestDucklakePartitionedWriteFormats` (identity CTAS+INSERT × 3
+   formats + temporal duckdb + NULL partitions). Found: explicit `WITH
+   (data_file_format=...)` was lost on empty `CREATE TABLE` + INSERT (now persisted as a
+   table-scoped `ducklake_metadata` setting; precedence pinned in
+   `TestDucklakeFileFormatPrecedence`), and NULL-partition splits leaked their rows through
+   enforced `col = 'x'` predicates (split pruning now drops them for null-excluding domains).
 
 Beyond those two: build the capability × format grid (reads, writes, deletes, partitioning,
 time travel, schema evolution, metadata tables, add_files, s3 × engine) and fill every cell
@@ -52,6 +76,13 @@ concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
 
 `RENAME TABLE`/`RENAME SCHEMA`/`COMMENT ON TABLE/COLUMN` are small catalog ops (days, not
 weeks); `SET TYPE` and nested `ADD/DROP FIELD` are medium. `ANALYZE` medium.
+✅ PARTIAL 2026-06-12 — the small four shipped (`TestDucklakeDdl` +
+`TestDucklakeDdlCrossEngine`): RENAME TABLE (same-schema; cross-schema rejected — table data
+paths are schema-relative), RENAME SCHEMA (new schema_id + re-pointed tables/views/macros;
+`ducklake_schema` has a PK on schema_id so same-id versioning is impossible; recorded as
+dropped+created — upstream's parser has no schema-rename change type), COMMENT ON
+TABLE/COLUMN (ducklake_tag/ducklake_column_tag `comment` keys — DuckDB sees them, and
+comments survive renames). Still open: SET TYPE, nested ADD/DROP FIELD, ANALYZE.
 
 ### F2. add_files for anything
 
@@ -60,6 +91,9 @@ list, probably a day (single file, count via `read_vortex`, same shape as lance'
 registration). Consider `.db` registration too (niche but symmetric). Existing related boxes:
 hive_partitioning beyond IDENTITY transforms, and upstream's `allow_missing` recursing into
 STRUCT fields (TODO-WRITE-MODE).
+✅ vortex DONE 2026-06-12 (`file_format => 'vortex'`, `TestDucklakeVortexAddFiles`; same
+opaque shape as lance + real file size; partitioned/hive gates shared). `.db` registration
+still open (niche).
 
 ### F3. Index lifecycle — lance first, designed for every non-parquet format
 
@@ -79,12 +113,20 @@ Verification spike from T1 first; then fix whatever it finds (write-side may nee
 reject cleanly; read-side delete filtering over .db/vortex/lance positions must be proven),
 then e2e tests per format. Lance search functions currently reject tables with row-level
 deletes (v1 gate) — revisit that gate once plain reads are proven.
+✅ MOSTLY DONE 2026-06-12 via T1.1 (spike + fixes + per-format e2e all green; plain reads
+over deleted lance data proven and the search-gate rejection pinned in
+`TestDucklakeRowLevelLanceFormat`). Remaining: the deliberate gate-revisit itself —
+loosening lance search over deleted tables needs the search positions to respect tombstones.
 
 ### F5. Partitioned CTAS/INSERT for non-parquet formats
 
 Plumbing exists (writers take partition values); verify end-to-end per format, fix what
 breaks, pin with tests. Interplay to check: lance `add_files` rejects partitioned tables —
 decide whether partitioned lance CTAS should work or be gated with a clear error.
+✅ MOSTLY DONE 2026-06-12 via T1.2 (verified + fixed + pinned; partitioned lance CTAS WORKS —
+dataset directories nest under `key=value/` partition dirs — so the add_files gate is about
+registration, not the format). Remaining: decide whether partitioned-table lance/vortex
+`add_files` should learn partition values or stay gated.
 
 ### F6. Maintenance operations
 
@@ -144,6 +186,10 @@ TODO/RESEARCH logs) into `dev-docs/archive/`; keep live trackers + this list at 
 Agents already know to ignore archive. Tick the stale boxes while there: TODO-vortex
 "SQL-level read through the catalog" (satisfied by the CTAS work), TODO-lance Route-B boxes
 (moot after the A-vs-B decision — REPORT-lance-route-a-vs-b.md is the record).
+✅ DONE 2026-06-12 — 10 docs moved (HANDOFF, RESEARCH-lance-and-pushdown, function-mapping ×2,
+substrait, COMPARE ×2, REPORT ×3 incl. the A-vs-B record); all path-style references
+rewritten to `dev-docs/archive/`; TODO-vortex box ticked (+ add_files note); TODO-lance
+Route-B section banner-marked MOOT.
 
 ### H2. Kotlinization candidate list
 

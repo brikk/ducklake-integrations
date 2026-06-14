@@ -18,44 +18,58 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 /**
- * Regression coverage for upstream [duckdb/ducklake#1084](https://github.com/duckdb/ducklake/issues/1084).
+ * Pins [DucklakePageSourceProvider.DeleteRowFilterTransform]'s two-vocabulary contract:
+ * global row ids and file-local offsets are matched ONLY under their own interpretation.
  *
+ * Two regressions are guarded:
  *
- * Upstream symptom: their C++ reader merges parquet delete positions and
- * inlined delete positions into a sorted vector *without deduplication*,
- * and the per-position filter only advances on exact match — so a single
- * duplicate position causes every later tombstoned position in the same vector
- * chunk to leak through.
- *
- *
- * Our reader merges the two sources into a [Set], which is intrinsically
- * dedup'd, and the filter checks via `contains(...)` per position — no
- * sorted-index advance, no "stuck on duplicate" failure mode. These tests pin
- * that contract so a future refactor that switches the merge to a sorted list
- * (or an algorithm that depends on it) catches the regression here.
+ *  1. **Vocabulary aliasing** — global ids numerically overlap local offsets whenever a
+ *     file's `rowIdStart < recordCount`. The previous single-set design checked every value
+ *     under both interpretations and phantom-deleted rows (first observed as the
+ *     nondeterministic spread-delete failure in [AbstractDucklakeRowLevelFormatTest]).
+ *  2. **Duplicate overlap** (upstream
+ *     [duckdb/ducklake#1084](https://github.com/duckdb/ducklake/issues/1084)) — their C++
+ *     reader merges delete positions into a sorted vector *without dedup* and the filter
+ *     wedges on the duplicate, leaking every later tombstone. Our per-vocabulary [Set]s
+ *     dedup intrinsically and the same logical row encoded in both vocabularies must drop
+ *     exactly once.
  */
 internal class TestDeleteRowFilterTransformOverlap {
     @Test
+    fun vocabulariesDoNotCrossMatch() {
+        // rowIdStart=1000, 20-row page: offsets 0..19 / global ids 1000..1019.
+        // global {5} names offset -995 of this file — nothing here; under the old both-ways
+        // check it would phantom-delete offset 5. Same for local {1005}: an offset far past
+        // this page, which the old check matched as global id 1005 = offset 5.
+        val globalRowIds: Set<Long> = setOf(5L, 1010L)
+        val localOffsets: Set<Long> = setOf(15L, 1005L)
+
+        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(globalRowIds, localOffsets, 1000L)
+        val filtered = filter.apply(SourcePage.create(20))
+
+        // Only global 1010 (offset 10) and local 15 may drop — 18 retained, not the old 17.
+        assertThat(filtered.positionCount)
+                .`as`("each vocabulary must match only under its own interpretation")
+                .isEqualTo(20 - 2)
+    }
+
+    @Test
     fun mergedOverlapDoesNotLeakSubsequentTombstones() {
-        // Simulates the actual merge in DucklakePageSourceProvider.applyDeleteFile:
-        // inlinedDeletedRowPositions on the split contributes {5, 10},
-        // a parquet delete file contributes {10, 15} — overlap on position 10.
-        val inlinedDeletes: Set<Long> = setOf(5L, 10L)
-        val parquetDeletes: Set<Long> = setOf(10L, 15L)
-        val merged: MutableSet<Long> = HashSet(inlinedDeletes)
-        merged.addAll(parquetDeletes)
-        assertThat(merged)
+        // Simulates the merge in DucklakePageSourceProvider.applyDeleteFile: inlined deletes
+        // contribute local {5, 10}, a DuckLake-spec `pos` delete file contributes local
+        // {10, 15} — overlap on offset 10 collapses in the set.
+        val localOffsets: MutableSet<Long> = hashSetOf(5L, 10L)
+        localOffsets.addAll(setOf(10L, 15L))
+        assertThat(localOffsets)
                 .`as`("HashSet merge dedupes overlapping positions")
                 .containsExactlyInAnyOrder(5L, 10L, 15L)
 
-        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(merged, 0L)
+        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(emptySet(), localOffsets, 0L)
+        val filtered = filter.apply(SourcePage.create(20))
 
-        val page = SourcePage.create(20)
-        val filtered = filter.apply(page)
-
-        // The smoking gun: position 15 must be dropped. Under the upstream C++
-        // bug the duplicate at position 10 wedges the sorted-index pointer and
-        // every later tombstoned position leaks.
+        // The smoking gun: offset 15 must be dropped. Under the upstream C++ bug the
+        // duplicate at offset 10 wedges the sorted-index pointer and every later
+        // tombstoned position leaks.
         assertThat(filtered.positionCount)
                 .`as`("all three distinct tombstoned positions must be dropped, "
                         + "regardless of overlap between the two delete sources")
@@ -63,26 +77,18 @@ internal class TestDeleteRowFilterTransformOverlap {
     }
 
     @Test
-    fun overlapDoesNotLeakWhenRowIdStartIsNonZero() {
-        // Same scenario with rowIdStart != 0 — exercises the global-rowId branch
-        // of the filter. The split's parquet delete file stores global row IDs
-        // (rowIdStart + offset); inlined deletes store file-local offsets. Both
-        // branches in DeleteRowFilterTransform.apply must respect the overlap.
-        val rowIdStart = 1000L
-        val merged: MutableSet<Long> = HashSet()
-        merged.add(5L)                  // file-local offset (inlined)
-        merged.add(rowIdStart + 10L)    // global row id (parquet)
-        merged.add(10L)                 // file-local offset that ALIASES the parquet id
-        merged.add(rowIdStart + 15L)    // global row id (parquet)
+    fun sameRowInBothVocabulariesDropsOnce() {
+        // One logical row tombstoned twice — as global id 1010 (Trino `row_id` delete file)
+        // and as local offset 10 (inlined delete). It must drop exactly once, and the
+        // overlap must not disturb neighbouring tombstones (5 local, 15 global).
+        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(
+                setOf(1010L, 1015L),
+                setOf(5L, 10L),
+                1000L)
+        val filtered = filter.apply(SourcePage.create(20))
 
-        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(merged, rowIdStart)
-
-        val page = SourcePage.create(20)
-        val filtered = filter.apply(page)
-
-        // Three distinct logical positions (5, 10, 15) are tombstoned; the
-        // duplicate-encoded 10 (once as offset, once as rowIdStart+10) shouldn't
-        // cause undercount or overcount.
-        assertThat(filtered.positionCount).isEqualTo(20 - 3)
+        assertThat(filtered.positionCount)
+                .`as`("offsets 5, 10, 15 are the distinct logical tombstones")
+                .isEqualTo(20 - 3)
     }
 }

@@ -325,35 +325,45 @@ class DucklakePageSourceProvider @Inject constructor(
             return dataSource
         }
 
-        // Merge parquet delete files (global row_ids) and inlined deletes (file-local row
-        // offsets, from ducklake_inlined_delete_<tableId>) into a single set. The filter
-        // checks both interpretations per page position, so adding both into the same set
-        // is correct: a parquet delete file row_id matches the rowId branch, an inlined
-        // delete row_id matches the rowOffset branch.
-        val deletedRows: MutableSet<Long> = split.inlinedDeletedRowPositions.toMutableSet()
+        // Two delete vocabularies, kept apart: GLOBAL row ids (Trino-written `row_id` delete
+        // files, value = rowIdStart + file position) and FILE-LOCAL offsets (DuckLake-spec
+        // `(file_path, pos)` delete files, puffin deletion vectors, and inlined deletes from
+        // ducklake_inlined_delete_<tableId>). Each value must be matched under exactly ONE
+        // interpretation: merging into a single both-ways-checked set phantom-deletes rows
+        // whenever the file's rowIdStart < recordCount, because global ids then numerically
+        // alias local offsets (caught by AbstractDucklakeRowLevelFormatTest's spread-delete).
+        val localOffsets: MutableSet<Long> = split.inlinedDeletedRowPositions.toMutableSet()
+        val globalRowIds: MutableSet<Long> = mutableSetOf()
         for (deleteFilePath in split.deleteFilePaths) {
             if (isPuffinPath(deleteFilePath)) {
-                deletedRows.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
+                localOffsets.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
                         fileSystem.newInputFile(toLocation(deleteFilePath))))
             }
             else {
-                deletedRows.addAll(readDeletedRowsFromFile(fileSystem, deleteFilePath, split))
+                val positions = readDeletedRowsFromFile(fileSystem, deleteFilePath, split)
+                if (positions.global) {
+                    globalRowIds.addAll(positions.values)
+                }
+                else {
+                    localOffsets.addAll(positions.values)
+                }
             }
         }
 
-        if (deletedRows.isEmpty()) {
+        if (globalRowIds.isEmpty() && localOffsets.isEmpty()) {
             return dataSource
         }
 
-        log.debug("Applying deletions to data file %s: %d parquet delete file(s), %d inlined deletes, %d total deleted rows",
+        log.debug("Applying deletions to data file %s: %d parquet delete file(s), %d inlined deletes, %d global + %d local deleted rows",
                 split.dataFilePath,
                 split.deleteFilePaths.size,
                 split.inlinedDeletedRowPositions.size,
-                deletedRows.size)
-        return TransformConnectorPageSource.create(dataSource, DeleteRowFilterTransform(deletedRows, split.rowIdStart))
+                globalRowIds.size,
+                localOffsets.size)
+        return TransformConnectorPageSource.create(dataSource, DeleteRowFilterTransform(globalRowIds, localOffsets, split.rowIdStart))
     }
 
-    private fun readDeletedRowsFromFile(fileSystem: TrinoFileSystem, deleteFilePath: String, split: DucklakeSplit): Set<Long>
+    private fun readDeletedRowsFromFile(fileSystem: TrinoFileSystem, deleteFilePath: String, split: DucklakeSplit): DucklakeDeleteFileReader.DeletePositions
     {
         // Delete files carry their own footer_size in ducklake_delete_file.
         val deleteFooterHint: Long = split.deleteFileFooterSizes.getOrDefault(deleteFilePath, 0L)
@@ -424,12 +434,14 @@ class DucklakePageSourceProvider @Inject constructor(
             // granularity MUST re-derive position math (or do the performant fix above).
             // Positions for $file_row_number / $row_id come from the cumulative page offset, which
             // only matches true file positions when the reader streams contiguously from row 0.
-            // Predicate pushdown can prune row groups and break that, so disable it when a
-            // positional virtual is requested — same reasoning as the active-deletes case (B3b).
-            // Scoped to the queryable virtuals (perRow); the MERGE $row_id (-100) keeps its
-            // existing behavior (pushdown gated only by active deletes).
+            // Predicate pushdown can prune row groups and break that, so disable it when ANY
+            // positional column is requested — the queryable virtuals (perRow) AND the MERGE
+            // $row_id (-100). The rowIds captured by a DELETE/UPDATE/MERGE source scan become
+            // delete-file positions, so a pruned merge scan tombstones the WRONG rows. Caught
+            // row-level on the duckdb-format path (AbstractDucklakeRowLevelFormatTest); the
+            // parquet variant was latent only because pruning is row-group-granular.
             val requiresContiguousPositions: Boolean =
-                    splitHasActiveDeletes(split) || columns.any { it.virtualKind()?.perRow == true }
+                    splitHasActiveDeletes(split) || columns.any { positionalColumnKind(it) != null }
             val parquetTupleDomain: TupleDomain<ColumnDescriptor> =
                     if (requiresContiguousPositions) TupleDomain.all()
                     else toParquetTupleDomain(descriptorsByPath, effectivePredicate)
@@ -611,10 +623,13 @@ class DucklakePageSourceProvider @Inject constructor(
             }
         }
 
-        // See createParquetPageSource: disable predicate/expression pushdown when a positional
-        // virtual is requested so cumulative-offset positions stay aligned with the .db scan output.
+        // See createParquetPageSource: disable predicate/expression pushdown when any positional
+        // column is requested so cumulative-offset positions stay aligned with the scan output.
+        // The MERGE $row_id (-100) counts: DuckDB applies pushed predicates per-ROW, so a pushed
+        // merge scan returns only matching rows, the cumulative offsets compact, and the delete
+        // file tombstones the wrong rows (the wrong-survivors failure that drove this guard).
         val requiresContiguousPositions: Boolean =
-                splitHasActiveDeletes(split) || columns.any { it.virtualKind()?.perRow == true }
+                splitHasActiveDeletes(split) || columns.any { positionalColumnKind(it) != null }
 
         // Empty projection (e.g. COUNT(*)) is handled inside DuckDbFilePageSource by
         // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
@@ -1067,16 +1082,22 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
-    class DeleteRowFilterTransform : Function<SourcePage, SourcePage>
+    /**
+     * Drops tombstoned positions from each page. Two delete vocabularies apply to a split and
+     * each value is matched ONLY under its own interpretation: [globalRowIds] holds global row
+     * ids (`rowIdStart + file position`; Trino-written `row_id` delete files) and [localOffsets]
+     * holds file-local row offsets (DuckLake-spec `pos` delete files, puffin deletion vectors,
+     * inlined deletes). Cross-matching one vocabulary against the other phantom-deletes rows
+     * whenever `rowIdStart < recordCount`, because the two numeric ranges overlap.
+     */
+    class DeleteRowFilterTransform(
+            globalRowIds: Set<Long>,
+            localOffsets: Set<Long>,
+            private val rowIdStart: Long) : Function<SourcePage, SourcePage>
     {
-        private val deletedRows: Set<Long>
-        private val rowIdStart: Long
+        private val globalRowIds: Set<Long> = globalRowIds.toSet()
+        private val localOffsets: Set<Long> = localOffsets.toSet()
         private var nextRowOffset: Long = 0
-
-        constructor(deletedRows: Set<Long>, rowIdStart: Long) {
-            this.deletedRows = deletedRows.toSet()
-            this.rowIdStart = rowIdStart
-        }
 
         override fun apply(page: SourcePage): SourcePage
         {
@@ -1088,9 +1109,7 @@ class DucklakePageSourceProvider @Inject constructor(
                 val rowOffset: Long = nextRowOffset + position
                 val rowId: Long = rowIdStart + rowOffset
 
-                // Ducklake delete files conceptually store row ids. We also check row offsets to
-                // tolerate producers that store file-local row index values.
-                if (!deletedRows.contains(rowId) && !deletedRows.contains(rowOffset)) {
+                if (!globalRowIds.contains(rowId) && !localOffsets.contains(rowOffset)) {
                     retainedPositions[retainedCount] = position
                     retainedCount++
                 }
