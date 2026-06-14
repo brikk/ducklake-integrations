@@ -89,32 +89,51 @@ interface DucklakeDuckDbExecutor {
             projectedColumns: List<DucklakeColumnHandle>,
             pushedPredicate: TupleDomain<DucklakeColumnHandle>,
             pushedExpressions: List<String>?,
-            duckDbTimeZone: String?) {
+            duckDbTimeZone: String?,
+            fileColumnNamesById: Map<Long, String>?) {
         private val target: DuckDbAttachTarget = target
         private val projectedColumns: List<DucklakeColumnHandle> = projectedColumns
         private val pushedPredicate: TupleDomain<DucklakeColumnHandle> = pushedPredicate
         private val pushedExpressions: List<String> =
             pushedExpressions?.toList() ?: emptyList()
         private val duckDbTimeZone: String? = duckDbTimeZone
+        // Schema-evolution resolution: maps each projected column's catalog column_id to the
+        // name it had IN THE PHYSICAL FILE (i.e. at the file's begin_snapshot). A projected
+        // column whose id is absent from this map was added AFTER the file was written and is
+        // projected as a typed NULL. Empty => no resolution: project columns by their current
+        // name (the no-evolution fast path, and the contract for the lance-search PTF path).
+        // See DuckDbSelectSqlBuilder. The .db/vortex/lance files store physical column names
+        // from write time, so the parquet path's field_id matching has no analogue here —
+        // catalog-snapshot name resolution is how renames + added columns are handled.
+        private val fileColumnNamesById: Map<Long, String> = fileColumnNamesById ?: emptyMap()
 
         constructor(
                 target: DuckDbAttachTarget,
                 projectedColumns: List<DucklakeColumnHandle>,
                 pushedPredicate: TupleDomain<DucklakeColumnHandle>)
-                : this(target, projectedColumns, pushedPredicate, emptyList(), null)
+                : this(target, projectedColumns, pushedPredicate, emptyList(), null, null)
 
         constructor(
                 target: DuckDbAttachTarget,
                 projectedColumns: List<DucklakeColumnHandle>,
                 pushedPredicate: TupleDomain<DucklakeColumnHandle>,
                 pushedExpressions: List<String>)
-                : this(target, projectedColumns, pushedPredicate, pushedExpressions, null)
+                : this(target, projectedColumns, pushedPredicate, pushedExpressions, null, null)
+
+        constructor(
+                target: DuckDbAttachTarget,
+                projectedColumns: List<DucklakeColumnHandle>,
+                pushedPredicate: TupleDomain<DucklakeColumnHandle>,
+                pushedExpressions: List<String>,
+                duckDbTimeZone: String?)
+                : this(target, projectedColumns, pushedPredicate, pushedExpressions, duckDbTimeZone, null)
 
         fun target(): DuckDbAttachTarget = target
         fun projectedColumns(): List<DucklakeColumnHandle> = projectedColumns
         fun pushedPredicate(): TupleDomain<DucklakeColumnHandle> = pushedPredicate
         fun pushedExpressions(): List<String> = pushedExpressions
         fun duckDbTimeZone(): String? = duckDbTimeZone
+        fun fileColumnNamesById(): Map<Long, String> = fileColumnNamesById
 
         fun isEmptyProjection(): Boolean = projectedColumns.isEmpty()
 
@@ -126,16 +145,17 @@ interface DucklakeDuckDbExecutor {
                     && pushedPredicate == other.pushedPredicate
                     && pushedExpressions == other.pushedExpressions
                     && duckDbTimeZone == other.duckDbTimeZone
+                    && fileColumnNamesById == other.fileColumnNamesById
         }
 
         override fun hashCode(): Int {
-            return java.util.Objects.hash(target, projectedColumns, pushedPredicate, pushedExpressions, duckDbTimeZone)
+            return java.util.Objects.hash(target, projectedColumns, pushedPredicate, pushedExpressions, duckDbTimeZone, fileColumnNamesById)
         }
 
         override fun toString(): String {
             return "ExecutionRequest[target=" + target + ", projectedColumns=" + projectedColumns +
                     ", pushedPredicate=" + pushedPredicate + ", pushedExpressions=" + pushedExpressions +
-                    ", duckDbTimeZone=" + duckDbTimeZone + "]"
+                    ", duckDbTimeZone=" + duckDbTimeZone + ", fileColumnNamesById=" + fileColumnNamesById + "]"
         }
     }
 

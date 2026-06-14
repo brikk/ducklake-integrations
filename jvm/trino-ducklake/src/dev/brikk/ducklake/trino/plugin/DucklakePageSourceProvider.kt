@@ -108,6 +108,40 @@ class DucklakePageSourceProvider @Inject constructor(
     private val autoHttpfsThresholdBytes: Long = ducklakeConfig
             .getDuckdbAutoHttpfsThreshold().toBytes()
 
+    // Schema-evolution resolution cache: (tableId, file begin_snapshot) -> column_id ->
+    // physical name in the file. The DuckDB-engine read path (.db / vortex / lance) reads
+    // files by their physical column names, which are the names the columns had when the file
+    // was WRITTEN — so a column renamed or added after the file means the current name doesn't
+    // exist in the file and the read errors. We resolve the file's write-snapshot column names
+    // from the catalog so renames alias and added columns project NULL (DuckDbSelectSqlBuilder).
+    // Bounded + cleared wholesale on overflow; schema-evolution reads are rare so it stays tiny.
+    private val fileColumnNamesCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, Map<Long, String>> =
+            java.util.concurrent.ConcurrentHashMap()
+
+    private data class FileColumnNamesKey(val tableId: Long, val beginSnapshot: Long)
+
+    /**
+     * Resolve `column_id -> physical name in the file` for a DuckDB-engine data split, by
+     * reading the table's column set as of the file's begin_snapshot. Empty when the table
+     * handle or begin_snapshot is unavailable (test splits) — the SQL builder then projects
+     * current names directly (the no-evolution fast path).
+     */
+    private fun resolveFileColumnNames(table: ConnectorTableHandle, split: DucklakeSplit): Map<Long, String> {
+        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L) {
+            return emptyMap()
+        }
+        val key = FileColumnNamesKey(table.tableId, split.beginSnapshot)
+        fileColumnNamesCache[key]?.let { return it }
+        if (fileColumnNamesCache.size >= MAX_FILE_COLUMN_NAME_CACHE_ENTRIES) {
+            fileColumnNamesCache.clear()
+        }
+        val resolved: Map<Long, String> = catalog.getTableColumns(table.tableId, split.beginSnapshot)
+                .filter { it.parentColumn == null }
+                .associate { it.columnId to it.columnName }
+        fileColumnNamesCache[key] = resolved
+        return resolved
+    }
+
     override fun createPageSource(
             transaction: ConnectorTransactionHandle?,
             session: ConnectorSession,
@@ -181,6 +215,9 @@ class DucklakePageSourceProvider @Inject constructor(
                     table.pushedExpressions
                 else
                     emptyList()
+                // Resolve physical (file-snapshot) column names so the DuckDB-engine read
+                // survives schema evolution (renamed/added columns) — see DuckDbSelectSqlBuilder.
+                val fileColumnNamesById: Map<Long, String> = resolveFileColumnNames(table, ducklakeSplit)
                 val delegate: ConnectorPageSource = createDuckDbPageSource(
                         dataFileLocation,
                         sourceColumns,
@@ -188,7 +225,8 @@ class DucklakePageSourceProvider @Inject constructor(
                         effectivePredicate,
                         pushedExpressions,
                         fileSystem,
-                        session)
+                        session,
+                        fileColumnNamesById)
                 return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
@@ -605,7 +643,8 @@ class DucklakePageSourceProvider @Inject constructor(
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
             pushedExpressions: List<String>,
             fileSystem: TrinoFileSystem,
-            session: ConnectorSession): ConnectorPageSource
+            session: ConnectorSession,
+            fileColumnNamesById: Map<Long, String>): ConnectorPageSource
     {
         // Separate positional columns (MERGE $row_id + queryable $row_id / $file_row_number)
         // from file-resident columns. The .db file does not store row IDs / file positions;
@@ -672,7 +711,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val effectivePushedExpressions: List<String> = if (requiresContiguousPositions) emptyList() else pushedExpressions
         var pageSource: ConnectorPageSource = DuckDbFilePageSource(
                 executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
-                duckDbTimeZone)
+                duckDbTimeZone, fileColumnNamesById)
 
         if (positionalInjections.isNotEmpty()) {
             pageSource = PositionalVirtualInjectingPageSource(
@@ -867,6 +906,11 @@ class DucklakePageSourceProvider @Inject constructor(
 
     companion object {
         private val log: Logger = Logger.get(DucklakePageSourceProvider::class.java)
+
+        // Cap on the schema-evolution name cache before a wholesale clear. Keyed by
+        // (tableId, begin_snapshot); only populated for tables that have actually evolved
+        // and been read, so this ceiling is effectively never hit in practice.
+        private const val MAX_FILE_COLUMN_NAME_CACHE_ENTRIES = 2048
 
         private fun buildSnapshotRows(snapshots: List<DucklakeSnapshot>): List<Map<String, Any?>>
         {

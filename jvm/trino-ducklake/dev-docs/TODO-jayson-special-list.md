@@ -68,6 +68,19 @@ Known open boxes that belong here: views across all catalog backends (TODO-READ-
 DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
 concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
 
+✅ T2-A DONE 2026-06-14 — the branch-hunt's first big find: **schema evolution was totally
+broken on non-parquet data**. CTAS into duckdb/vortex/lance + any `ALTER TABLE ADD/RENAME/DROP
+COLUMN` made the table UNREADABLE ("column not found") — the DuckDB-engine read projected
+current names against a file holding write-time names. Fixed: the provider resolves each
+column's name as of the file's begin_snapshot (`catalog.getTableColumns`, memoized) and
+`DuckDbSelectSqlBuilder` aliases renames / projects `CAST(NULL AS type)` for columns added
+later — matching parquet's behavior. 21 e2e tests (`TestDucklakeSchemaEvolution*Format`) + 4
+SQL-builder unit tests. Remaining T2 candidates (ranked, from the dispatch-site audit):
+vortex/lance × httpfs/auto read modes (needs s3/minio fixture); metadata-tables/$files +
+time-travel on non-parquet (cheap); inlined-rows + DELETE spanning non-parquet splits (the
+grid item); add_files name-mapper error paths; views across DUCKDB_LOCAL/QUACK backends;
+concurrent-writer snapshot-lineage. Doris note unchanged (module pre-existingly broken).
+
 ---
 
 ## FEATURE SIDE (agent 2) — in priority order

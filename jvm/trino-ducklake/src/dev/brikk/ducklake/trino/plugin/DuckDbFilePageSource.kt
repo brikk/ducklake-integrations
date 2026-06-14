@@ -41,9 +41,11 @@ import java.sql.SQLException
  *
  * Predicates flow as the file-stats / dynamic-filter intersection from the
  * split manager plus best-effort `WHERE` translation in
- * [DuckDbWhereClauseTranslator]. Schema evolution (column rename, new
- * column added after the file was written) is not supported on the duckdb
- * path yet.
+ * [DuckDbWhereClauseTranslator]. Schema evolution (column rename, new column
+ * added after the file was written) IS supported: the page source provider
+ * resolves each column's physical name as of the file's begin_snapshot and the
+ * [DuckDbSelectSqlBuilder] aliases renamed columns / projects typed NULL for
+ * columns added later — `fileColumnNamesById` carries that resolution.
  */
 class DuckDbFilePageSource(
         private val executor: DucklakeDuckDbExecutor,
@@ -52,13 +54,17 @@ class DuckDbFilePageSource(
         columnTypes: List<Type>,
         effectivePredicate: TupleDomain<DucklakeColumnHandle>,
         pushedExpressions: List<String>,
-        duckDbTimeZone: String?) : ConnectorPageSource {
+        duckDbTimeZone: String?,
+        // Schema-evolution name map (column_id -> physical name in the file). Empty for the
+        // no-evolution fast path and the lance-search PTF path. See DuckDbSelectSqlBuilder.
+        fileColumnNamesById: Map<Long, String> = emptyMap()) : ConnectorPageSource {
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
             columns.toList(),
             effectivePredicate,
             pushedExpressions.toList(),
-            duckDbTimeZone)
+            duckDbTimeZone,
+            fileColumnNamesById.toMap())
     private val converter: DucklakeArrowToPageConverter = DucklakeArrowToPageConverter(columnTypes)
     private val emptyProjection: Boolean = this.request.isEmptyProjection()
 

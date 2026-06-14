@@ -227,7 +227,7 @@ operators and functions are not available through Trino.
 | Mixed inline + Parquet snapshots | Yes | Both sources unioned transparently |
 | Delete files (merge-on-read) | Yes | Parquet positional delete files |
 | Delete-file evolution across snapshots | Yes | Reads the currently-valid delete file per data file at the active snapshot (spec: at most one delete file per data file per snapshot) |
-| Schema evolution on read | Yes | Missing columns return NULL |
+| Schema evolution on read | Yes | Renamed columns and columns added after a data file was written read correctly (added columns return NULL for older rows) — across all four data file formats (parquet via field_id; duckdb/vortex/lance via catalog name resolution at the file's write snapshot) |
 | Time travel — FOR VERSION AS OF | Yes | By snapshot ID |
 | Time travel — FOR TIMESTAMP AS OF | Yes | By timestamp |
 | Snapshot pinning (session) | Yes | `read_snapshot_id`, `read_snapshot_timestamp` |

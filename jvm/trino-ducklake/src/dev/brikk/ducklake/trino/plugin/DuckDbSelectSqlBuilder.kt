@@ -42,12 +42,14 @@ object DuckDbSelectSqlBuilder {
         }
         else {
             val columns = request.projectedColumns()
+            // Schema-evolution name map: column_id -> name in the physical file. Empty => no
+            // resolution, project by current name (no-evolution fast path / lance-search PTF).
+            val fileNames: Map<Long, String> = request.fileColumnNamesById()
             for (i in columns.indices) {
                 if (i > 0) {
                     sql.append(", ")
                 }
-                val name = columns[i].columnName.replace("\"", "\"\"")
-                sql.append('"').append(name).append('"')
+                appendProjectedColumn(sql, columns[i], fileNames)
             }
         }
         sql.append(" FROM ").append(fullyQualifiedTable)
@@ -72,5 +74,47 @@ object DuckDbSelectSqlBuilder {
             }
         }
         return sql.toString()
+    }
+
+    /**
+     * Append one projected column to the SELECT list, applying schema-evolution resolution:
+     *
+     *   - [fileNames] empty (no resolution): project the column by its current name.
+     *   - column present in [fileNames]: project the file's physical name, aliased to the
+     *     current name when they differ (handles RENAME COLUMN — the file kept the old name).
+     *   - column absent from a non-empty [fileNames]: the column was added AFTER the file was
+     *     written, so it has no physical column — project a typed NULL under the current name
+     *     (handles ADD COLUMN; matches the parquet path's missing-column-as-NULL behavior).
+     *
+     * The projection order always equals the requested column order, so the Arrow→page
+     * converter (which maps by position to the requested types) is unaffected.
+     */
+    private fun appendProjectedColumn(
+            sql: StringBuilder,
+            column: DucklakeColumnHandle,
+            fileNames: Map<Long, String>) {
+        val currentName = column.columnName
+        if (fileNames.isEmpty()) {
+            appendQuoted(sql, currentName)
+            return
+        }
+        val physicalName: String? = fileNames[column.columnId]
+        if (physicalName == null) {
+            // Added after this file was written — no physical column to read.
+            sql.append("CAST(NULL AS ")
+                    .append(DuckDbWriterSupport.toDuckDbSqlType(column.columnType, "schema-evolution NULL projection"))
+                    .append(") AS ")
+            appendQuoted(sql, currentName)
+            return
+        }
+        appendQuoted(sql, physicalName)
+        if (physicalName != currentName) {
+            sql.append(" AS ")
+            appendQuoted(sql, currentName)
+        }
+    }
+
+    private fun appendQuoted(sql: StringBuilder, identifier: String) {
+        sql.append('"').append(identifier.replace("\"", "\"\"")).append('"')
     }
 }

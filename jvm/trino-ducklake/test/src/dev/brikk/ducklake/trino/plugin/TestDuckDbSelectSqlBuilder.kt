@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import io.airlift.slice.Slices
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
+import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -100,6 +101,70 @@ class TestDuckDbSelectSqlBuilder {
         assertThat(sql).isEqualTo(
                 "SELECT \"name\" FROM ducklake_in.main.t " +
                         "WHERE (trino_lower(\"name\") = 'apple') AND ((\"id\" >= 42))")
+    }
+
+    // ==================== Schema-evolution projection (fileColumnNamesById) ====================
+
+    @Test
+    fun testRenamedColumnIsProjectedUnderFileNameAliasedToCurrent() {
+        // Current name "full_name" (id 101); the physical file still has it as "name".
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                listOf(DucklakeColumnHandle(101L, "full_name", VARCHAR, true)),
+                TupleDomain.all(),
+                listOf(),
+                null,
+                mapOf(101L to "name"))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo("SELECT \"name\" AS \"full_name\" FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testAddedColumnIsProjectedAsTypedNull() {
+        // id 101 present in file; id 102 ("score", INTEGER) added after the file was written.
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                listOf(
+                        DucklakeColumnHandle(101L, "name", VARCHAR, true),
+                        DucklakeColumnHandle(102L, "score", INTEGER, true)),
+                TupleDomain.all(),
+                listOf(),
+                null,
+                mapOf(101L to "name"))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT \"name\", CAST(NULL AS INTEGER) AS \"score\" FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testPresentColumnWithUnchangedNameHasNoAlias() {
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                listOf(NAME_COL),
+                TupleDomain.all(),
+                listOf(),
+                null,
+                mapOf(101L to "name"))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo("SELECT \"name\" FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testEmptyFileNameMapProjectsCurrentNames() {
+        // No resolution (no-evolution fast path): project the current name verbatim.
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                listOf(NAME_COL),
+                TupleDomain.all(),
+                listOf(),
+                null,
+                emptyMap())
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo("SELECT \"name\" FROM ducklake_in.main.t")
     }
 
     companion object {
