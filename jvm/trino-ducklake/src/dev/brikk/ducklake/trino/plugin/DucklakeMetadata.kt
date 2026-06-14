@@ -970,13 +970,25 @@ class DucklakeMetadata(
         val table: DucklakeTable = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
             ?: throw TrinoException(NOT_SUPPORTED, "Table was not created: $tableName")
 
+        // For the WRITE handle, a column's type must match the blocks the engine will stream
+        // from the CTAS source — not the catalog round-trip. The two agree for every type
+        // EXCEPT timestamptz: DuckLake stores it micros-only, so the round-trip always reports
+        // precision 6 (a long / Fixed12 tstz), but a CTAS streams the source's actual precision
+        // (e.g. the default precision-3 short / LongArray tstz). Feeding the writer the
+        // precision-6 type then crashed the stats accumulator / Arrow conversion on the short
+        // blocks (LongArrayBlock vs Fixed12Block). Use the originally-declared type for tstz so
+        // the writer's isShort branch matches the block; the stored value still widens to micros
+        // and reads back as precision 6.
+        val declaredTstzByName: Map<String, Type> = tableMetadata.columns
+                .filter { it.type is TimestampWithTimeZoneType }
+                .associate { it.name to it.type }
         val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, snapshotId)
         val columnHandles: List<DucklakeColumnHandle> = catalogColumns.stream()
                 .filter { col -> col.parentColumn == null }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
                         col.columnName,
-                        typeConverter.toTrinoType(col.columnType),
+                        declaredTstzByName[col.columnName] ?: typeConverter.toTrinoType(col.columnType),
                         col.nullsAllowed) }
                 .collect(toImmutableList())
 

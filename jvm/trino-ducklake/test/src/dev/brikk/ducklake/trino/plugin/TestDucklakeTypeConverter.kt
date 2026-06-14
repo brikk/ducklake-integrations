@@ -193,7 +193,14 @@ class TestDucklakeTypeConverter {
 
     @Test
     fun testTimestampTzWriteIsMicros() {
-        assertThat(converter.toDucklakeType(TimestampWithTimeZoneType.createTimestampWithTimeZoneType(6))).isEqualTo("timestamptz")
+        // DuckLake timestamptz is micros-only; every declared precision maps to the single
+        // micros storage type (the precision widens to 6 on read). The CTAS short-block
+        // mismatch this once caused is handled in beginCreateTable, not by rejecting the type.
+        for (precision in intArrayOf(0, 3, 6, 9)) {
+            assertThat(converter.toDucklakeType(TimestampWithTimeZoneType.createTimestampWithTimeZoneType(precision)))
+                    .`as`("tstz precision %d", precision)
+                    .isEqualTo("timestamptz")
+        }
     }
 
     // ==================== Unknown type still errors ====================

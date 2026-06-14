@@ -187,7 +187,7 @@ Restart Trino for the new plugin and catalog to take effect.
 | `timestamp_s` | TIMESTAMP(0) | Yes | Yes | Second precision |
 | `timestamp_ms` | TIMESTAMP(3) | Yes | Yes | Millisecond precision |
 | `timestamp_ns` | TIMESTAMP(9) | Yes | Yes | Nanosecond precision |
-| `timestamptz` | TIMESTAMP WITH TIME ZONE | Yes | Yes | Microsecond precision |
+| `timestamptz` | TIMESTAMP WITH TIME ZONE | Yes | Yes | Stored at microsecond precision; columns declared at a lower precision (incl. Trino's default `TIMESTAMP WITH TIME ZONE`, which is precision 3) widen to precision 6 on read. CTAS and INSERT of any precision round-trip. Non-parquet data formats only (parquet rejects timestamptz). |
 | `list<T>` | ARRAY(T) | Yes | Yes | Full nesting supported |
 | `struct<...>` | ROW(...) | Yes | Yes | Full nesting supported |
 | `map<K,V>` | MAP(K,V) | Yes | Yes | Full nesting supported |

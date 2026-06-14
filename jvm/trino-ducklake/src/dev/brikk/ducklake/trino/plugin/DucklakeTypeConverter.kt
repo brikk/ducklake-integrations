@@ -193,6 +193,12 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
                             "Unsupported timestamp precision ${trinoType.precision} for DuckLake write; supported precisions are 0, 3, 6, 9")
                 }
             }
+            // DuckLake timestamptz is microsecond-only (DuckDB has a single TIMESTAMPTZ = micros;
+            // no second/milli/nano variants like plain TIMESTAMP). The stored type is always
+            // micros regardless of the declared precision; a column declared at another precision
+            // silently widens to micros on read — tolerated here (unlike TIMESTAMP/TIME) because
+            // there is no narrower tstz storage. The CTAS short-block mismatch this used to cause
+            // is fixed in beginCreateTable, not by rejecting the type.
             is TimestampWithTimeZoneType -> return "timestamptz"
         }
         // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather

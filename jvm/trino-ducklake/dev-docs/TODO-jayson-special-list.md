@@ -68,6 +68,20 @@ Known open boxes that belong here: views across all catalog backends (TODO-READ-
 DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
 concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
 
+✅ T2-C DONE 2026-06-14 — type-edge sweep on the thin formats (special floats, empty
+strings, all-NULL, empty arrays, bucket partitioning, boundary bigints, decimals,
+pushdown, multi-file pruning — all solid). One real bug: **short-precision `TIMESTAMP WITH
+TIME ZONE` CTAS crashed** (`LongArrayBlock cannot be cast to Fixed12Block` in the stats
+accumulator on vortex/lance; "Failed to close writer" on duckdb). Root cause: DuckLake tstz is
+micros-only, so the catalog round-trip always reports precision 6 — but a CTAS streams the
+source's actual precision (e.g. default precision-3 short blocks), and beginCreateTable handed
+the writer the precision-6 (long) column type. Fixed by giving the CTAS write handle the
+ORIGINAL declared tstz type so the writer's isShort branch matches the blocks (value still
+widens to micros on read). NB plain CREATE TABLE + INSERT already worked (engine coerces to
+micros) — only CTAS broke, so the fix is in beginCreateTable, not a type-level gate (a gate
+broke the Tier-C declaration tests). `TestDucklakeTimestampTzPrecision` (CTAS prec 0/3/6 × 3
+formats) + unit pin.
+
 ✅ T2-B DONE 2026-06-14 — the grid's named inlined-interplay cell: a table with BOTH inlined
 rows (DuckDB-written) AND a non-parquet data file (Trino-written). READ composes fine
 (inlined split + lance data-file split union correctly — `TestDucklakeInlinedNonParquetInterplay`).
