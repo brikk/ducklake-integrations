@@ -284,6 +284,17 @@ interface DucklakeCatalog {
     fun truncateTable(schemaName: String, tableName: String)
 
     /**
+     * Flush a table's inlined rows into data files. Registers [fragments] (the materialized
+     * data file(s) the connector wrote from the inlined rows) AND end-snapshots every live
+     * inlined row, atomically in one snapshot. The caller must have written [fragments] to
+     * contain exactly the live inlined rows. No schema-version bump (a data move). Recorded as
+     * `flushed_inlined`. Conflicts (via the conflict matrix) with any intervening commit that
+     * dropped/altered the table or changed its inlined data, so a concurrent change aborts
+     * rather than duplicating or dropping rows.
+     */
+    fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>)
+
+    /**
      * Rename a table within its schema. End-snapshots the current `ducklake_table` row and
      * inserts a new version with the same table_id, uuid, and path — data files and history
      * are untouched; the table's data directory keeps its original name. Recorded as

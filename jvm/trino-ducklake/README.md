@@ -273,7 +273,7 @@ operators and functions are not available through Trino.
 | RENAME SCHEMA | Yes | Tables/views/macros follow; data stays in place; DuckDB cross-engine verified |
 | COMMENT ON TABLE | Yes | Stored as the `comment` tag in `ducklake_tag`; visible to DuckDB |
 | COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
-| DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Flush inlined data to files first (DuckLake `flush_inlined_data`, or `data_inlining_row_limit = 0`). Reads over inlined+file mixes work. |
+| DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Run `CALL system.flush_inlined_data(schema, table)` first (or `data_inlining_row_limit = 0`) to make the rows file-resident, then DELETE/UPDATE/MERGE work. Reads over inlined+file mixes work. |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
 | ALTER TABLE ADD/DROP FIELD | No | Nested struct field manipulation |
 | ANALYZE | No | Statistics are read-only from the catalog |
@@ -432,6 +432,7 @@ operates on whichever DuckLake catalog you invoke through.
 | Procedure | Description |
 |-----------|-------------|
 | `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map, unpartitioned tables only). |
+| `flush_inlined_data(schema_name, table_name)` | Materialize a table's inlined rows (written cross-engine by DuckDB under `data_inlining_row_limit`) into a Parquet data file and clear the inlined rows, atomically. Unblocks DELETE/UPDATE/MERGE, which are gated while a table has inlined rows. No-op when nothing is inlined; not supported for partitioned tables yet. |
 
 ### `add_files`
 

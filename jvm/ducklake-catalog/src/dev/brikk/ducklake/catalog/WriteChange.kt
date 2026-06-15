@@ -86,6 +86,17 @@ sealed interface WriteChange {
     }
 
     /**
+     * `flush_inlined_data`: inlined catalog rows materialized into a data file and the
+     * inlined rows end-snapshotted. Upstream's `ParseChangeType` accepts both
+     * `flushed_inlined` and `inline_flush`; we emit the former (see InterveningChanges).
+     */
+    @JvmRecord
+    data class FlushedInlinedData(val tableId: Long) : WriteChange {
+        override fun toChangesMadeEntry(): String =
+            "flushed_inlined:$tableId"
+    }
+
+    /**
      * @param referencedColumnIds column IDs the data files depend on (drawn from
      *        each fragment's `columnStats`). Captured so a logical
      *        conflict check can verify they are still active at commit time.

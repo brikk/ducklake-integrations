@@ -58,6 +58,8 @@ object LogicalConflictCheck {
                     checkDeletedFromTable(ctx, snapshotId, change, operationDescription)
                 is WriteChange.AlteredTable ->
                     checkTableActive(ctx, snapshotId, change.tableId, "altered", operationDescription)
+                is WriteChange.FlushedInlinedData ->
+                    checkTableActive(ctx, snapshotId, change.tableId, "flushed inlined data for", operationDescription)
                 is WriteChange.DroppedTable ->
                     checkTableActive(ctx, snapshotId, change.tableId, "dropped", operationDescription)
                 is WriteChange.DroppedSchema ->

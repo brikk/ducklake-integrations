@@ -1672,7 +1672,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     override fun truncateTable(schemaName: String, tableName: String) {
         val file = DUCKLAKE_DATA_FILE.`as`("file")
         val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
-        val inlinedTables = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
         executeWriteTransaction("truncate table $schemaName.$tableName") { tx ->
             val schemaId = tx.resolveSchemaId(schemaName)
             val tableId = tx.resolveTableId(schemaId, tableName)
@@ -1713,33 +1712,60 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                     .and(file.END_SNAPSHOT.isNull),
             )
 
-            // End-snapshot live inlined rows across every schema version's inlined-data table
-            // (Trino never inlines, but a cross-engine DuckDB writer may have). The per-version
-            // table is dynamically named; a DataAccessException means the metadata points at a
-            // dropped / never-materialized table — skip it, as getInlinedDataInfos does.
-            val schemaVersions: List<Long> = ctx.select(inlinedTables.SCHEMA_VERSION)
-                .from(inlinedTables)
-                .where(inlinedTables.TABLE_ID.eq(tableId))
-                .fetch(inlinedTables.SCHEMA_VERSION)
-                .filterNotNull()
-            for (schemaVersion in schemaVersions) {
-                val inlined = InlinedDataTable.of(tableId, schemaVersion)
-                try {
-                    metadata.execute(
-                        ctx,
-                        ctx.update(inlined.table)
-                            .set(inlined.endSnapshot, newSnapshotId)
-                            .where(inlined.endSnapshot.isNull),
-                    )
-                }
-                catch (e: DataAccessException) {
-                    log.log(System.Logger.Level.DEBUG,
-                        "Skipping inlined-data table for table $tableId schema version $schemaVersion during truncate", e)
-                }
-            }
+            endSnapshotLiveInlinedRows(ctx, tableId, newSnapshotId, "truncate")
 
             // Data change, not schema — do NOT bump the schema version (matches DELETE/MERGE).
             tx.recordChange(WriteChange.DeletedFromTable(tableId, clearedFileIds))
+        }
+    }
+
+    override fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>) {
+        executeWriteTransaction("flush inlined data for table $tableId") { tx ->
+            val ctx = tx.dsl()
+            val newSnapshotId = tx.getNewSnapshotId()
+
+            // Register the data file(s) the caller materialized from the inlined rows, then
+            // end-snapshot the live inlined rows — atomically. The conflict matrix
+            // (checkFlushedInlinedData) aborts if an intervening commit changed this table's
+            // inlined data or schema, so the read-then-write can't duplicate or drop rows.
+            if (fragments.isNotEmpty()) {
+                applyInsertFragments(tx, tableId, fragments)
+            }
+            endSnapshotLiveInlinedRows(ctx, tableId, newSnapshotId, "flush")
+
+            // Data move, not schema — no schema-version bump.
+            tx.recordChange(WriteChange.FlushedInlinedData(tableId))
+        }
+    }
+
+    /**
+     * End-snapshot every live inlined row across all of a table's per-schema-version inlined
+     * tables, at [newSnapshotId]. Shared by truncate and flush. The per-version table is
+     * dynamically named; a DataAccessException means the metadata points at a dropped /
+     * never-materialized table — skip it, as getInlinedDataInfos does. Routed through
+     * `metadata` so the Quack RPC binder accepts the UPDATE on attached-metadata tables.
+     */
+    private fun endSnapshotLiveInlinedRows(ctx: DSLContext, tableId: Long, newSnapshotId: Long, operation: String) {
+        val inlinedTables = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
+        val schemaVersions: List<Long> = ctx.select(inlinedTables.SCHEMA_VERSION)
+            .from(inlinedTables)
+            .where(inlinedTables.TABLE_ID.eq(tableId))
+            .fetch(inlinedTables.SCHEMA_VERSION)
+            .filterNotNull()
+        for (schemaVersion in schemaVersions) {
+            val inlined = InlinedDataTable.of(tableId, schemaVersion)
+            try {
+                metadata.execute(
+                    ctx,
+                    ctx.update(inlined.table)
+                        .set(inlined.endSnapshot, newSnapshotId)
+                        .where(inlined.endSnapshot.isNull),
+                )
+            }
+            catch (e: DataAccessException) {
+                log.log(System.Logger.Level.DEBUG,
+                    "Skipping inlined-data table for table $tableId schema version $schemaVersion during $operation", e)
+            }
         }
     }
 

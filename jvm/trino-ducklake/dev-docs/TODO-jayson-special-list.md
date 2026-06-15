@@ -189,6 +189,17 @@ registration, not the format). Remaining: decide whether partitioned-table lance
 against the shared catalog. This is the biggest single hole — a multi-week program (M8 in
 TODO-WRITE-MODE), and the one with real operational consequences (orphan files after failed
 commits currently have *no* Trino-side remedy).
+✅ flush_inlined_data DONE 2026-06-15 — `CALL system.flush_inlined_data(schema_name,
+table_name)`: connector-native (reads inlined rows via the catalog, materializes them into a
+Parquet file through `ParquetFileWriter` driven by an `InMemoryRecordSet`→Page reuse, then
+`catalog.flushInlinedData` registers the file + end-snapshots the inlined rows atomically;
+new `WriteChange.FlushedInlinedData` + ConflictMatrix/LogicalConflictCheck entries — conflicts
+on any intervening inlined-data/schema change so the read-then-write can't duplicate/drop).
+Unblocks the T2-B DELETE gate. v1 gates partitioned tables; handles schema evolution across
+inlined versions (readInlinedData NULL-fills). `TestDucklakeFlushInlinedData` (7, cross-engine).
+Still absent (the real F6 program): optimize/rewrite_data_files/expire_snapshots/
+remove_orphan_files/stats-recalc — design-led, with the in-place-mutation/snapshot-safety
+question from RESEARCH-lance-index-lifecycle.md.
 
 ### F7. Write-side polish
 

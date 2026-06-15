@@ -58,6 +58,7 @@ object ConflictMatrix {
                 is WriteChange.DeletedFromTable -> checkDeletedFromTable(change, other)
                 is WriteChange.AlteredTable -> checkAlteredTable(change, other)
                 is WriteChange.AlteredView -> checkAlteredView(change, other)
+                is WriteChange.FlushedInlinedData -> checkFlushedInlinedData(change, other)
             }
         }
     }
@@ -188,6 +189,19 @@ object ConflictMatrix {
             c.tableId, other.alteredTables,
             "alter table", "altered it",
         )
+    }
+
+    // A flush reads inlined rows, writes them to a data file, and clears the inlined rows —
+    // all against the base snapshot. Any intervening commit that touched this table's inlined
+    // data or schema invalidates that read-then-write: a concurrent flush or inlined-insert/
+    // delete would duplicate, resurrect, or drop rows, and a drop/alter changes the target. So
+    // conflict on all of them (mirrors checkDeletedFromTable, plus the inlined-specific kinds).
+    private fun checkFlushedInlinedData(c: WriteChange.FlushedInlinedData, other: InterveningChanges) {
+        conflictIfMember(c.tableId, other.droppedTables, "flush inlined data", "dropped it")
+        conflictIfMember(c.tableId, other.alteredTables, "flush inlined data", "altered it")
+        conflictIfMember(c.tableId, other.tablesFlushedInlined, "flush inlined data", "flushed it")
+        conflictIfMember(c.tableId, other.tablesInsertedInlined, "flush inlined data", "inlined-inserted into it")
+        conflictIfMember(c.tableId, other.tablesDeletedInlined, "flush inlined data", "inlined-deleted from it")
     }
 
     // ducklake_transaction.cpp:1311-1313
