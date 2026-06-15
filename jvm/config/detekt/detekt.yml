@@ -738,8 +738,11 @@ style:
   RedundantVisibilityModifier:
     active: false
   ReturnCount:
-    active: true
-    max: 4  # tuned: this codebase favors guard-clause early returns
+    # Disabled by preference: the codebase has many type-dispatch functions (a `when` over
+    # the open Trino `Type` hierarchy with one `return` per branch + a fall-through default),
+    # for which a low return cap is noise rather than signal.
+    active: false
+    max: 4
     excludedFunctions:
       - 'equals'
     excludeLabeled: false

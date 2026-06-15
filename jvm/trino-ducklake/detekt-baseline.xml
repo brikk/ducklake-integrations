@@ -4,8 +4,6 @@
   <CurrentIssues>
     <ID>ComplexCondition:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$name.catalogSchema.isEmpty &amp;&amp; "concat" == name.name &amp;&amp; args.size &gt;= 2 &amp;&amp; call.type is VarcharType</ID>
     <ID>ComplexCondition:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$type is BigintType || type is IntegerType || type is SmallintType || type is TinyintType</ID>
-    <ID>ComplexCondition:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT</ID>
-    <ID>ComplexCondition:DuckDbWriterSupport.kt:DuckDbWriterSupport$type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT</ID>
     <ID>ComplexCondition:DucklakeAddFilesTypeChecker.kt:DucklakeAddFilesTypeChecker.Companion$target is TinyintType || target is SmallintType || target is IntegerType || target is BigintType</ID>
     <ID>ComplexCondition:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$trinoType == TINYINT || trinoType == SMALLINT || trinoType == INTEGER || trinoType == BIGINT</ID>
     <ID>ComplexCondition:DucklakeMetadata.kt:DucklakeMetadata.Companion$type == BIGINT || type == INTEGER || type == SMALLINT || type == TINYINT</ID>
@@ -20,16 +18,15 @@
     <ID>CyclomaticComplexMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
     <ID>CyclomaticComplexMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun appendValue</ID>
     <ID>CyclomaticComplexMethod:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: String?</ID>
-    <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: String?</ID>
     <ID>CyclomaticComplexMethod:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun toDuckDbSqlType: String</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
     <ID>CyclomaticComplexMethod:DucklakeAddFilesTypeChecker.kt:DucklakeAddFilesTypeChecker.Companion$private fun isCompatible: Boolean</ID>
-    <ID>CyclomaticComplexMethod:DucklakeColumnStatsAccumulator.kt:DucklakeColumnStatsAccumulator.Companion$@Suppress("UNCHECKED_CAST") private fun extractComparable: Comparable&lt;Any&gt;?</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun convertColumn: Block</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampColumn</ID>
     <ID>CyclomaticComplexMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun writeTimestampTzColumn</ID>
-    <ID>CyclomaticComplexMethod:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
+    <ID>CyclomaticComplexMethod:DucklakeColumnStatsAccumulator.kt:DucklakeColumnStatsAccumulator.Companion$@Suppress("UNCHECKED_CAST") private fun extractComparable: Comparable&lt;Any&gt;?</ID>
     <ID>CyclomaticComplexMethod:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$fun convertJdbcValue: Any?</ID>
     <ID>CyclomaticComplexMethod:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$private fun parseDucklakeListText: Array&lt;Any?&gt;</ID>
     <ID>CyclomaticComplexMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
@@ -48,16 +45,15 @@
     <ID>LargeClass:DucklakeMetadata.kt:DucklakeMetadata : ConnectorMetadata</ID>
     <ID>LargeClass:TestDuckDbExpressionTranslator.kt:TestDuckDbExpressionTranslator</ID>
     <ID>LargeClass:TestDucklakePartitionPruning.kt:TestDucklakePartitionPruning</ID>
-    <ID>LongMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateTimestampVector</ID>
     <ID>LongMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateVector</ID>
     <ID>LongMethod:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
     <ID>LongMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun appendValue</ID>
+    <ID>LongMethod:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: String?</ID>
     <ID>LongMethod:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
     <ID>LongMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$@Suppress("unused") // invoked via MethodHandle fun addFiles</ID>
     <ID>LongMethod:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$private fun buildFragment: dev.brikk.ducklake.catalog.DucklakeWriteFragment</ID>
     <ID>LongMethod:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun convertColumn: Block</ID>
     <ID>LongMethod:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator$@JvmStatic @Throws(Exception::class) internal fun generateTestCatalog</ID>
-    <ID>LongMethod:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
     <ID>LongMethod:DucklakeMergeSink.kt:DucklakeMergeSink$@Throws(IOException::class) private fun writeDeleteFile: DucklakeDeleteFragment</ID>
     <ID>LongMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun applyFilter: Optional&lt;ConstraintApplicationResult&lt;ConnectorTableHandle&gt;&gt;</ID>
     <ID>LongMethod:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
@@ -67,7 +63,6 @@
     <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$override fun getSplits: ConnectorSplitSource</ID>
     <ID>LongMethod:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
     <ID>LongMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
-    <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toDucklakeType: String</ID>
     <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
     <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
     <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect</ID>
@@ -101,7 +96,6 @@
     <ID>MaxLineLength:DucklakePageSourceProviderFactory.kt:DucklakePageSourceProviderFactory$return DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache, duckDbS3Config, ducklakeConfig, executorFactory)</ID>
     <ID>MaxLineLength:DucklakeSessionProperties.kt:DucklakeSessionProperties$"Read strategy for duckdb-format data files: 'httpfs' (default; DuckDB streams blocks from S3 directly via the httpfs extension and maintains its own warm cache across queries), 'materialize' (download whole .db file to local tmp then ATTACH; useful when many small reads dominate), or 'auto' (picks per-file based on ducklake.duckdb.auto-httpfs-threshold). No effect when data_file_format is 'parquet'."</ID>
     <ID>MaxLineLength:DucklakeSessionProperties.kt:DucklakeSessionProperties$"Writer implementation for the duckdb format: 'arrow_stream' (default — Page → Arrow → INSERT FROM registered stream, columnar) or 'appender' (JDBC Appender, per-cell JNI; kept for comparison). No effect when data_file_format is 'parquet'."</ID>
-    <ID>MaxLineLength:DucklakeSnapshotResolver.kt:DucklakeSnapshotResolver$private val catalogDefaultSnapshotTimestamp: Optional&lt;Instant&gt; = requireNotNull(catalogDefaultSnapshotTimestamp) { "catalogDefaultSnapshotTimestamp is null" }</ID>
     <ID>MaxLineLength:DucklakeSplit.kt:DucklakeSplit$:</ID>
     <ID>MaxLineLength:DucklakeSplitManager.kt:DucklakeSplitManager$.</ID>
     <ID>MaxLineLength:DucklakeTableProperties.kt:DucklakeTableProperties$"Data file format for this table's CTAS payload: 'parquet' (default) or 'duckdb'. Overrides the session-level data_file_format for this CREATE only."</ID>
@@ -115,11 +109,9 @@
     <ID>MaxLineLength:TestDucklakeDuckDbFormatRead.kt:TestDucklakeDuckDbFormatRead$" (2, false, CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), CAST(-2147483648 AS INTEGER), -9223372036854775000, CAST(-3.5 AS REAL), CAST(-1.0 AS DOUBLE), CAST('there' AS VARCHAR))"</ID>
     <ID>MaxLineLength:TestDucklakeInlinedDeleteHandling.kt:TestDucklakeInlinedDeleteHandling.Companion$null</ID>
     <ID>MaxLineLength:TestDucklakePageSourceProvider.kt:TestDucklakePageSourceProvider$null</ID>
-    <ID>MaxLineLength:TestDucklakeSnapshotResolver.kt:TestDucklakeSnapshotResolver$assertThatThrownBy { resolver.resolveSnapshotId(createSession(ImmutableMap.of()), OptionalLong.of(currentSnapshotId), Optional.of(currentSnapshotTime)) }</ID>
     <ID>MaxLineLength:TrinoParityExtensionResolver.kt:TrinoParityExtensionResolver.Companion$log</ID>
     <ID>NestedBlockDepth:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$fun map: Result</ID>
     <ID>NestedBlockDepth:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure.Companion$@Throws(IOException::class) private fun toThriftFileMetaData: org.apache.parquet.format.FileMetaData</ID>
-    <ID>NestedBlockDepth:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositions: Set&lt;Long&gt;</ID>
     <ID>NestedBlockDepth:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter$private fun parseDucklakeListText: Array&lt;Any?&gt;</ID>
     <ID>NestedBlockDepth:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$fun extractStats: List&lt;DucklakeFileColumnStats&gt;</ID>
     <ID>NestedBlockDepth:TestDucklakeAddFiles.kt:TestDucklakeAddFiles$private fun countColumnMappings: Int</ID>
@@ -139,25 +131,6 @@
     <ID>NestedBlockDepth:TestDucklakeDuckDbFormatWrite.kt:TestDucklakeDuckDbFormatWrite$@Test @Throws(Exception::class) fun testCtasIntoDuckDbFormatProducesValidDbFile</ID>
     <ID>NestedBlockDepth:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats$private fun dataPathDir: String</ID>
     <ID>RethrowCaughtException:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.QueueArrowReader$throw e</ID>
-    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateCall: String?</ID>
-    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$private fun translateConstant: String?</ID>
-    <ID>ReturnCount:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.LikePatternAccessor$fun extract: Extracted?</ID>
-    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun formatLiteral: String?</ID>
-    <ID>ReturnCount:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$private fun translateDomain: String?</ID>
-    <ID>ReturnCount:DuckDbWriterSupport.kt:DuckDbWriterSupport$fun formatStatValue: Optional&lt;String&gt;</ID>
-    <ID>ReturnCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$private fun parquetPrimitiveToTrino: Type</ID>
-    <ID>ReturnCount:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$private fun resolveTimeZoneKey: TimeZoneKey</ID>
-    <ID>ReturnCount:DucklakeMetadata.kt:DucklakeMetadata$override fun getTableStatistics: TableStatistics</ID>
-    <ID>ReturnCount:DucklakeParquetTypeUtils.kt:DucklakeParquetTypeUtils$fun constructField: Optional&lt;Field&gt;</ID>
-    <ID>ReturnCount:DucklakeSnapshotResolver.kt:DucklakeSnapshotResolver$fun resolveSnapshotId: Long</ID>
-    <ID>ReturnCount:DucklakeSortPropertyMapper.kt:DucklakeSortPropertyMapper.Companion$internal fun parseColumnReference: String?</ID>
-    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun buildFileStatisticsDomain: TupleDomain&lt;DucklakeColumnHandle&gt;</ID>
-    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun partitionValueMatchesDomain: Boolean</ID>
-    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneByPartitionValues: List&lt;DucklakeDataFile&gt;</ID>
-    <ID>ReturnCount:DucklakeSplitManager.kt:DucklakeSplitManager$private fun pruneDataFiles: List&lt;DucklakeDataFile&gt;</ID>
-    <ID>ReturnCount:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
-    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$fun partitionValueMatchesDomain: Boolean</ID>
-    <ID>ReturnCount:DucklakeTemporalPartitionMatcher.kt:DucklakeTemporalPartitionMatcher$private fun extractEpochMicros: Long</ID>
     <ID>SwallowedException:DuckDbWhereClauseTranslator.kt:DuckDbWhereClauseTranslator$e: UnsupportedOperationException</ID>
     <ID>SwallowedException:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$e: DucklakeAddFilesException</ID>
     <ID>SwallowedException:DucklakeArrowToPageConverter.kt:DucklakeArrowToPageConverter.Companion$e: IllegalArgumentException</ID>
@@ -195,7 +168,6 @@
     <ID>TooGenericExceptionCaught:QuackDuckDbExecutor.kt:QuackDuckDbExecutor$e: RuntimeException</ID>
     <ID>TooGenericExceptionCaught:QuackDuckDbExecutor.kt:QuackDuckDbExecutor.QuackExecutionContext$t: Throwable</ID>
     <ID>TooGenericExceptionThrown:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator$throw RuntimeException("Failed to delete: $path", e)</ID>
-    <ID>TooGenericExceptionThrown:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$throw RuntimeException("Failed to read delete file: $deleteFilePath", e)</ID>
     <ID>TooGenericExceptionThrown:DucklakeMaterializedFileCache.kt:DucklakeMaterializedFileCache$throw RuntimeException("Failed to create DuckDB read cache dir: $cacheDir", e)</ID>
     <ID>TooGenericExceptionThrown:DucklakeMergeSink.kt:DucklakeMergeSink$throw RuntimeException("Failed to finish insert sink", e)</ID>
     <ID>TooGenericExceptionThrown:DucklakeMetadata.kt:DucklakeMetadata$throw RuntimeException("Failed to deserialize merge fragment", e)</ID>
@@ -211,12 +183,5 @@
     <ID>TooGenericExceptionThrown:TestDucklakeMetadataTemporalVersionConversion.kt:TestDucklakeMetadataTemporalVersionConversion.Companion$throw RuntimeException("Unable to invoke DucklakeMetadata#getSnapshotTimestampFromVersion", e)</ID>
     <ID>TooGenericExceptionThrown:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats$throw RuntimeException("Failed to read data_path from ducklake_metadata", e)</ID>
     <ID>TooGenericExceptionThrown:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats.Companion$throw RuntimeException(e)</ID>
-    <ID>TooManyFunctions:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter : DucklakeFileWriter</ID>
-    <ID>TooManyFunctions:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator$Companion</ID>
-    <ID>TooManyFunctions:DucklakeConfig.kt:DucklakeConfig</ID>
-    <ID>TooManyFunctions:DucklakeInlinedValueConverter.kt:DucklakeInlinedValueConverter</ID>
-    <ID>TooManyFunctions:DucklakeMetadata.kt:DucklakeMetadata : ConnectorMetadata</ID>
-    <ID>TooManyFunctions:DucklakeMetadata.kt:DucklakeMetadata$Companion</ID>
-    <ID>TooManyFunctions:DucklakePageSink.kt:DucklakePageSink : ConnectorPageSink</ID>
   </CurrentIssues>
 </SmellBaseline>
