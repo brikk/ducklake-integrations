@@ -15,6 +15,54 @@ both directions). F1 (RENAME TABLE same-schema, RENAME SCHEMA, COMMENT ON TABLE/
 cross-engine verified) and F2 (vortex add_files) shipped. H1 archive sweep done. Open from
 this list: T2, F3, F4 gate-revisit, F5 interplay item, F6–F11, H2–H3.
 
+---
+## ▶ NEXT-SESSION HANDOFF (last worked 2026-06-15, branch `claude/confident-haslett-01cafa`, all FF'd to `main` @ 24ac0e8)
+
+**Repo is green and clean.** `:ducklake-catalog:test` + `:trino-ducklake:test` pass; BOTH
+plain `:<module>:detekt` gates green (ReturnCount rule was disabled + baselines refreshed,
+24ac0e8). Run detekt for BOTH modules before committing — the gate is the PLAIN `detekt`
+task, NOT `detektMain` (type-res, false positives). See memory `project-detekt-gate-mechanics`.
+
+**Done since first pass (each its own commit, all on main):** T2-A schema evolution on
+non-parquet (was totally broken — any ALTER → unreadable; now resolves names at file
+begin_snapshot); T2-B inlined-row DELETE gate; T2-C short-precision tstz CTAS crash; T2-D
+lance MAP write gate; **TRUNCATE TABLE**; **flush_inlined_data** procedure (unblocks the T2-B
+gate). F3 (lance index lifecycle) is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md;
+he'll define the application model + gauge DuckLake-team interest. Do NOT build F3.
+
+**What's left, with scoping (pick one; all are medium / design-led now):**
+- **ANALYZE** (DDL) — most self-contained, NO read-path coupling. Wire Trino's
+  `getStatisticsCollectionMetadata`/`finishStatisticsCollection` → `ducklake_table_stats` /
+  `ducklake_table_column_stats`. Lower value (stats already written on every write via
+  `DucklakeColumnStatsAccumulator`). Fiddly SPI flow. Good if you want a clean, bounded item.
+- **Nested ADD/DROP FIELD** (DDL) — catalog ops follow the `addColumn`/`renameColumn` pattern
+  (nested `ducklake_column` rows, parent_column links). COUPLING: reading OLD non-parquet
+  files after a nested-field change needs the same struct-evolution handling T2-A did for
+  top-level columns (the DuckDB-engine SELECT must NULL-fill an added ROW subfield) — likely a
+  deeper read-path change OR a clean gate. Probe/scope before committing.
+- **SET TYPE** (DDL) — DEFER. Same read-path coupling as above but worse (the converter assumes
+  column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
+- **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
+  expire_snapshots / remove_orphan_files / stats-recalc. Needs the in-place-mutation /
+  snapshot-safety design decided FIRST (the lance `__lance_compact_files`/`cleanup_old_versions`
+  probed in RESEARCH-lance-index-lifecycle.md mutate datasets in place). Start with a design
+  note + ONE safe procedure. `flush_inlined_data` (done) is the template for the procedure +
+  catalog-commit shape; `truncateTable`/`flushInlinedData` show the atomic catalog mutation.
+- **More T2** — remaining candidates need infra not on this arm64 box (httpfs/s3 → MinIO+Quack
+  amd64 container; concurrent-writer snapshot-lineage) or are low-yield (views × backends,
+  cross-engine uint reads go through parquet). The branch-hunt is otherwise exhausted.
+- **H2/H3** (hygiene) — kotlinization candidate list; monolith decomposition PLAN (plan first).
+
+**Env notes:** `:doris-ducklake` does NOT compile (pre-existing ~/.m2 Doris 1.2-SNAPSHOT drift,
+unrelated — task chip filed; needs a P-series FE rebuild). lance + vortex DuckDB extensions ARE
+available on this box (osx_arm64), so those tests run (don't skip). The trino_parity extension
+binary is symlinked into the worktree from the main checkout's build dir (tests need it).
+
+**Patterns/memory to read first:** MEMORY.md pointers, esp. `project-driving-list-pass2`,
+`project-catalog-ddl-constraints` (PK on ducklake_schema, never invent changes_made vocab,
+table-scoped ducklake_metadata settings), `project-ducklake-delete-vocabularies`,
+`project-schema-evolution-nonparquet`, `project-detekt-gate-mechanics`.
+
 Ground rules carried over from the same conversation:
 - Parquet is NOT more important than the other formats — duckdb/vortex/lance coverage and
   capability matter equally.
