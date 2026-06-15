@@ -274,6 +274,16 @@ interface DucklakeCatalog {
     fun dropTable(schemaName: String, tableName: String)
 
     /**
+     * Truncate a table: remove all rows but keep the table, its columns, partition spec, and
+     * settings. End-snapshots every active data file, delete file, and inlined-data row for the
+     * table at a new snapshot — a bulk metadata clear, NOT merge-on-read (so it also empties
+     * inlined rows, which positional DELETE cannot, and costs O(1) writes regardless of row
+     * count). The schema version is NOT bumped (data change, not schema). Recorded as
+     * `deleted_from_table`. Creates a new snapshot atomically.
+     */
+    fun truncateTable(schemaName: String, tableName: String)
+
+    /**
      * Rename a table within its schema. End-snapshots the current `ducklake_table` row and
      * inserts a new version with the same table_id, uuid, and path — data files and history
      * are untouched; the table's data directory keeps its original name. Recorded as

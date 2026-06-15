@@ -112,6 +112,11 @@ concurrent-writer snapshot-lineage. Doris note unchanged (module pre-existingly 
 
 `RENAME TABLE`/`RENAME SCHEMA`/`COMMENT ON TABLE/COLUMN` are small catalog ops (days, not
 weeks); `SET TYPE` and nested `ADD/DROP FIELD` are medium. `ANALYZE` medium.
+✅ TRUNCATE TABLE shipped 2026-06-15 (`TestDucklakeTruncate` + cross-engine inlined-clear in
+`TestDucklakeInlinedNonParquetInterplay`) — catalog bulk-clear (end-snapshot data/delete files
++ inlined rows, keep schema, no schema-version bump, recorded `deleted_from_table`). Clears
+inlined rows too, so it works where the T2-B DELETE gate rejects. Still open from F1: SET TYPE
+(coupled to the T2-A schema-evolution read path — defer), nested ADD/DROP FIELD, ANALYZE.
 ✅ PARTIAL 2026-06-12 — the small four shipped (`TestDucklakeDdl` +
 `TestDucklakeDdlCrossEngine`): RENAME TABLE (same-schema; cross-schema rejected — table data
 paths are schema-relative), RENAME SCHEMA (new schema_id + re-pointed tables/views/macros;

@@ -1669,6 +1669,80 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun truncateTable(schemaName: String, tableName: String) {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
+        val inlinedTables = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
+        executeWriteTransaction("truncate table $schemaName.$tableName") { tx ->
+            val schemaId = tx.resolveSchemaId(schemaName)
+            val tableId = tx.resolveTableId(schemaId, tableName)
+            val ctx = tx.dsl()
+            val newSnapshotId = tx.getNewSnapshotId()
+
+            // Capture the active data-file ids before clearing — for the conflict matrix's
+            // deleted_from_table entry (it keys on table id, but the set keeps the change honest).
+            val clearedFileIds: Set<Long> = ctx.select(file.DATA_FILE_ID)
+                .from(file)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, tx.getCurrentSnapshotId()))
+                .fetchSet(file.DATA_FILE_ID)
+                .filterNotNull()
+                .toSet()
+
+            // End-snapshot active delete files first (they reference data files), then the data
+            // files themselves. Routed through `metadata` so the Quack RPC binder accepts the
+            // UPDATE on attached-metadata tables (pass-through on PG / local DuckDB).
+            metadata.execute(
+                ctx,
+                ctx.update(delfile)
+                    .set(delfile.END_SNAPSHOT, newSnapshotId)
+                    .where(
+                        delfile.DATA_FILE_ID.`in`(
+                            DSL.select(file.DATA_FILE_ID)
+                                .from(file)
+                                .where(file.TABLE_ID.eq(tableId)),
+                        ),
+                    )
+                    .and(delfile.END_SNAPSHOT.isNull),
+            )
+            metadata.execute(
+                ctx,
+                ctx.update(file)
+                    .set(file.END_SNAPSHOT, newSnapshotId)
+                    .where(file.TABLE_ID.eq(tableId))
+                    .and(file.END_SNAPSHOT.isNull),
+            )
+
+            // End-snapshot live inlined rows across every schema version's inlined-data table
+            // (Trino never inlines, but a cross-engine DuckDB writer may have). The per-version
+            // table is dynamically named; a DataAccessException means the metadata points at a
+            // dropped / never-materialized table — skip it, as getInlinedDataInfos does.
+            val schemaVersions: List<Long> = ctx.select(inlinedTables.SCHEMA_VERSION)
+                .from(inlinedTables)
+                .where(inlinedTables.TABLE_ID.eq(tableId))
+                .fetch(inlinedTables.SCHEMA_VERSION)
+                .filterNotNull()
+            for (schemaVersion in schemaVersions) {
+                val inlined = InlinedDataTable.of(tableId, schemaVersion)
+                try {
+                    metadata.execute(
+                        ctx,
+                        ctx.update(inlined.table)
+                            .set(inlined.endSnapshot, newSnapshotId)
+                            .where(inlined.endSnapshot.isNull),
+                    )
+                }
+                catch (e: DataAccessException) {
+                    log.log(System.Logger.Level.DEBUG,
+                        "Skipping inlined-data table for table $tableId schema version $schemaVersion during truncate", e)
+                }
+            }
+
+            // Data change, not schema — do NOT bump the schema version (matches DELETE/MERGE).
+            tx.recordChange(WriteChange.DeletedFromTable(tableId, clearedFileIds))
+        }
+    }
+
     override fun renameTable(tableId: Long, targetSchemaName: String, newTableName: String) {
         val tab = DUCKLAKE_TABLE.`as`("tab")
         executeWriteTransaction("rename table $tableId to $targetSchemaName.$newTableName") { tx ->

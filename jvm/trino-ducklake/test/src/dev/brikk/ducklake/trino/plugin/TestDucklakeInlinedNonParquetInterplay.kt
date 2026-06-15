@@ -79,6 +79,38 @@ class TestDucklakeInlinedNonParquetInterplay : AbstractDucklakeCrossEngineTest()
     }
 
     @Test
+    fun truncateClearsInlinedRowsWhereDeleteCannot() {
+        // TRUNCATE is a bulk metadata clear, not merge-on-read, so it empties inlined rows too —
+        // the case DELETE is gated on. Cross-engine: DuckDB writes inlined rows + Trino a lance
+        // file, Trino truncates, and BOTH engines then see an empty table.
+        FormatExtensionAssumptions.assumeDuckDbExtensionAvailable("lance")
+        val table = "test_schema.inlined_lance_trunc"
+        val bare = "inlined_lance_trunc"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, name VARCHAR)")
+            createDuckdbConnection().use { duck ->
+                duck.createStatement().use { stmt ->
+                    stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, " +
+                            "schema => 'test_schema', table_name => '$bare')")
+                    stmt.execute("INSERT INTO ducklake_db.$table VALUES (1, 'inlined-a'), (2, 'inlined-b')")
+                }
+            }
+            computeActual(sessionWithFormat(DucklakeSessionProperties.FORMAT_LANCE),
+                    "INSERT INTO $table VALUES (3, 'lance-c')")
+            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(3L)
+
+            computeActual("TRUNCATE TABLE $table")
+
+            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
+            // DuckDB must also see the table as empty (the inlined rows were end-snapshotted).
+            assertThat(duckdbScalarLong("SELECT count(*) FROM ducklake_db.$table")).isEqualTo(0L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
     fun deleteOverInlinedRowsIsRejectedWithGuidance() {
         FormatExtensionAssumptions.assumeDuckDbExtensionAvailable("lance")
         val table = "test_schema.inlined_lance_del"
@@ -111,4 +143,15 @@ class TestDucklakeInlinedNonParquetInterplay : AbstractDucklakeCrossEngineTest()
             Session.builder(session)
                     .setCatalogSessionProperty("ducklake", DucklakeSessionProperties.DATA_FILE_FORMAT, format)
                     .build()
+
+    private fun duckdbScalarLong(sql: String): Long {
+        createDuckdbConnection().use { duck ->
+            duck.createStatement().use { stmt ->
+                stmt.executeQuery(sql).use { rs ->
+                    assertThat(rs.next()).isTrue()
+                    return rs.getLong(1)
+                }
+            }
+        }
+    }
 }

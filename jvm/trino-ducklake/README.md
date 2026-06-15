@@ -268,6 +268,7 @@ operators and functions are not available through Trino.
 | Register existing files (`add_files`) | Yes | `CALL system.add_files(...)`; parquet (IDENTITY hive partitioning supported), lance dataset directories, and vortex files (`file_format => 'lance'`/`'vortex'`) |
 | Cross-engine Parquet compatibility | Yes | `field_id` annotations for DuckDB interop |
 | Concurrent conflict detection | Yes | Snapshot lineage check; aborts on stale base |
+| TRUNCATE TABLE | Yes | Bulk metadata clear (end-snapshots all data/delete files + inlined rows; O(1), no delete files written); keeps the schema. Clears inlined rows too, so it works where DELETE is gated. Time travel still sees pre-truncate rows. |
 | RENAME TABLE | Yes | Same-schema only (table data paths are schema-relative, so cross-schema moves are rejected) |
 | RENAME SCHEMA | Yes | Tables/views/macros follow; data stays in place; DuckDB cross-engine verified |
 | COMMENT ON TABLE | Yes | Stored as the `comment` tag in `ducklake_tag`; visible to DuckDB |

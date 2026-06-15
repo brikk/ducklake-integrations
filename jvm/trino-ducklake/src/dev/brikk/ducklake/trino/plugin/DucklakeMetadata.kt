@@ -810,6 +810,12 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.dropTable(handle.schemaName, handle.tableName) }
     }
 
+    override fun truncateTable(session: ConnectorSession, tableHandle: ConnectorTableHandle)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        translateCatalogExceptions { catalog.truncateTable(handle.schemaName, handle.tableName) }
+    }
+
     override fun renameTable(session: ConnectorSession, tableHandle: ConnectorTableHandle, newTableName: SchemaTableName)
     {
         val handle = tableHandle as DucklakeTableHandle
