@@ -90,7 +90,8 @@ interface DucklakeDuckDbExecutor {
             pushedPredicate: TupleDomain<DucklakeColumnHandle>,
             pushedExpressions: List<String>?,
             duckDbTimeZone: String?,
-            fileColumnNamesById: Map<Long, String>?) {
+            fileColumnNamesById: Map<Long, String>?,
+            structReshapePlans: Map<Long, List<StructFieldPlan>>? = null) {
         private val target: DuckDbAttachTarget = target
         private val projectedColumns: List<DucklakeColumnHandle> = projectedColumns
         private val pushedPredicate: TupleDomain<DucklakeColumnHandle> = pushedPredicate
@@ -106,6 +107,11 @@ interface DucklakeDuckDbExecutor {
         // from write time, so the parquet path's field_id matching has no analogue here —
         // catalog-snapshot name resolution is how renames + added columns are handled.
         private val fileColumnNamesById: Map<Long, String> = fileColumnNamesById ?: emptyMap()
+        // Nested struct-evolution reshaping: top-level column_id -> the struct's reshaped subfields
+        // for THIS file. Empty for the common case (no struct whose file shape differs from the
+        // current schema); when present, DuckDbSelectSqlBuilder emits a struct_pack that normalizes
+        // the file's struct to the current shape. See StructFieldPlan.
+        private val structReshapePlans: Map<Long, List<StructFieldPlan>> = structReshapePlans ?: emptyMap()
 
         constructor(
                 target: DuckDbAttachTarget,
@@ -134,6 +140,7 @@ interface DucklakeDuckDbExecutor {
         fun pushedExpressions(): List<String> = pushedExpressions
         fun duckDbTimeZone(): String? = duckDbTimeZone
         fun fileColumnNamesById(): Map<Long, String> = fileColumnNamesById
+        fun structReshapePlans(): Map<Long, List<StructFieldPlan>> = structReshapePlans
 
         fun isEmptyProjection(): Boolean = projectedColumns.isEmpty()
 
@@ -146,16 +153,18 @@ interface DucklakeDuckDbExecutor {
                     && pushedExpressions == other.pushedExpressions
                     && duckDbTimeZone == other.duckDbTimeZone
                     && fileColumnNamesById == other.fileColumnNamesById
+                    && structReshapePlans == other.structReshapePlans
         }
 
         override fun hashCode(): Int {
-            return java.util.Objects.hash(target, projectedColumns, pushedPredicate, pushedExpressions, duckDbTimeZone, fileColumnNamesById)
+            return java.util.Objects.hash(target, projectedColumns, pushedPredicate, pushedExpressions, duckDbTimeZone, fileColumnNamesById, structReshapePlans)
         }
 
         override fun toString(): String {
             return "ExecutionRequest[target=" + target + ", projectedColumns=" + projectedColumns +
                     ", pushedPredicate=" + pushedPredicate + ", pushedExpressions=" + pushedExpressions +
-                    ", duckDbTimeZone=" + duckDbTimeZone + ", fileColumnNamesById=" + fileColumnNamesById + "]"
+                    ", duckDbTimeZone=" + duckDbTimeZone + ", fileColumnNamesById=" + fileColumnNamesById +
+                    ", structReshapePlans=" + structReshapePlans + "]"
         }
     }
 
