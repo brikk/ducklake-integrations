@@ -72,6 +72,7 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.RowType
 import io.trino.spi.type.VarcharType.VARCHAR
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
@@ -118,6 +119,11 @@ class DucklakePageSourceProvider @Inject constructor(
     private val fileColumnNamesCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, Map<Long, String>> =
             java.util.concurrent.ConcurrentHashMap()
 
+    // Full column tree (incl. nested rows, with parent_column) per (tableId, snapshot), for building
+    // nested struct reshape plans. Same bounded/cleared-on-overflow policy as fileColumnNamesCache.
+    private val columnTreeCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, List<DucklakeColumn>> =
+            java.util.concurrent.ConcurrentHashMap()
+
     private data class FileColumnNamesKey(val tableId: Long, val beginSnapshot: Long)
 
     /**
@@ -140,6 +146,39 @@ class DucklakePageSourceProvider @Inject constructor(
                 .associate { it.columnId to it.columnName }
         fileColumnNamesCache[key] = resolved
         return resolved
+    }
+
+    /**
+     * Build per-file struct reshape plans for nested schema evolution: when a projected struct's
+     * shape in this file differs from the current schema (a subfield was added / dropped / renamed
+     * since the file was written), the SQL builder normalizes it with `struct_pack`. Empty unless a
+     * struct is projected AND its file shape actually drifted. See [NestedFieldReshapePlanner].
+     */
+    private fun resolveStructReshapePlans(
+            table: ConnectorTableHandle,
+            split: DucklakeSplit,
+            projectedColumns: List<DucklakeColumnHandle>): Map<Long, List<StructFieldPlan>> {
+        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L || split.beginSnapshot == table.snapshotId) {
+            return emptyMap()
+        }
+        // Only structs can drift; skip the catalog reads entirely when none are projected.
+        if (projectedColumns.none { it.columnType is RowType }) {
+            return emptyMap()
+        }
+        val currentColumns: List<DucklakeColumn> = columnTree(table.tableId, table.snapshotId)
+        val fileColumns: List<DucklakeColumn> = columnTree(table.tableId, split.beginSnapshot)
+        return NestedFieldReshapePlanner.buildPlans(projectedColumns, currentColumns, fileColumns)
+    }
+
+    private fun columnTree(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
+        val key = FileColumnNamesKey(tableId, snapshotId)
+        columnTreeCache[key]?.let { return it }
+        if (columnTreeCache.size >= MAX_FILE_COLUMN_NAME_CACHE_ENTRIES) {
+            columnTreeCache.clear()
+        }
+        val tree: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
+        columnTreeCache[key] = tree
+        return tree
     }
 
     override fun createPageSource(
@@ -218,6 +257,10 @@ class DucklakePageSourceProvider @Inject constructor(
                 // Resolve physical (file-snapshot) column names so the DuckDB-engine read
                 // survives schema evolution (renamed/added columns) — see DuckDbSelectSqlBuilder.
                 val fileColumnNamesById: Map<Long, String> = resolveFileColumnNames(table, ducklakeSplit)
+                // ...and per-file struct reshape plans for NESTED schema evolution (added/dropped/
+                // renamed struct subfields), which the SQL builder normalizes with struct_pack.
+                val structReshapePlans: Map<Long, List<StructFieldPlan>> =
+                        resolveStructReshapePlans(table, ducklakeSplit, sourceColumns)
                 val delegate: ConnectorPageSource = createDuckDbPageSource(
                         dataFileLocation,
                         sourceColumns,
@@ -226,7 +269,8 @@ class DucklakePageSourceProvider @Inject constructor(
                         pushedExpressions,
                         fileSystem,
                         session,
-                        fileColumnNamesById)
+                        fileColumnNamesById,
+                        structReshapePlans)
                 return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
             }
             throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
@@ -644,7 +688,8 @@ class DucklakePageSourceProvider @Inject constructor(
             pushedExpressions: List<String>,
             fileSystem: TrinoFileSystem,
             session: ConnectorSession,
-            fileColumnNamesById: Map<Long, String>): ConnectorPageSource
+            fileColumnNamesById: Map<Long, String>,
+            structReshapePlans: Map<Long, List<StructFieldPlan>>): ConnectorPageSource
     {
         // Separate positional columns (MERGE $row_id + queryable $row_id / $file_row_number)
         // from file-resident columns. The .db file does not store row IDs / file positions;
@@ -711,7 +756,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val effectivePushedExpressions: List<String> = if (requiresContiguousPositions) emptyList() else pushedExpressions
         var pageSource: ConnectorPageSource = DuckDbFilePageSource(
                 executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
-                duckDbTimeZone, fileColumnNamesById)
+                duckDbTimeZone, fileColumnNamesById, structReshapePlans)
 
         if (positionalInjections.isNotEmpty()) {
             pageSource = PositionalVirtualInjectingPageSource(
