@@ -42,6 +42,7 @@ import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ColumnMetadata
 import io.trino.spi.connector.ColumnNotFoundException
 import io.trino.spi.connector.ColumnPosition
+import io.trino.spi.connector.ConnectorAnalyzeMetadata
 import io.trino.spi.connector.ConnectorInsertTableHandle
 import io.trino.spi.connector.ConnectorMergeTableHandle
 import io.trino.spi.connector.ConnectorMetadata
@@ -75,7 +76,9 @@ import io.trino.spi.statistics.ColumnStatistics
 import io.trino.spi.statistics.ComputedStatistics
 import io.trino.spi.statistics.DoubleRange
 import io.trino.spi.statistics.Estimate
+import io.trino.spi.statistics.TableStatisticType
 import io.trino.spi.statistics.TableStatistics
+import io.trino.spi.statistics.TableStatisticsMetadata
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
@@ -478,6 +481,52 @@ class DucklakeMetadata(
         }
 
         return stats.build()
+    }
+
+    // ANALYZE — refresh DuckLake's cached table-level statistics. The engine scans the table to
+    // produce an authoritative live ROW_COUNT (net of deletes/inlined rows); the connector then
+    // rebuilds the per-column aggregates from the authoritative per-file stats in the catalog
+    // (DucklakeCatalog.analyzeTable), which also tightens any min/max that incremental maintenance
+    // left stale after a delete. We deliberately do NOT declare column statistics here: doing so
+    // would force the engine to hand back typed min/max blocks we'd have to re-encode into
+    // DuckLake's string form, duplicating logic the per-file aggregation already gets right.
+    override fun getStatisticsCollectionMetadata(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle,
+            analyzeProperties: Map<String, Any>): ConnectorAnalyzeMetadata
+    {
+        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle) {
+            throw TrinoException(NOT_SUPPORTED, "ANALYZE is not supported for this table")
+        }
+        val statisticsMetadata = TableStatisticsMetadata(
+                emptySet(),
+                setOf(TableStatisticType.ROW_COUNT),
+                emptyList())
+        return ConnectorAnalyzeMetadata(tableHandle, statisticsMetadata)
+    }
+
+    override fun beginStatisticsCollection(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle): ConnectorTableHandle =
+            // No scan-side preparation needed — the refresh runs entirely against the catalog in
+            // finishStatisticsCollection. Pass the handle straight through.
+            tableHandle
+
+    override fun finishStatisticsCollection(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle,
+            computedStatistics: Collection<ComputedStatistics>)
+    {
+        val table = tableHandle as DucklakeTableHandle
+        // ANALYZE without GROUP BY yields a single ungrouped ComputedStatistics; sum defensively.
+        var rowCount = 0L
+        for (statistics in computedStatistics) {
+            val block = statistics.tableStatistics[TableStatisticType.ROW_COUNT] ?: continue
+            if (!block.isNull(0)) {
+                rowCount += BIGINT.getLong(block, 0)
+            }
+        }
+        translateCatalogExceptions { catalog.analyzeTable(table.tableId, rowCount) }
     }
 
     private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean =

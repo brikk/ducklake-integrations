@@ -276,7 +276,7 @@ operators and functions are not available through Trino.
 | DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Run `CALL system.flush_inlined_data(schema, table)` first (or `data_inlining_row_limit = 0`) to make the rows file-resident, then DELETE/UPDATE/MERGE work. Reads over inlined+file mixes work. |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
 | ALTER TABLE ADD/DROP FIELD | No | Nested struct field manipulation |
-| ANALYZE | No | Statistics are read-only from the catalog |
+| ANALYZE | Yes | Refreshes the cached table-level stats (`ducklake_table_stats` + `ducklake_table_column_stats`). The engine scans for an authoritative live row count; the per-column aggregates are rebuilt from the authoritative per-file stats, tightening any min/max that incremental maintenance left stale after a delete. Stats are otherwise maintained on every write, so ANALYZE is a no-op on a never-drifted table. A non-versioned side-table refresh: no new snapshot, `next_row_id` preserved. |
 | Sorted writes | No | Trino-written files are unsorted |
 
 ## Partitioning

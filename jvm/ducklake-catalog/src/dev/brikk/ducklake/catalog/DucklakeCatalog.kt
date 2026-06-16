@@ -122,6 +122,30 @@ interface DucklakeCatalog {
     fun getColumnStats(tableId: Long, snapshotId: Long): List<DucklakeColumnStats>
 
     /**
+     * Recompute the cached table-level statistics for a table from ground truth — the
+     * connector's `ANALYZE` entry point.
+     *
+     * DuckLake maintains [DucklakeTableStats] (`ducklake_table_stats`) and the per-column
+     * aggregates (`ducklake_table_column_stats`) incrementally on every write. Incremental
+     * maintenance only ever *widens* a column's min/max (it merges each new file's bounds in)
+     * and never narrows them after a DELETE or file expiry, so the cached bounds can drift
+     * loose over a table's lifetime. This forces a full refresh:
+     *  - `record_count` is set to [rowCount] (the engine's authoritative live count from the
+     *    ANALYZE scan — already net of deletes and inlined rows); `next_row_id` (the row-id
+     *    allocator high-water mark) is preserved.
+     *  - `file_size_bytes` is recomputed from the active data files.
+     *  - the per-column aggregates are rebuilt from the authoritative per-file stats
+     *    (`ducklake_file_column_stats`) of the currently-active data files, tightening any
+     *    bounds that incremental maintenance left stale.
+     *
+     * These are mutable, non-snapshot-versioned side tables, so this runs in a plain catalog
+     * transaction and does NOT mint a new snapshot or record a `changes_made` entry (there is
+     * no stats change-type in the DuckLake vocabulary). The refreshed values are advisory
+     * planner hints; run `ANALYZE` while the table is quiescent for an exact result.
+     */
+    fun analyzeTable(tableId: Long, rowCount: Long)
+
+    /**
      * Get partition specs for a table at the given snapshot
      */
     fun getPartitionSpecs(tableId: Long, snapshotId: Long): List<DucklakePartitionSpec>

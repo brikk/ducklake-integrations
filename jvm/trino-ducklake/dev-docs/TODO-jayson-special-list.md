@@ -27,14 +27,21 @@ task, NOT `detektMain` (type-res, false positives). See memory `project-detekt-g
 non-parquet (was totally broken — any ALTER → unreadable; now resolves names at file
 begin_snapshot); T2-B inlined-row DELETE gate; T2-C short-precision tstz CTAS crash; T2-D
 lance MAP write gate; **TRUNCATE TABLE**; **flush_inlined_data** procedure (unblocks the T2-B
-gate). F3 (lance index lifecycle) is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md;
-he'll define the application model + gauge DuckLake-team interest. Do NOT build F3.
+gate); **ANALYZE** (2026-06-15, recompute cached table-level stats). F3 (lance index lifecycle)
+is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the application model
++ gauge DuckLake-team interest. Do NOT build F3.
 
 **What's left, with scoping (pick one; all are medium / design-led now):**
-- **ANALYZE** (DDL) — most self-contained, NO read-path coupling. Wire Trino's
-  `getStatisticsCollectionMetadata`/`finishStatisticsCollection` → `ducklake_table_stats` /
-  `ducklake_table_column_stats`. Lower value (stats already written on every write via
-  `DucklakeColumnStatsAccumulator`). Fiddly SPI flow. Good if you want a clean, bounded item.
+- ✅ **ANALYZE** (DDL) — DONE 2026-06-15. Wired `getStatisticsCollectionMetadata` (declares only
+  ROW_COUNT) / `beginStatisticsCollection` / `finishStatisticsCollection` →
+  `catalog.analyzeTable` → `ducklake_table_stats` + `ducklake_table_column_stats`. The engine
+  scans for an authoritative live row count; the per-column aggregates are rebuilt from the
+  authoritative per-file stats (NOT decoded from scanned blocks — avoids re-encoding typed
+  min/max), which also *tightens* min/max that incremental maintenance never narrows after a
+  delete. Plain catalog transaction — no new snapshot, no invented `changes_made` vocab,
+  `next_row_id` preserved (stats tables aren't snapshot-versioned). `TestJdbcDucklakeCatalogAnalyze`
+  (drift-repair: corrupt → analyze → restored) + `TestDucklakeAnalyze` (e2e × 4: SHOW STATS,
+  drift recompute through SQL, empty table, duckdb format). README row flipped to Yes.
 - **Nested ADD/DROP FIELD** (DDL) — catalog ops follow the `addColumn`/`renameColumn` pattern
   (nested `ducklake_column` rows, parent_column links). COUPLING: reading OLD non-parquet
   files after a nested-field change needs the same struct-evolution handling T2-A did for
@@ -164,7 +171,16 @@ weeks); `SET TYPE` and nested `ADD/DROP FIELD` are medium. `ANALYZE` medium.
 `TestDucklakeInlinedNonParquetInterplay`) — catalog bulk-clear (end-snapshot data/delete files
 + inlined rows, keep schema, no schema-version bump, recorded `deleted_from_table`). Clears
 inlined rows too, so it works where the T2-B DELETE gate rejects. Still open from F1: SET TYPE
-(coupled to the T2-A schema-evolution read path — defer), nested ADD/DROP FIELD, ANALYZE.
+(coupled to the T2-A schema-evolution read path — defer), nested ADD/DROP FIELD.
+✅ ANALYZE shipped 2026-06-15 (`TestJdbcDucklakeCatalogAnalyze` + `TestDucklakeAnalyze`) — the
+statistics-collection SPI (`getStatisticsCollectionMetadata` declares ROW_COUNT only /
+`beginStatisticsCollection` / `finishStatisticsCollection`) → `catalog.analyzeTable`, which
+recomputes `ducklake_table_stats` (record_count from the live scan, file_size from active files,
+next_row_id preserved) and rebuilds `ducklake_table_column_stats` from the active files'
+authoritative per-file stats — tightening min/max that incremental maintenance never narrows
+after a delete. Non-snapshot-versioned side-table refresh: plain catalog transaction, no new
+snapshot, no invented change vocab. Per-file aggregation (not scanned-block decoding) keeps the
+canonical stat-string encoding. Still open from F1: SET TYPE (defer), nested ADD/DROP FIELD.
 ✅ PARTIAL 2026-06-12 — the small four shipped (`TestDucklakeDdl` +
 `TestDucklakeDdlCrossEngine`): RENAME TABLE (same-schema; cross-schema rejected — table data
 paths are schema-relative), RENAME SCHEMA (new schema_id + re-pointed tables/views/macros;

@@ -522,6 +522,153 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         return result
     }
 
+    override fun analyzeTable(tableId: Long, rowCount: Long) {
+        // Stats tables are mutable, non-snapshot-versioned side tables, so this is a plain catalog
+        // transaction — no new snapshot, no `changes_made` entry (see the interface contract). It
+        // mirrors `attemptWriteTransaction`'s connection handling without the snapshot/conflict
+        // machinery.
+        dataSource.connection.use { conn ->
+            conn.autoCommit = false
+            try {
+                val ctx = forConnection(conn)
+                val snapshotId = readLatestSnapshotId(ctx)
+                recomputeTableStats(ctx, tableId, snapshotId, rowCount)
+                recomputeTableColumnStats(ctx, tableId, snapshotId)
+                conn.commit()
+            }
+            catch (e: Exception) {
+                conn.rollback()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * `ducklake_table_stats`: set record_count to the live [rowCount], recompute file_size_bytes
+     * from the active data files, and PRESERVE next_row_id (the row-id allocator high-water mark).
+     * No PK/UNIQUE on table_id → explicit probe + INSERT-or-UPDATE (matches the write path).
+     */
+    private fun recomputeTableStats(ctx: DSLContext, tableId: Long, snapshotId: Long, rowCount: Long) {
+        val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        // Sum the active data files' byte sizes (single-table read — plain ctx).
+        val totalFileSize: Long = ctx.select(file.FILE_SIZE_BYTES)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(activeAt(file, snapshotId))
+            .fetch(file.FILE_SIZE_BYTES)
+            .sumOf { orZero(it) }
+
+        val existing: DucklakeTableStatsRecord? = ctx.selectFrom(tabstats)
+            .where(tabstats.TABLE_ID.eq(tableId))
+            .fetchOne()
+        if (existing != null) {
+            ctx.update(tabstats)
+                .set(tabstats.RECORD_COUNT, rowCount)
+                .set(tabstats.FILE_SIZE_BYTES, totalFileSize)
+                .where(tabstats.TABLE_ID.eq(tableId))
+                .execute()
+        }
+        else {
+            ctx.insertInto(tabstats)
+                .set(tabstats.TABLE_ID, tableId)
+                .set(tabstats.RECORD_COUNT, rowCount)
+                // No prior row (table never went through the insert path): seed the row-id
+                // allocator high-water mark at the live row count.
+                .set(tabstats.NEXT_ROW_ID, rowCount)
+                .set(tabstats.FILE_SIZE_BYTES, totalFileSize)
+                .execute()
+        }
+    }
+
+    /**
+     * `ducklake_table_column_stats`: full replace with aggregates freshly recomputed from the
+     * active data files' authoritative per-file stats. Tightens any min/max that incremental
+     * maintenance left stale after a delete.
+     */
+    private fun recomputeTableColumnStats(ctx: DSLContext, tableId: Long, snapshotId: Long) {
+        val tabcolst = DUCKLAKE_TABLE_COLUMN_STATS.`as`("tabcolst")
+        val rows = aggregateActiveColumnStats(ctx, tableId, snapshotId)
+        // DELETE routed through `metadata` for Quack (matches dropTable's metadata-table delete).
+        metadata.execute(
+            ctx,
+            ctx.deleteFrom(tabcolst).where(tabcolst.TABLE_ID.eq(tableId)),
+        )
+        if (rows.isNotEmpty()) {
+            ctx.batchInsert(rows).execute()
+        }
+    }
+
+    /**
+     * Fold the active data files' per-file column stats (`ducklake_file_column_stats`) into one
+     * `ducklake_table_column_stats` row per column, using typed (numeric, not lexicographic)
+     * min/max comparison. A column with no active per-file stats produces no row.
+     */
+    private fun aggregateActiveColumnStats(
+        ctx: DSLContext,
+        tableId: Long,
+        snapshotId: Long,
+    ): List<DucklakeTableColumnStatsRecord> {
+        val tabcolst = DUCKLAKE_TABLE_COLUMN_STATS.`as`("tabcolst")
+        val colstats = DUCKLAKE_FILE_COLUMN_STATS.`as`("colstats")
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        // Column types drive the typed min/max fold.
+        val columnTypes: Map<Long, String> = getTableColumns(tableId, snapshotId)
+            .associate { it.columnId to it.columnType }
+
+        val seenColumns: MutableSet<Long> = linkedSetOf()
+        val containsNull: MutableMap<Long, Boolean> = mutableMapOf()
+        val containsNan: MutableMap<Long, Boolean> = mutableMapOf()
+        val mins: MutableMap<Long, String> = mutableMapOf()
+        val maxs: MutableMap<Long, String> = mutableMapOf()
+        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        metadata.fetch(
+            ctx,
+            ctx.select(
+                colstats.COLUMN_ID,
+                colstats.NULL_COUNT,
+                colstats.CONTAINS_NAN,
+                colstats.MIN_VALUE,
+                colstats.MAX_VALUE,
+            )
+                .from(colstats)
+                .innerJoin(file)
+                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
+                .where(colstats.TABLE_ID.eq(tableId))
+                .and(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId)),
+        ) { r ->
+            val columnId = orZero(r.get(colstats.COLUMN_ID))
+            seenColumns.add(columnId)
+            if (orZero(r.get(colstats.NULL_COUNT)) > 0) {
+                containsNull[columnId] = true
+            }
+            if (r.get(colstats.CONTAINS_NAN) == true) {
+                containsNan[columnId] = true
+            }
+            val columnType = columnTypes.getOrDefault(columnId, "")
+            r.get(colstats.MIN_VALUE)?.let { v ->
+                mins.merge(columnId, v) { a, b -> typedMin(a, b, columnType) }
+            }
+            r.get(colstats.MAX_VALUE)?.let { v ->
+                maxs.merge(columnId, v) { a, b -> typedMax(a, b, columnType) }
+            }
+            null
+        }
+
+        return seenColumns.map { columnId ->
+            ctx.newRecord(tabcolst).apply {
+                setTableId(tableId)
+                setColumnId(columnId)
+                setContainsNull(containsNull.getOrDefault(columnId, false))
+                // Asymmetric with contains_null: TRUE when set, SQL NULL otherwise (upstream convention).
+                setContainsNan(if (containsNan.getOrDefault(columnId, false)) java.lang.Boolean.TRUE else null)
+                setMinValue(mins[columnId])
+                setMaxValue(maxs[columnId])
+            }
+        }
+    }
+
     override fun getPartitionSpecs(tableId: Long, snapshotId: Long): List<DucklakePartitionSpec> {
         val fieldsByPartition: MutableMap<Long, MutableList<DucklakePartitionField>> = linkedMapOf()
         val tableIdByPartition: MutableMap<Long, Long> = mutableMapOf()
