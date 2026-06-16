@@ -927,6 +927,9 @@ class DucklakeMetadata(
 
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
     // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
+    // Reads of files written before a nested change are reconciled per file: parquet self-heals via
+    // field name/id; non-parquet (DuckDB-engine) reshapes the struct with struct_pack (see
+    // NestedFieldReshapePlanner / DuckDbSelectSqlBuilder).
     override fun addField(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
@@ -936,7 +939,6 @@ class DucklakeMetadata(
             ignoreExisting: Boolean)
     {
         val handle = tableHandle as DucklakeTableHandle
-        rejectNestedFieldDdlOnNonParquet(handle, "ADD")
         val fieldSpec: TableColumnSpec = toColumnSpec(fieldName, type, true)
         translateCatalogExceptions { catalog.addField(handle.tableId, parentPath, fieldSpec, ignoreExisting) }
     }
@@ -948,28 +950,9 @@ class DucklakeMetadata(
             fieldPath: List<String>)
     {
         val handle = tableHandle as DucklakeTableHandle
-        rejectNestedFieldDdlOnNonParquet(handle, "DROP")
         val ducklakeColumn = column as DucklakeColumnHandle
         val fullPath: List<String> = listOf(ducklakeColumn.columnName) + fieldPath
         translateCatalogExceptions { catalog.dropField(handle.tableId, fullPath) }
-    }
-
-    // TEMPORARY gate — step 1 of nested field evolution. The DuckDB-engine read path can't yet reshape
-    // a struct per file, so adding/dropping a subfield would make OLD non-parquet data files unreadable
-    // (parquet self-heals via field name/id). Reject when the table has any active non-parquet data
-    // file. Removed when the per-file struct-reshaping read path lands — see
-    // dev-docs/DESIGN-nested-field-evolution.md.
-    private fun rejectNestedFieldDdlOnNonParquet(handle: DucklakeTableHandle, op: String)
-    {
-        val hasNonParquet: Boolean = catalog.getDataFiles(handle.tableId, handle.snapshotId)
-                .any { !it.fileFormat.equals(DucklakeSessionProperties.FORMAT_PARQUET, ignoreCase = true) }
-        if (hasNonParquet) {
-            throw TrinoException(
-                    NOT_SUPPORTED,
-                    "$op COLUMN on a nested field is not yet supported for tables with non-parquet data " +
-                            "files: reading files written before the change would fail. " +
-                            "Tracked: nested field evolution on non-parquet reads.")
-        }
     }
 
     // ==================== INSERT ====================

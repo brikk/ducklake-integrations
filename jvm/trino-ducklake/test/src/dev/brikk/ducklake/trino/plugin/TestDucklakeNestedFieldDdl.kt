@@ -20,10 +20,10 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
  * Nested struct field DDL — `ALTER TABLE ... ADD COLUMN parent.child <type>` / `DROP COLUMN
- * parent.child`. Step 1: fully supported on parquet (the default format — old files self-heal via
- * the parquet reader's name/field-id struct binding + NULL-fill), and cleanly GATED on tables with
- * non-parquet data files until the per-file struct-reshaping read path lands
- * (dev-docs/DESIGN-nested-field-evolution.md).
+ * parent.child` — exercised here over the default (parquet) format, where old files self-heal via
+ * the parquet reader's name/field-id struct binding + NULL-fill. Non-parquet (duckdb/vortex)
+ * reconciliation via per-file `struct_pack` reshaping is covered by
+ * [AbstractDucklakeNestedFieldEvolutionFormatTest].
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
  */
@@ -135,26 +135,6 @@ class TestDucklakeNestedFieldDdl : AbstractDucklakeIntegrationTest() {
             computeActual("ALTER TABLE $table ADD COLUMN IF NOT EXISTS s.a INTEGER")
             computeActual("INSERT INTO $table VALUES (1, CAST(ROW(10) AS ROW(a INTEGER)))")
             assertThat(computeScalar("SELECT typeof(s) FROM $table LIMIT 1")).isEqualTo("row(\"a\" integer)")
-        }
-        finally {
-            tryDropTable(table)
-        }
-    }
-
-    @Test
-    fun nestedFieldDdlGatedOnNonParquetData() {
-        // A duckdb-format data file exists, so the read path can't yet reshape the struct per file —
-        // both ADD and DROP FIELD must be rejected with a clear message (step-1 gate).
-        val table = "test_schema.nf_gate"
-        try {
-            computeActual("CREATE TABLE $table (id INTEGER, s ROW(a INTEGER, b INTEGER)) " +
-                    "WITH (data_file_format = 'duckdb')")
-            computeActual("INSERT INTO $table VALUES (1, CAST(ROW(10, 11) AS ROW(a INTEGER, b INTEGER)))")
-
-            assertQueryFails("ALTER TABLE $table ADD COLUMN s.c INTEGER",
-                    ".*not yet supported for tables with non-parquet data files.*")
-            assertQueryFails("ALTER TABLE $table DROP COLUMN s.b",
-                    ".*not yet supported for tables with non-parquet data files.*")
         }
         finally {
             tryDropTable(table)
