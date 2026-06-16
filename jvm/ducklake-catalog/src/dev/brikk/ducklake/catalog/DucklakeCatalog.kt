@@ -380,6 +380,27 @@ interface DucklakeCatalog {
     fun renameColumn(tableId: Long, columnId: Long, newName: String)
 
     /**
+     * Add a nested field to a struct column (`ALTER TABLE ... ADD COLUMN parent.child <type>`).
+     *
+     * [parentPath] is the dotted path to the containing struct, INCLUDING the top-level column name
+     * (e.g. `[s]` for `s.child`, `[s, inner]` for `s.inner.child`). [field] is the new subfield
+     * subtree (itself possibly nested). The field is inserted as a new `ducklake_column` row with
+     * `parent_column` = the struct's column_id and a fresh column_id; the struct row is unchanged.
+     * Increments schema version, creates a new snapshot atomically. When [ignoreExisting] is true and
+     * the struct already has an active field of that name, this is a no-op (no snapshot).
+     */
+    fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean)
+
+    /**
+     * Drop a nested field from a struct column (`ALTER TABLE ... DROP COLUMN parent.child`).
+     *
+     * [fieldPath] is the dotted path to the field, INCLUDING the top-level column name (e.g.
+     * `[s, child]`). End-snapshots the field's `ducklake_column` row and all of its descendants.
+     * Increments schema version, creates a new snapshot atomically.
+     */
+    fun dropField(tableId: Long, fieldPath: List<String>)
+
+    /**
      * Commit inserted data files to a table.
      * Creates a new snapshot with data file rows, file column stats,
      * and updated table stats.

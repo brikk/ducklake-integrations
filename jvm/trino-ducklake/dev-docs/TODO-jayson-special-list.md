@@ -42,11 +42,18 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   `next_row_id` preserved (stats tables aren't snapshot-versioned). `TestJdbcDucklakeCatalogAnalyze`
   (drift-repair: corrupt → analyze → restored) + `TestDucklakeAnalyze` (e2e × 4: SHOW STATS,
   drift recompute through SQL, empty table, duckdb format). README row flipped to Yes.
-- **Nested ADD/DROP FIELD** (DDL) — catalog ops follow the `addColumn`/`renameColumn` pattern
-  (nested `ducklake_column` rows, parent_column links). COUPLING: reading OLD non-parquet
-  files after a nested-field change needs the same struct-evolution handling T2-A did for
-  top-level columns (the DuckDB-engine SELECT must NULL-fill an added ROW subfield) — likely a
-  deeper read-path change OR a clean gate. Probe/scope before committing.
+- **Nested ADD/DROP FIELD** (DDL) — ⏳ STEP 1 DONE 2026-06-15, STEP 2 (non-parquet read path) is the
+  reviewed next step (Jayson chose "Scope B, design-first"). Probe confirmed the split: PARQUET
+  self-heals (name/field-id struct binding + NULL-fill) so it's fully supported now; NON-PARQUET
+  (DuckDB-engine) reads of OLD files break after a nested change (T2-A is top-level only). Step 1
+  shipped: SPI `addField`/`dropField` → catalog `addField`/`dropField` (insert one child row /
+  recursively end-snapshot the subtree; path resolution by parent_column walk), a TEMPORARY gate
+  rejecting nested DDL on tables with non-parquet data files, and `TestDucklakeNestedFieldDdl`
+  (6: add+NULL-fill, scalar drop, nested struct add, recursive subtree drop, IF NOT EXISTS no-op,
+  non-parquet gate). **Step 2** = the per-file struct-reshaping read path that removes the gate —
+  full plan in **dev-docs/DESIGN-nested-field-evolution.md** (plumb per-file nested type into
+  `DuckDbSelectSqlBuilder`, emit `struct_pack`/CAST reshaping keyed by column_id; the nested
+  generalization of T2-A). `setFieldType`/`renameField` stay out.
 - **SET TYPE** (DDL) — DEFER. Same read-path coupling as above but worse (the converter assumes
   column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
 - **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
@@ -180,7 +187,9 @@ next_row_id preserved) and rebuilds `ducklake_table_column_stats` from the activ
 authoritative per-file stats — tightening min/max that incremental maintenance never narrows
 after a delete. Non-snapshot-versioned side-table refresh: plain catalog transaction, no new
 snapshot, no invented change vocab. Per-file aggregation (not scanned-block decoding) keeps the
-canonical stat-string encoding. Still open from F1: SET TYPE (defer), nested ADD/DROP FIELD.
+canonical stat-string encoding. Still open from F1: SET TYPE (defer); nested ADD/DROP FIELD step 1
+done 2026-06-15 (parquet supported + non-parquet gated), step 2 = the non-parquet struct-evolution
+read path (dev-docs/DESIGN-nested-field-evolution.md).
 ✅ PARTIAL 2026-06-12 — the small four shipped (`TestDucklakeDdl` +
 `TestDucklakeDdlCrossEngine`): RENAME TABLE (same-schema; cross-schema rejected — table data
 paths are schema-relative), RENAME SCHEMA (new schema_id + re-pointed tables/views/macros;

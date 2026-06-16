@@ -275,7 +275,7 @@ operators and functions are not available through Trino.
 | COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
 | DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Run `CALL system.flush_inlined_data(schema, table)` first (or `data_inlining_row_limit = 0`) to make the rows file-resident, then DELETE/UPDATE/MERGE work. Reads over inlined+file mixes work. |
 | ALTER TABLE SET TYPE | No | Type promotion not supported |
-| ALTER TABLE ADD/DROP FIELD | No | Nested struct field manipulation |
+| ALTER TABLE ADD/DROP FIELD | Parquet | Nested struct field add/drop (`ADD COLUMN s.child …` / `DROP COLUMN s.child`). Fully supported on parquet data (old files self-heal: missing subfields read back NULL, dropped ones are ignored). Gated with a clear error on tables with non-parquet data files until the per-file struct-reshaping read path lands (dev-docs/DESIGN-nested-field-evolution.md). |
 | ANALYZE | Yes | Refreshes the cached table-level stats (`ducklake_table_stats` + `ducklake_table_column_stats`). The engine scans for an authoritative live row count; the per-column aggregates are rebuilt from the authoritative per-file stats, tightening any min/max that incremental maintenance left stale after a delete. Stats are otherwise maintained on every write, so ANALYZE is a no-op on a never-drifted table. A non-versioned side-table refresh: no new snapshot, `next_row_id` preserved. |
 | Sorted writes | No | Trino-written files are unsorted |
 
@@ -521,17 +521,11 @@ catalog for these operations. Planned for a future milestone:
 - `expire_snapshots` (connector procedure)
 - `cleanup_old_files` (connector procedure)
 - `remove_orphan_files` (connector procedure)
-- `flush_inlined_data` (connector procedure)
 - `recalc stats` (rescan data files and recompute table/column stats)
 
 ### DDL
 
-- `RENAME TABLE`
-- `RENAME SCHEMA`
-- `COMMENT ON TABLE`
-- `COMMENT ON COLUMN` (table columns; view column comments are supported)
 - `ALTER TABLE SET TYPE` (type promotion)
-- `ALTER TABLE ADD/DROP FIELD` (nested struct field manipulation)
 
 ### Commit Context
 

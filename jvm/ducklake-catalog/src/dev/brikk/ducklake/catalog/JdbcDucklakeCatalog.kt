@@ -2275,6 +2275,108 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean) {
+        // IF NOT EXISTS pre-check (advisory) so the no-op case doesn't mint an empty snapshot.
+        if (ignoreExisting) {
+            val current = activeColumnRows(dsl, tableId, currentSnapshotId)
+            val parentId = resolveColumnIdByPath(current, parentPath)
+            if (current.any { it.parentColumn == parentId && it.columnName == field.name }) {
+                return
+            }
+        }
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("add field ${(parentPath + field.name).joinToString(".")} to table $tableId") { tx ->
+            val columns = activeColumnRows(tx.dsl(), tableId, tx.getCurrentSnapshotId())
+            val parentId = resolveColumnIdByPath(columns, parentPath)
+            val parent = columns.first { it.columnId == parentId }
+            if (!parent.columnType.equals("struct", ignoreCase = true)) {
+                throw IllegalArgumentException(
+                    "Cannot add a field to non-struct column ${parentPath.joinToString(".")} (type=${parent.columnType})",
+                )
+            }
+            if (columns.any { it.parentColumn == parentId && it.columnName == field.name }) {
+                throw IllegalArgumentException("Field ${(parentPath + field.name).joinToString(".")} already exists")
+            }
+            // Children carry their own column_order within the parent; append at max+1 (0 if first).
+            val maxChildOrder: Long? = tx.dsl().select(DSL.max(col.COLUMN_ORDER))
+                .from(col)
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.PARENT_COLUMN.eq(parentId))
+                .and(activeAt(col, tx.getCurrentSnapshotId()))
+                .fetchOne(0, Long::class.java)
+            val childOrder = if (maxChildOrder == null) 0L else maxChildOrder + 1
+            insertColumnTree(tx, tableId, field, childOrder, OptionalLong.of(parentId))
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    override fun dropField(tableId: Long, fieldPath: List<String>) {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("drop field ${fieldPath.joinToString(".")} from table $tableId") { tx ->
+            val ctx = tx.dsl()
+            val columns = activeColumnRows(ctx, tableId, tx.getCurrentSnapshotId())
+            val targetId = resolveColumnIdByPath(columns, fieldPath)
+            // End-snapshot the field and every transitive descendant (struct subfields nest
+            // arbitrarily — improves on dropColumn's single-level cascade).
+            val subtree = collectSubtreeIds(columns, targetId)
+            ctx.update(col)
+                .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.`in`(subtree))
+                .and(col.END_SNAPSHOT.isNull)
+                .execute()
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    /** Active `ducklake_column` rows for a table at [snapshotId], flat (children keep parent_column). */
+    private fun activeColumnRows(ctx: DSLContext, tableId: Long, snapshotId: Long): List<DucklakeColumn> {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        return ctx.selectFrom(col)
+            .where(col.TABLE_ID.eq(tableId))
+            .and(activeAt(col, snapshotId))
+            .orderBy(col.COLUMN_ORDER, col.COLUMN_ID)
+            .fetch { toDucklakeColumn(it) }
+    }
+
+    /**
+     * Walk a dotted field [path] (top-level column name first, then nested field names) through the
+     * `parent_column` links of [columns], returning the leaf's column_id. Throws if any step misses.
+     */
+    private fun resolveColumnIdByPath(columns: List<DucklakeColumn>, path: List<String>): Long {
+        if (path.isEmpty()) {
+            throw IllegalArgumentException("Empty field path")
+        }
+        var parentId: Long? = null
+        var currentId: Long? = null
+        for (name in path) {
+            val match = columns.firstOrNull { it.columnName == name && it.parentColumn == parentId }
+                ?: throw IllegalArgumentException("Field not found: ${path.joinToString(".")} (no '$name')")
+            currentId = match.columnId
+            parentId = match.columnId
+        }
+        return currentId!!
+    }
+
+    /** [rootId] plus every transitive descendant via `parent_column` (for a recursive field drop). */
+    private fun collectSubtreeIds(columns: List<DucklakeColumn>, rootId: Long): Set<Long> {
+        val byParent: Map<Long, List<DucklakeColumn>> = columns
+            .filter { it.parentColumn != null }
+            .groupBy { it.parentColumn!! }
+        val result: MutableSet<Long> = linkedSetOf()
+        val stack: ArrayDeque<Long> = ArrayDeque()
+        stack.addLast(rootId)
+        while (stack.isNotEmpty()) {
+            val id = stack.removeLast()
+            if (result.add(id)) {
+                byParent[id]?.forEach { stack.addLast(it.columnId) }
+            }
+        }
+        return result
+    }
+
     override fun commitInsert(tableId: Long, fragments: List<DucklakeWriteFragment>) {
         if (fragments.isEmpty()) {
             return
