@@ -221,8 +221,27 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   a BE serde/arrow-builder bug, not CTAS-specific (see friction log 2026-06-10); use
   INT/BIGINT or `CAST(… AS INT)`.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
-  `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker
-  (READ todo Step 7, BE OPTIONAL-column position-delete rejection).
+  `catalog.commitDelete`/`commitMerge`. **De-risked 2026-06-24 (native amd64 probe).**
+  Earlier this was marked "gated on the read-side delete blocker (Step 7, BE
+  OPTIONAL-column rejection)" — the live probe shows that gate is **narrower than
+  thought**: it only blocks reading *DuckDB/DuckLake-written* delete files (which DuckDB
+  emits with OPTIONAL `(file_path, pos)`). **The Doris BE's own position-delete writer
+  emits REQUIRED columns** — `be/src/exec/sink/writer/iceberg/viceberg_delete_file_writer.cpp`
+  `build_position_delete_schema()` constructs both reserved-id fields with
+  `NestedField(optional=false, …)`, i.e. spec-compliant REQUIRED. So a **Doris-issued
+  DELETE writes a REQUIRED delete file the BE reads back fine** → W4 (Doris write +
+  read-back) is end-to-end viable on this box **without** the BE read-strictness fix.
+  That fix (widen `ScalarColumnReader<false,false>` to accept OPTIONAL-with-no-nulls,
+  `be/src/format/parquet/vparquet_column_reader.cpp`) remains valuable for the
+  *cross-engine* case (reading DuckDB-written deletes) but is **not a W4 blocker**.
+  Probe specifics: full smoke (read + W1 DDL + W2/W2c INSERT + W3 CTAS) is GREEN
+  end-to-end on native amd64; the Step-7 read of a DuckDB-written OPTIONAL delete still
+  fails `[CORRUPTION]Not nullable column has null values` from `ScalarColumnReader<false,
+  false>` (confirmed real, not an arm-emulation artifact). Remaining W4 work is the
+  connector mapping: `supportsDelete`/`supportsMerge` + `beginDelete`/`finishDelete` →
+  `catalog.commitDelete`, and `DuckLakeWritePlanProvider` emitting the BE iceberg
+  delete/merge sink — headless-unit-testable (oracle: `catalog.commitDelete`, proven by
+  trino), then a live smoke DELETE step.
 - [ ] **W5 — MERGE:** full upsert via the delete+insert fragment path.
 - [x] **Cross-engine round-trip:** ✅ Doris-written `tpch.doris_w` read back by
   DuckDB+DuckLake on the same metadata DB (W2 smoke). The reverse (DuckDB-written
