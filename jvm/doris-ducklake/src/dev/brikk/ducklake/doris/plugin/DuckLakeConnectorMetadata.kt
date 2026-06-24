@@ -18,6 +18,7 @@ import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.handle.ConnectorTransaction
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import org.apache.doris.connector.api.mvcc.ConnectorTimeTravelSpec
 import org.apache.doris.connector.api.pushdown.ConnectorAnd
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
@@ -329,24 +330,37 @@ internal class DuckLakeConnectorMetadata(
         return Optional.of(toMvccSnapshot(snapshotId, catalog.getSnapshot(snapshotId)))
     }
 
-    override fun getSnapshotAt(
+    // The P-series SPI consolidated the former getSnapshotAt(timestampMillis) +
+    // getSnapshotById(snapshotId) overrides into a single resolveTimeTravel that
+    // receives a ConnectorTimeTravelSpec (FOR TIME AS OF / FOR VERSION AS OF, or
+    // the @tag/@branch/@incr scan params). DuckLake supports only the linear-history
+    // kinds — SNAPSHOT_ID (== old getSnapshotById) and TIMESTAMP (== old getSnapshotAt);
+    // TAG/BRANCH/INCREMENTAL have no DuckLake equivalent and return empty so the engine
+    // surfaces a clear "unsupported" user error.
+    override fun resolveTimeTravel(
         session: ConnectorSession?,
         handle: ConnectorTableHandle,
-        timestampMillis: Long,
+        spec: ConnectorTimeTravelSpec,
     ): Optional<ConnectorMvccSnapshot> {
-        val snap = catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillis))
-            ?: return Optional.empty()
-        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+        val snap: DucklakeSnapshot? = when (spec.getKind()) {
+            ConnectorTimeTravelSpec.Kind.SNAPSHOT_ID ->
+                catalog.getSnapshot(spec.getStringValue().toLong())
+            ConnectorTimeTravelSpec.Kind.TIMESTAMP ->
+                catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillisOf(spec)))
+            else -> null // TAG / BRANCH / INCREMENTAL: unsupported by DuckLake
+        }
+        return if (snap == null) Optional.empty() else Optional.of(toMvccSnapshot(snap.snapshotId, snap))
     }
 
-    override fun getSnapshotById(
-        session: ConnectorSession?,
-        handle: ConnectorTableHandle,
-        snapshotId: Long,
-    ): Optional<ConnectorMvccSnapshot> {
-        val snap = catalog.getSnapshot(snapshotId) ?: return Optional.empty()
-        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
-    }
+    // Derives epoch-millis from a TIMESTAMP spec: a digital value is the raw epoch-millis
+    // (parity with the former getSnapshotAt(timestampMillis) caller), otherwise it is an
+    // ISO-8601 / SQL datetime expression parsed as an Instant.
+    private fun timestampMillisOf(spec: ConnectorTimeTravelSpec): Long =
+        if (spec.isDigital()) {
+            spec.getStringValue().toLong()
+        } else {
+            Instant.parse(spec.getStringValue()).toEpochMilli()
+        }
 
     private fun toMvccSnapshot(snapshotId: Long, snap: DucklakeSnapshot?): ConnectorMvccSnapshot {
         val builder = ConnectorMvccSnapshot.builder().snapshotId(snapshotId)
