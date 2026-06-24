@@ -242,6 +242,29 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   `catalog.commitDelete`, and `DuckLakeWritePlanProvider` emitting the BE iceberg
   delete/merge sink — headless-unit-testable (oracle: `catalog.commitDelete`, proven by
   trino), then a live smoke DELETE step.
+
+  **⛔ CORRECTION — the real W4 gate is UPSTREAM fe-core, not the connector (probed
+  2026-06-24, decisive).** Implementing the connector SPI delete methods would be
+  **dead code**: fe-core has no plugin-driven delete/merge executor. Evidence:
+  - `PluginDrivenInsertExecutor` is **insert-only** (`ConnectorInsertHandle` +
+    `PluginDrivenTableSink`); there is **no `PluginDrivenDeleteExecutor`/`MergeExecutor`**
+    anywhere in `fe-core/src/main`.
+  - The SPI `ConnectorWriteOps.beginDelete`/`finishDelete`/`beginMerge`/`finishMerge` are
+    invoked **only** by the **native** `IcebergDeleteExecutor`/`IcebergMergeExecutor`,
+    which cast to `IcebergExternalTable` and call the native `IcebergTransaction`, not the
+    connector SPI. `IcebergDeleteCommand.java:111` guards `if (!(table instanceof
+    IcebergExternalTable))` → a `PluginDrivenExternalTable` (DuckLake) never routes there.
+  - **Live confirmation:** `DELETE FROM dl.tpch.doris_w WHERE id=1` on the running cluster
+    → `errCode=2 … delete command could be only used on olap table` (rejected at the FE
+    before any connector call).
+  This is the exact pre-P4 INSERT situation: INSERT only worked once
+  [#64253 (P4)] landed `PluginDrivenInsertExecutor` + generic commit-fragment delivery.
+  **W4 needs the analogous upstream contribution** — a `PluginDrivenDeleteExecutor`
+  (+ Merge), command-dispatch routing plugin catalogs to it, and a plugin delete/merge
+  sink — in apache/doris fe-core, either landed on `branch-catalog-spi` or carried as a
+  (large, non-trivial) FE patch. Until then W4 is **upstream-blocked**, not connector
+  work. The BE-side facts above (BE writes REQUIRED deletes; read-strictness only affects
+  cross-engine OPTIONAL deletes) remain valid and become relevant once the executor exists.
 - [ ] **W5 — MERGE:** full upsert via the delete+insert fragment path.
 - [x] **Cross-engine round-trip:** ✅ Doris-written `tpch.doris_w` read back by
   DuckDB+DuckLake on the same metadata DB (W2 smoke). The reverse (DuckDB-written
