@@ -126,8 +126,26 @@ to users; we only flip it in tests / smoke as fixture setup.
 - [ ] Alternative: get the BE / Doris to accept "exclude row indexes" pushdown. No hook today.
 
 ### Step 8 — Time travel
-- [ ] `DuckLakeConnectorMetadata.getTableHandle` second overload taking `Optional<ConnectorTableVersion>` + `Optional<ConnectorRefSpec>`. Map `BySnapshotId` and `ByTimestamp` to the library's existing snapshot resolvers; reject `ByRef` / `ByRefAtTimestamp` for v1 (DuckLake has no branches/tags). `ByOpaque` decodes via our MVCC codec from Step 1.
-- [ ] Smoke: `SELECT * FROM dl.tpch.orders FOR VERSION AS OF <snapshot_id>` returns the historical snapshot's rows.
+**SPI note (2026-06-24):** the original plan below assumed the old `getTableHandle`
+overload (`ConnectorTableVersion`/`ConnectorRefSpec`). The P-series SPI replaced that
+with the MVCC model: `resolveTimeTravel(ConnectorTimeTravelSpec)` resolves the spec to a
+`ConnectorMvccSnapshot`, and `applySnapshot(handle, snapshot)` threads the pin onto the
+handle. The engine drives both for plugin catalogs in
+`PluginDrivenMvccExternalTable.loadSnapshot` (calls `resolveTimeTravel` then
+`applySnapshot`, then `getTableSchema(pinnedHandle)` for schema-at-snapshot) — so this is
+genuinely wired upstream (unlike plugin DELETE).
+- [x] **`resolveTimeTravel`** — `SNAPSHOT_ID` (FOR VERSION AS OF) + `TIMESTAMP` (FOR TIME
+  AS OF) → DuckLake's `getSnapshot` / `getSnapshotAtOrBefore`; `TAG`/`BRANCH`/`INCREMENTAL`
+  return empty (no DuckLake equivalent). (Shipped with the SPI consolidation fix.)
+- [x] **`applySnapshot`** — threads the resolved `snapshotId` onto `DuckLakeTableHandle`
+  (the read path resolves schema + data files + pushdown + partitions by
+  `(tableId, snapshotId)`, so re-stamping snapshotId pins the whole read AT that snapshot;
+  schema-at-snapshot is automatic). Null / negative / same-id pins leave the handle
+  unchanged (read latest). Tests: `DuckLakeConnectorMetadataTimeTravelTest` (8) — incl.
+  `timeTravelPinResolvesTheHistoricalDataFileSet` (two-snapshot fixture: a historical pin
+  resolves the OLD data-file set, current resolves the new one).
+- [x] **Smoke:** `SELECT … FOR VERSION AS OF <snapshot_id>` on the live FE+BE returns the
+  historical snapshot's rows (native amd64, 2026-06-24).
 
 ## Build hygiene (run before merging code from any step above)
 

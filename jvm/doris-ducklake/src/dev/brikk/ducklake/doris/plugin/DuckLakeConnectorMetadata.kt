@@ -370,6 +370,27 @@ internal class DuckLakeConnectorMetadata(
         return builder.build()
     }
 
+    // Threads a resolved MVCC / time-travel snapshot onto the table handle BEFORE planScan,
+    // so the whole read path reads AT that snapshot. DuckLake pins the snapshot directly on
+    // the handle's `snapshotId`: the read path resolves schema, data files, predicate pushdown
+    // and partitions by `(tableId, snapshotId)` (tableId is snapshot-stable), so re-stamping
+    // snapshotId is sufficient — there is no scan-options properties map to thread (unlike
+    // paimon). This is the piece that makes `FOR VERSION/TIME AS OF` actually read historical
+    // state: `resolveTimeTravel` resolves the spec to a snapshot, and the engine threads it
+    // here. A null snapshot or a negative id (empty-table / invalid pin) leaves the handle
+    // unchanged (read latest), matching the paimon contract.
+    override fun applySnapshot(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        snapshot: ConnectorMvccSnapshot?,
+    ): ConnectorTableHandle {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        if (snapshot == null || snapshot.snapshotId < 0 || snapshot.snapshotId == dlHandle.snapshotId) {
+            return dlHandle
+        }
+        return dlHandle.copy(snapshotId = snapshot.snapshotId)
+    }
+
     // ---- Write: INSERT via the connector-transaction model (P4 MaxCompute template) ----
     // The engine opens beginTransaction(), binds the resulting transaction to the
     // session, then DuckLakeWritePlanProvider.planWrite emits a TIcebergTableSink and
