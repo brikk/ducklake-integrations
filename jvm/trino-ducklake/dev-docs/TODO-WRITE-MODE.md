@@ -81,8 +81,10 @@ What landed (2026-05-19):
 - `TestDuckDbQuackCatalogServerSmoke` — containerized DuckLake-on-Quack
   round-trip through the test fixture.
 - `TestJdbcDucklakeCatalogOnQuackSmoke` — `JdbcDucklakeCatalog` against the
-  Quack fixture; `listSchemas` passes, `createSchema` is `@Disabled` until
-  Quack supports same-table multi-scan.
+  Quack fixture; both `listSchemas` AND `createSchemaCommitsAndListSchemasSeesIt`
+  are live `@Test`s and PASS (re-verified 2026-06-24 on amd64). The earlier
+  `@Disabled`-pending-multi-scan note is stale — the `createSchema` commit path
+  round-trips against Quack today.
 - `TestJdbcDucklakeCatalogOnLocalDuckDbSmoke` — full schema + table CRUD round
   trip against a local DuckDB `.db` file, including `dropTable`/`dropSchema`
   (which Quack can't do yet). This is the "SQL/type-compat gate" for Quack —
@@ -141,10 +143,11 @@ How to revisit when upstream Quack matures:
   usable. Same for "Can only update / delete base table" — that one likely
   needs an upstream Quack-extension change rather than a DuckLake change.
 - When the Quack-side blockers lift, lift the `assumeTrue` skip in
-  `TestDucklakeBackendDispatchSmoke`, lift the `@Disabled` on the
-  `createSchema` test in `TestJdbcDucklakeCatalogOnQuackSmoke`, and extend
+  `TestDucklakeBackendDispatchSmoke` and extend
   `DucklakeCatalogGenerator.generateIsolatedDuckDbQuackCatalog` with the
-  full test-data bootstrap so the cross-engine suite can run under it.
+  full test-data bootstrap so the cross-engine suite can run under it. (The
+  `createSchema` smoke test is already enabled and passing — see the smoke-test
+  list above; no `@Disabled` to lift there.)
 
 (Pre-2026-05-19 scoping notes follow.)
 
