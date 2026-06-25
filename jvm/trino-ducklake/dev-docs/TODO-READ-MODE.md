@@ -211,14 +211,18 @@ data file's scan.
 
 ## Virtual Columns
 
-- [ ] **Add DuckDB-equivalent virtual columns** (`rowid`, `snapshot_id`,
-  `filename`, `file_row_number`, `file_index`). Useful for the MERGE story and
-  for debug/lineage queries. Design sketched in
-  [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md) — v1 ships four
-  `$`-prefixed hidden columns (`$path`, `$snapshot_id`, `$file_row_number`,
-  `$row_id`); see that doc for naming/encoding decisions, plumbing
-  sketch, test plan, and what's deferred to v2. ~2 focused days when
-  scheduled.
+- [x] **DuckDB-equivalent virtual columns** — DONE. Ships **five** `$`-prefixed
+  hidden columns on the read path (parquet + duckdb + inlined): `$path`,
+  `$snapshot_id`, `$file_row_number`, `$row_id`, and `$file_size_bytes`. Hidden
+  (out of `SELECT *` / `DESCRIBE`, queryable by name); constant-per-split
+  virtuals injected as RLE blocks, row-varying (`$file_row_number`/`$row_id`)
+  injected pre-delete-filter so positions reflect true file offsets; inlined
+  rows return NULL for file-bound virtuals and per-row `begin_snapshot` for
+  `$snapshot_id`; `$path` predicate pushdown prunes data files before the scan.
+  Pinned by `TestDucklakeVirtualColumns` (21 cross-engine) + `TestVirtualKind`
+  (6 unit). `$file_index`/`$filename` declined (see DESIGN § 8). DuckDB-name
+  aliases (`rowid` etc.) deferred to v2. See
+  [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md).
 
 ## R6: Change Feed and Extended Metadata Parity
 

@@ -237,10 +237,39 @@ operators and functions are not available through Trino.
 | Metadata tables (`$snapshots`) | Yes | List all snapshots |
 | Metadata tables (`$current_snapshot`) | Yes | Current snapshot info |
 | Metadata tables (`$snapshot_changes`) | Yes | Snapshot audit trail |
+| Virtual (hidden) columns | Yes | `$path`, `$snapshot_id`, `$file_row_number`, `$row_id`, `$file_size_bytes` — see [Virtual Columns](#virtual-columns) below |
 | Views (Trino dialect) | Yes | |
 | Views (other dialects) | No | Filtered out; only Trino-created views exposed |
 | Puffin deletion vectors | Yes | DuckLake's Roaring-bitmap delete files (`write_deletion_vectors=true` on the writer) |
 | Sorted table optimizations | Yes | Catalog sort spec surfaces as `SortingProperty` so the planner can skip sort operators when `ORDER BY` matches the leading prefix |
+
+### Virtual Columns
+
+Row-lineage metadata is exposed as `$`-prefixed **hidden** columns, matching the convention
+Trino's Iceberg and Delta connectors use. They are **not** included in `SELECT *` or `DESCRIBE`
+but are queryable by explicit name (and usable in `WHERE` / `GROUP BY`):
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `$path` | `VARCHAR` | Absolute path of the data file backing the row (`NULL` for inlined rows) |
+| `$snapshot_id` | `BIGINT` | The snapshot that wrote the row's data file; per-row `begin_snapshot` for inlined rows |
+| `$file_row_number` | `BIGINT` | 0-based row position within its data file (`NULL` for inlined rows) |
+| `$row_id` | `BIGINT` | Globally-unique-within-table id, `file's row_id_start + $file_row_number` (`NULL` for inlined rows) |
+| `$file_size_bytes` | `BIGINT` | Size in bytes of the backing data file (`NULL` for inlined rows) |
+
+```sql
+SELECT "$path", "$row_id", "$file_row_number", "$snapshot_id" FROM orders WHERE id = 42;
+
+-- File distribution of a table
+SELECT "$path", count(*) FROM orders GROUP BY "$path";
+
+-- $path predicate prunes data files before the scan (optimization; results are correct either way)
+SELECT * FROM orders WHERE "$path" = 's3://bucket/.../ducklake-abc.parquet';
+```
+
+Notes: virtual columns are read-only (writing them is rejected); `$file_index` and `$filename`
+are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-virtual-columns.md)
+§ 8); DuckDB-style unprefixed aliases (`rowid`, `filename`, …) are deferred.
 
 ## Write Operations
 

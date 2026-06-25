@@ -66,15 +66,32 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   probed in RESEARCH-lance-index-lifecycle.md mutate datasets in place). Start with a design
   note + ONE safe procedure. `flush_inlined_data` (done) is the template for the procedure +
   catalog-commit shape; `truncateTable`/`flushInlinedData` show the atomic catalog mutation.
-- **More T2** — remaining candidates need infra not on this arm64 box (httpfs/s3 → MinIO+Quack
-  amd64 container; concurrent-writer snapshot-lineage) or are low-yield (views × backends,
-  cross-engine uint reads go through parquet). The branch-hunt is otherwise exhausted.
+- **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
+  MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
+  `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino
+  parquet data files over s3** (previously ZERO coverage; the old s3 tests were all
+   executor-level) — is covered by `TestDucklakeS3ParquetEndToEnd` (11 tests: CTAS / INSERT /
+   DELETE / UPDATE / MERGE / schema-evolution / time-travel / partitioned, every data file
+   verified as a physical MinIO object; a duckdb-format `.db`-upload-to-s3 write+read cell; and
+   **concurrent writers over s3** — 4 barrier-aligned writers, lineage retry, all rows land once,
+   the s3-transport variant of the conflict matrix). Only residual: full-Trino vortex/lance reads
+   over s3 — a fragile mixed shape (in-process write + Quack-engine read across two containers)
+   whose unproven delta is format-identical to the local FileScan path; executor-level
+   vortex/lance-s3 reads are already proven. Low-yield leftovers: views × backends, cross-engine
+   uint reads go through parquet.
 - **H2/H3** (hygiene) — kotlinization candidate list; monolith decomposition PLAN (plan first).
 
 **Env notes:** `:doris-ducklake` does NOT compile (pre-existing ~/.m2 Doris 1.2-SNAPSHOT drift,
 unrelated — task chip filed; needs a P-series FE rebuild). lance + vortex DuckDB extensions ARE
-available on this box (osx_arm64), so those tests run (don't skip). The trino_parity extension
-binary is symlinked into the worktree from the main checkout's build dir (tests need it).
+available on this box, so those tests run (don't skip). The trino_parity extension binary is
+symlinked into the worktree from the main checkout's build dir (tests need it) — on this
+**linux-amd64** box `duckdb-trino-parity-extension/build` is a symlink to the main checkout's
+build dir, which carries both `build/release/` (host) and `build/linux-amd64/release/`. Build
+with JAVA_HOME=java25 (the daemon otherwise picks up 21 and `:doris-ducklake` config fails the
+JVM-25 floor). Run the s3 suite with
+`-Dducklake.test.parityExtensionPath=<main-checkout>/duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension`.
+**The 2026-06-24 amd64 move retired the "needs infra not on this arm64 box" T2 blocker** — the
+full MinIO+Quack container topology runs here.
 
 **Patterns/memory to read first:** MEMORY.md pointers, esp. `project-driving-list-pass2`,
 `project-catalog-ddl-constraints` (PK on ducklake_schema, never invent changes_made vocab,
@@ -133,6 +150,32 @@ remaining never-exercised branches the same way (coverage tooling or grep-the-di
 Known open boxes that belong here: views across all catalog backends (TODO-READ-MODE), the
 DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
 concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
+
+✅ T2-E DONE 2026-06-24 (amd64 box) — **the s3 × engine grid row, full-Trino.** The pre-existing
+s3 tests were all *executor*-level (`QuackDuckDbExecutor` reading vortex/lance/.db over s3); the
+real hole was **Trino's own ParquetWriter/ParquetPageSource against an s3-resident DuckLake
+catalog** — zero coverage. `TestDucklakeS3ParquetEndToEnd` (self-contained: MinIO container + a
+**PostgreSQL** catalog ATTACHed with an `s3://` DATA_PATH so the catalog-stored path routes every
+new file to the bucket — PG, not a single-file local DuckDB catalog, so the concurrency cell is
+real; native S3 filesystem `fs.native-s3.enabled`, no Quack/parity needed for parquet) — 11 tests:
+- CTAS / INSERT / DELETE / UPDATE / MERGE / schema-evolution (ADD/RENAME/DROP) / time-travel /
+  partitioned writes, each asserting the data file is a **physical MinIO object** (`mc ls`, since
+  `$files.path` is the relative name);
+- a **duckdb-format** cell (the writer uploads the `.db` to s3 via TrinoFileSystem; read
+  materializes back through the parity executor with pushdown);
+- **concurrent writers over s3** (4 writers × 3 rows, barrier-aligned): every INSERT is its own
+  snapshot commit, and the connector's lineage retry serializes them so all rows land exactly once
+  — the s3-transport variant of the (otherwise in-JVM, local-data) catalog conflict matrix. Stable
+  across 3 reruns.
+Also confirmed the whole MinIO+Quack container suite runs 0-skip on amd64 (the "needs infra not on
+this arm64 box" blocker is retired). Doc-drift fixed while here: the Quack `createSchema` smoke is
+a live passing test (TODO-WRITE-MODE wrongly called it `@Disabled`), and the type-audit `list<blob>`
+comment claiming `@Disabled` was stale (the test is live + passing).
+**Only residual in this row:** full-Trino vortex/lance reads over s3 (the *write* path never
+consults `execution-engine`, so it would be a fragile mixed shape — in-process vortex/lance write
++ Quack-engine s3 read across a two-container network — and the **executor**-level vortex/lance-s3
+read is already proven by `TestDucklakeLanceS3QuackRead` + `TestDucklakeQuackS3InitRace`, so the
+only unproven delta is connector plumbing that is format-identical to the local FileScan path).
 
 ✅ T2-C DONE 2026-06-14 — type-edge sweep on the thin formats (special floats, empty
 strings, all-NULL, empty arrays, bucket partitioning, boundary bigints, decimals,
