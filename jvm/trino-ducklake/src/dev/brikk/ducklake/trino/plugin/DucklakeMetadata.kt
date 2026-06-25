@@ -1567,17 +1567,18 @@ class DucklakeMetadata(
         private const val METADATA_TABLE_SEPARATOR: String = "$"
 
         // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
-        // Constant-per-split ($path, $snapshot_id) plus the row-varying lineage pair
-        // ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
+        // Constant-per-split ($path, $snapshot_id, $file_size_bytes) plus the row-varying
+        // lineage pair ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
         private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> = VirtualKind.values().toList()
 
         /**
          * Reject any virtual column handle in a write column list with NOT_SUPPORTED.
          * Routed through DucklakeColumnHandle.isVirtual() (the single sentinel check) so
          * the guard can never drift from VirtualKind. The MERGE row-id handle (-100) is
-         * NOT virtual, so this never rejects it.
+         * NOT virtual, so this never rejects it. `internal` (not private) so TestDucklakeMetadata
+         * can pin the write-path guard directly (DESIGN-virtual-columns.md § 5).
          */
-        private fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
+        internal fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
         {
             for (column in columns) {
                 if (column is DucklakeColumnHandle && column.isVirtual()) {
