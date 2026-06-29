@@ -90,8 +90,11 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   • **dead-table metadata GC** — expire now also deletes the table_id-keyed metadata rows of
     fully-expired dropped tables (reusing validated deadTableIds). Dead schema/view/macro rows +
     dynamic inlined tables still deferred (harmless dangling).
-  Remaining F6: optimize/rewrite_data_files (compaction — **blocked on the full partial_max
-  filter**); the deferred schema/view/macro metadata GC. stats-recalc already shipped as ANALYZE.
+  Remaining F6: **optimize/rewrite_data_files (the compaction WRITER)** — read side now unblocked
+  (partial data + parquet-delete files read correctly); a non-partial (Iceberg-style) v1 reuses the
+  expire/cleanup reclaim, a partial-emitting variant must POPULATE `partial_max` +
+  `_ducklake_internal_snapshot_id` on write. Plus: puffin partial-delete per-blob filter (rare); the
+  deferred dead schema/view/macro metadata GC. stats-recalc already shipped as ANALYZE.
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino
