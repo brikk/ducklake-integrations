@@ -301,32 +301,34 @@ un-annotated trailing parquet field, so catalog stats (built over the table colu
 read path (which finds the column by name) are both unaffected. Tested at the catalog layer (no
 parity extension needed) + a full-Trino round trip.
 
-### 7.3 v1 gates (kept honest and explicit)
+### 7.3 Scope (final)
 
-  - **Unpartitioned tables only** (matches `flush_inlined_data`'s v1 gate). Partitioned compaction
-    must merge per-partition and assign partition values — deferred.
-  - **Source candidate selection**: active data files at the current snapshot whose
-    `file_size_bytes < target` (a `file_size_threshold` arg, default e.g. 100MB), of a compactable
-    format (parquet; mixed-format tables compact only their parquet files). Lance/vortex/duckdb
-    source files are skipped in v1.
-  - **`partial_max` source files** (cross-snapshot DuckDB-compacted) are read correctly (§ 6) but in
-    v1 we do not *re-emit* partial files; a source already carrying `partial_max` is skipped (it is
-    already compacted). A clean follow-up, not a correctness gap.
-  - **Inlined rows**: if the table has live inlined rows, require `flush_inlined_data` first (same as
-    the merge gate) — or skip them (they are not file-resident). v1: leave inlined rows untouched
-    (compaction only touches file-resident data).
-  - If fewer than 2 candidates qualify, it's a no-op (nothing to compact).
+  - **Partitioned tables: supported.** Sources are grouped by partition (a file's `partition_id` +
+    its stored partition values); each group with ≥ 2 files is compacted independently and the merged
+    files inherit the group's partition values (copied from the catalog, not recomputed — so it works
+    for ANY transform, not just identity). A lone file per partition is left alone; cross-partition
+    files are never merged.
+  - **Size-bounded output: supported.** A `target_file_size` arg (default 512MB) rolls the merged
+    rows of a group into a new file once the target is reached (`GroupWriter`).
+  - **Source candidate selection**: active **parquet** data files whose `file_size_bytes <
+    file_size_threshold` (default 100MB). Mixed-format tables compact only their parquet files;
+    lance/vortex/duckdb sources are skipped.
+  - **`partial_max` source files**: the NON-partial path folds them in too (read at current = all
+    rows live; sources end-snapshotted, still serve time-travel via their own filter). The
+    partial-emitting path still requires non-partial sources (re-emitting from an already-partial
+    file would need a per-row internal-id read — niche, skipped).
+  - **Inlined rows** are left untouched (not file-resident). A partition with < 2 compactable files
+    is a no-op.
 
-### 7.4 Test plan (every cell proves a real success/failure)
+### 7.4 Tests (every cell proves a real success/failure)
 
   - **Catalog-level** (`TestJdbcDucklakeCatalogRewriteDataFiles`, postgres-backed, no extension):
     register-merged + retire-sources atomicity; `record_count` unchanged; `file_size_bytes` adjusted;
-    `next_row_id` monotonic; source delete files end-snapshotted; **concurrent-modification conflict**
-    — a delete that end-snapshots a source between our read and commit makes `rewriteDataFiles` throw
-    a non-retryable `TransactionConflictException` (and the catalog is left untouched).
-  - **Cross-engine e2e** (`TestDucklakeOptimize`, full-Trino, parity extension): CTAS/INSERT producing
-    N small files → `CALL optimize` → file count drops, **row set + values identical**, time-travel to
-    the pre-optimize snapshot still returns the old rows from the old files; a DELETE-then-optimize
-    case proving tombstoned rows are physically dropped from the merged file while the live result is
-    unchanged; a partitioned-table call rejected with a clear `NOT_SUPPORTED`; a below-threshold /
-    single-file no-op.
+    `next_row_id` monotonic; source delete files end-snapshotted; **concurrent-delete-on-source
+    conflict** is non-retryable (both shapes); partial back-date + `partial_max` + entire-source
+    deletion + scheduling.
+  - **Full-Trino e2e** (`TestDucklakeRewriteDataFiles`): compaction + time-travel; delete-applying
+    (tombstones physically dropped); **partitioned per-partition** compaction (pruning preserved);
+    **`target_file_size` rollover** (tiny → many files, large → one); **partial round trip** (sources
+    gone, time-travel reproduced from the merged file alone via the per-row snapshot filter);
+    non-partial folding an already-partial source; single-file no-op.

@@ -765,9 +765,11 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
     write, back-dates begin = min(source begin), and DELETES the sources entirely + schedules them
     (mirrors DuckLake WriteMergeAdjacent). `DucklakeCatalog.rewriteDataFilesPartial`;
     `TestJdbcDucklakeCatalogRewriteDataFiles` +2, `TestDucklakeRewriteDataFiles` +1 round trip.
-- [ ] `rewrite_data_files` ENHANCEMENT follow-ups (out of F6 core): partitioned tables (currently
-    gated like flush), size-bounded multi-file output, re-compacting already-partial sources, an
-    `ALTER TABLE ... EXECUTE optimize` alias.
+- [x] `rewrite_data_files` enhancements — DONE: partitioned tables (per-partition groups, any
+    transform), size-bounded multi-file output (`target_file_size`), re-compacting already-partial
+    sources (non-partial path). The `ALTER TABLE ... EXECUTE optimize` alias is a deliberate non-goal
+    (procedure surface is the connector's convention; the alias needs the separate TableProcedures
+    SPI for no capability gain).
 - [ ] Connector procedures in `ducklake.system`:
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
     (no catalog mutation): deletes files under the table data path with no catalog row, older than
@@ -785,11 +787,12 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
 - [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed). v1 procs log
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
-**F6 CORE COMPLETE.** `remove_orphan_files` + `expire_snapshots` (+ full metadata GC) +
-`cleanup_old_files` + `ANALYZE` + the partial-file READ filters (data + parquet-delete + puffin-delete,
-all gates lifted) + the `rewrite_data_files` compaction WRITER in BOTH shapes (non-partial v1 +
-partial-emitting / merge_adjacent). Remaining are optional enhancements only (partitioned compaction,
-size-bounded multi-file output, re-compact-already-partial, dropping dynamic inlined-data tables).
+**F6 DONE (done done).** `remove_orphan_files` + `expire_snapshots` (+ FULL metadata GC incl. dynamic
+inlined-data tables) + `cleanup_old_files` + `ANALYZE` + the partial-file READ filters (data +
+parquet-delete + puffin-delete, all gates lifted) + the `rewrite_data_files` compaction WRITER in BOTH
+shapes (non-partial + partial-emitting), with partitioned compaction, size-bounded multi-file output,
+and partial-source re-compaction. Only omission: the cosmetic `ALTER TABLE … EXECUTE optimize` alias
+(deliberate non-goal — procedure surface is the convention).
 
 ## Commit-Failure File Cleanup
 

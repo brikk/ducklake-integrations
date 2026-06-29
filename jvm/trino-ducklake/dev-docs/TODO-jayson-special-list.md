@@ -116,12 +116,16 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     primitive `rewriteDataFilesPartial`; `TestJdbcDucklakeCatalogRewriteDataFiles` +2,
     `TestDucklakeRewriteDataFiles` +1 (round trip: sources gone, time-travel AS OF s1/s2 reproduced
     from the merged file alone).
-  **F6 CORE COMPLETE.** All maintenance ops shipped: remove_orphan_files, expire_snapshots (+ full
-  metadata GC), cleanup_old_files, ANALYZE, the partial_max READ filters (all formats), and BOTH
-  compaction WRITER shapes (non-partial + partial-emitting). Remaining are optional ENHANCEMENTS:
-  partitioned-table compaction (currently gated like flush), size-bounded multi-file output,
-  re-compacting already-partial sources, and dropping the dynamic `ducklake_inlined_data_*` tables on
-  expire (harmless dangling).
+  **F6 DONE (done done).** All maintenance ops shipped: remove_orphan_files, expire_snapshots (+ full
+  metadata GC, incl. dropping dynamic `ducklake_inlined_data_*` tables), cleanup_old_files, ANALYZE,
+  the partial_max READ filters (all formats), and BOTH compaction WRITER shapes (non-partial +
+  partial-emitting). Enhancements also DONE: **partitioned-table compaction** (per-partition groups,
+  any transform), **size-bounded multi-file output** (`target_file_size`, default 512MB), and
+  **re-compacting already-partial sources** (non-partial path). Only omission: the
+  `ALTER TABLE … EXECUTE optimize` *alias* — deliberate non-goal (the connector exposes ALL F6 ops as
+  `CALL system.*` procedures; the alias needs the separate TableProcedures SPI for zero capability
+  gain). rewrite_data_files tests: `TestJdbcDucklakeCatalogRewriteDataFiles` (6),
+  `TestDucklakeRewriteDataFiles` (8).
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino
