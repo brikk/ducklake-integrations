@@ -328,6 +328,22 @@ Improvements, Inlined-Read Type Gaps).
   Parquet reader the same way we do for data files? Saves IO on narrow predicates
   (e.g. single `pos` value in a MERGE plan). Scoping spike against Trino's
   `ConnectorPageSource` filter-pushdown surface.
+- **partial_max time-travel correctness (read gap)** — `ducklake_data_file` /
+  `ducklake_delete_file` carry a `partial_max BIGINT` we ignore entirely. It's the
+  row-level snapshot bound for **cross-snapshot compacted files** (DuckLake's
+  `merge_adjacent_files`): correct time-travel must filter
+  `_ducklake_internal_snapshot_id <= partial_max`. Today a table compacted by DuckDB
+  on a shared catalog can be **time-travel-read with over-inclusion** of later-snapshot
+  rows (current-snapshot reads unaffected). Narrow (compacted × time-travel only) but
+  real. Fix = project `partial_max` onto `DucklakeDataFile` + apply the internal-snapshot
+  filter in the page source. Also a hard prerequisite for our own compaction — see
+  [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+- **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
+  List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
+  Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
+  (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
+  verify our nested field-id resolution reads ids off the top-level field, not the leaf,
+  with a List/struct write→read roundtrip across schema evolution. ~1h spike.
 
 ### Cross-Dialect View Transpilation
 

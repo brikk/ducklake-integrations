@@ -17,7 +17,9 @@ import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
 import io.airlift.configuration.Config
 import io.airlift.configuration.ConfigDescription
 import io.airlift.units.DataSize
+import io.airlift.units.Duration
 import io.airlift.units.MinDataSize
+import io.airlift.units.MinDuration
 import jakarta.validation.constraints.AssertTrue
 import jakarta.validation.constraints.NotNull
 import java.time.Instant
@@ -50,6 +52,7 @@ class DucklakeConfig {
     private var duckdbEnableObjectCache: Boolean = true
     private var duckdbTargetWriteBytes: DataSize = DataSize.ofBytes(512L * 1024 * 1024)
     private var duckdbParityExtensionPath: Optional<String> = Optional.empty()
+    private var removeOrphanFilesMinRetention: Duration = Duration.valueOf("7d")
 
     @NotNull
     fun getCatalogDatabaseUrl(): String? {
@@ -319,6 +322,21 @@ class DucklakeConfig {
     @ConfigDescription("Approximate logical input bytes appended before the DuckDB-format writer rolls to a new .db file. On-disk size will be smaller depending on data compressibility — typically 3-5×.")
     fun setDuckdbTargetWriteBytes(duckdbTargetWriteBytes: DataSize): DucklakeConfig {
         this.duckdbTargetWriteBytes = duckdbTargetWriteBytes
+        return this
+    }
+
+    @NotNull
+    @MinDuration("0s")
+    fun getRemoveOrphanFilesMinRetention(): Duration {
+        return removeOrphanFilesMinRetention
+    }
+
+    @Config("ducklake.remove-orphan-files.min-retention")
+    @ConfigDescription("Minimum age a file must have before remove_orphan_files may delete it. " +
+            "Floors the procedure's retention_threshold argument so the maintenance op cannot " +
+            "delete files an in-flight (possibly cross-engine) writer just produced. Default 7d.")
+    fun setRemoveOrphanFilesMinRetention(removeOrphanFilesMinRetention: Duration): DucklakeConfig {
+        this.removeOrphanFilesMinRetention = removeOrphanFilesMinRetention
         return this
     }
 

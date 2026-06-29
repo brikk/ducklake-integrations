@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.CALENDAR
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.EPOCH
 import io.airlift.units.DataSize
+import io.airlift.units.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -83,5 +84,19 @@ class TestDucklakeConfig {
                 .setDuckdbAutoHttpfsThreshold(DataSize.valueOf("128MB"))
 
         assertThat(config.getDuckdbAutoHttpfsThreshold().toBytes()).isEqualTo(128L * 1024 * 1024)
+    }
+
+    @Test
+    fun testRemoveOrphanFilesMinRetentionDefault() {
+        // 7d default (matches Trino's Iceberg connector) — the floor under remove_orphan_files'
+        // retention_threshold argument that stops the op deleting freshly-written files.
+        assertThat(DucklakeConfig().getRemoveOrphanFilesMinRetention())
+                .isEqualTo(Duration.valueOf("7d"))
+    }
+
+    @Test
+    fun testRemoveOrphanFilesMinRetentionParsing() {
+        val config = DucklakeConfig().setRemoveOrphanFilesMinRetention(Duration.valueOf("3d"))
+        assertThat(config.getRemoveOrphanFilesMinRetention()).isEqualTo(Duration.valueOf("3d"))
     }
 }

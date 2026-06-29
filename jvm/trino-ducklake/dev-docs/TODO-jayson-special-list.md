@@ -61,11 +61,25 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
 - **SET TYPE** (DDL) — DEFER. Same read-path coupling as above but worse (the converter assumes
   column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
 - **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
-  expire_snapshots / remove_orphan_files / stats-recalc. Needs the in-place-mutation /
-  snapshot-safety design decided FIRST (the lance `__lance_compact_files`/`cleanup_old_versions`
-  probed in RESEARCH-lance-index-lifecycle.md mutate datasets in place). Start with a design
-  note + ONE safe procedure. `flush_inlined_data` (done) is the template for the procedure +
-  catalog-commit shape; `truncateTable`/`flushInlinedData` show the atomic catalog mutation.
+  expire_snapshots / remove_orphan_files / stats-recalc.
+  ✅ DESIGN + first procedure DONE 2026-06-29 — **dev-docs/DESIGN-maintenance.md** settles the
+  snapshot-safety question: adopt DuckLake's **two-phase deletion** (catalog retirement only ever
+  *schedules* files into `ducklake_files_scheduled_for_deletion`; physical unlink is a separate,
+  **age-gated** step — the grace period protects in-flight/cross-engine readers; liveness =
+  half-open `[begin_snapshot, end_snapshot)`). First procedure shipped: **`remove_orphan_files`**
+  (`TestDucklakeRemoveOrphanFiles`, 5 e2e: aged-orphan deleted, recent-orphan protected, dry_run,
+  retention-floor reject, real data untouched) — chosen first because orphans have no catalog row
+  so it touches storage ONLY (no snapshot/WriteChange/ConflictMatrix), and it fixes the
+  named hole ("orphans from failed commits have no Trino-side remedy"). New config
+  `ducklake.remove-orphan-files.min-retention` (default 7d) floors the retention arg. Roadmap
+  (next): expire_snapshots (catalog mutation + scheduling + new WriteChange/conflict entries),
+  cleanup_old_files (drain the schedule table), optimize/rewrite_data_files (compaction —
+  **blocked on `partial_max`**, see below). stats-recalc already shipped as ANALYZE.
+  **⚠️ partial_max read gap** (flagged 2026-06-29): `ducklake_data_file`/`_delete_file` carry a
+  `partial_max` we ignore; cross-snapshot compacted files (DuckDB `merge_adjacent_files`) need
+  `_ducklake_internal_snapshot_id <= partial_max` filtering for correct time-travel. Narrow
+  (compacted × time-travel) but real, and a hard prerequisite before we emit compacted files.
+  Tracked in TODO-READ-MODE + DESIGN-maintenance § 6.
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino

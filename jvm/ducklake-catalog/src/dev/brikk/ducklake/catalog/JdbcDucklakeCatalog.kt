@@ -22,6 +22,7 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_TAG
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES
@@ -387,6 +388,30 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.get(file.MAPPING_ID),
             )
         }
+    }
+
+    override fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef> {
+        val refs = mutableListOf<DucklakeFilePathRef>()
+        val collect: (String?, Boolean?) -> Unit = { path, isRelative ->
+            if (path != null) {
+                refs.add(DucklakeFilePathRef(path, isRelative ?: false))
+            }
+        }
+        // Data + delete files for this table at ANY snapshot (end-snapshotted rows included — the
+        // physical files are still catalog-owned until cleanup, so they are NOT orphans).
+        val df = DUCKLAKE_DATA_FILE.`as`("df")
+        dsl.select(df.PATH, df.PATH_IS_RELATIVE).from(df).where(df.TABLE_ID.eq(tableId))
+            .fetch { collect(it.value1(), it.value2()) }
+        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
+        dsl.select(delf.PATH, delf.PATH_IS_RELATIVE).from(delf).where(delf.TABLE_ID.eq(tableId))
+            .fetch { collect(it.value1(), it.value2()) }
+        // Files already scheduled for deletion (the two-phase pipeline owns these). The schedule
+        // table has no table_id, so we include all of them; cross-table paths can't collide with a
+        // single table's data-path listing anyway.
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("sched")
+        dsl.select(sched.PATH, sched.PATH_IS_RELATIVE).from(sched)
+            .fetch { collect(it.value1(), it.value2()) }
+        return refs
     }
 
     override fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String? {

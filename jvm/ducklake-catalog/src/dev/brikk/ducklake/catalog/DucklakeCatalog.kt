@@ -87,6 +87,18 @@ interface DucklakeCatalog {
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>
 
     /**
+     * Every storage path the catalog references for this table, regardless of snapshot liveness:
+     * all `ducklake_data_file` and `ducklake_delete_file` rows for the table (including
+     * end-snapshotted ones — those physical files are still owned by the catalog until cleanup),
+     * plus rows already in `ducklake_files_scheduled_for_deletion`. This is the "known set" for
+     * orphan-file detection ([remove_orphan_files]): a file under the table's data path that is
+     * NOT in this set has no catalog row at all and is a candidate orphan. Paths are returned raw
+     * (relative or absolute, per `path_is_relative`); the caller resolves them against the table
+     * data path.
+     */
+    fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef>
+
+    /**
      * Get the `file_format` of the most recent active data file for this table at the given
      * snapshot. Used by INSERT (and the insert leg of MERGE/UPDATE) to inherit the format of the
      * existing data when neither a session property nor a statement-level override is in play.
