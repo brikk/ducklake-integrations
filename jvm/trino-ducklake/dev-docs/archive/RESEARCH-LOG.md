@@ -8,6 +8,110 @@ recent items have been folded as bullets into the working
 
 ---
 
+## 2026-06-29 — full refresh (ducklake, datafusion, ducklake-web, pg_ducklake, quack)
+
+**Trigger:** user asked for a full upstream survey — check logged baselines,
+last commit dates/hashes, and whether anything in the DuckLake spec, the
+DuckLake DuckDB extension, or the DataFusion plugin would break us. Fresh
+blobless clones of all five tracked repos into `vendor/`, fetched and diffed
+against the baselines from the 2026-05-22 / 2026-05-29 entries.
+
+**Surveyed repos and new baselines:**
+
+| Repo | Baseline this run | Surveyed up to | Δ (no-merge) |
+|---|---|---|---|
+| `ducklake/` | `v1.5-variegata@04a91e8e`, `main@d897bc5a` | `v1.5-variegata@c23aca43` (2026-06-17), `main@96a4574d` (2026-06-25) | 126 / 355 |
+| `datafusion-ducklake/` | `main@f1af7dd5` (post-v0.2.1) | `main@8abedc97` (2026-06-26, post-v0.3.1) | 21 |
+| `ducklake-web/` | `main@58e9ed7e`, `quack@bb393710` | `main@82231c20` (2026-06-28), `quack` unchanged | 23 / 0 |
+| `pg_ducklake/` | `main@011ab8d5` | `main@e906c7ae` (2026-06-18, v1.1.0, duckdb v1.5.4) | 716 |
+| `duckdb-quack/` | `main@daae4826`, `v1.5-variegata@a3dbe3d5` | `main@ebf88413` (2026-06-19), `v1.5-variegata@40de7bad` (2026-06-10) | 116 / 14 |
+
+`duckdb-web/` and `duckdb/` not refreshed this run.
+
+### Headline: DuckLake metadata format → `1.0` — we are aligned
+
+DuckLake's catalog format bumped through the migration chain V01→V04
+(`ducklake_metadata.version` 0.1 → 0.2 → 0.3 → 0.4 → 1.0). Attach now **throws**
+if a migration is required and `AUTOMATIC_MIGRATION=false`. The structurally
+significant DDL (from `src/storage/ducklake_metadata_manager.cpp`):
+
+- **V03 (0.3→0.4):** drops `ducklake_data_file.partial_file_info`, adds
+  `partial_max BIGINT` to both `ducklake_data_file` and `ducklake_delete_file`;
+  adds `table_id` to `ducklake_schema_versions` (schema-version tracking is now
+  **per-table**, global rows deleted); new tables `ducklake_macro{,_impl,_parameters}`,
+  `ducklake_sort_info`, `ducklake_sort_expression`, `ducklake_file_variant_stats`;
+  `ducklake_column.default_value_type` + `default_value_dialect`.
+- **V04 (0.4→1.0):** version-string bump only; 1.0 == 0.4 structurally.
+
+**Verdict — parity.** Our jOOQ schema (`jvm/ducklake-catalog/generated/...`) is
+already generated against a 0.4/1.0 catalog: no `partial_file_info`, `partial_max`
+present, `ducklake_schema_versions.table_id` present, and the sort/macro/variant
+tables exist. `getSnapshotIdForSchemaVersion` (`JdbcDucklakeCatalog.kt:1071`)
+already prefers per-table `schema_versions` with a fallback for older/global
+catalogs. We never read a `ducklake_metadata` `version` row and don't migrate —
+fine for an attach-as-reader/writer posture, but worth keeping in mind that we
+will silently operate on a catalog regardless of declared version.
+
+### Substantive findings
+
+**ducklake `v1.5-variegata` / `main` — deletion vectors + server-side commit.**
+- Deletion-vector puffin files (`ducklake_deletion_vector.{hpp,cpp}`, footer-less
+  puffin, multiple DVs per puffin, `DeletionVectors.yml` CI, `deletion_vectors.json`
+  config). **Parity** — `DucklakePuffinDeleteReader` already decodes DuckLake's
+  Roaring-bitmap DV blob and `DucklakeSplitManager.kt:624` validates the `format`
+  column (parquet/puffin).
+- Server-side / staged commit (`ducklake_server_side_commit.cpp`,
+  `ducklake_staged_commit.cpp`, transaction → transaction_state refactor): commit
+  id assigned at commit, full metadata written in one txn. Quack-path; feeds the
+  open `quack-server-side-txn-lifecycle` write-mode item. **Research.**
+- "Hide metadata catalog" option (`hide_metadata_catalog.test`) + answer MIN/MAX
+  from catalog metadata when stats are exact (aggregate-pushdown opportunity).
+  **Research** (not yet bulleted; low priority).
+- `merge_adjacent_files` across schema version + `partial_max` snapshot-bounded
+  cross-snapshot compaction (`ducklake_multi_file_reader.cpp:298`). Confirms the
+  **already-tracked** `partial_max time-travel correctness` read-mode gap — we
+  ignore `partial_max`, so a DuckDB-compacted table read under time-travel
+  over-includes later-snapshot rows. Still open; no new bullet (already in
+  `TODO-READ-MODE.md` Open research items, linked to DESIGN-maintenance § 6).
+
+**datafusion-ducklake (v0.3.0 / v0.3.1 + unreleased).**
+- **#148** — nested List/struct/map columns read back all-NULL because the
+  read-schema field-id matcher keyed off Parquet *leaf* columns instead of the
+  *top-level* field. **Bug-shaped on our side** given we just shipped nested
+  ADD/DROP FIELD. Added `nested-field-id-top-level-match` bullet to
+  `TODO-READ-MODE.md` Open research items (~1h verification spike).
+- **#149 / #146** — explicit widening-only `promote_column_type`; **reject** silent
+  type changes on `Replace`/`Append` writes (ALTER-vs-INSERT separation). Confirms
+  our posture; cross-check our write path matches. **Parity (verify).**
+- #131 `get_table_row_count` accounting for delete files; #127 staging-file +
+  multipart streamed writes; #126/#128 parquet compression + row-group caps;
+  #133 nanosecond-tz → `timestamptz_ns`. Mostly Rust-writer-side; informational.
+
+**pg_ducklake — v1.1.0, duckdb v1.5.4, DuckLake v1.5-variegata vendored.** Repo
+layout flattened; SQL surface redesigned for 1.0.0; cloud-storage secret mgmt;
+ORDER BY/Top-N pushdown into PG scan. Mostly non-portable PG glue. Signal: they
+track duckdb **1.5.4** + DuckLake v1.5-variegata. **No action.**
+
+**duckdb-quack.** Added a connection-id scalar function + `quack_active_connections`
+view, query-uuid/client-id serialization, cancel-by-name. Directly useful for the
+open `quack-jdbc-vs-quack-connid-pinning` / `quack-server-side-txn-lifecycle`
+write-mode research items. **Research input** — no new bullet (items exist).
+
+### Documents touched this run
+
+- `../RESEARCH-upstreams.md` — "Latest baselines" table bumped to the SHAs above.
+- `../TODO-READ-MODE.md` — added `nested-field-id-top-level-match` bullet under
+  Open research items (read-path).
+- This log entry.
+
+### Open question for the user
+
+Promote candidates from "Open research items" into real backlog (needs explicit OK):
+`nested-field-id-top-level-match` (read), and whether to act on `partial_max`
+time-travel correctness now vs. defer to the compaction work.
+
+---
+
 ## 2026-05-29 — `datafusion-ducklake` focused refresh
 
 **Trigger:** user pulled fresh `vendor/datafusion-ducklake` and asked for a

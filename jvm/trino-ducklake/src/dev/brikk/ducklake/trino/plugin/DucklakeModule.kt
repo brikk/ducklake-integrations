@@ -89,6 +89,9 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         binder.bind(ConnectorSplitManager::class.java)
                 .to(ClassLoaderSafeConnectorSplitManager::class.java)
                 .`in`(Scopes.SINGLETON)
+        // Explicit self-binding so procedures (rewrite_data_files) can inject the concrete split
+        // manager to drive the real read path; JIT bindings are disabled.
+        binder.bind(DucklakeSplitManager::class.java).`in`(Scopes.SINGLETON)
 
         // Page source provider
         binder.bind(ConnectorPageSourceProviderFactory::class.java)
@@ -131,9 +134,7 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         binder.bind(DucklakeDuckDbExecutorFactory::class.java).`in`(Scopes.SINGLETON)
 
         // Procedures (per-catalog, exposed under <catalog>.system.<name>).
-        val procedureBinder = Multibinder.newSetBinder(binder, Procedure::class.java)
-        procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure::class.java).`in`(Scopes.SINGLETON)
-        procedureBinder.addBinding().toProvider(DucklakeFlushInlinedDataProcedure::class.java).`in`(Scopes.SINGLETON)
+        bindProcedures(binder)
 
         // Table functions (per-catalog, invoked as TABLE(<catalog>.system.<name>(...))).
         // DucklakeFunctionProvider routes each function's handle to its split processor.
@@ -142,5 +143,15 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         tableFunctionBinder.addBinding().to(LanceFtsTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(LanceHybridSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeFunctionProvider::class.java).`in`(Scopes.SINGLETON)
+    }
+
+    private fun bindProcedures(binder: com.google.inject.Binder) {
+        val procedureBinder = Multibinder.newSetBinder(binder, Procedure::class.java)
+        procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeFlushInlinedDataProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeRemoveOrphanFilesProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeExpireSnapshotsProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeCleanupOldFilesProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeRewriteDataFilesProcedure::class.java).`in`(Scopes.SINGLETON)
     }
 }

@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.3.10"
 adbc = "0.21.0"
-duckdb = "1.5.3.0"
+duckdb = "1.5.4.0"
 arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
 terpal-sql-lib = "2.0.0.PL-4.4.0"

@@ -19,13 +19,18 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import dev.brikk.ducklake.catalog.SnapshotRange.activeAt
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_TAG
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_VARIANT_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO_IMPL
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO_PARAMETERS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_NAME_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_COLUMN
@@ -70,6 +75,7 @@ import org.jooq.tools.jdbc.JDBCUtils
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.Locale
 import java.util.Optional
@@ -335,6 +341,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val deleteFilePath = delfile.PATH.`as`("delete_file_path")
         val deleteFilePathIsRelative = delfile.PATH_IS_RELATIVE.`as`("delete_file_path_is_relative")
         val deleteFileFooterSize = delfile.FOOTER_SIZE.`as`("delete_file_footer_size")
+        val deleteFilePartialMax = delfile.PARTIAL_MAX.`as`("delete_file_partial_max")
         // Multi-table JOIN — routed through `metadata` for Quack compatibility.
         return metadata.fetch(
             dsl,
@@ -353,10 +360,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 file.ROW_ID_START,
                 file.PARTITION_ID,
                 file.MAPPING_ID,
+                file.PARTIAL_MAX,
                 deleteFilePath,
                 deleteFilePathIsRelative,
                 deleteFileFooterSize,
                 delfile.FORMAT,
+                deleteFilePartialMax,
             )
                 .from(file)
                 .leftJoin(delfile)
@@ -385,9 +394,390 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.get(deleteFileFooterSize),
                 r.get(delfile.FORMAT),
                 r.get(file.MAPPING_ID),
+                r.get(file.PARTIAL_MAX),
+                r.get(deleteFilePartialMax),
             )
         }
     }
+
+    override fun hasPartialDeleteFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean {
+        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
+        return dsl.selectOne().from(delf)
+            .where(delf.TABLE_ID.eq(tableId))
+            .and(activeAt(delf, snapshotId))
+            .and(delf.PARTIAL_MAX.isNotNull)
+            .and(delf.PARTIAL_MAX.gt(snapshotId))
+            // Both PARQUET (via _ducklake_internal_snapshot_id) and PUFFIN (via each blob's embedded
+            // ducklake-snapshot-id) partial delete files are now snapshot-filtered on read
+            // (DucklakeSplit.deleteFileSnapshotFilters). Anything else is an unknown format that
+            // validateDeleteFileFormats already rejects — this stays only as a defensive double-gate.
+            .and(delf.FORMAT.isNotNull)
+            .and(DSL.lower(delf.FORMAT).ne("parquet"))
+            .and(DSL.lower(delf.FORMAT).ne("puffin"))
+            .limit(1)
+            .fetch().isNotEmpty
+    }
+
+    override fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef> {
+        val refs = mutableListOf<DucklakeFilePathRef>()
+        val collect: (String?, Boolean?) -> Unit = { path, isRelative ->
+            if (path != null) {
+                refs.add(DucklakeFilePathRef(path, isRelative ?: false))
+            }
+        }
+        // Data + delete files for this table at ANY snapshot (end-snapshotted rows included — the
+        // physical files are still catalog-owned until cleanup, so they are NOT orphans).
+        val df = DUCKLAKE_DATA_FILE.`as`("df")
+        dsl.select(df.PATH, df.PATH_IS_RELATIVE).from(df).where(df.TABLE_ID.eq(tableId))
+            .fetch { collect(it.value1(), it.value2()) }
+        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
+        dsl.select(delf.PATH, delf.PATH_IS_RELATIVE).from(delf).where(delf.TABLE_ID.eq(tableId))
+            .fetch { collect(it.value1(), it.value2()) }
+        // Files already scheduled for deletion (the two-phase pipeline owns these). The schedule
+        // table has no table_id, so we include all of them; cross-table paths can't collide with a
+        // single table's data-path listing anyway.
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("sched")
+        dsl.select(sched.PATH, sched.PATH_IS_RELATIVE).from(sched)
+            .fetch { collect(it.value1(), it.value2()) }
+        return refs
+    }
+
+    override fun listExpirableSnapshots(olderThan: Instant?, versions: Set<Long>?): List<Long> {
+        val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
+        val maxId: Long = dsl.select(DSL.max(snap.SNAPSHOT_ID)).from(snap)
+            .fetchOne(0, Long::class.java) ?: return emptyList()
+        var cond: Condition = snap.SNAPSHOT_ID.ne(maxId) // the latest is never expirable
+        when {
+            versions != null -> cond = cond.and(snap.SNAPSHOT_ID.`in`(versions))
+            olderThan != null -> cond = cond.and(
+                snap.SNAPSHOT_TIME.lt(OffsetDateTime.ofInstant(olderThan, ZoneOffset.UTC)))
+        }
+        return dsl.select(snap.SNAPSHOT_ID).from(snap).where(cond)
+            .orderBy(snap.SNAPSHOT_ID.asc())
+            .fetch(snap.SNAPSHOT_ID)
+    }
+
+    override fun expireSnapshots(snapshotIds: Set<Long>): ExpireSnapshotsResult {
+        if (snapshotIds.isEmpty()) {
+            return ExpireSnapshotsResult(0, 0)
+        }
+        // Plain catalog transaction — destructive GC, no new snapshot (mirrors analyzeTable).
+        dataSource.connection.use { conn ->
+            conn.autoCommit = false
+            try {
+                val ctx = forConnection(conn)
+                val maxId = readLatestSnapshotId(ctx)
+                require(maxId !in snapshotIds) { "cannot expire the latest snapshot ($maxId)" }
+
+                // Delete the snapshot rows FIRST so the half-open survivor tests below see only the
+                // snapshots that REMAIN.
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SNAPSHOT)
+                    .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.`in`(snapshotIds)))
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SNAPSHOT_CHANGES)
+                    .where(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.`in`(snapshotIds)))
+
+                val deadTableIds: List<Long> = findDeadTableIds(ctx)
+                val tableDataPathCache = HashMap<Long, String?>()
+                var scheduledCount = 0
+
+                // Dead data files: end-snapshotted with no surviving snapshot in [begin,end), OR
+                // belonging to a fully-expired dropped table (its files may have end_snapshot=NULL).
+                val deadData = findDeadDataFiles(ctx, deadTableIds)
+                for (f in deadData) {
+                    if (scheduleFile(ctx, f, tableDataPathCache)) {
+                        scheduledCount++
+                    }
+                }
+                val deadDataIds = deadData.map { it.fileId }
+                if (deadDataIds.isNotEmpty()) {
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_COLUMN_STATS)
+                        .where(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_VARIANT_STATS)
+                        .where(DUCKLAKE_FILE_VARIANT_STATS.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_PARTITION_VALUE)
+                        .where(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DATA_FILE)
+                        .where(DUCKLAKE_DATA_FILE.DATA_FILE_ID.`in`(deadDataIds)))
+                }
+
+                // Dead delete files: same survivor test, or orphaned by a just-removed data file,
+                // or belonging to a dead table.
+                val deadDelete = findDeadDeleteFiles(ctx, deadTableIds, deadDataIds)
+                for (f in deadDelete) {
+                    if (scheduleFile(ctx, f, tableDataPathCache)) {
+                        scheduledCount++
+                    }
+                }
+                val deadDeleteIds = deadDelete.map { it.fileId }
+                if (deadDeleteIds.isNotEmpty()) {
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DELETE_FILE)
+                        .where(DUCKLAKE_DELETE_FILE.DELETE_FILE_ID.`in`(deadDeleteIds)))
+                }
+
+                // GC the metadata rows of fully-expired DROPPED tables (every row dead — see
+                // findDeadTableIds). Reuses the already-validated deadTableIds, so it can't touch a
+                // live table.
+                if (deadTableIds.isNotEmpty()) {
+                    deleteDeadTableMetadata(ctx, deadTableIds)
+                }
+                // GC fully-expired schema/view/macro rows + name-mapping rows orphaned by the
+                // table GC above. Pure tidiness (no file leak either way) but completes the catalog
+                // sweep so a long-lived warehouse doesn't accumulate dead metadata.
+                deleteDeadSchemaViewMacroMetadata(ctx)
+
+                conn.commit()
+                return ExpireSnapshotsResult(snapshotIds.size, scheduledCount)
+            }
+            catch (e: Exception) {
+                conn.rollback()
+                throw e
+            }
+        }
+    }
+
+    /** A dead data/delete file row carrying just what scheduling needs. */
+    private data class DeadFile(val fileId: Long, val tableId: Long, val path: String, val pathIsRelative: Boolean)
+
+    /** Deletes every `table_id`-keyed metadata row for fully-expired dropped tables. */
+    private fun deleteDeadTableMetadata(ctx: DSLContext, deadTableIds: List<Long>) {
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE_STATS).where(DUCKLAKE_TABLE_STATS.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE_COLUMN_STATS).where(DUCKLAKE_TABLE_COLUMN_STATS.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_PARTITION_INFO).where(DUCKLAKE_PARTITION_INFO.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_PARTITION_COLUMN).where(DUCKLAKE_PARTITION_COLUMN.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN_TAG).where(DUCKLAKE_COLUMN_TAG.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN).where(DUCKLAKE_COLUMN.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_EXPRESSION).where(DUCKLAKE_SORT_EXPRESSION.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_INFO).where(DUCKLAKE_SORT_INFO.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SCHEMA_VERSIONS).where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.`in`(deadTableIds)))
+        // Drop the dynamic per-(table,schema-version) inlined-data tables before forgetting they
+        // exist, then delete the directory rows.
+        dropDeadInlinedDataTables(ctx, deadTableIds)
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_INLINED_DATA_TABLES).where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN_MAPPING).where(DUCKLAKE_COLUMN_MAPPING.TABLE_ID.`in`(deadTableIds)))
+        // The ducklake_table rows last (others reference table_id).
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE).where(DUCKLAKE_TABLE.TABLE_ID.`in`(deadTableIds)))
+    }
+
+    /**
+     * DROP the dynamic `ducklake_inlined_data_<tableId>_<schemaVersion>` tables of fully-expired
+     * dropped tables. A missing/never-materialized table is skipped (DROP TABLE IF EXISTS, and any
+     * DataAccessException is swallowed) — the same tolerance [endSnapshotLiveInlinedRows] uses.
+     */
+    private fun dropDeadInlinedDataTables(ctx: DSLContext, deadTableIds: List<Long>) {
+        val inlinedTables = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
+        val tablePairs: List<Pair<Long, Long>> = ctx.select(inlinedTables.TABLE_ID, inlinedTables.SCHEMA_VERSION)
+            .from(inlinedTables)
+            .where(inlinedTables.TABLE_ID.`in`(deadTableIds))
+            .fetch()
+            .mapNotNull { r -> val tid = r.value1(); val sv = r.value2(); if (tid != null && sv != null) tid to sv else null }
+        for ((tid, sv) in tablePairs) {
+            try {
+                ctx.dropTableIfExists(InlinedDataTable.of(tid, sv).table).execute()
+            }
+            catch (e: DataAccessException) {
+                log.log(System.Logger.Level.DEBUG, "Skipping drop of dead inlined-data table for $tid/$sv", e)
+            }
+        }
+    }
+
+    private fun findDeadTableIds(ctx: DSLContext): List<Long> {
+        val t1 = DUCKLAKE_TABLE.`as`("t1")
+        val t2 = DUCKLAKE_TABLE.`as`("t2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(t1.TABLE_ID).from(t1)
+            .where(t1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(t1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(t1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(t2)
+                .where(t2.TABLE_ID.eq(t1.TABLE_ID))
+                .and(t2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(t2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(t2.END_SNAPSHOT)))))))
+            .fetch(t1.TABLE_ID)
+            .distinct()
+    }
+
+    /**
+     * GC of dead schema/view/macro metadata + name-mapping rows orphaned by [deleteDeadTableMetadata].
+     * Views and macros are versioned like tables (same half-open survivor test); a schema carries a
+     * single PK row. Runs AFTER the table-metadata GC so it sees the post-cleanup state (a dead
+     * schema can only be removed once its tables' rows are gone; orphaned name mappings are those
+     * whose `mapping_id` lost its `ducklake_column_mapping` owner). All "no file leak" tidiness.
+     */
+    private fun deleteDeadSchemaViewMacroMetadata(ctx: DSLContext) {
+        val deadViewIds = findDeadViewIds(ctx)
+        if (deadViewIds.isNotEmpty()) {
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_VIEW).where(DUCKLAKE_VIEW.VIEW_ID.`in`(deadViewIds)))
+        }
+        val deadMacroIds = findDeadMacroIds(ctx)
+        if (deadMacroIds.isNotEmpty()) {
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO_IMPL).where(DUCKLAKE_MACRO_IMPL.MACRO_ID.`in`(deadMacroIds)))
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO_PARAMETERS).where(DUCKLAKE_MACRO_PARAMETERS.MACRO_ID.`in`(deadMacroIds)))
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO).where(DUCKLAKE_MACRO.MACRO_ID.`in`(deadMacroIds)))
+        }
+        // Name-mapping rows whose mapping_id no longer has a column_mapping owner (the table GC
+        // removed it). mapping_id originates in ducklake_column_mapping, so an unreferenced one is
+        // dead. Routed through a NOT IN subquery on the surviving column_mapping owners.
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_NAME_MAPPING)
+            .where(DUCKLAKE_NAME_MAPPING.MAPPING_ID.notIn(
+                ctx.select(DUCKLAKE_COLUMN_MAPPING.MAPPING_ID).from(DUCKLAKE_COLUMN_MAPPING))))
+        // Dead schemas last: every row dead AND nothing (live or dead-but-surviving) still references
+        // schema_id. The survivor test already implies emptiness, but the extra guard keeps the
+        // delete from ever stranding a referencing row.
+        val deadSchemaIds = findDeadSchemaIds(ctx)
+        if (deadSchemaIds.isNotEmpty()) {
+            val tab = DUCKLAKE_TABLE.`as`("tab")
+            val vw = DUCKLAKE_VIEW.`as`("vw")
+            val mac = DUCKLAKE_MACRO.`as`("mac")
+            val referenced: Set<Long> = (
+                ctx.select(tab.SCHEMA_ID).from(tab).where(tab.SCHEMA_ID.`in`(deadSchemaIds)).fetch(tab.SCHEMA_ID) +
+                ctx.select(vw.SCHEMA_ID).from(vw).where(vw.SCHEMA_ID.`in`(deadSchemaIds)).fetch(vw.SCHEMA_ID) +
+                ctx.select(mac.SCHEMA_ID).from(mac).where(mac.SCHEMA_ID.`in`(deadSchemaIds)).fetch(mac.SCHEMA_ID)
+                ).filterNotNull().toSet()
+            val removable = deadSchemaIds.filterNot { it in referenced }
+            if (removable.isNotEmpty()) {
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SCHEMA).where(DUCKLAKE_SCHEMA.SCHEMA_ID.`in`(removable)))
+            }
+        }
+    }
+
+    private fun findDeadViewIds(ctx: DSLContext): List<Long> {
+        val v1 = DUCKLAKE_VIEW.`as`("v1")
+        val v2 = DUCKLAKE_VIEW.`as`("v2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(v1.VIEW_ID).from(v1)
+            .where(v1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(v1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(v1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(v2)
+                .where(v2.VIEW_ID.eq(v1.VIEW_ID))
+                .and(v2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(v2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(v2.END_SNAPSHOT)))))))
+            .fetch(v1.VIEW_ID)
+            .distinct()
+    }
+
+    private fun findDeadMacroIds(ctx: DSLContext): List<Long> {
+        val m1 = DUCKLAKE_MACRO.`as`("m1")
+        val m2 = DUCKLAKE_MACRO.`as`("m2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(m1.MACRO_ID).from(m1)
+            .where(m1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(m1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(m1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(m2)
+                .where(m2.MACRO_ID.eq(m1.MACRO_ID))
+                .and(m2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(m2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(m2.END_SNAPSHOT)))))))
+            .fetch(m1.MACRO_ID)
+            .distinct()
+    }
+
+    private fun findDeadSchemaIds(ctx: DSLContext): List<Long> {
+        val s1 = DUCKLAKE_SCHEMA.`as`("s1")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        // ducklake_schema has a PK on schema_id (one row per id), so a dead schema is simply an
+        // end-snapshotted row with no surviving snapshot in [begin,end).
+        return ctx.select(s1.SCHEMA_ID).from(s1)
+            .where(s1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(s1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(s1.END_SNAPSHOT))))
+            .fetch(s1.SCHEMA_ID)
+            .distinct()
+    }
+
+    private fun findDeadDataFiles(ctx: DSLContext, deadTableIds: List<Long>): List<DeadFile> {
+        val file = DUCKLAKE_DATA_FILE.`as`("df")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val noSurvivor = file.END_SNAPSHOT.isNotNull.and(DSL.notExists(ctx.selectOne().from(surv)
+            .where(surv.SNAPSHOT_ID.ge(file.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(file.END_SNAPSHOT))))
+        return ctx.select(file.DATA_FILE_ID, file.TABLE_ID, file.PATH, file.PATH_IS_RELATIVE)
+            .from(file)
+            .where(file.TABLE_ID.`in`(deadTableIds).or(noSurvivor))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+    }
+
+    private fun findDeadDeleteFiles(ctx: DSLContext, deadTableIds: List<Long>, deadDataIds: List<Long>): List<DeadFile> {
+        val file = DUCKLAKE_DELETE_FILE.`as`("delf")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val noSurvivor = file.END_SNAPSHOT.isNotNull.and(DSL.notExists(ctx.selectOne().from(surv)
+            .where(surv.SNAPSHOT_ID.ge(file.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(file.END_SNAPSHOT))))
+        return ctx.select(file.DELETE_FILE_ID, file.TABLE_ID, file.PATH, file.PATH_IS_RELATIVE)
+            .from(file)
+            .where(file.TABLE_ID.`in`(deadTableIds).or(file.DATA_FILE_ID.`in`(deadDataIds)).or(noSurvivor))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+    }
+
+    /**
+     * Schedules a dead file into `ducklake_files_scheduled_for_deletion` as an ABSOLUTE path
+     * (path_is_relative=false), resolving table-relative paths against the file's table data dir.
+     * Returns false (skips) when the path can't be resolved (no data_path root) — the file then
+     * simply becomes an orphan reclaimable by remove_orphan_files. Cross-engine readable: DuckLake
+     * cleanup reads absolute (path_is_relative=false) rows directly.
+     */
+    private fun scheduleFile(ctx: DSLContext, f: DeadFile, cache: HashMap<Long, String?>): Boolean {
+        val absolute: String = if (!f.pathIsRelative) {
+            f.path
+        }
+        else {
+            val tableDataPath = cache.getOrPut(f.tableId) { resolveTableDataPathById(ctx, f.tableId) }
+                ?: return false
+            joinPaths(tableDataPath, f.path)
+        }
+        metadata.execute(ctx, ctx.insertInto(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.DATA_FILE_ID, f.fileId)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH, absolute)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH_IS_RELATIVE, false)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.SCHEDULE_START, DSL.currentOffsetDateTime()))
+        return true
+    }
+
+    /** Resolves a table's absolute data dir (root + schema.path + table.path), latest row wins. */
+    private fun resolveTableDataPathById(ctx: DSLContext, tableId: Long): String? {
+        val root = readDataPath(ctx) ?: return null
+        val tab = DUCKLAKE_TABLE.`as`("tab")
+        val tableRow = ctx.select(tab.SCHEMA_ID, tab.PATH, tab.PATH_IS_RELATIVE).from(tab)
+            .where(tab.TABLE_ID.eq(tableId)).orderBy(tab.BEGIN_SNAPSHOT.desc()).limit(1).fetchOne()
+            ?: return null
+        val sch = DUCKLAKE_SCHEMA.`as`("sch")
+        val schemaRow = ctx.select(sch.PATH, sch.PATH_IS_RELATIVE).from(sch)
+            .where(sch.SCHEMA_ID.eq(tableRow.value1())).orderBy(sch.BEGIN_SNAPSHOT.desc()).limit(1).fetchOne()
+        val schemaDataPath = resolveScopedPath(schemaRow?.value1(), schemaRow?.value2(), root)
+        return resolveScopedPath(tableRow.value2(), tableRow.value3(), schemaDataPath)
+    }
+
+    private fun readDataPath(ctx: DSLContext): String? {
+        val meta = DUCKLAKE_METADATA.`as`("meta")
+        return ctx.select(meta.VALUE).from(meta).where(meta.KEY.eq("data_path")).fetchOne(meta.VALUE)
+    }
+
+    override fun listFilesScheduledForDeletion(olderThan: Instant): List<DucklakeScheduledFile> {
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("sched")
+        return dsl.select(sched.DATA_FILE_ID, sched.PATH, sched.PATH_IS_RELATIVE).from(sched)
+            .where(sched.SCHEDULE_START.lt(OffsetDateTime.ofInstant(olderThan, ZoneOffset.UTC)))
+            .fetch { DucklakeScheduledFile(it.value1() ?: -1L, it.value2() ?: "", it.value3() ?: false) }
+            .filter { it.path.isNotEmpty() }
+    }
+
+    override fun removeScheduledFileRows(dataFileIds: Collection<Long>) {
+        if (dataFileIds.isEmpty()) {
+            return
+        }
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
+        dsl.deleteFrom(sched).where(sched.DATA_FILE_ID.`in`(dataFileIds)).execute()
+    }
+
+    private fun resolveScopedPath(path: String?, isRelative: Boolean?, parentPath: String): String {
+        if (path.isNullOrBlank()) {
+            return parentPath
+        }
+        return if (isRelative == true) joinPaths(parentPath, path) else path
+    }
+
+    private fun joinPaths(parent: String, child: String): String =
+        if (parent.endsWith("/")) "$parent$child" else "$parent/$child"
 
     override fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String? {
         // "Latest" = highest data_file_id among rows still active at the requested snapshot.
@@ -2275,6 +2665,108 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean) {
+        // IF NOT EXISTS pre-check (advisory) so the no-op case doesn't mint an empty snapshot.
+        if (ignoreExisting) {
+            val current = activeColumnRows(dsl, tableId, currentSnapshotId)
+            val parentId = resolveColumnIdByPath(current, parentPath)
+            if (current.any { it.parentColumn == parentId && it.columnName == field.name }) {
+                return
+            }
+        }
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("add field ${(parentPath + field.name).joinToString(".")} to table $tableId") { tx ->
+            val columns = activeColumnRows(tx.dsl(), tableId, tx.getCurrentSnapshotId())
+            val parentId = resolveColumnIdByPath(columns, parentPath)
+            val parent = columns.first { it.columnId == parentId }
+            if (!parent.columnType.equals("struct", ignoreCase = true)) {
+                throw IllegalArgumentException(
+                    "Cannot add a field to non-struct column ${parentPath.joinToString(".")} (type=${parent.columnType})",
+                )
+            }
+            if (columns.any { it.parentColumn == parentId && it.columnName == field.name }) {
+                throw IllegalArgumentException("Field ${(parentPath + field.name).joinToString(".")} already exists")
+            }
+            // Children carry their own column_order within the parent; append at max+1 (0 if first).
+            val maxChildOrder: Long? = tx.dsl().select(DSL.max(col.COLUMN_ORDER))
+                .from(col)
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.PARENT_COLUMN.eq(parentId))
+                .and(activeAt(col, tx.getCurrentSnapshotId()))
+                .fetchOne(0, Long::class.java)
+            val childOrder = if (maxChildOrder == null) 0L else maxChildOrder + 1
+            insertColumnTree(tx, tableId, field, childOrder, OptionalLong.of(parentId))
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    override fun dropField(tableId: Long, fieldPath: List<String>) {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("drop field ${fieldPath.joinToString(".")} from table $tableId") { tx ->
+            val ctx = tx.dsl()
+            val columns = activeColumnRows(ctx, tableId, tx.getCurrentSnapshotId())
+            val targetId = resolveColumnIdByPath(columns, fieldPath)
+            // End-snapshot the field and every transitive descendant (struct subfields nest
+            // arbitrarily — improves on dropColumn's single-level cascade).
+            val subtree = collectSubtreeIds(columns, targetId)
+            ctx.update(col)
+                .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.`in`(subtree))
+                .and(col.END_SNAPSHOT.isNull)
+                .execute()
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
+    /** Active `ducklake_column` rows for a table at [snapshotId], flat (children keep parent_column). */
+    private fun activeColumnRows(ctx: DSLContext, tableId: Long, snapshotId: Long): List<DucklakeColumn> {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        return ctx.selectFrom(col)
+            .where(col.TABLE_ID.eq(tableId))
+            .and(activeAt(col, snapshotId))
+            .orderBy(col.COLUMN_ORDER, col.COLUMN_ID)
+            .fetch { toDucklakeColumn(it) }
+    }
+
+    /**
+     * Walk a dotted field [path] (top-level column name first, then nested field names) through the
+     * `parent_column` links of [columns], returning the leaf's column_id. Throws if any step misses.
+     */
+    private fun resolveColumnIdByPath(columns: List<DucklakeColumn>, path: List<String>): Long {
+        if (path.isEmpty()) {
+            throw IllegalArgumentException("Empty field path")
+        }
+        var parentId: Long? = null
+        var currentId: Long? = null
+        for (name in path) {
+            val match = columns.firstOrNull { it.columnName == name && it.parentColumn == parentId }
+                ?: throw IllegalArgumentException("Field not found: ${path.joinToString(".")} (no '$name')")
+            currentId = match.columnId
+            parentId = match.columnId
+        }
+        return currentId!!
+    }
+
+    /** [rootId] plus every transitive descendant via `parent_column` (for a recursive field drop). */
+    private fun collectSubtreeIds(columns: List<DucklakeColumn>, rootId: Long): Set<Long> {
+        val byParent: Map<Long, List<DucklakeColumn>> = columns
+            .filter { it.parentColumn != null }
+            .groupBy { it.parentColumn!! }
+        val result: MutableSet<Long> = linkedSetOf()
+        val stack: ArrayDeque<Long> = ArrayDeque()
+        stack.addLast(rootId)
+        while (stack.isNotEmpty()) {
+            val id = stack.removeLast()
+            if (result.add(id)) {
+                byParent[id]?.forEach { stack.addLast(it.columnId) }
+            }
+        }
+        return result
+    }
+
     override fun commitInsert(tableId: Long, fragments: List<DucklakeWriteFragment>) {
         if (fragments.isEmpty()) {
             return
@@ -2573,6 +3065,226 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 tx.recordChange(WriteChange.InsertedIntoTable(tableId, referencedColumnIds(insertFragments)))
             }
         }
+    }
+
+    override fun rewriteDataFiles(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragments: List<DucklakeWriteFragment>,
+        readSnapshotId: Long,
+    ) {
+        if (sourceDataFileIds.isEmpty() || fragments.isEmpty()) {
+            return
+        }
+        executeWriteTransaction("rewrite data files for table $tableId") { tx ->
+            assertNoNewerDeleteOnRewriteSources(tx, sourceDataFileIds, readSnapshotId)
+            val retiredFileSize = sumActiveSourceFileSize(tx, tableId, sourceDataFileIds)
+
+            // Register the merged file(s): begin = newSnapshotId, ordinary (no partial_max). This
+            // also bumps table_stats record_count/file_size/next_row_id UP by the merged amounts and
+            // widens the per-column table stats (a no-op since merged ⊆ source range).
+            applyInsertFragments(tx, tableId, fragments)
+            endSnapshotRewriteSources(tx, tableId, sourceDataFileIds)
+            netRewriteStats(tx, tableId, fragments.sumOf { it.recordCount }, retiredFileSize)
+
+            // Recorded as delete + insert: reuses the full conflict machinery (LogicalConflictCheck
+            // verifies the sources are still active at commit → stale-read aborts non-retryably;
+            // ConflictMatrix aborts on concurrent drop/alter). No new snapshot-change vocabulary.
+            tx.recordChange(WriteChange.DeletedFromTable(tableId, sourceDataFileIds))
+            tx.recordChange(WriteChange.InsertedIntoTable(tableId, referencedColumnIds(fragments)))
+        }
+    }
+
+    override fun rewriteDataFilesPartial(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        mergedFiles: List<PartialMergedFile>,
+        readSnapshotId: Long,
+    ) {
+        if (sourceDataFileIds.isEmpty() || mergedFiles.isEmpty()) {
+            return
+        }
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        executeWriteTransaction("partial-rewrite data files for table $tableId") { tx ->
+            val ctx = tx.dsl()
+            // Up-front validation (re-checked on retry): sources still active + no deletion newer
+            // than the caller's read. Recorded only as InsertedIntoTable (the sources are DELETED,
+            // not end-snapshotted, so the DeletedFromTable active-file check would misfire).
+            assertRewriteSourcesStillPresent(tx, tableId, sourceDataFileIds)
+            assertNoNewerDeleteOnRewriteSources(tx, sourceDataFileIds, readSnapshotId)
+            val retiredFileSize = sumActiveSourceFileSize(tx, tableId, sourceDataFileIds)
+
+            for (merged in mergedFiles) {
+                applyInsertFragments(tx, tableId, listOf(merged.fragment))
+                // Back-date the just-registered merged file to begin = MIN row snapshot + tag it
+                // partial (partial_max = MAX row snapshot); rows newer than a time-travel read are
+                // filtered via the file's _ducklake_internal_snapshot_id column.
+                ctx.update(file)
+                    .set(file.BEGIN_SNAPSHOT, merged.beginSnapshot)
+                    .set(file.PARTIAL_MAX, merged.partialMax)
+                    .where(file.TABLE_ID.eq(tableId))
+                    .and(file.PATH.eq(merged.fragment.path))
+                    .and(file.BEGIN_SNAPSHOT.eq(tx.getNewSnapshotId()))
+                    .execute()
+            }
+
+            scheduleAndDeleteRewriteSources(tx, sourceDataFileIds)
+            netRewriteStats(tx, tableId, mergedFiles.sumOf { it.fragment.recordCount }, retiredFileSize)
+            val columnIds: Set<Long> = mergedFiles.flatMap { it.fragment.columnStats }.mapTo(HashSet()) { it.columnId }
+            tx.recordChange(WriteChange.InsertedIntoTable(tableId, columnIds))
+        }
+    }
+
+    /** Abort non-retryably if any source is no longer active (a concurrent drop/compaction removed it). */
+    private fun assertRewriteSourcesStillPresent(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>) {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val active: Set<Long> = tx.dsl().select(file.DATA_FILE_ID)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+            .and(activeAt(file, tx.getCurrentSnapshotId()))
+            .fetchSet(file.DATA_FILE_ID)
+            .filterNotNull().toSet()
+        val missing = sourceDataFileIds.filterNot { it in active }
+        if (missing.isNotEmpty()) {
+            throw LogicalConflictException(
+                "Failed to partial-rewrite data files for table $tableId: source data_file_id(s) $missing " +
+                    "are no longer active (a concurrent DROP/compaction removed them). Not retried.")
+        }
+    }
+
+    /**
+     * Schedule the source data files AND their delete files for physical deletion (immediate
+     * reclaim, age-gated cleanup), then delete every catalog row keyed by the source data_file_ids
+     * (data file, column/variant stats, partition values, delete files). Mirrors WriteMergeAdjacent.
+     */
+    private fun scheduleAndDeleteRewriteSources(tx: DucklakeWriteTransaction, sourceDataFileIds: Set<Long>) {
+        val ctx = tx.dsl()
+        val cache = HashMap<Long, String?>()
+        val dataFiles = findRewriteSourceFiles(ctx, DUCKLAKE_DATA_FILE.DATA_FILE_ID, DUCKLAKE_DATA_FILE.TABLE_ID,
+            DUCKLAKE_DATA_FILE.PATH, DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE, sourceDataFileIds)
+        val delFiles = findRewriteSourceFiles(ctx, DUCKLAKE_DELETE_FILE.DELETE_FILE_ID, DUCKLAKE_DELETE_FILE.TABLE_ID,
+            DUCKLAKE_DELETE_FILE.PATH, DUCKLAKE_DELETE_FILE.PATH_IS_RELATIVE,
+            sourceDataFileIds, DUCKLAKE_DELETE_FILE.DATA_FILE_ID)
+        for (f in dataFiles + delFiles) {
+            scheduleFile(ctx, f, cache)
+        }
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_COLUMN_STATS).where(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_VARIANT_STATS).where(DUCKLAKE_FILE_VARIANT_STATS.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_PARTITION_VALUE).where(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DELETE_FILE).where(DUCKLAKE_DELETE_FILE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DATA_FILE).where(DUCKLAKE_DATA_FILE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+    }
+
+    private fun findRewriteSourceFiles(
+        ctx: DSLContext,
+        idField: org.jooq.TableField<*, Long>,
+        tableIdField: org.jooq.TableField<*, Long>,
+        pathField: org.jooq.TableField<*, String>,
+        pathRelField: org.jooq.TableField<*, Boolean>,
+        sourceDataFileIds: Set<Long>,
+        keyField: org.jooq.TableField<*, Long> = idField,
+    ): List<DeadFile> =
+        ctx.select(idField, tableIdField, pathField, pathRelField)
+            .from(idField.table)
+            .where(keyField.`in`(sourceDataFileIds))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+
+    /**
+     * Stale-read guard for [rewriteDataFiles]: a concurrent DELETE/MERGE attaches a delete file to a
+     * source WITHOUT end-snapshotting the data file, so the `DeletedFromTable` active-file check
+     * would miss it and the pre-built merged file (which didn't apply that delete) would resurrect
+     * the deleted rows. Abort non-retryably if any delete file on a source is newer than the
+     * snapshot the caller read at. Runs inside the action so it re-checks on every retry.
+     */
+    private fun assertNoNewerDeleteOnRewriteSources(
+        tx: DucklakeWriteTransaction,
+        sourceDataFileIds: Set<Long>,
+        readSnapshotId: Long,
+    ) {
+        val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
+        val hasNewerDelete: Boolean = tx.dsl().fetchExists(
+            DSL.selectOne()
+                .from(delfile)
+                .where(delfile.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(delfile.BEGIN_SNAPSHOT.gt(readSnapshotId)),
+        )
+        if (hasNewerDelete) {
+            throw LogicalConflictException(
+                "Failed to rewrite data files: a concurrent commit added a delete file to a " +
+                    "compaction source after this operation read it (read snapshot $readSnapshotId). " +
+                    "The merged file would resurrect the newly-deleted rows; re-running with the " +
+                    "same merged payload would fail identically, so this conflict is not retried.",
+            )
+        }
+    }
+
+    /**
+     * Total `file_size_bytes` of the active source files about to be retired — used to net
+     * `ducklake_table_stats.file_size_bytes`. record_count is intentionally NOT read here:
+     * compaction is row-count-preserving, so [netRewriteStats] backs the merged file's record_count
+     * out and leaves record_count unchanged.
+     */
+    private fun sumActiveSourceFileSize(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>): Long {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        return tx.dsl().select(file.FILE_SIZE_BYTES)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+            .and(activeAt(file, tx.getCurrentSnapshotId()))
+            .fetch(file.FILE_SIZE_BYTES)
+            .filterNotNull()
+            .sum()
+    }
+
+    /**
+     * End-snapshot the retired sources' active delete files first (they reference the data files),
+     * then the source data files themselves, at the new snapshot. The merged file has those deletes
+     * applied to its bytes, so the delete files are no longer needed going forward (kept for
+     * time-travel until expire/cleanup reclaims them). Routed through `metadata` so the Quack RPC
+     * binder accepts the UPDATE.
+     */
+    private fun endSnapshotRewriteSources(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>) {
+        val ctx = tx.dsl()
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
+        val newSnapshotId = tx.getNewSnapshotId()
+        metadata.execute(
+            ctx,
+            ctx.update(delfile)
+                .set(delfile.END_SNAPSHOT, newSnapshotId)
+                .where(delfile.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(delfile.END_SNAPSHOT.isNull),
+        )
+        metadata.execute(
+            ctx,
+            ctx.update(file)
+                .set(file.END_SNAPSHOT, newSnapshotId)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(file.END_SNAPSHOT.isNull),
+        )
+    }
+
+    /**
+     * Net the table stats back to a row-count-preserving result: subtract the merged file's
+     * record_count ([applyInsertFragments] added it; the live row set is unchanged by compaction)
+     * and subtract the retired sources' total file_size. GREATEST(0, …) defends against underflow
+     * if stats were ever inconsistent with the file ledger.
+     */
+    private fun netRewriteStats(tx: DucklakeWriteTransaction, tableId: Long, mergedRecordCount: Long, retiredFileSize: Long) {
+        val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
+        tx.dsl().update(tabstats)
+            .set(
+                tabstats.RECORD_COUNT,
+                DSL.greatest(DSL.inline(0L), tabstats.RECORD_COUNT.minus(mergedRecordCount)),
+            )
+            .set(
+                tabstats.FILE_SIZE_BYTES,
+                DSL.greatest(DSL.inline(0L), tabstats.FILE_SIZE_BYTES.minus(retiredFileSize)),
+            )
+            .where(tabstats.TABLE_ID.eq(tableId))
+            .execute()
     }
 
     private fun applyDeleteFragments(tx: DucklakeWriteTransaction, tableId: Long, deleteFragments: List<DucklakeDeleteFragment>) {

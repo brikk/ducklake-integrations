@@ -57,14 +57,18 @@ class DuckDbFilePageSource(
         duckDbTimeZone: String?,
         // Schema-evolution name map (column_id -> physical name in the file). Empty for the
         // no-evolution fast path and the lance-search PTF path. See DuckDbSelectSqlBuilder.
-        fileColumnNamesById: Map<Long, String> = emptyMap()) : ConnectorPageSource {
+        fileColumnNamesById: Map<Long, String> = emptyMap(),
+        // Per-file struct reshape plans (top-level column_id -> reshaped subfields) for nested
+        // schema evolution; empty unless a projected struct's file shape differs. See StructFieldPlan.
+        structReshapePlans: Map<Long, List<StructFieldPlan>> = emptyMap()) : ConnectorPageSource {
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
             columns.toList(),
             effectivePredicate,
             pushedExpressions.toList(),
             duckDbTimeZone,
-            fileColumnNamesById.toMap())
+            fileColumnNamesById.toMap(),
+            structReshapePlans.toMap())
     private val converter: DucklakeArrowToPageConverter = DucklakeArrowToPageConverter(columnTypes)
     private val emptyProjection: Boolean = this.request.isEmptyProjection()
 

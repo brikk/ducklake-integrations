@@ -364,10 +364,11 @@ class DucklakeMetadata(
                             typeConverter.toTrinoType(column.columnType),
                             column.nullsAllowed))
         }
-        // Append the hidden virtual columns. They are absent from getTableMetadata, so they
-        // stay out of SELECT * / DESCRIBE and are queryable by name only (getColumnMetadata
-        // marks them hidden). Day 1 exposes the constant-per-split pair; $file_row_number /
-        // $row_id (row-varying) are added in Day 2. See DESIGN-virtual-columns.md.
+        // Append the hidden virtual columns ($path, $snapshot_id, $file_row_number, $row_id,
+        // $file_size_bytes). They DO appear in getTableMetadata too (each setHidden(true)) — the
+        // hidden flag, not absence, is what keeps them out of SELECT * / DESCRIBE while letting a
+        // column reference resolve. Keep this list in lockstep with getTableMetadata. See
+        // DESIGN-virtual-columns.md.
         for (kind in EXPOSED_VIRTUAL_COLUMNS) {
             columnHandles.put(kind.columnName, kind.columnHandle())
         }
@@ -923,6 +924,36 @@ class DucklakeMetadata(
         val handle = tableHandle as DucklakeTableHandle
         val ducklakeColumn = source as DucklakeColumnHandle
         translateCatalogExceptions { catalog.renameColumn(handle.tableId, ducklakeColumn.columnId, target) }
+    }
+
+    // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
+    // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
+    // Reads of files written before a nested change are reconciled per file: parquet self-heals via
+    // field name/id; non-parquet (DuckDB-engine) reshapes the struct with struct_pack (see
+    // NestedFieldReshapePlanner / DuckDbSelectSqlBuilder).
+    override fun addField(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle,
+            parentPath: List<String>,
+            fieldName: String,
+            type: Type,
+            ignoreExisting: Boolean)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        val fieldSpec: TableColumnSpec = toColumnSpec(fieldName, type, true)
+        translateCatalogExceptions { catalog.addField(handle.tableId, parentPath, fieldSpec, ignoreExisting) }
+    }
+
+    override fun dropField(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle,
+            column: ColumnHandle,
+            fieldPath: List<String>)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        val ducklakeColumn = column as DucklakeColumnHandle
+        val fullPath: List<String> = listOf(ducklakeColumn.columnName) + fieldPath
+        translateCatalogExceptions { catalog.dropField(handle.tableId, fullPath) }
     }
 
     // ==================== INSERT ====================
@@ -1536,17 +1567,18 @@ class DucklakeMetadata(
         private const val METADATA_TABLE_SEPARATOR: String = "$"
 
         // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
-        // Constant-per-split ($path, $snapshot_id) plus the row-varying lineage pair
-        // ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
+        // Constant-per-split ($path, $snapshot_id, $file_size_bytes) plus the row-varying
+        // lineage pair ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
         private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> = VirtualKind.values().toList()
 
         /**
          * Reject any virtual column handle in a write column list with NOT_SUPPORTED.
          * Routed through DucklakeColumnHandle.isVirtual() (the single sentinel check) so
          * the guard can never drift from VirtualKind. The MERGE row-id handle (-100) is
-         * NOT virtual, so this never rejects it.
+         * NOT virtual, so this never rejects it. `internal` (not private) so TestDucklakeMetadata
+         * can pin the write-path guard directly (DESIGN-virtual-columns.md § 5).
          */
-        private fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
+        internal fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
         {
             for (column in columns) {
                 if (column is DucklakeColumnHandle && column.isVirtual()) {

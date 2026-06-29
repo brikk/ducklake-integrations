@@ -405,13 +405,12 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                 })
     }
 
-    // ==================== Partial coverage: list<blob> ====================
+    // ==================== list<blob> ====================
     //
-    // `list<blob>` still fails end-to-end on the inlined path (see TODO-READ-MODE § Inlined-Read
-    // Type Gaps): we do not decode DuckDB's `\xNN` text escapes back into bytes. May work on the
-    // Parquet path (Trino's Parquet reader handles ARRAY<BINARY>) but unconfirmed until the
-    // inlined-path fix lands. Kept `@Disabled` so the missing behavior stays tracked — don't
-    // delete.
+    // `list<blob>` reads end-to-end now — the inlined-path `\xNN` text-escape decode landed
+    // 2026-05-20 (see TODO-READ-MODE § Inlined-Read Type Gaps, `decodeBlobText`). This is a live,
+    // passing `@Test` running BOTH the inlined and Parquet paths via `runListRoundTrip` (the
+    // earlier "still fails / kept @Disabled" note was stale).
 
     @Test
     @Throws(Exception::class)

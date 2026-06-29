@@ -87,7 +87,18 @@ data class DucklakeSplit @JsonCreator constructor(
         // test-only convenience constructors below; production (DucklakeSplitManager.
         // createMergedSplit) always passes the real value through the canonical constructor.
         @get:JvmName("beginSnapshot")
-        @param:JsonProperty("beginSnapshot") val beginSnapshot: Long = 0L)
+        @param:JsonProperty("beginSnapshot") val beginSnapshot: Long = 0L,
+        // Set only when this data file is a cross-snapshot compacted ("partial") file whose
+        // partial_max exceeds the read's snapshot — i.e. it physically holds rows newer than this
+        // read. Its value is the QUERY snapshot S: the page source drops rows whose
+        // `_ducklake_internal_snapshot_id > S`. Null for ordinary files (no filter needed).
+        @get:JvmName("snapshotFilterMax")
+        @param:JsonProperty("snapshotFilterMax") val snapshotFilterMax: Long? = null,
+        // For consolidated ("partial") PARQUET delete files whose partial_max exceeds the read
+        // snapshot: resolved delete-file path -> the query snapshot S. The delete reader keeps only
+        // the deletions whose _ducklake_internal_snapshot_id <= S. Empty for ordinary delete files.
+        @get:JvmName("deleteFileSnapshotFilters")
+        @param:JsonProperty("deleteFileSnapshotFilters") val deleteFileSnapshotFilters: Map<String, Long> = mapOf())
         : ConnectorSplit
 {
     // Convenience constructor without footer-size hints / partition values — used by

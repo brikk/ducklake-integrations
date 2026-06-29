@@ -42,28 +42,116 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   `next_row_id` preserved (stats tables aren't snapshot-versioned). `TestJdbcDucklakeCatalogAnalyze`
   (drift-repair: corrupt → analyze → restored) + `TestDucklakeAnalyze` (e2e × 4: SHOW STATS,
   drift recompute through SQL, empty table, duckdb format). README row flipped to Yes.
-- **Nested ADD/DROP FIELD** (DDL) — catalog ops follow the `addColumn`/`renameColumn` pattern
-  (nested `ducklake_column` rows, parent_column links). COUPLING: reading OLD non-parquet
-  files after a nested-field change needs the same struct-evolution handling T2-A did for
-  top-level columns (the DuckDB-engine SELECT must NULL-fill an added ROW subfield) — likely a
-  deeper read-path change OR a clean gate. Probe/scope before committing.
+- ✅ **Nested ADD/DROP FIELD** (DDL) — DONE 2026-06-15, BOTH steps (Jayson chose "Scope B,
+  design-first"). Step 1: SPI `addField`/`dropField` → catalog `addField`/`dropField` (insert one
+  child row via insertColumnTree / recursively end-snapshot the subtree; path resolved by
+  parent_column walk); parquet self-heals. Step 2 (the non-parquet read path, removes the step-1
+  gate): per-file `StructFieldPlan` built by `NestedFieldReshapePlanner` (current-vs-file column
+  trees matched by column_id) → `DuckDbSelectSqlBuilder` emits a NULL-guarded `struct_pack`
+  normalizing each file's struct to the current shape (added subfields CAST(NULL), drops omitted,
+  renames/reorders by column_id, struct-in-struct recursion; NULL structs preserved). Plumbed via
+  ExecutionRequest/DuckDbFilePageSource (cached column trees, skipped when no struct projected); the
+  Arrow converter is unchanged (SQL normalizes to the current shape). Tests:
+  `TestDuckDbSelectSqlBuilder` (+5 SQL), `TestNestedFieldReshapePlanner` (7),
+  `TestDucklakeNestedFieldDdl` (parquet, 6), `AbstractDucklakeNestedFieldEvolutionFormatTest` ×
+  {duckdb, vortex} (7 each: add NULL-fill, drop-non-trailing-no-misbind, nested-in-nested,
+  **NULL-struct guard**, top-level compose, time-travel, delete-interplay). LANCE excluded (ROW
+  writes gated upstream). Design: dev-docs/DESIGN-nested-field-evolution.md. `setFieldType`/
+  `renameField` stay out. README row flipped to Yes.
 - **SET TYPE** (DDL) — DEFER. Same read-path coupling as above but worse (the converter assumes
   column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
 - **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
-  expire_snapshots / remove_orphan_files / stats-recalc. Needs the in-place-mutation /
-  snapshot-safety design decided FIRST (the lance `__lance_compact_files`/`cleanup_old_versions`
-  probed in RESEARCH-lance-index-lifecycle.md mutate datasets in place). Start with a design
-  note + ONE safe procedure. `flush_inlined_data` (done) is the template for the procedure +
-  catalog-commit shape; `truncateTable`/`flushInlinedData` show the atomic catalog mutation.
-- **More T2** — remaining candidates need infra not on this arm64 box (httpfs/s3 → MinIO+Quack
-  amd64 container; concurrent-writer snapshot-lineage) or are low-yield (views × backends,
-  cross-engine uint reads go through parquet). The branch-hunt is otherwise exhausted.
+  expire_snapshots / remove_orphan_files / stats-recalc.
+  ✅ DESIGN + THREE procedures DONE 2026-06-29 — **dev-docs/DESIGN-maintenance.md** settles the
+  snapshot-safety question: adopt DuckLake's **two-phase deletion** (catalog retirement only ever
+  *schedules* files into `ducklake_files_scheduled_for_deletion`; physical unlink is a separate,
+  **age-gated** step — the grace period protects in-flight/cross-engine readers; liveness =
+  half-open `[begin_snapshot, end_snapshot)`). Shipped:
+  • **`remove_orphan_files`** (`TestDucklakeRemoveOrphanFiles`, 5 e2e) — storage-only (orphans have
+    no catalog row → no snapshot/WriteChange/ConflictMatrix); fixes the named hole ("orphans from
+    failed commits have no Trino-side remedy"). Config `ducklake.remove-orphan-files.min-retention`.
+  • **`expire_snapshots`** + **`cleanup_old_files`** (`TestDucklakeExpireSnapshots`, 7 e2e incl. the
+    surviving-snapshot safety invariant + root-relative cleanup). Key finding: expire does NOT need
+    `WriteChange`/`ConflictMatrix` after all — it's a **plain catalog transaction with no new
+    snapshot** (like `ANALYZE`), since expiry is destructive GC. Catalog-wide; retention (floored by
+    `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest; schedules
+    dead files (absolute paths); cleanup drains them age-gated, resolving both absolute (ours) and
+    root-relative (DuckLake's) scheduled paths. v1 leaves dead dropped-table/schema/view METADATA
+    rows (harmless dangling; no file leak) — a tidy-up follow-up.
+  • **partial_max read filter** — cross-snapshot compacted files (DuckDB `merge_adjacent_files`)
+    carry per-row `_ducklake_internal_snapshot_id`; correct read at `S` keeps `<= S`, needed when
+    `partial_max > S`. ✅ DATA files now FILTERED (2026-06-29): split carries `snapshotFilterMax`,
+    page source reads the column + drops positions `> S` via the delete-filter set; time-travel of a
+    DuckDB-compacted table is correct (`TestDucklakePartialFileFilter`, cross-engine via real
+    `merge_adjacent_files`). Consolidated **parquet DELETE files** also filtered
+    (`TestDucklakePartialDeleteFilter`, cross-engine via `flush_inlined_data`); **puffin DELETE files
+    now filtered too** (PFA1 container + per-blob `ducklake-snapshot-id`; `TestDucklakePuffinDeleteReader`,
+    `TestDucklakePuffinPartialDelete`). **Every partial-file read is now correct — no gate remains;
+    compaction read side fully unblocked in all formats.**
+  • **dead metadata GC** — expire deletes the metadata rows of fully-expired dropped
+    tables/views/macros/schemas (`ducklake_table`+deps, `ducklake_view`, `ducklake_macro`/_impl/
+    _parameters, `ducklake_schema`) + name-mapping rows orphaned by the table GC
+    (`TestDucklakeExpireSnapshots` +2). Only the dynamic `ducklake_inlined_data_*` tables still
+    deferred (harmless dangling, no file leak).
+  • **optimize/rewrite_data_files — the compaction WRITER (non-partial v1)** ✅ DONE (uncommitted,
+    pending review). `CALL system.rewrite_data_files(schema_name, table_name, file_size_threshold =>
+    '100MB')` reads a table's small parquet files through the REAL read path (so delete files /
+    partial_max / schema evolution all apply), writes one merged file, and atomically registers it +
+    end-snapshots the sources via the new `DucklakeCatalog.rewriteDataFiles` primitive. Key design
+    (DESIGN-maintenance.md § 7): modeled as `DeletedFromTable`+`InsertedIntoTable` so ALL conflict
+    machinery applies with ZERO spec-locked edits; row-count-preserving stats; a `readSnapshotId`
+    guard aborts non-retryably if a concurrent delete lands on a source after the read (the active-
+    file check alone wouldn't catch that). Gates: unpartitioned only, parquet + non-partial sources,
+    ≥2 candidates. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles` (4, incl. concurrent-delete
+    conflict), `TestDucklakeRewriteDataFiles` (5 e2e: compaction+time-travel, delete-applying,
+    partitioned reject, single-file no-op).
+  • **puffin partial-delete per-blob filter** ✅ DONE — the last partial-file READ gate is lifted.
+    `DucklakePuffinDeleteReader` parses the real PFA1 container + per-blob `ducklake-snapshot-id` and
+    applies only blobs `<= S` (`TestDucklakePuffinDeleteReader` +5, `TestDucklakePuffinPartialDelete`
+    full-Trino). All partial-file reads (data + parquet-delete + puffin-delete) now correct.
+  • **partial-emitting compaction variant** ✅ DONE — `rewrite_data_files(..,
+    reclaim_sources_immediately => true)` writes the merged file with `_ducklake_internal_snapshot_id`
+    per row (= source begin), back-dated begin = min(source begin), partial_max = max(source begin),
+    and DELETES the sources entirely + schedules them (mirrors DuckLake WriteMergeAdjacent). Catalog
+    primitive `rewriteDataFilesPartial`; `TestJdbcDucklakeCatalogRewriteDataFiles` +2,
+    `TestDucklakeRewriteDataFiles` +1 (round trip: sources gone, time-travel AS OF s1/s2 reproduced
+    from the merged file alone).
+  **F6 DONE (done done).** All maintenance ops shipped: remove_orphan_files, expire_snapshots (+ full
+  metadata GC, incl. dropping dynamic `ducklake_inlined_data_*` tables), cleanup_old_files, ANALYZE,
+  the partial_max READ filters (all formats), and BOTH compaction WRITER shapes (non-partial +
+  partial-emitting). Enhancements also DONE: **partitioned-table compaction** (per-partition groups,
+  any transform), **size-bounded multi-file output** (`target_file_size`, default 512MB), and
+  **re-compacting already-partial sources** (non-partial path). Only omission: the
+  `ALTER TABLE … EXECUTE optimize` *alias* — deliberate non-goal (the connector exposes ALL F6 ops as
+  `CALL system.*` procedures; the alias needs the separate TableProcedures SPI for zero capability
+  gain). rewrite_data_files tests: `TestJdbcDucklakeCatalogRewriteDataFiles` (6),
+  `TestDucklakeRewriteDataFiles` (8).
+- **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
+  MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
+  `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino
+  parquet data files over s3** (previously ZERO coverage; the old s3 tests were all
+   executor-level) — is covered by `TestDucklakeS3ParquetEndToEnd` (11 tests: CTAS / INSERT /
+   DELETE / UPDATE / MERGE / schema-evolution / time-travel / partitioned, every data file
+   verified as a physical MinIO object; a duckdb-format `.db`-upload-to-s3 write+read cell; and
+   **concurrent writers over s3** — 4 barrier-aligned writers, lineage retry, all rows land once,
+   the s3-transport variant of the conflict matrix). Only residual: full-Trino vortex/lance reads
+   over s3 — a fragile mixed shape (in-process write + Quack-engine read across two containers)
+   whose unproven delta is format-identical to the local FileScan path; executor-level
+   vortex/lance-s3 reads are already proven. Low-yield leftovers: views × backends, cross-engine
+   uint reads go through parquet.
 - **H2/H3** (hygiene) — kotlinization candidate list; monolith decomposition PLAN (plan first).
 
 **Env notes:** `:doris-ducklake` does NOT compile (pre-existing ~/.m2 Doris 1.2-SNAPSHOT drift,
 unrelated — task chip filed; needs a P-series FE rebuild). lance + vortex DuckDB extensions ARE
-available on this box (osx_arm64), so those tests run (don't skip). The trino_parity extension
-binary is symlinked into the worktree from the main checkout's build dir (tests need it).
+available on this box, so those tests run (don't skip). The trino_parity extension binary is
+symlinked into the worktree from the main checkout's build dir (tests need it) — on this
+**linux-amd64** box `duckdb-trino-parity-extension/build` is a symlink to the main checkout's
+build dir, which carries both `build/release/` (host) and `build/linux-amd64/release/`. Build
+with JAVA_HOME=java25 (the daemon otherwise picks up 21 and `:doris-ducklake` config fails the
+JVM-25 floor). Run the s3 suite with
+`-Dducklake.test.parityExtensionPath=<main-checkout>/duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension`.
+**The 2026-06-24 amd64 move retired the "needs infra not on this arm64 box" T2 blocker** — the
+full MinIO+Quack container topology runs here.
 
 **Patterns/memory to read first:** MEMORY.md pointers, esp. `project-driving-list-pass2`,
 `project-catalog-ddl-constraints` (PK on ducklake_schema, never invent changes_made vocab,
@@ -123,6 +211,32 @@ Known open boxes that belong here: views across all catalog backends (TODO-READ-
 DuckLake `.slt` corpus evaluation as a portable regression suite (TODO-READ-MODE), and the
 concurrent-writer-under-Quack snapshot-lineage test (TODO-WRITE-MODE).
 
+✅ T2-E DONE 2026-06-24 (amd64 box) — **the s3 × engine grid row, full-Trino.** The pre-existing
+s3 tests were all *executor*-level (`QuackDuckDbExecutor` reading vortex/lance/.db over s3); the
+real hole was **Trino's own ParquetWriter/ParquetPageSource against an s3-resident DuckLake
+catalog** — zero coverage. `TestDucklakeS3ParquetEndToEnd` (self-contained: MinIO container + a
+**PostgreSQL** catalog ATTACHed with an `s3://` DATA_PATH so the catalog-stored path routes every
+new file to the bucket — PG, not a single-file local DuckDB catalog, so the concurrency cell is
+real; native S3 filesystem `fs.native-s3.enabled`, no Quack/parity needed for parquet) — 11 tests:
+- CTAS / INSERT / DELETE / UPDATE / MERGE / schema-evolution (ADD/RENAME/DROP) / time-travel /
+  partitioned writes, each asserting the data file is a **physical MinIO object** (`mc ls`, since
+  `$files.path` is the relative name);
+- a **duckdb-format** cell (the writer uploads the `.db` to s3 via TrinoFileSystem; read
+  materializes back through the parity executor with pushdown);
+- **concurrent writers over s3** (4 writers × 3 rows, barrier-aligned): every INSERT is its own
+  snapshot commit, and the connector's lineage retry serializes them so all rows land exactly once
+  — the s3-transport variant of the (otherwise in-JVM, local-data) catalog conflict matrix. Stable
+  across 3 reruns.
+Also confirmed the whole MinIO+Quack container suite runs 0-skip on amd64 (the "needs infra not on
+this arm64 box" blocker is retired). Doc-drift fixed while here: the Quack `createSchema` smoke is
+a live passing test (TODO-WRITE-MODE wrongly called it `@Disabled`), and the type-audit `list<blob>`
+comment claiming `@Disabled` was stale (the test is live + passing).
+**Only residual in this row:** full-Trino vortex/lance reads over s3 (the *write* path never
+consults `execution-engine`, so it would be a fragile mixed shape — in-process vortex/lance write
++ Quack-engine s3 read across a two-container network — and the **executor**-level vortex/lance-s3
+read is already proven by `TestDucklakeLanceS3QuackRead` + `TestDucklakeQuackS3InitRace`, so the
+only unproven delta is connector plumbing that is format-identical to the local FileScan path).
+
 ✅ T2-C DONE 2026-06-14 — type-edge sweep on the thin formats (special floats, empty
 strings, all-NULL, empty arrays, bucket partitioning, boundary bigints, decimals,
 pushdown, multi-file pruning — all solid). One real bug: **short-precision `TIMESTAMP WITH
@@ -180,7 +294,9 @@ next_row_id preserved) and rebuilds `ducklake_table_column_stats` from the activ
 authoritative per-file stats — tightening min/max that incremental maintenance never narrows
 after a delete. Non-snapshot-versioned side-table refresh: plain catalog transaction, no new
 snapshot, no invented change vocab. Per-file aggregation (not scanned-block decoding) keeps the
-canonical stat-string encoding. Still open from F1: SET TYPE (defer), nested ADD/DROP FIELD.
+canonical stat-string encoding. Still open from F1: SET TYPE (defer). Nested ADD/DROP FIELD DONE
+2026-06-15 (both steps — parquet + non-parquet struct_pack reshaping; per-format e2e on duckdb +
+vortex; lance excluded as ROW writes are gated upstream).
 ✅ PARTIAL 2026-06-12 — the small four shipped (`TestDucklakeDdl` +
 `TestDucklakeDdlCrossEngine`): RENAME TABLE (same-schema; cross-schema rejected — table data
 paths are schema-relative), RENAME SCHEMA (new schema_id + re-pointed tables/views/macros;

@@ -69,8 +69,9 @@ Then: `DORIS_BE_PLATFORM=linux/amd64 ./smoke.sh`. (Full remote recipe also in th
 ## Building the FE image (`doris-fe:pr62767-local`)
 
 The compose uses a locally-built FE image overlaying our P-series `output/fe` onto a
-stock Doris base, via Doris's own `docker/runtime/doris-fe-overlay/Dockerfile`
+stock Doris base, via the in-repo [`fe-overlay/Dockerfile`](./fe-overlay/Dockerfile)
 (`FROM apache/doris:fe-4.1.0`, wipes + COPYs `output/fe/{bin,lib,conf,plugins,webroot}`).
+(Originally a local-only file in the Doris checkout; now tracked here so it can't be lost.)
 
 ```bash
 # 1. Build the P-series FE (JDK 17). Apply BOTH FE patches first — see
@@ -109,6 +110,7 @@ or plugin changes so the fresh FE reloads everything.
 |---|---|
 | `FE never came up` but FE log shows SQL | The FE *is* up; the health-check `SELECT 1` needs a **live BE** (Nereids assigns even constant queries to a backend). Check `SHOW BACKENDS\G` → `Alive`. |
 | BE `Exited (0)`, `ErrMsg: NoRouteToHost`, FE `No backend available as scan node` | BE crashed. On x86_64 this is the **arm64-under-emulation** crash — set `DORIS_BE_PLATFORM=linux/amd64` + re-pull the amd64 BE. |
+| FE exits 255; `fe.log` shows BDB JE `NoClassDefFoundError: …JVMSystemUtils` → `NullPointerException … CgroupV2Subsystem.getInstance … anyController is null` | The base FE image's bundled **JDK 17 is too old for this host's cgroup v2** (NPEs during container-resource detection). Native-Linux/cgroup-v2 boxes hit this; the old Docker-Desktop VM didn't. Fix: `fe.conf` `JAVA_OPTS_FOR_JDK_17` carries `-XX:-UseContainerSupport` (safe — heap is pinned `-Xmx2g`). |
 | `Unknown catalog type: ducklake` on `CREATE CATALOG` | FE missing `"ducklake"` in `SPI_READY_TYPES`. Rebuild the FE image from a patched FE (`../fe-patches/`). |
 | `Current catalog does not support create table: dl` on `CREATE TABLE` | FE missing the `pluginCatalogTypeToEngine` `"ducklake"→ENGINE_ICEBERG` patch. Reapply `../fe-patches/ducklake-fe.patch`, rebuild + re-image the FE. |
 | INSERT: `Unsupported compress type UNKNOWN with parquet` | (fixed) sink must set a compression — we use `ZSTD`. |

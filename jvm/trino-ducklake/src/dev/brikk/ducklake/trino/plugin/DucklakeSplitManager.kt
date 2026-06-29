@@ -87,6 +87,7 @@ class DucklakeSplitManager @Inject constructor(
         log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName)
 
         validateDeleteFileFormats(dataFiles, tableHandle)
+        validateNoUnfilterablePartialFiles(tableHandle)
 
         val tableHasNoDataFiles: Boolean = dataFiles.isEmpty()
         // getInlinedDataInfos already records, per schema version, whether rows are live at the
@@ -161,7 +162,7 @@ class DucklakeSplitManager @Inject constructor(
             // (a data file can accumulate multiple delete files across snapshots)
             val groupedFiles: Map<Long, List<DucklakeDataFile>> = dataFiles.groupBy { it.dataFileId }
             parquetSplits = groupedFiles.values
-                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId) }
+                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId) }
         }
 
         // Empty table (no data files at all) with an inlined data table: emit an inlined
@@ -547,6 +548,20 @@ class DucklakeSplitManager @Inject constructor(
         }
     }
 
+    /**
+     * True when a data file's joined DELETE file is a cross-snapshot consolidated ("partial") file
+     * holding deletions NEWER than [snapshotId] in a format we snapshot-filter on read (parquet or
+     * puffin) — i.e. the page source must apply only the deletions recorded at/before [snapshotId].
+     */
+    private fun needsPartialDeleteSnapshotFilter(df: DucklakeDataFile, snapshotId: Long): Boolean {
+        val deletePartialMax = df.deleteFilePartialMax ?: return false
+        if (deletePartialMax <= snapshotId) {
+            return false
+        }
+        val deleteFormat = df.deleteFileFormat?.lowercase(Locale.ROOT)
+        return deleteFormat == "parquet" || deleteFormat == "puffin"
+    }
+
     private data class PartitionKeyMapping(val keyIndex: Int, val transform: DucklakePartitionTransform, val arity: java.util.OptionalInt)
 
     private fun createMergedSplit(
@@ -556,7 +571,8 @@ class DucklakeSplitManager @Inject constructor(
             activePartitionSpec: Optional<DucklakePartitionSpec>,
             partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>,
             nameMapsByMappingId: Map<Long, Map<Long, String>>,
-            inlinedDeletesByFileId: Map<Long, Set<Long>>): DucklakeSplit {
+            inlinedDeletesByFileId: Map<Long, Set<Long>>,
+            snapshotId: Long): DucklakeSplit {
         val primary: DucklakeDataFile = dataFileGroup.first()
         val dataFilePath: String = pathResolver.resolveFilePath(primary.path, primary.pathIsRelative, tableDataPath)
 
@@ -566,6 +582,7 @@ class DucklakeSplitManager @Inject constructor(
         // are still deduplicated, and when duplicates carry different (or absent) hints we
         // prefer the first recorded positive hint.
         val deleteFileFooterSizes: LinkedHashMap<String, Long> = linkedMapOf()
+        val deleteFileSnapshotFilters: LinkedHashMap<String, Long> = linkedMapOf()
         for (df in dataFileGroup) {
             val deleteFilePath = df.deleteFilePath ?: continue
             val resolvedDeletePath: String = pathResolver.resolveFilePath(
@@ -574,6 +591,14 @@ class DucklakeSplitManager @Inject constructor(
                     tableDataPath)
             val hint: Long = df.deleteFileFooterSize ?: 0L
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
+            // Consolidated ("partial") delete file holding deletions newer than this read → filter
+            // its deletions to those recorded at/before snapshotId. PARQUET filters by the
+            // file's _ducklake_internal_snapshot_id column; PUFFIN by each blob's embedded
+            // ducklake-snapshot-id (DucklakePuffinDeleteReader). Both consumed via this map by the
+            // page source.
+            if (needsPartialDeleteSnapshotFilter(df, snapshotId)) {
+                deleteFileSnapshotFilters[resolvedDeletePath] = snapshotId
+            }
         }
         val deleteFilePaths: List<String> = deleteFileFooterSizes.keys.toList()
 
@@ -592,6 +617,12 @@ class DucklakeSplitManager @Inject constructor(
 
         val affinityKey: Optional<String> = splitAffinityProvider.getKey(dataFilePath, 0L, primary.fileSizeBytes)
 
+        // Partial (cross-snapshot compacted) file holding rows newer than this read → the page
+        // source must drop rows whose _ducklake_internal_snapshot_id > snapshotId. partial_max <=
+        // snapshotId means every row is valid → no filter.
+        val partialMax: Long? = primary.partialMax
+        val snapshotFilterMax: Long? = if (partialMax != null && partialMax > snapshotId) snapshotId else null
+
         return DucklakeSplit(
                 dataFilePath,
                 deleteFilePaths,
@@ -606,7 +637,27 @@ class DucklakeSplitManager @Inject constructor(
                 fieldIdToParquetSourceName,
                 inlinedDeletedRowPositions,
                 affinityKey,
-                primary.beginSnapshot)
+                primary.beginSnapshot,
+                snapshotFilterMax,
+                deleteFileSnapshotFilters)
+    }
+
+    /**
+     * Defensive gate for a partial DELETE file in a format we cannot snapshot-filter. Partial DATA
+     * files and partial PARQUET + PUFFIN delete files are all filtered on read now (via
+     * [DucklakeSplit.snapshotFilterMax] / [DucklakeSplit.deleteFileSnapshotFilters]); this only
+     * fires for an unknown delete-file format (which [validateDeleteFileFormats] also rejects). See
+     * dev-docs/DESIGN-maintenance.md § 6.
+     */
+    private fun validateNoUnfilterablePartialFiles(tableHandle: DucklakeTableHandle) {
+        if (catalog.hasPartialDeleteFilesRequiringSnapshotFilter(tableHandle.tableId, tableHandle.snapshotId)) {
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s has a cross-snapshot consolidated delete file in an unsupported format whose " +
+                            "deletions extend beyond snapshot %d. Read at the latest snapshot, or expire old snapshots.",
+                    tableHandle.schemaName,
+                    tableHandle.tableName,
+                    tableHandle.snapshotId))
+        }
     }
 
     private data class PredicateBounds(val minValue: String?, val maxValue: String?)

@@ -18,6 +18,7 @@ import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.handle.ConnectorTransaction
 import org.apache.doris.connector.api.mvcc.ConnectorMvccSnapshot
+import org.apache.doris.connector.api.mvcc.ConnectorTimeTravelSpec
 import org.apache.doris.connector.api.pushdown.ConnectorAnd
 import org.apache.doris.connector.api.pushdown.ConnectorColumnAssignment
 import org.apache.doris.connector.api.pushdown.ConnectorColumnRef
@@ -329,24 +330,37 @@ internal class DuckLakeConnectorMetadata(
         return Optional.of(toMvccSnapshot(snapshotId, catalog.getSnapshot(snapshotId)))
     }
 
-    override fun getSnapshotAt(
+    // The P-series SPI consolidated the former getSnapshotAt(timestampMillis) +
+    // getSnapshotById(snapshotId) overrides into a single resolveTimeTravel that
+    // receives a ConnectorTimeTravelSpec (FOR TIME AS OF / FOR VERSION AS OF, or
+    // the @tag/@branch/@incr scan params). DuckLake supports only the linear-history
+    // kinds — SNAPSHOT_ID (== old getSnapshotById) and TIMESTAMP (== old getSnapshotAt);
+    // TAG/BRANCH/INCREMENTAL have no DuckLake equivalent and return empty so the engine
+    // surfaces a clear "unsupported" user error.
+    override fun resolveTimeTravel(
         session: ConnectorSession?,
         handle: ConnectorTableHandle,
-        timestampMillis: Long,
+        spec: ConnectorTimeTravelSpec,
     ): Optional<ConnectorMvccSnapshot> {
-        val snap = catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillis))
-            ?: return Optional.empty()
-        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
+        val snap: DucklakeSnapshot? = when (spec.getKind()) {
+            ConnectorTimeTravelSpec.Kind.SNAPSHOT_ID ->
+                catalog.getSnapshot(spec.getStringValue().toLong())
+            ConnectorTimeTravelSpec.Kind.TIMESTAMP ->
+                catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillisOf(spec)))
+            else -> null // TAG / BRANCH / INCREMENTAL: unsupported by DuckLake
+        }
+        return if (snap == null) Optional.empty() else Optional.of(toMvccSnapshot(snap.snapshotId, snap))
     }
 
-    override fun getSnapshotById(
-        session: ConnectorSession?,
-        handle: ConnectorTableHandle,
-        snapshotId: Long,
-    ): Optional<ConnectorMvccSnapshot> {
-        val snap = catalog.getSnapshot(snapshotId) ?: return Optional.empty()
-        return Optional.of(toMvccSnapshot(snap.snapshotId, snap))
-    }
+    // Derives epoch-millis from a TIMESTAMP spec: a digital value is the raw epoch-millis
+    // (parity with the former getSnapshotAt(timestampMillis) caller), otherwise it is an
+    // ISO-8601 / SQL datetime expression parsed as an Instant.
+    private fun timestampMillisOf(spec: ConnectorTimeTravelSpec): Long =
+        if (spec.isDigital()) {
+            spec.getStringValue().toLong()
+        } else {
+            Instant.parse(spec.getStringValue()).toEpochMilli()
+        }
 
     private fun toMvccSnapshot(snapshotId: Long, snap: DucklakeSnapshot?): ConnectorMvccSnapshot {
         val builder = ConnectorMvccSnapshot.builder().snapshotId(snapshotId)
@@ -354,6 +368,27 @@ internal class DuckLakeConnectorMetadata(
             builder.timestampMillis(snap.snapshotTime.toEpochMilli())
         }
         return builder.build()
+    }
+
+    // Threads a resolved MVCC / time-travel snapshot onto the table handle BEFORE planScan,
+    // so the whole read path reads AT that snapshot. DuckLake pins the snapshot directly on
+    // the handle's `snapshotId`: the read path resolves schema, data files, predicate pushdown
+    // and partitions by `(tableId, snapshotId)` (tableId is snapshot-stable), so re-stamping
+    // snapshotId is sufficient — there is no scan-options properties map to thread (unlike
+    // paimon). This is the piece that makes `FOR VERSION/TIME AS OF` actually read historical
+    // state: `resolveTimeTravel` resolves the spec to a snapshot, and the engine threads it
+    // here. A null snapshot or a negative id (empty-table / invalid pin) leaves the handle
+    // unchanged (read latest), matching the paimon contract.
+    override fun applySnapshot(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        snapshot: ConnectorMvccSnapshot?,
+    ): ConnectorTableHandle {
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        if (snapshot == null || snapshot.snapshotId < 0 || snapshot.snapshotId == dlHandle.snapshotId) {
+            return dlHandle
+        }
+        return dlHandle.copy(snapshotId = snapshot.snapshotId)
     }
 
     // ---- Write: INSERT via the connector-transaction model (P4 MaxCompute template) ----

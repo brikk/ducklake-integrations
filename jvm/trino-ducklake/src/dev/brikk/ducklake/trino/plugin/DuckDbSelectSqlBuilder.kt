@@ -45,11 +45,12 @@ object DuckDbSelectSqlBuilder {
             // Schema-evolution name map: column_id -> name in the physical file. Empty => no
             // resolution, project by current name (no-evolution fast path / lance-search PTF).
             val fileNames: Map<Long, String> = request.fileColumnNamesById()
+            val structReshapePlans: Map<Long, List<StructFieldPlan>> = request.structReshapePlans()
             for (i in columns.indices) {
                 if (i > 0) {
                     sql.append(", ")
                 }
-                appendProjectedColumn(sql, columns[i], fileNames)
+                appendProjectedColumn(sql, columns[i], fileNames, structReshapePlans)
             }
         }
         sql.append(" FROM ").append(fullyQualifiedTable)
@@ -92,7 +93,8 @@ object DuckDbSelectSqlBuilder {
     private fun appendProjectedColumn(
             sql: StringBuilder,
             column: DucklakeColumnHandle,
-            fileNames: Map<Long, String>) {
+            fileNames: Map<Long, String>,
+            structReshapePlans: Map<Long, List<StructFieldPlan>>) {
         val currentName = column.columnName
         if (fileNames.isEmpty()) {
             appendQuoted(sql, currentName)
@@ -107,6 +109,18 @@ object DuckDbSelectSqlBuilder {
             appendQuoted(sql, currentName)
             return
         }
+        val reshape: List<StructFieldPlan>? = structReshapePlans[column.columnId]
+        if (reshape != null) {
+            // The struct exists in the file but with a different shape — normalize it to the current
+            // shape with struct_pack. The CASE guard preserves NULL structs: struct_pack would
+            // otherwise turn a NULL struct into a (non-null) struct of NULL fields.
+            val rootExpr = quoteIdentifier(physicalName)
+            sql.append("CASE WHEN ").append(rootExpr).append(" IS NULL THEN NULL ELSE ")
+            appendStructPack(sql, reshape, rootExpr)
+            sql.append(" END AS ")
+            appendQuoted(sql, currentName)
+            return
+        }
         appendQuoted(sql, physicalName)
         if (physicalName != currentName) {
             sql.append(" AS ")
@@ -114,7 +128,46 @@ object DuckDbSelectSqlBuilder {
         }
     }
 
-    private fun appendQuoted(sql: StringBuilder, identifier: String) {
-        sql.append('"').append(identifier.replace("\"", "\"\"")).append('"')
+    /** `struct_pack(curName := <field expr>, …)` rebuilding the current struct from [parentExpr]. */
+    private fun appendStructPack(sql: StringBuilder, fields: List<StructFieldPlan>, parentExpr: String) {
+        sql.append("struct_pack(")
+        for (i in fields.indices) {
+            if (i > 0) {
+                sql.append(", ")
+            }
+            val field = fields[i]
+            appendQuoted(sql, field.currentName)
+            sql.append(" := ")
+            appendFieldExpr(sql, field, parentExpr)
+        }
+        sql.append(")")
     }
+
+    private fun appendFieldExpr(sql: StringBuilder, field: StructFieldPlan, parentExpr: String) {
+        if (field.fileName == null) {
+            // Subfield (or wholly-added nested struct) added after the file was written — typed NULL.
+            sql.append("CAST(NULL AS ")
+                    .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested schema-evolution NULL projection"))
+                    .append(")")
+            return
+        }
+        val childExpr = "(" + parentExpr + ")." + quoteIdentifier(field.fileName)
+        if (field.children == null) {
+            // Leaf: a scalar, or a nested struct whose shape matches the file (read as-is).
+            sql.append(childExpr)
+        }
+        else {
+            // Nested struct that itself needs reshaping — recurse, NULL-guarded like the root.
+            sql.append("CASE WHEN ").append(childExpr).append(" IS NULL THEN NULL ELSE ")
+            appendStructPack(sql, field.children, childExpr)
+            sql.append(" END")
+        }
+    }
+
+    private fun appendQuoted(sql: StringBuilder, identifier: String) {
+        sql.append(quoteIdentifier(identifier))
+    }
+
+    private fun quoteIdentifier(identifier: String): String =
+            "\"" + identifier.replace("\"", "\"\"") + "\""
 }

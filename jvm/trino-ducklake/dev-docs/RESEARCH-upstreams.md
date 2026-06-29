@@ -202,19 +202,15 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `dfa9942` (v0.3.0) | 2026-06-23 |
-| `ducklake/` | `main` | `7e217d04` | 2026-06-23 |
-| `ducklake/` | `v1.5-variegata` | `64b23db0` | 2026-06-23 |
-| `ducklake-web/` | `main` | `3cec097` | 2026-06-23 |
-| `pg_ducklake/` | `main` | `377aabf` (third_party/ducklake `ea92a4cc`) | 2026-06-23 |
-| `duckdb-quack/` | `v1.5-variegata` | `273f2ea` | 2026-06-23 |
-| `duckdb-web/` | `main` | `318e0f5fb` | 2026-06-23 |
-
-> **NOTE — baselines NOT advanced in the vendor checkouts.** Per the runbook the
-> `vendor/` repos were `fetch`ed only (left at the prior HEADs); the SHAs above are
-> the **fetched `origin/<branch>` tips** I diffed against, recorded so the next run
-> anchors here. Advance the local HEADs (`clone-related-projects.sh --pull`) only
-> when you've absorbed the 2026-06-23 findings folded into TODO-WRITE-MODE.md.
+| `datafusion-ducklake/` | `main` | `8abedc97` (post-v0.3.1) | 2026-06-29 |
+| `ducklake/` | `v1.5-variegata` | `c23aca43` | 2026-06-29 |
+| `ducklake/` | `main` | `96a4574d` | 2026-06-29 |
+| `ducklake-web/` | `main` | `82231c20` | 2026-06-29 |
+| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-06-29 |
+| `pg_ducklake/` | `main` | `e906c7ae` (v1.1.0; duckdb v1.5.4) | 2026-06-29 |
+| `duckdb-quack/` | `main` | `ebf88413` | 2026-06-29 |
+| `duckdb-quack/` | `v1.5-variegata` | `40de7bad` | 2026-06-29 |
+| `duckdb-web/` | `main` | (see archive entry 2026-05-22; not refreshed this run) | 2026-05-22 |
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The

@@ -211,14 +211,18 @@ data file's scan.
 
 ## Virtual Columns
 
-- [ ] **Add DuckDB-equivalent virtual columns** (`rowid`, `snapshot_id`,
-  `filename`, `file_row_number`, `file_index`). Useful for the MERGE story and
-  for debug/lineage queries. Design sketched in
-  [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md) — v1 ships four
-  `$`-prefixed hidden columns (`$path`, `$snapshot_id`, `$file_row_number`,
-  `$row_id`); see that doc for naming/encoding decisions, plumbing
-  sketch, test plan, and what's deferred to v2. ~2 focused days when
-  scheduled.
+- [x] **DuckDB-equivalent virtual columns** — DONE. Ships **five** `$`-prefixed
+  hidden columns on the read path (parquet + duckdb + inlined): `$path`,
+  `$snapshot_id`, `$file_row_number`, `$row_id`, and `$file_size_bytes`. Hidden
+  (out of `SELECT *` / `DESCRIBE`, queryable by name); constant-per-split
+  virtuals injected as RLE blocks, row-varying (`$file_row_number`/`$row_id`)
+  injected pre-delete-filter so positions reflect true file offsets; inlined
+  rows return NULL for file-bound virtuals and per-row `begin_snapshot` for
+  `$snapshot_id`; `$path` predicate pushdown prunes data files before the scan.
+  Pinned by `TestDucklakeVirtualColumns` (21 cross-engine) + `TestVirtualKind`
+  (6 unit). `$file_index`/`$filename` declined (see DESIGN § 8). DuckDB-name
+  aliases (`rowid` etc.) deferred to v2. See
+  [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md).
 
 ## R6: Change Feed and Extended Metadata Parity
 
@@ -324,6 +328,23 @@ Improvements, Inlined-Read Type Gaps).
   Parquet reader the same way we do for data files? Saves IO on narrow predicates
   (e.g. single `pos` value in a MERGE plan). Scoping spike against Trino's
   `ConnectorPageSource` filter-pushdown surface.
+- **partial_max time-travel correctness** — ✅ DATA files FILTERED 2026-06-29 (delete files still
+  gated). Cross-snapshot compacted files (DuckLake's `merge_adjacent_files`) physically carry per-row
+  `_ducklake_internal_snapshot_id`; a correct read at `S` keeps only rows `<= S`, needed when
+  `partial_max > S`. The connector now reads the column and drops file-local positions `> S` via the
+  `DeleteRowFilterTransform` set (split carries `snapshotFilterMax`); time-travel of a DuckDB-compacted
+  table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). Consolidated **parquet
+  DELETE files** are also filtered now (split carries `deleteFileSnapshotFilters`; the delete reader
+  keeps only deletions whose `_ducklake_internal_snapshot_id <= S` — `TestDucklakePartialDeleteFilter`,
+  cross-engine via `flush_inlined_data` consolidation). **Only remaining:** consolidated **PUFFIN**
+  delete files are gated (the deletion-vector reader doesn't yet snapshot-filter per blob) —
+  `TestDucklakePartialFileGuard`. See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+- **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
+  List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
+  Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
+  (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
+  verify our nested field-id resolution reads ids off the top-level field, not the leaf,
+  with a List/struct write→read roundtrip across schema evolution. ~1h spike.
 
 ### Cross-Dialect View Transpilation
 

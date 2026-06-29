@@ -221,8 +221,76 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   a BE serde/arrow-builder bug, not CTAS-specific (see friction log 2026-06-10); use
   INT/BIGINT or `CAST(… AS INT)`.
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
-  `catalog.commitDelete`/`commitMerge`. **Gated** on the read-side delete blocker
-  (READ todo Step 7, BE OPTIONAL-column position-delete rejection).
+  `catalog.commitDelete`/`commitMerge`. **De-risked 2026-06-24 (native amd64 probe).**
+  Earlier this was marked "gated on the read-side delete blocker (Step 7, BE
+  OPTIONAL-column rejection)" — the live probe shows that gate is **narrower than
+  thought**: it only blocks reading *DuckDB/DuckLake-written* delete files (which DuckDB
+  emits with OPTIONAL `(file_path, pos)`). **The Doris BE's own position-delete writer
+  emits REQUIRED columns** — `be/src/exec/sink/writer/iceberg/viceberg_delete_file_writer.cpp`
+  `build_position_delete_schema()` constructs both reserved-id fields with
+  `NestedField(optional=false, …)`, i.e. spec-compliant REQUIRED. So a **Doris-issued
+  DELETE writes a REQUIRED delete file the BE reads back fine** → W4 (Doris write +
+  read-back) is end-to-end viable on this box **without** the BE read-strictness fix.
+  That fix (widen `ScalarColumnReader<false,false>` to accept OPTIONAL-with-no-nulls,
+  `be/src/format/parquet/vparquet_column_reader.cpp`) remains valuable for the
+  *cross-engine* case (reading DuckDB-written deletes) but is **not a W4 blocker**.
+  Probe specifics: full smoke (read + W1 DDL + W2/W2c INSERT + W3 CTAS) is GREEN
+  end-to-end on native amd64; the Step-7 read of a DuckDB-written OPTIONAL delete still
+  fails `[CORRUPTION]Not nullable column has null values` from `ScalarColumnReader<false,
+  false>` (confirmed real, not an arm-emulation artifact). Remaining W4 work is the
+  connector mapping: `supportsDelete`/`supportsMerge` + `beginDelete`/`finishDelete` →
+  `catalog.commitDelete`, and `DuckLakeWritePlanProvider` emitting the BE iceberg
+  delete/merge sink — headless-unit-testable (oracle: `catalog.commitDelete`, proven by
+  trino), then a live smoke DELETE step.
+
+  **⛔ CORRECTION — the real W4 gate is UPSTREAM fe-core, not the connector (probed
+  2026-06-24, decisive).** Implementing the connector SPI delete methods would be
+  **dead code**: fe-core has no plugin-driven delete/merge executor. Evidence:
+  - `PluginDrivenInsertExecutor` is **insert-only** (`ConnectorInsertHandle` +
+    `PluginDrivenTableSink`); there is **no `PluginDrivenDeleteExecutor`/`MergeExecutor`**
+    anywhere in `fe-core/src/main`.
+  - The SPI `ConnectorWriteOps.beginDelete`/`finishDelete`/`beginMerge`/`finishMerge` are
+    invoked **only** by the **native** `IcebergDeleteExecutor`/`IcebergMergeExecutor`,
+    which cast to `IcebergExternalTable` and call the native `IcebergTransaction`, not the
+    connector SPI. `IcebergDeleteCommand.java:111` guards `if (!(table instanceof
+    IcebergExternalTable))` → a `PluginDrivenExternalTable` (DuckLake) never routes there.
+  - **Live confirmation:** `DELETE FROM dl.tpch.doris_w WHERE id=1` on the running cluster
+    → `errCode=2 … delete command could be only used on olap table` (rejected at the FE
+    before any connector call).
+  This is the exact pre-P4 INSERT situation: INSERT only worked once
+  [#64253 (P4)] landed `PluginDrivenInsertExecutor` + generic commit-fragment delivery.
+  **W4 needs the analogous upstream contribution** — a `PluginDrivenDeleteExecutor`
+  (+ Merge), command-dispatch routing plugin catalogs to it, and a plugin delete/merge
+  sink — in apache/doris fe-core, either landed on `branch-catalog-spi` or carried as a
+  (large, non-trivial) FE patch. Until then W4 is **upstream-blocked**, not connector
+  work. The BE-side facts above (BE writes REQUIRED deletes; read-strictness only affects
+  cross-engine OPTIONAL deletes) remain valid and become relevant once the executor exists.
+
+  **⛔⛔ DEEPER GATE (probed 2026-06-24) — it is NOT just a missing executor; it is missing
+  row-identity infrastructure.** Merge-on-read DELETE requires the scan to emit
+  `(file_path, position)` per matched row so the BE can write position-delete files. The
+  native path gets this from the **Iceberg `$row_id` metadata column**, which is
+  `IcebergScanNode`-specific (`dataFile.firstRowId()`; `Column.ICEBERG_ROWID_COL` /
+  `GLOBAL_ROWID_COL`; `IcebergNereidsUtils.injectRowIdColumn`). For plugin catalogs this
+  **does not exist anywhere**: `PluginDrivenScanNode` has no row-id/position column, and
+  the connector SPI has no row-identity concept. So a plugin-driven DELETE needs, in
+  addition to the FE executor/command/sink classes:
+    1. **SPI**: a way for the connector to declare data-file row identity and for the scan
+       to project a `(file_path, ordinal-position)` reserved column.
+    2. **FE `PluginDrivenScanNode`**: produce/propagate that reserved column + per-split
+       first-row-id, mirroring `IcebergScanNode`.
+    3. **BE**: the plugin/external scanner must emit file_path + ordinal position per row,
+       and the plugin delete-sink path must be wired (today only `IcebergScanNode` feeds
+       the position-delete sink).
+  This is a **major multi-component effort spanning FE planner + connector SPI + BE
+  scanner/sink** — effectively building merge-on-read row-identity for plugin catalogs,
+  not a localized fe-core change. Architecture map + the ~7 new FE classes / ~7 modified
+  dispatch sites are catalogued in the 2026-06-24 session notes, but they all sit on top
+  of this absent row-identity layer. **Recommendation: treat W4 as an upstream design RFC
+  (row-identity for plugin/external merge-on-read), coordinated with the Doris team, not
+  a connector-side task.** EQUALITY_DELETES (predicate-based, no positions) was considered
+  as a position-free alternative but does not map to DuckLake's position-based delete model
+  (`ducklake_delete_file` = file_path + pos).
 - [ ] **W5 — MERGE:** full upsert via the delete+insert fragment path.
 - [x] **Cross-engine round-trip:** ✅ Doris-written `tpch.doris_w` read back by
   DuckDB+DuckLake on the same metadata DB (W2 smoke). The reverse (DuckDB-written

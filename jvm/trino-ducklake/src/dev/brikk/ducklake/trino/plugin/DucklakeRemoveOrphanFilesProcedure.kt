@@ -1,0 +1,222 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package dev.brikk.ducklake.trino.plugin
+
+import com.google.common.collect.ImmutableList
+import com.google.inject.Inject
+import com.google.inject.Provider
+import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeFilePathRef
+import dev.brikk.ducklake.catalog.DucklakeSchema
+import dev.brikk.ducklake.catalog.DucklakeTable
+import io.airlift.log.Logger
+import io.airlift.units.Duration
+import io.trino.filesystem.Location
+import io.trino.filesystem.TrinoFileSystem
+import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
+import io.trino.spi.connector.ConnectorSession
+import io.trino.spi.procedure.Procedure
+import io.trino.spi.type.BooleanType.BOOLEAN
+import io.trino.spi.type.VarcharType.VARCHAR
+import java.io.IOException
+import java.lang.invoke.MethodHandle
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
+import java.time.Instant
+
+/**
+ * Implements `CALL <catalog>.system.remove_orphan_files(schema_name, table_name,
+ * retention_threshold => '7d', dry_run => false)` — deletes files under a table's data path that
+ * **no catalog row references** and that are **older than the retention threshold**. Orphans are
+ * the residue of failed/aborted commits (a data file written, then the catalog commit lost):
+ * before this, Trino had no way to reclaim them.
+ *
+ * Safety (see dev-docs/DESIGN-maintenance.md):
+ *  - Orphans have no catalog row, so this touches storage ONLY — no snapshot, no catalog mutation,
+ *    no conflict matrix. The "known set" is every path the catalog references for the table at ANY
+ *    snapshot (data + delete files, including end-snapshotted ones) plus files already scheduled
+ *    for deletion ([DucklakeCatalog.listReferencedFilePaths]); a listed file not in that set, and
+ *    not inside a known dataset directory (lance/vortex dirs), is a candidate orphan.
+ *  - The retention threshold is the grace period that keeps the op safe without a global lock: a
+ *    file young enough to still be referenced by an in-flight (possibly cross-engine) writer is
+ *    never deleted. The argument is floored by `ducklake.remove-orphan-files.min-retention`
+ *    (default 7d); a call below the floor is rejected so the op can't be turned into a foot-gun.
+ *  - `dry_run => true` logs what would be deleted and removes nothing.
+ *
+ * Mirrors upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
+ * mtime-gated), scoped to one table's data path in the Trino procedure idiom.
+ */
+class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
+        private val catalog: DucklakeCatalog,
+        private val fileSystemFactory: DucklakeFileSystemFactory,
+        private val pathResolver: DucklakePathResolver,
+        config: DucklakeConfig,
+) : Provider<Procedure> {
+    private val minRetention: Duration = config.getRemoveOrphanFilesMinRetention()
+
+    override fun get(): Procedure =
+        Procedure(
+                "system",
+                "remove_orphan_files",
+                ImmutableList.of(
+                        Procedure.Argument("SCHEMA_NAME", VARCHAR),
+                        Procedure.Argument("TABLE_NAME", VARCHAR),
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, "7d"),
+                        Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
+                REMOVE_ORPHAN_FILES.bindTo(this),
+                true)
+
+    @Suppress("unused") // invoked via MethodHandle
+    fun removeOrphanFiles(
+            session: ConnectorSession,
+            schemaName: String?,
+            tableName: String?,
+            retentionThreshold: String?,
+            dryRun: Boolean,
+    ) {
+        val schemaArg = requireArg(schemaName, "schema_name")
+        val tableArg = requireArg(tableName, "table_name")
+        val retention = parseRetention(retentionThreshold)
+        val isDryRun = dryRun
+
+        val snapshotId = catalog.currentSnapshotId
+        val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
+        val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
+
+        // The known set: every path the catalog references for this table, normalized to absolute.
+        val knownPaths: Set<String> = catalog.listReferencedFilePaths(table.tableId)
+                .map { resolveKnown(it, tableDataPath) }
+                .toSet()
+
+        val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
+        val cutoff: Instant = Instant.now().minusMillis(retention.toMillis())
+        val orphans: List<Location> = findOrphans(fileSystem, tableDataPath, knownPaths, cutoff)
+
+        if (orphans.isEmpty()) {
+            log.info("remove_orphan_files: no orphans under %s for %s.%s", tableDataPath, schemaArg, tableArg)
+            return
+        }
+        if (isDryRun) {
+            log.info("remove_orphan_files (dry_run): %d orphan file(s) under %s for %s.%s would be deleted: %s",
+                    orphans.size, tableDataPath, schemaArg, tableArg, orphans)
+            return
+        }
+        try {
+            fileSystem.deleteFiles(orphans)
+        }
+        catch (e: IOException) {
+            throw TrinoException(NOT_SUPPORTED, "Failed to delete orphan files for $schemaArg.$tableArg: ${e.message}", e)
+        }
+        log.info("remove_orphan_files: deleted %d orphan file(s) under %s for %s.%s",
+                orphans.size, tableDataPath, schemaArg, tableArg)
+    }
+
+    /**
+     * Lists everything under the table data path and keeps files that are (a) not a known path,
+     * (b) not inside a known dataset directory (lance/vortex datasets register a directory whose
+     * member files must not be mistaken for orphans), and (c) older than the cutoff.
+     */
+    private fun findOrphans(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            knownPaths: Set<String>,
+            cutoff: Instant,
+    ): List<Location> {
+        val knownDirPrefixes: List<String> = knownPaths.map { "$it/" }
+        val orphans = mutableListOf<Location>()
+        try {
+            val files = fileSystem.listFiles(Location.of(tableDataPath))
+            while (files.hasNext()) {
+                val entry = files.next()
+                if (isDeletableOrphan(entry, knownPaths, knownDirPrefixes, cutoff)) {
+                    orphans.add(entry.location())
+                }
+            }
+        }
+        catch (e: IOException) {
+            // A missing data path (table never written, or already cleaned) means no orphans.
+            log.info("remove_orphan_files: could not list %s (%s) — treating as no orphans", tableDataPath, e.message)
+        }
+        return orphans
+    }
+
+    /**
+     * An entry is a deletable orphan iff it is (a) not a known catalog path, (b) not a member of a
+     * registered dataset directory (lance/vortex datasets register a dir whose files must survive),
+     * and (c) older than the cutoff (the grace period protecting in-flight, possibly cross-engine,
+     * writers).
+     */
+    private fun isDeletableOrphan(
+            entry: io.trino.filesystem.FileEntry,
+            knownPaths: Set<String>,
+            knownDirPrefixes: List<String>,
+            cutoff: Instant,
+    ): Boolean {
+        val path = entry.location().toString()
+        return path !in knownPaths &&
+                knownDirPrefixes.none { prefix -> path.startsWith(prefix) } &&
+                entry.lastModified().isBefore(cutoff)
+    }
+
+    private fun resolveKnown(ref: DucklakeFilePathRef, tableDataPath: String): String =
+            Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tableDataPath)).toString()
+
+    private fun parseRetention(value: String?): Duration {
+        val raw = if (value.isNullOrBlank()) "7d" else value
+        val retention = try {
+            Duration.valueOf(raw)
+        }
+        catch (e: IllegalArgumentException) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid retention_threshold '$raw': ${e.message}", e)
+        }
+        if (retention.compareTo(minRetention) < 0) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "retention_threshold $retention is below the minimum ${minRetention} "
+                            + "(set by ducklake.remove-orphan-files.min-retention); refusing to delete recently-written files")
+        }
+        return retention
+    }
+
+    private fun requireArg(value: String?, name: String): String {
+        if (value.isNullOrEmpty()) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "$name is required")
+        }
+        return value
+    }
+
+    private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
+        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
+            ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
+            ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
+        return schema to table
+    }
+
+    companion object {
+        private val log: Logger = Logger.get(DucklakeRemoveOrphanFilesProcedure::class.java)
+
+        private val REMOVE_ORPHAN_FILES: MethodHandle = MethodHandles.lookup().findVirtual(
+                DucklakeRemoveOrphanFilesProcedure::class.java,
+                "removeOrphanFiles",
+                MethodType.methodType(
+                        Void.TYPE,
+                        ConnectorSession::class.java,
+                        String::class.java,
+                        String::class.java,
+                        String::class.java,
+                        java.lang.Boolean.TYPE))
+    }
+}

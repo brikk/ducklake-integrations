@@ -17,6 +17,7 @@ import io.airlift.slice.Slices
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.RowType
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -167,8 +168,109 @@ class TestDuckDbSelectSqlBuilder {
         assertThat(sql).isEqualTo("SELECT \"name\" FROM ducklake_in.main.t")
     }
 
+    // =============== Nested struct-evolution reshaping (structReshapePlans) ===============
+
+    @Test
+    fun testNestedAddedFieldIsStructPackedWithNullFill() {
+        // current s = row(a integer, b integer); the file had only row(a) — b added later.
+        val structType = RowType.rowType(RowType.field("a", INTEGER), RowType.field("b", INTEGER))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(
+                        StructFieldPlan("a", INTEGER, "a", null),
+                        StructFieldPlan("b", INTEGER, null, null)))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := (\"s\").\"a\", \"b\" := CAST(NULL AS INTEGER)) END AS \"s\" " +
+                        "FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testNestedDroppedNonTrailingFieldIsOmitted() {
+        // current s = row(a, c); the file had row(a, b, c) — b dropped. struct_pack selects a, c by
+        // file name, so the file's extra b is simply not read (no positional misbind).
+        val structType = RowType.rowType(RowType.field("a", INTEGER), RowType.field("c", INTEGER))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(
+                        StructFieldPlan("a", INTEGER, "a", null),
+                        StructFieldPlan("c", INTEGER, "c", null)))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := (\"s\").\"a\", \"c\" := (\"s\").\"c\") END AS \"s\" " +
+                        "FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testNestedRenamedFieldMapsCurrentNameToFileName() {
+        // current s = row(a); the file stored the field as old_a (renamed since).
+        val structType = RowType.rowType(RowType.field("a", INTEGER))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(StructFieldPlan("a", INTEGER, "old_a", null)))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := (\"s\").\"old_a\") END AS \"s\" FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testNestedStructInStructIsReshapedRecursively() {
+        // current s = row(child row(a, b)); the file had row(child row(a)) — b added in the inner struct.
+        val innerType = RowType.rowType(RowType.field("a", INTEGER), RowType.field("b", INTEGER))
+        val structType = RowType.rowType(RowType.field("child", innerType))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(StructFieldPlan("child", innerType, "child", listOf(
+                        StructFieldPlan("a", INTEGER, "a", null),
+                        StructFieldPlan("b", INTEGER, null, null)))))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE struct_pack(\"child\" := " +
+                        "CASE WHEN (\"s\").\"child\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := ((\"s\").\"child\").\"a\", \"b\" := CAST(NULL AS INTEGER)) END" +
+                        ") END AS \"s\" FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testStructNotInReshapePlanIsProjectedPlain() {
+        // A struct present in the file with an unchanged shape (no reshape plan) projects by name —
+        // the common path stays byte-for-byte the plain projection, NOT a struct_pack rewrap.
+        val structType = RowType.rowType(RowType.field("a", INTEGER))
+        val request = DucklakeDuckDbExecutor.ExecutionRequest(
+                DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                listOf(DucklakeColumnHandle(200L, "s", structType, true)),
+                TupleDomain.all(),
+                listOf(),
+                null,
+                mapOf(200L to "s"),
+                emptyMap())
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo("SELECT \"s\" FROM ducklake_in.main.t")
+    }
+
     companion object {
         private val NAME_COL: DucklakeColumnHandle =
                 DucklakeColumnHandle(101L, "name", VARCHAR, true)
+
+        /** A single-struct-column request whose file name equals the current name, with a reshape plan. */
+        private fun reshapeRequest(
+                column: DucklakeColumnHandle,
+                plan: List<StructFieldPlan>): DucklakeDuckDbExecutor.ExecutionRequest =
+                DucklakeDuckDbExecutor.ExecutionRequest(
+                        DuckDbAttachTarget.LocalPath(Path.of("/tmp/x.db")),
+                        listOf(column),
+                        TupleDomain.all(),
+                        listOf(),
+                        null,
+                        mapOf(column.columnId to column.columnName),
+                        mapOf(column.columnId to plan))
     }
 }

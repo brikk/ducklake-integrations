@@ -87,6 +87,66 @@ interface DucklakeCatalog {
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>
 
     /**
+     * True only if the table has a partial DELETE file active at [snapshotId] in a format this
+     * connector cannot snapshot-filter. Both PARQUET (filtered via `_ducklake_internal_snapshot_id`)
+     * and PUFFIN (each blob's embedded `ducklake-snapshot-id`) partial delete files are now handled
+     * on read, so this returns false for them; it only flags an unknown delete-file format, which
+     * [io.trino] validateDeleteFileFormats already rejects regardless of `partial_max`. Kept as a
+     * defensive double-gate. See dev-docs/DESIGN-maintenance.md § 6.
+     */
+    fun hasPartialDeleteFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean
+
+    /**
+     * Every storage path the catalog references for this table, regardless of snapshot liveness:
+     * all `ducklake_data_file` and `ducklake_delete_file` rows for the table (including
+     * end-snapshotted ones — those physical files are still owned by the catalog until cleanup),
+     * plus rows already in `ducklake_files_scheduled_for_deletion`. This is the "known set" for
+     * orphan-file detection ([remove_orphan_files]): a file under the table's data path that is
+     * NOT in this set has no catalog row at all and is a candidate orphan. Paths are returned raw
+     * (relative or absolute, per `path_is_relative`); the caller resolves them against the table
+     * data path.
+     */
+    fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef>
+
+    /**
+     * Snapshot ids eligible for expiry — every snapshot EXCEPT the latest (which is never
+     * expirable), optionally narrowed to those older than [olderThan] or to an explicit [versions]
+     * set. [olderThan] and [versions] are mutually exclusive; pass both null to list all
+     * non-latest snapshots. Returned ascending. Read-only (used by both the dry-run and the op).
+     */
+    fun listExpirableSnapshots(olderThan: java.time.Instant?, versions: Set<Long>?): List<Long>
+
+    /**
+     * Expire [snapshotIds] (must NOT include the latest snapshot). Deletes the snapshot +
+     * snapshot_changes rows, then cascade-deletes the now-dead data/delete files (+ their column
+     * stats, variant stats, and partition values), **scheduling** those files into
+     * `ducklake_files_scheduled_for_deletion` (stored as absolute paths) for a later age-gated
+     * [physical cleanup][listFilesScheduledForDeletion]. Liveness uses the half-open
+     * `[begin_snapshot, end_snapshot)` survivor test against the snapshots that REMAIN; files of a
+     * fully-expired dropped table are caught via that table's id too, so no data file leaks.
+     * A plain catalog transaction — no new snapshot, no `changes_made` entry (matches `ANALYZE`;
+     * expiry is destructive GC, not a forward commit).
+     *
+     * Also GCs the dead *metadata* rows of fully-expired dropped tables/views/macros/schemas
+     * (`ducklake_table` + column/stats/partition/sort/mapping rows; `ducklake_view`;
+     * `ducklake_macro`/`_impl`/`_parameters`; `ducklake_schema`) and name-mapping rows orphaned by
+     * that cleanup — a full catalog sweep so a long-lived warehouse doesn't accumulate dead
+     * metadata. Not supported on the Quack backend yet.
+     */
+    fun expireSnapshots(snapshotIds: Set<Long>): ExpireSnapshotsResult
+
+    /**
+     * Files due for physical deletion: `ducklake_files_scheduled_for_deletion` rows whose
+     * `schedule_start` is strictly before [olderThan] (the grace period). Paths are returned raw;
+     * relative ones are resolved by the caller against the catalog `data_path` ROOT (NOT a table
+     * dir — see [DucklakeScheduledFile]).
+     */
+    fun listFilesScheduledForDeletion(olderThan: java.time.Instant): List<DucklakeScheduledFile>
+
+    /** Delete the schedule rows for [dataFileIds] (after their physical files were removed). */
+    fun removeScheduledFileRows(dataFileIds: Collection<Long>)
+
+    /**
      * Get the `file_format` of the most recent active data file for this table at the given
      * snapshot. Used by INSERT (and the insert leg of MERGE/UPDATE) to inherit the format of the
      * existing data when neither a session property nor a statement-level override is in play.
@@ -380,6 +440,27 @@ interface DucklakeCatalog {
     fun renameColumn(tableId: Long, columnId: Long, newName: String)
 
     /**
+     * Add a nested field to a struct column (`ALTER TABLE ... ADD COLUMN parent.child <type>`).
+     *
+     * [parentPath] is the dotted path to the containing struct, INCLUDING the top-level column name
+     * (e.g. `[s]` for `s.child`, `[s, inner]` for `s.inner.child`). [field] is the new subfield
+     * subtree (itself possibly nested). The field is inserted as a new `ducklake_column` row with
+     * `parent_column` = the struct's column_id and a fresh column_id; the struct row is unchanged.
+     * Increments schema version, creates a new snapshot atomically. When [ignoreExisting] is true and
+     * the struct already has an active field of that name, this is a no-op (no snapshot).
+     */
+    fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean)
+
+    /**
+     * Drop a nested field from a struct column (`ALTER TABLE ... DROP COLUMN parent.child`).
+     *
+     * [fieldPath] is the dotted path to the field, INCLUDING the top-level column name (e.g.
+     * `[s, child]`). End-snapshots the field's `ducklake_column` row and all of its descendants.
+     * Increments schema version, creates a new snapshot atomically.
+     */
+    fun dropField(tableId: Long, fieldPath: List<String>)
+
+    /**
      * Commit inserted data files to a table.
      * Creates a new snapshot with data file rows, file column stats,
      * and updated table stats.
@@ -417,6 +498,66 @@ interface DucklakeCatalog {
         tableId: Long,
         deleteFragments: List<DucklakeDeleteFragment>,
         insertFragments: List<DucklakeWriteFragment>,
+    )
+
+    /**
+     * Compaction primitive: atomically register the merged [fragments] (begin = the new snapshot)
+     * and **end-snapshot** the source data files in [sourceDataFileIds] (and any active delete file
+     * attached to them) at that same new snapshot — the non-partial / Iceberg-style `optimize` /
+     * `rewrite_data_files` shape (see dev-docs/DESIGN-maintenance.md § 7).
+     *
+     * Contract: the merged fragments must hold **exactly the live rows** of the retired sources
+     * (deletes already applied), so compaction is **row-count-preserving** — `ducklake_table_stats`
+     * `record_count` is left unchanged, `file_size_bytes` is adjusted by (Σmerged − Σretired), and
+     * `next_row_id` advances monotonically. The retired source/delete files are NOT physically
+     * removed here; time-travel still resolves them via `[begin,end)` liveness until
+     * `expire_snapshots` → `cleanup_old_files` reclaims them.
+     *
+     * Recorded as `DeletedFromTable(sourceDataFileIds)` + `InsertedIntoTable(mergedColumnIds)`, so
+     * the existing conflict machinery applies with no spec-locked changes: a concurrent commit that
+     * end-snapshotted any source between the caller's read and this commit aborts non-retryably
+     * (the read is stale), and a concurrent drop/alter of the table aborts too.
+     *
+     * [readSnapshotId] is the snapshot the caller read the source rows at. A concurrent DELETE/MERGE
+     * adds a delete file to a source **without** end-snapshotting the data file, so the active-file
+     * check alone would NOT catch it — the merged file (built before that delete) would resurrect
+     * the deleted rows. We therefore additionally abort non-retryably if any delete file referencing
+     * a source has `begin_snapshot > readSnapshotId` (a deletion newer than the caller's read). v1
+     * limitation: a concurrent DuckDB-written *inlined* delete (dynamic `ducklake_inlined_delete_*`
+     * table) on a source is not covered by this guard (the connector never writes inlined deletes;
+     * same rarity class as the gated partial-puffin deletes).
+     *
+     * No-op if [sourceDataFileIds] or [fragments] is empty.
+     */
+    fun rewriteDataFiles(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragments: List<DucklakeWriteFragment>,
+        readSnapshotId: Long,
+    )
+
+    /**
+     * Partial-emitting ("merge_adjacent") compaction primitive — the variant that reclaims sources
+     * IMMEDIATELY (dev-docs/DESIGN-maintenance.md § 7). Each [mergedFiles] entry physically carries a
+     * per-row `_ducklake_internal_snapshot_id` column (each row tagged with its source file's
+     * begin_snapshot), so it serves time-travel reads across `[beginSnapshot, now]` on its own; it is
+     * registered **back-dated** to that entry's `beginSnapshot` with its `partialMax`. The source
+     * files are **deleted from the catalog entirely** (their `ducklake_data_file` + stats +
+     * delete-file + partition-value + variant-stats rows) and scheduled for physical deletion — NOT
+     * end-snapshotted. Mirrors upstream `DuckLakeMetadataManager::WriteMergeAdjacent`.
+     *
+     * Multiple merged files cover partitioned tables (one+ per partition) and size-bounded output.
+     * Contract: every source must be NON-partial (`partial_max IS NULL`) so each source's rows share
+     * one origin snapshot (its begin), and the merged files together must hold exactly the live source
+     * rows (row-count-preserving). Validated up front (active-source + no-newer-delete since
+     * [readSnapshotId]); a concurrent commit touching a source aborts non-retryably. No-op if either
+     * argument is empty.
+     */
+    fun rewriteDataFilesPartial(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        mergedFiles: List<PartialMergedFile>,
+        readSnapshotId: Long,
     )
 
     // ==================== View operations ====================

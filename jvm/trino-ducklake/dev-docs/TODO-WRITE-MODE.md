@@ -81,8 +81,10 @@ What landed (2026-05-19):
 - `TestDuckDbQuackCatalogServerSmoke` — containerized DuckLake-on-Quack
   round-trip through the test fixture.
 - `TestJdbcDucklakeCatalogOnQuackSmoke` — `JdbcDucklakeCatalog` against the
-  Quack fixture; `listSchemas` passes, `createSchema` is `@Disabled` until
-  Quack supports same-table multi-scan.
+  Quack fixture; both `listSchemas` AND `createSchemaCommitsAndListSchemasSeesIt`
+  are live `@Test`s and PASS (re-verified 2026-06-24 on amd64). The earlier
+  `@Disabled`-pending-multi-scan note is stale — the `createSchema` commit path
+  round-trips against Quack today.
 - `TestJdbcDucklakeCatalogOnLocalDuckDbSmoke` — full schema + table CRUD round
   trip against a local DuckDB `.db` file, including `dropTable`/`dropSchema`
   (which Quack can't do yet). This is the "SQL/type-compat gate" for Quack —
@@ -141,10 +143,11 @@ How to revisit when upstream Quack matures:
   usable. Same for "Can only update / delete base table" — that one likely
   needs an upstream Quack-extension change rather than a DuckLake change.
 - When the Quack-side blockers lift, lift the `assumeTrue` skip in
-  `TestDucklakeBackendDispatchSmoke`, lift the `@Disabled` on the
-  `createSchema` test in `TestJdbcDucklakeCatalogOnQuackSmoke`, and extend
+  `TestDucklakeBackendDispatchSmoke` and extend
   `DucklakeCatalogGenerator.generateIsolatedDuckDbQuackCatalog` with the
-  full test-data bootstrap so the cross-engine suite can run under it.
+  full test-data bootstrap so the cross-engine suite can run under it. (The
+  `createSchema` smoke test is already enabled and passing — see the smoke-test
+  list above; no `@Disabled` to lift there.)
 
 (Pre-2026-05-19 scoping notes follow.)
 
@@ -742,24 +745,54 @@ decisions, just translation.
 
 ## M8: Maintenance Operations
 
-- [ ] Stats maintenance utilities:
-  - `recalc stats` procedure(s) to rescan active data files and recompute
-    table/column stats into catalog metadata.
-  - Decoupled from rewrite/merge; callable independently as maintenance.
-  - Regression tests for recompute-after-delete and recompute-after-schema-evolution
-    snapshots.
-- [ ] Maintenance verbs that map to Trino conventions:
-  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent)
-  - `ALTER TABLE ... EXECUTE rewrite_data_files`
-- [ ] Connector procedures in `ducklake.system`:
-  - `expire_snapshots`
-  - `cleanup_old_files`
-  - `remove_orphan_files`
-  - `flush_inlined_data`
-- [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed).
+**Design + snapshot-safety model: [DESIGN-maintenance.md](DESIGN-maintenance.md)** (two-phase
+deletion: catalog retirement only *schedules* files; physical unlink is a separate age-gated step).
 
-Suggested kickoff: `expire_snapshots` + `remove_orphan_files` (both catalog-driven,
-don't require a compaction engine).
+- [x] Stats maintenance — shipped as `ANALYZE` (rescans for the live row count, rebuilds column
+  stats from per-file stats; recompute-after-delete + drift-repair tested).
+- [x] **`rewrite_data_files` (compaction WRITER, non-partial v1)** — DONE (uncommitted, pending
+    review). Shipped as the procedure `CALL system.rewrite_data_files(schema_name, table_name,
+    file_size_threshold => '100MB')` rather than `ALTER TABLE ... EXECUTE` (procedure surface matches
+    the other F6 ops). Reads the table's small parquet files through the REAL read path (delete files
+    / partial_max / schema evolution all apply), writes one merged file, and atomically registers it
+    + end-snapshots the sources via `DucklakeCatalog.rewriteDataFiles`. Non-partial / Iceberg-style:
+    sources stay readable via time-travel until expire/cleanup reclaim them. Modeled as
+    `DeletedFromTable`+`InsertedIntoTable` (no spec-locked conflict-matrix edits) + a `readSnapshotId`
+    guard for the concurrent-delete-on-source race. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles`
+    (4), `TestDucklakeRewriteDataFiles` (5). See DESIGN-maintenance.md § 7.
+- [x] **partial-emitting compaction variant** — DONE. `rewrite_data_files(.., reclaim_sources_-
+    immediately => true)` writes `partial_max` + the `_ducklake_internal_snapshot_id` column on
+    write, back-dates begin = min(source begin), and DELETES the sources entirely + schedules them
+    (mirrors DuckLake WriteMergeAdjacent). `DucklakeCatalog.rewriteDataFilesPartial`;
+    `TestJdbcDucklakeCatalogRewriteDataFiles` +2, `TestDucklakeRewriteDataFiles` +1 round trip.
+- [x] `rewrite_data_files` enhancements — DONE: partitioned tables (per-partition groups, any
+    transform), size-bounded multi-file output (`target_file_size`), re-compacting already-partial
+    sources (non-partial path). The `ALTER TABLE ... EXECUTE optimize` alias is a deliberate non-goal
+    (procedure surface is the connector's convention; the alias needs the separate TableProcedures
+    SPI for no capability gain).
+- [ ] Connector procedures in `ducklake.system`:
+  - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
+    (no catalog mutation): deletes files under the table data path with no catalog row, older than
+    `retention_threshold` (default 7d, floored by `ducklake.remove-orphan-files.min-retention`).
+  - [x] `expire_snapshots` — DONE 2026-06-29 (`TestDucklakeExpireSnapshots`, 7 e2e incl. surviving-
+    snapshot safety + root-relative cleanup). Catalog-wide; `retention_threshold` (floored by
+    `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest. Turned out
+    NOT to need `WriteChange`/`ConflictMatrix` — it's a **plain catalog transaction, no new
+    snapshot** (like `ANALYZE`), since expiry is destructive GC. Schedules dead files (absolute
+     paths); also GCs the metadata of fully-expired dropped tables/views/macros/schemas + orphaned
+    name-mapping rows. Still deferred: dynamic inlined-data tables only (harmless dangling).
+  - [x] `cleanup_old_files` — DONE 2026-06-29. Drains `ducklake_files_scheduled_for_deletion` past
+    the grace period; resolves connector-written absolute + DuckLake-written root-relative paths.
+  - [x] `flush_inlined_data` — shipped earlier.
+- [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed). v1 procs log
+  counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
+
+**F6 DONE (done done).** `remove_orphan_files` + `expire_snapshots` (+ FULL metadata GC incl. dynamic
+inlined-data tables) + `cleanup_old_files` + `ANALYZE` + the partial-file READ filters (data +
+parquet-delete + puffin-delete, all gates lifted) + the `rewrite_data_files` compaction WRITER in BOTH
+shapes (non-partial + partial-emitting), with partitioned compaction, size-bounded multi-file output,
+and partial-source re-compaction. Only omission: the cosmetic `ALTER TABLE … EXECUTE optimize` alias
+(deliberate non-goal — procedure surface is the convention).
 
 ## Commit-Failure File Cleanup
 
