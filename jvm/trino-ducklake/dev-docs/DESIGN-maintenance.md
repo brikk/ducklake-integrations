@@ -136,12 +136,16 @@ actually reclaim space. That is the next increment, built on the model above —
    `schedule_start < now - retention` (floored by `ducklake.maintenance.min-retention`); deletes the
    file then removes the row (a failed delete keeps its row for retry). Resolves connector-written
    ABSOLUTE paths directly and DuckLake-written ROOT-relative paths against the catalog `data_path`.
-4. **`optimize` / `rewrite_data_files`** — compact small files; the rewrite registers new files and
-   *schedules* the old ones (same two-phase reclaim). This is where the cross-engine concurrency
-   matrix matters most; design when scheduled. **HARD PREREQUISITE: `partial_max` (see § 6)** —
-   merging rows across snapshots into one file requires populating `partial_max` on write so
-   time-travel reads stay correct; do not ship cross-snapshot compaction until the read path honors
-   it.
+4. **`optimize` / `rewrite_data_files`** — compact small files. **Read side now UNBLOCKED** (§ 6:
+   the connector reads partial data + parquet-delete files correctly). Two writer shapes:
+   (a) **non-partial / Iceberg-style** — end-snapshot the source files at the current snapshot and
+   register one new file (begin = current snapshot, NO `partial_max`); time-travel to older
+   snapshots still uses the (end-snapshotted) source files until `expire_snapshots` removes them.
+   Simplest; no `partial_max` writing; sources reclaimed only on expiry. (b) **partial-emitting** —
+   write the merged file with `begin = min source begin`, `partial_max = max source snapshot`, and a
+   per-row `_ducklake_internal_snapshot_id` column; reclaims sources immediately. Needs the WRITE
+   side of `partial_max` (the read side is done). Start with (a). Cross-engine concurrency matters
+   most here; design when scheduled.
 5. **stats-recalc** — already shipped as `ANALYZE`.
 
 ## 6. `partial_max` — a standing read-correctness gap (compaction-coupled)

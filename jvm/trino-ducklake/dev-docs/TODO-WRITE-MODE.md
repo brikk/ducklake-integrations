@@ -751,11 +751,12 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
 - [x] Stats maintenance — shipped as `ANALYZE` (rescans for the live row count, rebuilds column
   stats from per-file stats; recompute-after-delete + drift-repair tested).
 - [ ] Maintenance verbs that map to Trino conventions:
-  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent) — **blocked on
-    the `partial_max` read gap** (cross-snapshot compacted files need
-    `_ducklake_internal_snapshot_id <= partial_max` time-travel filtering, which the connector
-    ignores today; see DESIGN-maintenance.md § 6 + TODO-READ-MODE). A within-single-snapshot
-    compaction variant could ship first.
+  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent) — **read side
+    UNBLOCKED** (the connector now reads cross-snapshot partial data + parquet-delete files
+    correctly, DESIGN-maintenance.md § 6). Remaining is the WRITER: either a non-partial
+    (Iceberg-style) v1 that end-snapshots sources + registers a new file (begin = current snapshot;
+    sources reclaimed later by expire), or a partial-emitting variant that POPULATES `partial_max` +
+    the `_ducklake_internal_snapshot_id` column on write (reclaims sources immediately).
   - `ALTER TABLE ... EXECUTE rewrite_data_files`
 - [ ] Connector procedures in `ducklake.system`:
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
@@ -775,9 +776,9 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
 Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
-pair. Remaining: `optimize` / `rewrite_data_files` (compaction) — **blocked on the `partial_max`
-read gap** (DESIGN-maintenance § 6); and GC of dead dropped-table/schema/view metadata rows
-(a tidy-up follow-up to expire_snapshots).
+pair + the partial-file READ filters (data + parquet-delete). Remaining: `optimize` /
+`rewrite_data_files` (compaction WRITER — read side now unblocked; see above); puffin partial-delete
+per-blob filter (rare); GC of dead dropped-schema/view/macro metadata rows (tidy-up follow-up).
 
 ## Commit-Failure File Cleanup
 
