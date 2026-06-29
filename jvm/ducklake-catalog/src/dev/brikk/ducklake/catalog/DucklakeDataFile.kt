@@ -78,3 +78,22 @@ data class DucklakeFilePathRef(
     val path: String,
     val pathIsRelative: Boolean,
 )
+
+/**
+ * A file row from `ducklake_files_scheduled_for_deletion`. NOTE: per the DuckLake spec the
+ * relative paths in this table are relative to the **catalog global `data_path` root** (not a
+ * per-table directory — that's why the table carries no `table_id`). [dataFileId] is the id of the
+ * data- or delete-file row that was retired (used only to delete the schedule row after the
+ * physical file is removed).
+ */
+data class DucklakeScheduledFile(
+    val dataFileId: Long,
+    val path: String,
+    val pathIsRelative: Boolean,
+)
+
+/** Outcome of [DucklakeCatalog.expireSnapshots]. */
+data class ExpireSnapshotsResult(
+    val expiredSnapshotCount: Int,
+    val scheduledFileCount: Int,
+)

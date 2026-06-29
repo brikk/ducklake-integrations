@@ -53,6 +53,7 @@ class DucklakeConfig {
     private var duckdbTargetWriteBytes: DataSize = DataSize.ofBytes(512L * 1024 * 1024)
     private var duckdbParityExtensionPath: Optional<String> = Optional.empty()
     private var removeOrphanFilesMinRetention: Duration = Duration.valueOf("7d")
+    private var maintenanceMinRetention: Duration = Duration.valueOf("7d")
 
     @NotNull
     fun getCatalogDatabaseUrl(): String? {
@@ -337,6 +338,21 @@ class DucklakeConfig {
             "delete files an in-flight (possibly cross-engine) writer just produced. Default 7d.")
     fun setRemoveOrphanFilesMinRetention(removeOrphanFilesMinRetention: Duration): DucklakeConfig {
         this.removeOrphanFilesMinRetention = removeOrphanFilesMinRetention
+        return this
+    }
+
+    @NotNull
+    @MinDuration("0s")
+    fun getMaintenanceMinRetention(): Duration {
+        return maintenanceMinRetention
+    }
+
+    @Config("ducklake.maintenance.min-retention")
+    @ConfigDescription("Minimum age floor shared by expire_snapshots (retention mode — protects " +
+            "recent time-travel) and cleanup_old_files (the grace period before a scheduled file " +
+            "is physically deleted — protects in-flight, possibly cross-engine, readers). Default 7d.")
+    fun setMaintenanceMinRetention(maintenanceMinRetention: Duration): DucklakeConfig {
+        this.maintenanceMinRetention = maintenanceMinRetention
         return this
     }
 

@@ -761,16 +761,22 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
     (no catalog mutation): deletes files under the table data path with no catalog row, older than
     `retention_threshold` (default 7d, floored by `ducklake.remove-orphan-files.min-retention`).
-  - [ ] `expire_snapshots` — next: catalog mutation (delete snapshot rows + cascade) that
-    *schedules* dead files; needs new `WriteChange`/`InterveningChanges`/`ConflictMatrix`/
-    `LogicalConflictCheck` entries.
-  - [ ] `cleanup_old_files` — drains `ducklake_files_scheduled_for_deletion` past the grace period.
+  - [x] `expire_snapshots` — DONE 2026-06-29 (`TestDucklakeExpireSnapshots`, 7 e2e incl. surviving-
+    snapshot safety + root-relative cleanup). Catalog-wide; `retention_threshold` (floored by
+    `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest. Turned out
+    NOT to need `WriteChange`/`ConflictMatrix` — it's a **plain catalog transaction, no new
+    snapshot** (like `ANALYZE`), since expiry is destructive GC. Schedules dead files (absolute
+    paths); v1 leaves dead dropped-table/schema/view METADATA rows (harmless, no file leak).
+  - [x] `cleanup_old_files` — DONE 2026-06-29. Drains `ducklake_files_scheduled_for_deletion` past
+    the grace period; resolves connector-written absolute + DuckLake-written root-relative paths.
   - [x] `flush_inlined_data` — shipped earlier.
 - [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed). v1 procs log
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
-Done first: `remove_orphan_files` (storage-only, fixes the un-remediable-orphan hole). Next:
-`expire_snapshots` + `cleanup_old_files` (the catalog-driven reclaim pair).
+Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
+pair. Remaining: `optimize` / `rewrite_data_files` (compaction) — **blocked on the `partial_max`
+read gap** (DESIGN-maintenance § 6); and GC of dead dropped-table/schema/view metadata rows
+(a tidy-up follow-up to expire_snapshots).
 
 ## Commit-Failure File Cleanup
 

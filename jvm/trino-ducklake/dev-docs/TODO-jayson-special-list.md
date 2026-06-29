@@ -62,19 +62,24 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
 - **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
   expire_snapshots / remove_orphan_files / stats-recalc.
-  ✅ DESIGN + first procedure DONE 2026-06-29 — **dev-docs/DESIGN-maintenance.md** settles the
+  ✅ DESIGN + THREE procedures DONE 2026-06-29 — **dev-docs/DESIGN-maintenance.md** settles the
   snapshot-safety question: adopt DuckLake's **two-phase deletion** (catalog retirement only ever
   *schedules* files into `ducklake_files_scheduled_for_deletion`; physical unlink is a separate,
   **age-gated** step — the grace period protects in-flight/cross-engine readers; liveness =
-  half-open `[begin_snapshot, end_snapshot)`). First procedure shipped: **`remove_orphan_files`**
-  (`TestDucklakeRemoveOrphanFiles`, 5 e2e: aged-orphan deleted, recent-orphan protected, dry_run,
-  retention-floor reject, real data untouched) — chosen first because orphans have no catalog row
-  so it touches storage ONLY (no snapshot/WriteChange/ConflictMatrix), and it fixes the
-  named hole ("orphans from failed commits have no Trino-side remedy"). New config
-  `ducklake.remove-orphan-files.min-retention` (default 7d) floors the retention arg. Roadmap
-  (next): expire_snapshots (catalog mutation + scheduling + new WriteChange/conflict entries),
-  cleanup_old_files (drain the schedule table), optimize/rewrite_data_files (compaction —
-  **blocked on `partial_max`**, see below). stats-recalc already shipped as ANALYZE.
+  half-open `[begin_snapshot, end_snapshot)`). Shipped:
+  • **`remove_orphan_files`** (`TestDucklakeRemoveOrphanFiles`, 5 e2e) — storage-only (orphans have
+    no catalog row → no snapshot/WriteChange/ConflictMatrix); fixes the named hole ("orphans from
+    failed commits have no Trino-side remedy"). Config `ducklake.remove-orphan-files.min-retention`.
+  • **`expire_snapshots`** + **`cleanup_old_files`** (`TestDucklakeExpireSnapshots`, 7 e2e incl. the
+    surviving-snapshot safety invariant + root-relative cleanup). Key finding: expire does NOT need
+    `WriteChange`/`ConflictMatrix` after all — it's a **plain catalog transaction with no new
+    snapshot** (like `ANALYZE`), since expiry is destructive GC. Catalog-wide; retention (floored by
+    `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest; schedules
+    dead files (absolute paths); cleanup drains them age-gated, resolving both absolute (ours) and
+    root-relative (DuckLake's) scheduled paths. v1 leaves dead dropped-table/schema/view METADATA
+    rows (harmless dangling; no file leak) — a tidy-up follow-up.
+  Remaining F6: optimize/rewrite_data_files (compaction — **blocked on `partial_max`**, below);
+  dead-metadata-row GC. stats-recalc already shipped as ANALYZE.
   **⚠️ partial_max read gap** (flagged 2026-06-29): `ducklake_data_file`/`_delete_file` carry a
   `partial_max` we ignore; cross-snapshot compacted files (DuckDB `merge_adjacent_files`) need
   `_ducklake_internal_snapshot_id <= partial_max` filtering for correct time-travel. Narrow

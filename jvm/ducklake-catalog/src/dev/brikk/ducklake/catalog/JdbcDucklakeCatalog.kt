@@ -25,6 +25,7 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_COLUMN_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_VALUE
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_VARIANT_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA
@@ -71,6 +72,7 @@ import org.jooq.tools.jdbc.JDBCUtils
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.Locale
 import java.util.Optional
@@ -413,6 +415,199 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .fetch { collect(it.value1(), it.value2()) }
         return refs
     }
+
+    override fun listExpirableSnapshots(olderThan: Instant?, versions: Set<Long>?): List<Long> {
+        val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
+        val maxId: Long = dsl.select(DSL.max(snap.SNAPSHOT_ID)).from(snap)
+            .fetchOne(0, Long::class.java) ?: return emptyList()
+        var cond: Condition = snap.SNAPSHOT_ID.ne(maxId) // the latest is never expirable
+        when {
+            versions != null -> cond = cond.and(snap.SNAPSHOT_ID.`in`(versions))
+            olderThan != null -> cond = cond.and(
+                snap.SNAPSHOT_TIME.lt(OffsetDateTime.ofInstant(olderThan, ZoneOffset.UTC)))
+        }
+        return dsl.select(snap.SNAPSHOT_ID).from(snap).where(cond)
+            .orderBy(snap.SNAPSHOT_ID.asc())
+            .fetch(snap.SNAPSHOT_ID)
+    }
+
+    override fun expireSnapshots(snapshotIds: Set<Long>): ExpireSnapshotsResult {
+        if (snapshotIds.isEmpty()) {
+            return ExpireSnapshotsResult(0, 0)
+        }
+        // Plain catalog transaction — destructive GC, no new snapshot (mirrors analyzeTable).
+        dataSource.connection.use { conn ->
+            conn.autoCommit = false
+            try {
+                val ctx = forConnection(conn)
+                val maxId = readLatestSnapshotId(ctx)
+                require(maxId !in snapshotIds) { "cannot expire the latest snapshot ($maxId)" }
+
+                // Delete the snapshot rows FIRST so the half-open survivor tests below see only the
+                // snapshots that REMAIN.
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SNAPSHOT)
+                    .where(DUCKLAKE_SNAPSHOT.SNAPSHOT_ID.`in`(snapshotIds)))
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SNAPSHOT_CHANGES)
+                    .where(DUCKLAKE_SNAPSHOT_CHANGES.SNAPSHOT_ID.`in`(snapshotIds)))
+
+                val deadTableIds: List<Long> = findDeadTableIds(ctx)
+                val tableDataPathCache = HashMap<Long, String?>()
+                var scheduledCount = 0
+
+                // Dead data files: end-snapshotted with no surviving snapshot in [begin,end), OR
+                // belonging to a fully-expired dropped table (its files may have end_snapshot=NULL).
+                val deadData = findDeadDataFiles(ctx, deadTableIds)
+                for (f in deadData) {
+                    if (scheduleFile(ctx, f, tableDataPathCache)) {
+                        scheduledCount++
+                    }
+                }
+                val deadDataIds = deadData.map { it.fileId }
+                if (deadDataIds.isNotEmpty()) {
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_COLUMN_STATS)
+                        .where(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_VARIANT_STATS)
+                        .where(DUCKLAKE_FILE_VARIANT_STATS.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_PARTITION_VALUE)
+                        .where(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.`in`(deadDataIds)))
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DATA_FILE)
+                        .where(DUCKLAKE_DATA_FILE.DATA_FILE_ID.`in`(deadDataIds)))
+                }
+
+                // Dead delete files: same survivor test, or orphaned by a just-removed data file,
+                // or belonging to a dead table.
+                val deadDelete = findDeadDeleteFiles(ctx, deadTableIds, deadDataIds)
+                for (f in deadDelete) {
+                    if (scheduleFile(ctx, f, tableDataPathCache)) {
+                        scheduledCount++
+                    }
+                }
+                val deadDeleteIds = deadDelete.map { it.fileId }
+                if (deadDeleteIds.isNotEmpty()) {
+                    metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DELETE_FILE)
+                        .where(DUCKLAKE_DELETE_FILE.DELETE_FILE_ID.`in`(deadDeleteIds)))
+                }
+
+                conn.commit()
+                return ExpireSnapshotsResult(snapshotIds.size, scheduledCount)
+            }
+            catch (e: Exception) {
+                conn.rollback()
+                throw e
+            }
+        }
+    }
+
+    /** A dead data/delete file row carrying just what scheduling needs. */
+    private data class DeadFile(val fileId: Long, val tableId: Long, val path: String, val pathIsRelative: Boolean)
+
+    private fun findDeadTableIds(ctx: DSLContext): List<Long> {
+        val t1 = DUCKLAKE_TABLE.`as`("t1")
+        val t2 = DUCKLAKE_TABLE.`as`("t2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(t1.TABLE_ID).from(t1)
+            .where(t1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(t1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(t1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(t2)
+                .where(t2.TABLE_ID.eq(t1.TABLE_ID))
+                .and(t2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(t2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(t2.END_SNAPSHOT)))))))
+            .fetch(t1.TABLE_ID)
+            .distinct()
+    }
+
+    private fun findDeadDataFiles(ctx: DSLContext, deadTableIds: List<Long>): List<DeadFile> {
+        val file = DUCKLAKE_DATA_FILE.`as`("df")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val noSurvivor = file.END_SNAPSHOT.isNotNull.and(DSL.notExists(ctx.selectOne().from(surv)
+            .where(surv.SNAPSHOT_ID.ge(file.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(file.END_SNAPSHOT))))
+        return ctx.select(file.DATA_FILE_ID, file.TABLE_ID, file.PATH, file.PATH_IS_RELATIVE)
+            .from(file)
+            .where(file.TABLE_ID.`in`(deadTableIds).or(noSurvivor))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+    }
+
+    private fun findDeadDeleteFiles(ctx: DSLContext, deadTableIds: List<Long>, deadDataIds: List<Long>): List<DeadFile> {
+        val file = DUCKLAKE_DELETE_FILE.`as`("delf")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val noSurvivor = file.END_SNAPSHOT.isNotNull.and(DSL.notExists(ctx.selectOne().from(surv)
+            .where(surv.SNAPSHOT_ID.ge(file.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(file.END_SNAPSHOT))))
+        return ctx.select(file.DELETE_FILE_ID, file.TABLE_ID, file.PATH, file.PATH_IS_RELATIVE)
+            .from(file)
+            .where(file.TABLE_ID.`in`(deadTableIds).or(file.DATA_FILE_ID.`in`(deadDataIds)).or(noSurvivor))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+    }
+
+    /**
+     * Schedules a dead file into `ducklake_files_scheduled_for_deletion` as an ABSOLUTE path
+     * (path_is_relative=false), resolving table-relative paths against the file's table data dir.
+     * Returns false (skips) when the path can't be resolved (no data_path root) — the file then
+     * simply becomes an orphan reclaimable by remove_orphan_files. Cross-engine readable: DuckLake
+     * cleanup reads absolute (path_is_relative=false) rows directly.
+     */
+    private fun scheduleFile(ctx: DSLContext, f: DeadFile, cache: HashMap<Long, String?>): Boolean {
+        val absolute: String = if (!f.pathIsRelative) {
+            f.path
+        }
+        else {
+            val tableDataPath = cache.getOrPut(f.tableId) { resolveTableDataPathById(ctx, f.tableId) }
+                ?: return false
+            joinPaths(tableDataPath, f.path)
+        }
+        metadata.execute(ctx, ctx.insertInto(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.DATA_FILE_ID, f.fileId)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH, absolute)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH_IS_RELATIVE, false)
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.SCHEDULE_START, DSL.currentOffsetDateTime()))
+        return true
+    }
+
+    /** Resolves a table's absolute data dir (root + schema.path + table.path), latest row wins. */
+    private fun resolveTableDataPathById(ctx: DSLContext, tableId: Long): String? {
+        val root = readDataPath(ctx) ?: return null
+        val tab = DUCKLAKE_TABLE.`as`("tab")
+        val tableRow = ctx.select(tab.SCHEMA_ID, tab.PATH, tab.PATH_IS_RELATIVE).from(tab)
+            .where(tab.TABLE_ID.eq(tableId)).orderBy(tab.BEGIN_SNAPSHOT.desc()).limit(1).fetchOne()
+            ?: return null
+        val sch = DUCKLAKE_SCHEMA.`as`("sch")
+        val schemaRow = ctx.select(sch.PATH, sch.PATH_IS_RELATIVE).from(sch)
+            .where(sch.SCHEMA_ID.eq(tableRow.value1())).orderBy(sch.BEGIN_SNAPSHOT.desc()).limit(1).fetchOne()
+        val schemaDataPath = resolveScopedPath(schemaRow?.value1(), schemaRow?.value2(), root)
+        return resolveScopedPath(tableRow.value2(), tableRow.value3(), schemaDataPath)
+    }
+
+    private fun readDataPath(ctx: DSLContext): String? {
+        val meta = DUCKLAKE_METADATA.`as`("meta")
+        return ctx.select(meta.VALUE).from(meta).where(meta.KEY.eq("data_path")).fetchOne(meta.VALUE)
+    }
+
+    override fun listFilesScheduledForDeletion(olderThan: Instant): List<DucklakeScheduledFile> {
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("sched")
+        return dsl.select(sched.DATA_FILE_ID, sched.PATH, sched.PATH_IS_RELATIVE).from(sched)
+            .where(sched.SCHEDULE_START.lt(OffsetDateTime.ofInstant(olderThan, ZoneOffset.UTC)))
+            .fetch { DucklakeScheduledFile(it.value1() ?: -1L, it.value2() ?: "", it.value3() ?: false) }
+            .filter { it.path.isNotEmpty() }
+    }
+
+    override fun removeScheduledFileRows(dataFileIds: Collection<Long>) {
+        if (dataFileIds.isEmpty()) {
+            return
+        }
+        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
+        dsl.deleteFrom(sched).where(sched.DATA_FILE_ID.`in`(dataFileIds)).execute()
+    }
+
+    private fun resolveScopedPath(path: String?, isRelative: Boolean?, parentPath: String): String {
+        if (path.isNullOrBlank()) {
+            return parentPath
+        }
+        return if (isRelative == true) joinPaths(parentPath, path) else path
+    }
+
+    private fun joinPaths(parent: String, child: String): String =
+        if (parent.endsWith("/")) "$parent$child" else "$parent/$child"
 
     override fun getLatestDataFileFormat(tableId: Long, snapshotId: Long): String? {
         // "Latest" = highest data_file_id among rows still active at the requested snapshot.
