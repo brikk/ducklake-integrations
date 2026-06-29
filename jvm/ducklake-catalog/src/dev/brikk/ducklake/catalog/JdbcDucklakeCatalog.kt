@@ -3073,10 +3073,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     override fun rewriteDataFilesPartial(
         tableId: Long,
         sourceDataFileIds: Set<Long>,
-        fragment: DucklakeWriteFragment,
+        mergedFiles: List<PartialMergedFile>,
         readSnapshotId: Long,
     ) {
-        if (sourceDataFileIds.isEmpty()) {
+        if (sourceDataFileIds.isEmpty() || mergedFiles.isEmpty()) {
             return
         }
         val file = DUCKLAKE_DATA_FILE.`as`("file")
@@ -3087,41 +3087,27 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             // not end-snapshotted, so the DeletedFromTable active-file check would misfire).
             assertRewriteSourcesStillPresent(tx, tableId, sourceDataFileIds)
             assertNoNewerDeleteOnRewriteSources(tx, sourceDataFileIds, readSnapshotId)
-
-            // begin = min source begin (back-date so the merged file covers the whole history);
-            // partial_max = max source begin (rows newer than a time-travel read are filtered via
-            // the file's _ducklake_internal_snapshot_id column).
-            val (minBegin, maxBegin) = sourceBeginRange(tx, tableId, sourceDataFileIds)
             val retiredFileSize = sumActiveSourceFileSize(tx, tableId, sourceDataFileIds)
 
-            applyInsertFragments(tx, tableId, listOf(fragment))
-            // Back-date the just-registered merged file + tag it partial.
-            ctx.update(file)
-                .set(file.BEGIN_SNAPSHOT, minBegin)
-                .set(file.PARTIAL_MAX, maxBegin)
-                .where(file.TABLE_ID.eq(tableId))
-                .and(file.PATH.eq(fragment.path))
-                .and(file.BEGIN_SNAPSHOT.eq(tx.getNewSnapshotId()))
-                .execute()
+            for (merged in mergedFiles) {
+                applyInsertFragments(tx, tableId, listOf(merged.fragment))
+                // Back-date the just-registered merged file to begin = MIN row snapshot + tag it
+                // partial (partial_max = MAX row snapshot); rows newer than a time-travel read are
+                // filtered via the file's _ducklake_internal_snapshot_id column.
+                ctx.update(file)
+                    .set(file.BEGIN_SNAPSHOT, merged.beginSnapshot)
+                    .set(file.PARTIAL_MAX, merged.partialMax)
+                    .where(file.TABLE_ID.eq(tableId))
+                    .and(file.PATH.eq(merged.fragment.path))
+                    .and(file.BEGIN_SNAPSHOT.eq(tx.getNewSnapshotId()))
+                    .execute()
+            }
 
             scheduleAndDeleteRewriteSources(tx, sourceDataFileIds)
-            netRewriteStats(tx, tableId, fragment.recordCount, retiredFileSize)
-            tx.recordChange(WriteChange.InsertedIntoTable(tableId, referencedColumnIds(listOf(fragment))))
+            netRewriteStats(tx, tableId, mergedFiles.sumOf { it.fragment.recordCount }, retiredFileSize)
+            val columnIds: Set<Long> = mergedFiles.flatMap { it.fragment.columnStats }.mapTo(HashSet()) { it.columnId }
+            tx.recordChange(WriteChange.InsertedIntoTable(tableId, columnIds))
         }
-    }
-
-    /** Min/max `begin_snapshot` across the active source files (for the merged file's begin + partial_max). */
-    private fun sourceBeginRange(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>): Pair<Long, Long> {
-        val file = DUCKLAKE_DATA_FILE.`as`("file")
-        val begins: List<Long> = tx.dsl().select(file.BEGIN_SNAPSHOT)
-            .from(file)
-            .where(file.TABLE_ID.eq(tableId))
-            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
-            .and(activeAt(file, tx.getCurrentSnapshotId()))
-            .fetch(file.BEGIN_SNAPSHOT)
-            .filterNotNull()
-        require(begins.isNotEmpty()) { "no active source files for partial rewrite of table $tableId" }
-        return begins.min() to begins.max()
     }
 
     /** Abort non-retryably if any source is no longer active (a concurrent drop/compaction removed it). */

@@ -111,3 +111,16 @@ data class ExpireSnapshotsResult(
     val expiredSnapshotCount: Int,
     val scheduledFileCount: Int,
 )
+
+/**
+ * One output file of a partial-emitting compaction ([DucklakeCatalog.rewriteDataFilesPartial]):
+ * the registration [fragment] plus the back-dated [beginSnapshot] (= MIN of the source
+ * begin_snapshots of the rows it holds) and [partialMax] (= MAX). The merged file physically
+ * carries a per-row `_ducklake_internal_snapshot_id` column so a read at S keeps rows whose value
+ * is `<= S`; these bounds are persisted onto the `ducklake_data_file` row.
+ */
+data class PartialMergedFile(
+    val fragment: DucklakeWriteFragment,
+    val beginSnapshot: Long,
+    val partialMax: Long,
+)

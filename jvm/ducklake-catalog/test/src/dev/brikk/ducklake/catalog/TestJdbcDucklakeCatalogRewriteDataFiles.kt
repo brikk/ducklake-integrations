@@ -312,7 +312,8 @@ class TestJdbcDucklakeCatalogRewriteDataFiles {
         val statsBefore = catalog.getTableStats(tableId)!!
 
         val mergedPath = uniquePath("pmerged")
-        catalog.rewriteDataFilesPartial(tableId, setOf(idE, idF), fragmentFor(mergedPath, 20L, 1500L, 400L, 419L), readSnapshot)
+        catalog.rewriteDataFilesPartial(tableId, setOf(idE, idF),
+            listOf(PartialMergedFile(fragmentFor(mergedPath, 20L, 1500L, 400L, 419L), beginE, beginF)), readSnapshot)
 
         // Merged file back-dated to min(begin), tagged partial_max = max(begin).
         val (mergedBegin, mergedPartialMax) = fileRow(mergedPath)
@@ -337,13 +338,13 @@ class TestJdbcDucklakeCatalogRewriteDataFiles {
         val (_, idG) = insertFile(10L, 1024L, 500L, 509L)
         val readSnapshot = catalog.currentSnapshotId
         val mergedPath = uniquePath("pmerged")
-        val merged = fragmentFor(mergedPath, 10L, 900L, 500L, 509L)
+        val merged = PartialMergedFile(fragmentFor(mergedPath, 10L, 900L, 500L, 509L), readSnapshot, readSnapshot)
         val winnerDelete = DucklakeDeleteFragment(idG, uniquePath("pwin"), 1L, 256L, 64L, 1L)
 
         val result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
             catalog,
             Runnable { catalog.commitDelete(tableId, listOf(winnerDelete)) },
-            Runnable { catalog.rewriteDataFilesPartial(tableId, setOf(idG), merged, readSnapshot) },
+            Runnable { catalog.rewriteDataFilesPartial(tableId, setOf(idG), listOf(merged), readSnapshot) },
         )
         assertThat(result.loserException)
             .`as`("partial compaction racing a delete on its source must conflict")

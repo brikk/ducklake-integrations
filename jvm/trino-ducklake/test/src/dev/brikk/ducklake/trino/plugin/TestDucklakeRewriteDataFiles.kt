@@ -171,13 +171,62 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
     }
 
     @Test
-    fun partitionedTableRejected() {
+    fun partitionedTableCompactsPerPartition() {
         val table = "test_schema.rewrite_partitioned"
         try {
             computeActual("CREATE TABLE $table (id INTEGER, region VARCHAR) WITH (partitioned_by = ARRAY['region'])")
+            // US: 2 files; EU: 2 files; APAC: 1 file (a lone partition file is left alone).
             computeActual("INSERT INTO $table VALUES (1, 'US')")
             computeActual("INSERT INTO $table VALUES (2, 'US')")
-            assertQueryFails(call(table), ".*does not support partitioned tables.*")
+            computeActual("INSERT INTO $table VALUES (3, 'EU')")
+            computeActual("INSERT INTO $table VALUES (4, 'EU')")
+            computeActual("INSERT INTO $table VALUES (5, 'APAC')")
+            assertThat(fileCount(table)).`as`("five files before compaction").isEqualTo(5L)
+
+            computeActual(call(table))
+
+            // US 2->1, EU 2->1, APAC untouched (1) = 3 files; rows + partition pruning preserved.
+            assertThat(fileCount(table)).`as`("compacted per partition (US+EU merged, APAC left)").isEqualTo(3L)
+            assertThat(computeActual("SELECT id, region FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String })
+                    .containsExactly(1 to "US", 2 to "US", 3 to "EU", 4 to "EU", 5 to "APAC")
+            assertThat(computeActual("SELECT id FROM $table WHERE region = 'US' ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int })
+                    .`as`("partition pruning still resolves the merged US file").containsExactly(1, 2)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
+    fun targetFileSizeRollsOverToMultipleFiles() {
+        val table = "test_schema.rewrite_multifile"
+        try {
+            // Several small files with enough rows that a tiny target_file_size forces >1 output.
+            computeActual("CREATE TABLE $table AS SELECT * FROM UNNEST(sequence(0, 999)) AS t(id)")
+            for (i in 1 until 6) {
+                computeActual("INSERT INTO $table SELECT * FROM UNNEST(sequence(${i * 1000}, ${i * 1000 + 999})) AS t(id)")
+            }
+            val before = fileCount(table)
+            assertThat(before).`as`("six source files").isEqualTo(6L)
+            val totalRows = computeScalar("SELECT count(*) FROM $table") as Long
+
+            // A 4KB target forces the 6000-row merge to roll across multiple files.
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', "
+                    + "table_name => 'rewrite_multifile', target_file_size => '4kB')")
+
+            // Without rollover the merge would yield exactly ONE file; a 4KB target forces it to
+            // roll into several. (How many depends on encoded size; >1 is the meaningful invariant.)
+            val after = fileCount(table)
+            assertThat(after).`as`("target_file_size rolled the merge into multiple files").isGreaterThan(1L)
+            assertThat(computeScalar("SELECT count(*) FROM $table")).`as`("all rows preserved").isEqualTo(totalRows)
+
+            // A large target coalesces everything back into a single file.
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', "
+                    + "table_name => 'rewrite_multifile', target_file_size => '512MB')")
+            assertThat(fileCount(table)).`as`("large target coalesces to one file").isEqualTo(1L)
+            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(totalRows)
         }
         finally {
             tryDrop(table)

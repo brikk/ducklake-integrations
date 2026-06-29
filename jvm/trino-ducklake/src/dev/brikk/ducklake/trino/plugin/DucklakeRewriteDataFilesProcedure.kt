@@ -19,9 +19,11 @@ import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeDataFile
+import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
+import dev.brikk.ducklake.catalog.PartialMergedFile
 import dev.brikk.ducklake.catalog.TransactionConflictException
 import io.airlift.log.Logger
 import io.airlift.units.DataSize
@@ -31,6 +33,7 @@ import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.spi.NodeVersion
+import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
@@ -57,27 +60,30 @@ import java.util.UUID
 
 /**
  * Implements `CALL <catalog>.system.rewrite_data_files(schema_name, table_name,
- * file_size_threshold => '100MB')` — the non-partial / Iceberg-style compaction WRITER
- * (dev-docs/DESIGN-maintenance.md § 7). It reads the live rows of a table's small data files
- * through the connector's **real read path** (so positional/parquet delete files, `partial_max`
- * snapshot filtering and schema evolution are all applied), writes them into one larger Parquet
- * file, and atomically registers the merged file while end-snapshotting the sources via
- * [DucklakeCatalog.rewriteDataFiles].
+ * file_size_threshold => '100MB', target_file_size => '512MB', reclaim_sources_immediately =>
+ * false)` — the compaction WRITER (dev-docs/DESIGN-maintenance.md § 7). It reads the live rows of a
+ * table's small data files through the connector's **real read path** (so positional/parquet/puffin
+ * delete files, `partial_max` snapshot filtering, and schema evolution all apply) and rewrites them
+ * into fewer, larger Parquet files.
  *
- * v1 scope (§ 7.3):
- *   - **Unpartitioned tables only** (a partitioned table is rejected with NOT_SUPPORTED — the merged
- *     rows carry no partition assignment, same gate as flush_inlined_data).
- *   - Source candidates are the **parquet** data files at the current snapshot smaller than
- *     `file_size_threshold` (default 100MB) that are not already cross-snapshot-compacted
- *     (`partial_max` IS NULL). Files with delete files ARE compacted — the deletes are applied to
- *     the merged file's bytes, physically dropping the tombstoned rows.
- *   - If fewer than two candidates qualify, it is a no-op.
- *   - The merged file is NON-partial (no `partial_max`); the retired sources stay readable via
- *     time-travel until `expire_snapshots` → `cleanup_old_files` reclaim them.
+ * Surface:
+ *   - **Partitioned tables**: sources are grouped by partition (a file's `partition_id` + its stored
+ *     partition values); each group is compacted independently and the merged files inherit the
+ *     group's partition values, so pruning still works. Works for any transform (the stored values
+ *     are copied, not recomputed). A partition with fewer than two compactable files is left alone.
+ *   - **Size-bounded output**: within a group the merged rows roll over to a new file once
+ *     `target_file_size` is reached, so compaction never produces one unbounded file.
+ *   - **`reclaim_sources_immediately`**: when true, emit PARTIAL (merge_adjacent) files — each row
+ *     tagged with its source file's begin_snapshot via `_ducklake_internal_snapshot_id`, back-dated
+ *     so the merged file serves time-travel on its own, and the sources are deleted + scheduled NOW.
+ *     Partial mode requires non-partial sources (already-`partial_max` files are skipped). When
+ *     false (default), the non-partial / Iceberg-style shape: sources are end-snapshotted and stay
+ *     readable for time-travel until `expire_snapshots` reclaims them; already-partial sources may
+ *     be folded in too.
  *
- * Concurrency: a concurrent commit that modifies a source between the read and the commit aborts
- * the rewrite non-retryably (the catalog's `rewriteDataFiles` checks the sources are still active
- * AND that no newer delete file landed on them — see its contract).
+ * Source candidates are the **parquet** data files smaller than `file_size_threshold`. Concurrency:
+ * a commit that modifies a source between the read and the commit aborts the rewrite non-retryably
+ * (see the catalog primitives).
  */
 class DucklakeRewriteDataFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
@@ -100,10 +106,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         Procedure.Argument("SCHEMA_NAME", VARCHAR),
                         Procedure.Argument("TABLE_NAME", VARCHAR),
                         Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, "100MB"),
-                        // When true, emit a PARTIAL (merge_adjacent) file that carries a per-row
-                        // _ducklake_internal_snapshot_id column and reclaims the source files
-                        // immediately (they are deleted + scheduled, not kept until expire). Default
-                        // false = the simpler non-partial / Iceberg-style shape.
+                        Procedure.Argument("TARGET_FILE_SIZE", VARCHAR, false, "512MB"),
                         Procedure.Argument("RECLAIM_SOURCES_IMMEDIATELY", BOOLEAN, false, false)),
                 REWRITE_DATA_FILES.bindTo(this),
                 true)
@@ -114,34 +117,24 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             schemaName: String?,
             tableName: String?,
             fileSizeThreshold: String?,
+            targetFileSize: String?,
             reclaimSourcesImmediately: Boolean) {
         val schemaArg = requireArg(schemaName, "schema_name")
         val tableArg = requireArg(tableName, "table_name")
-        val threshold: Long = parseThreshold(fileSizeThreshold)
+        val threshold: Long = parseDataSize(fileSizeThreshold, "file_size_threshold", "100MB")
+        val targetSize: Long = parseDataSize(targetFileSize, "target_file_size", "512MB")
 
         val snapshotId = catalog.currentSnapshotId
         val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
         val tableId = table.tableId
 
-        // v1: a partitioned table's merged rows have no partition assignment to write into a
-        // hive-style file; gate (same constraint as flush_inlined_data).
-        if (catalog.getPartitionSpecs(tableId, snapshotId).isNotEmpty()) {
-            throw TrinoException(NOT_SUPPORTED,
-                    "rewrite_data_files does not support partitioned tables yet: $schemaArg.$tableArg")
-        }
-
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(tableId, snapshotId)
-        val candidates: List<DucklakeDataFile> = dataFiles.filter { f ->
-            FORMAT_PARQUET.equals(f.fileFormat, ignoreCase = true) &&
-                f.partialMax == null &&
-                f.fileSizeBytes < threshold
-        }
+        val candidates: List<DucklakeDataFile> =
+                selectCandidates(catalog.getDataFiles(tableId, snapshotId), threshold, reclaimSourcesImmediately)
         if (candidates.size < 2) {
             log.info("rewrite_data_files: %s.%s has %d compactable file(s) below %d bytes — nothing to compact",
                     schemaArg, tableArg, candidates.size, threshold)
             return
         }
-        // Filenames are UUIDs, so the basename uniquely keys a data file to its split.
         val candidatesByBasename: Map<String, DucklakeDataFile> = candidates.associateBy { basename(it.path) }
 
         val topLevelColumns: List<DucklakeColumn> = catalog.getTableColumns(tableId, snapshotId)
@@ -151,51 +144,80 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         }
         val columnTypes: List<Type> = columnHandles.map { it.columnType }
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
+        val partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>> =
+                if (catalog.getPartitionSpecs(tableId, snapshotId).isEmpty()) emptyMap()
+                else catalog.getFilePartitionValues(tableId, snapshotId)
 
         val tableHandle = DucklakeTableHandle(schemaArg, tableArg, tableId, snapshotId)
         val matchedSplits: List<DucklakeSplit> = collectCandidateSplits(session, tableHandle, candidatesByBasename.keys)
-        if (matchedSplits.size < 2) {
-            log.info("rewrite_data_files: %s.%s resolved %d candidate split(s) — nothing to compact",
-                    schemaArg, tableArg, matchedSplits.size)
+        // Group splits by partition; only compact groups with >= 2 files (a lone file per partition
+        // is nothing to merge). Cross-partition files are never merged.
+        val groups: Map<PartitionGroup, List<DucklakeSplit>> = matchedSplits
+                .groupBy { partitionGroupOf(candidatesByBasename[basename(it.dataFilePath)], partitionValuesByFile) }
+                .filterValues { it.size >= 2 }
+        if (groups.isEmpty()) {
+            log.info("rewrite_data_files: %s.%s — no partition has >= 2 compactable files; nothing to compact",
+                    schemaArg, tableArg)
             return
         }
-
-        val sourceIds: Set<Long> = matchedSplits.mapNotNull { candidatesByBasename[basename(it.dataFilePath)]?.dataFileId }.toSet()
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
-        val fragment: DucklakeWriteFragment = writeMergedParquetFile(
-                session, fileSystem, tableDataPath, tableHandle, matchedSplits,
-                columnHandles, allCatalogColumns, columnTypes, reclaimSourcesImmediately)
+        val outputs = mutableListOf<MergedOutput>()
+        val sourceIds = mutableSetOf<Long>()
+        for ((group, splits) in groups) {
+            outputs += GroupWriter(fileSystem, tableDataPath, tableHandle, columnHandles, allCatalogColumns,
+                    columnTypes, reclaimSourcesImmediately, targetSize, group).write(session, splits)
+            sourceIds += splits.mapNotNull { candidatesByBasename[basename(it.dataFilePath)]?.dataFileId }
+        }
 
-        if (fragment.recordCount == 0L) {
-            // Every source row was deleted — registering an empty file is pointless; just retire the
-            // sources (they hold no live rows). Use an empty-source guard by skipping: a 0-row merge
-            // means the live set is empty, so leave it to expire/cleanup via a normal DELETE path.
+        val nonEmpty = outputs.filter { it.fragment.recordCount > 0L }
+        if (nonEmpty.isEmpty()) {
             log.info("rewrite_data_files: %s.%s merged to 0 live rows — skipping (no file written)", schemaArg, tableArg)
             return
         }
+        commitRewrite(tableId, sourceIds, nonEmpty, snapshotId, reclaimSourcesImmediately, schemaArg, tableArg)
+    }
 
-        commitRewrite(tableId, sourceIds, fragment, snapshotId, reclaimSourcesImmediately, schemaArg, tableArg)
+    /** Parquet data files below [threshold]; partial mode also requires NON-partial sources. */
+    private fun selectCandidates(dataFiles: List<DucklakeDataFile>, threshold: Long, partial: Boolean): List<DucklakeDataFile> =
+        dataFiles.filter { f ->
+            FORMAT_PARQUET.equals(f.fileFormat, ignoreCase = true) &&
+                f.fileSizeBytes < threshold &&
+                (!partial || f.partialMax == null)
+        }
+
+    /** Partition group of a candidate file: its `partition_id` + stored partition values (keyed by key index). */
+    private fun partitionGroupOf(
+            file: DucklakeDataFile?,
+            partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>): PartitionGroup {
+        if (file == null) {
+            return PartitionGroup(null, emptyMap())
+        }
+        val values: Map<Int, String?> = partitionValuesByFile[file.dataFileId]
+                ?.associate { it.partitionKeyIndex to it.partitionValue }
+                ?: emptyMap()
+        return PartitionGroup(file.partitionId, values)
     }
 
     private fun commitRewrite(
             tableId: Long,
             sourceIds: Set<Long>,
-            fragment: DucklakeWriteFragment,
+            outputs: List<MergedOutput>,
             snapshotId: Long,
             partial: Boolean,
             schemaArg: String,
             tableArg: String) {
         try {
             if (partial) {
-                catalog.rewriteDataFilesPartial(tableId, sourceIds, fragment, snapshotId)
+                catalog.rewriteDataFilesPartial(tableId, sourceIds,
+                        outputs.map { PartialMergedFile(it.fragment, it.beginSnapshot, it.partialMax) }, snapshotId)
             }
             else {
-                catalog.rewriteDataFiles(tableId, sourceIds, ImmutableList.of(fragment), snapshotId)
+                catalog.rewriteDataFiles(tableId, sourceIds, outputs.map { it.fragment }, snapshotId)
             }
-            log.info("rewrite_data_files: %s.%s compacted %d files into 1 (%d rows, partial=%b)",
-                    schemaArg, tableArg, sourceIds.size, fragment.recordCount, partial)
+            log.info("rewrite_data_files: %s.%s compacted %d files into %d (%d rows, partial=%b)",
+                    schemaArg, tableArg, sourceIds.size, outputs.size, outputs.sumOf { it.fragment.recordCount }, partial)
         }
         catch (e: TransactionConflictException) {
             throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
@@ -226,78 +248,6 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         return matched
     }
 
-    /**
-     * Read the live rows of [splits] through the real read path and write them into one Parquet
-     * file. When [partial], a trailing `_ducklake_internal_snapshot_id` BIGINT column is written —
-     * every row tagged with its source file's begin_snapshot — so the merged file can serve
-     * time-travel reads on its own (read at S keeps rows whose value <= S). The internal column is
-     * appended LAST and carries no field_id, so the catalog stats (built over the table columns
-     * only) are unaffected and the read path finds it by name (DucklakeDeleteFileReader).
-     */
-    private fun writeMergedParquetFile(
-            session: ConnectorSession,
-            fileSystem: TrinoFileSystem,
-            tableDataPath: String,
-            tableHandle: DucklakeTableHandle,
-            splits: List<DucklakeSplit>,
-            columnHandles: List<DucklakeColumnHandle>,
-            allCatalogColumns: List<DucklakeColumn>,
-            columnTypes: List<Type>,
-            partial: Boolean): DucklakeWriteFragment {
-        val writerColumnNames: List<String> =
-                columnHandles.map { it.columnName } +
-                    if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()
-        val writerColumnTypes: List<Type> = columnTypes + if (partial) listOf<Type>(BIGINT) else emptyList()
-        val schemaConverter = ParquetSchemaConverter(writerColumnTypes, writerColumnNames, false, false)
-        // buildMessageType annotates only the table columns by name; the internal column (unknown to
-        // the catalog) is kept un-annotated — exactly how DuckLake writes it.
-        val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                columnHandles, allCatalogColumns, schemaConverter.messageType)
-
-        val fileName = "ducklake-${UUID.randomUUID()}.parquet"
-        val filePath: Location = Location.of(tableDataPath).appendPath(fileName)
-        val outputStream = fileSystem.newOutputFile(filePath).create()
-
-        val parquetWriter = ParquetWriter(
-                outputStream,
-                messageType,
-                schemaConverter.primitiveTypes,
-                writerOptions,
-                CompressionCodec.ZSTD,
-                trinoVersion,
-                Optional.empty(),
-                Optional.empty())
-        // Stats/fragment are built over the TABLE columns only (the internal column is not a catalog
-        // column), so the fragment's column-stats + recordCount stay correct.
-        val writer = ParquetFileWriter(
-                parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns)
-
-        val readColumns: List<ColumnHandle> = columnHandles
-        var fragment: DucklakeWriteFragment? = null
-        try {
-            for (split in splits) {
-                pageSource(session, tableHandle, split, readColumns).use { source ->
-                    while (!source.isFinished) {
-                        val sourcePage = source.nextSourcePage ?: continue
-                        val page = sourcePage.page
-                        // Tag every row of this source with the source file's begin_snapshot.
-                        writer.write(
-                                if (partial) page.appendColumn(
-                                        RunLengthEncodedBlock.create(BIGINT, split.beginSnapshot, page.positionCount))
-                                else page)
-                    }
-                }
-            }
-            fragment = writer.finishAndBuildFragment()
-        }
-        finally {
-            if (fragment == null) {
-                writer.abort()
-            }
-        }
-        return fragment
-    }
-
     private fun pageSource(
             session: ConnectorSession,
             tableHandle: DucklakeTableHandle,
@@ -306,6 +256,105 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         pageSourceProvider.createPageSource(
                 null, session, split, tableHandle, Optional.empty(), columns, DynamicFilter.EMPTY)
 
+    /** Identity of a partition group: a file's `partition_id` + its stored partition values. */
+    private data class PartitionGroup(val partitionId: Long?, val partitionValues: Map<Int, String?>)
+
+    /** One output file: the registration fragment + (for partial) the back-date bounds of its rows. */
+    private class MergedOutput(val fragment: DucklakeWriteFragment, val beginSnapshot: Long, val partialMax: Long)
+
+    /**
+     * Streams one partition group's source rows through the real read path into one or more Parquet
+     * files, rolling over to a new file at [targetSize]. When [partial], a trailing
+     * `_ducklake_internal_snapshot_id` BIGINT column is written (each row tagged with its source
+     * file's begin_snapshot) and per-file begin/partial_max bounds are tracked. The internal column
+     * is appended LAST and carries no field_id, so catalog stats (built over the table columns only)
+     * are unaffected and the read path finds it by name.
+     */
+    private inner class GroupWriter(
+            private val fileSystem: TrinoFileSystem,
+            private val tableDataPath: String,
+            private val tableHandle: DucklakeTableHandle,
+            private val columnHandles: List<DucklakeColumnHandle>,
+            private val allCatalogColumns: List<DucklakeColumn>,
+            private val columnTypes: List<Type>,
+            private val partial: Boolean,
+            private val targetSize: Long,
+            private val group: PartitionGroup) {
+        private val outputs = mutableListOf<MergedOutput>()
+        private var writer: ParquetFileWriter? = null
+        private var minBegin = Long.MAX_VALUE
+        private var maxBegin = Long.MIN_VALUE
+
+        fun write(session: ConnectorSession, splits: List<DucklakeSplit>): List<MergedOutput> {
+            var success = false
+            try {
+                for (split in splits) {
+                    pageSource(session, tableHandle, split, columnHandles).use { source ->
+                        while (!source.isFinished) {
+                            val sourcePage = source.nextSourcePage ?: continue
+                            addPage(sourcePage.page, split.beginSnapshot)
+                        }
+                    }
+                }
+                if (writer != null) {
+                    finishCurrent()
+                }
+                success = true
+            }
+            finally {
+                // On failure abort the open file; finished files in `outputs` were never committed,
+                // so they simply become orphans reclaimable by remove_orphan_files.
+                if (!success) {
+                    writer?.abort()
+                }
+            }
+            return outputs
+        }
+
+        private fun addPage(page: Page, sourceBegin: Long) {
+            if (writer == null) {
+                openNew()
+            }
+            if (partial) {
+                writer!!.write(page.appendColumn(RunLengthEncodedBlock.create(BIGINT, sourceBegin, page.positionCount)))
+                minBegin = minOf(minBegin, sourceBegin)
+                maxBegin = maxOf(maxBegin, sourceBegin)
+            }
+            else {
+                writer!!.write(page)
+            }
+            if (writer!!.getApproximateWrittenBytes() >= targetSize) {
+                finishCurrent()
+            }
+        }
+
+        private fun openNew() {
+            val names = columnHandles.map { it.columnName } +
+                    if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()
+            val types = columnTypes + if (partial) listOf<Type>(BIGINT) else emptyList()
+            val schemaConverter = ParquetSchemaConverter(types, names, false, false)
+            val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
+                    columnHandles, allCatalogColumns, schemaConverter.messageType)
+            val fileName = "ducklake-${UUID.randomUUID()}.parquet"
+            val outputStream = fileSystem.newOutputFile(Location.of(tableDataPath).appendPath(fileName)).create()
+            val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,
+                    CompressionCodec.ZSTD, trinoVersion, Optional.empty(), Optional.empty())
+            writer = ParquetFileWriter(parquetWriter, outputStream, fileName,
+                    group.partitionValues, group.partitionId, columnHandles, allCatalogColumns)
+            minBegin = Long.MAX_VALUE
+            maxBegin = Long.MIN_VALUE
+        }
+
+        private fun finishCurrent() {
+            val fragment = writer!!.finishAndBuildFragment()
+            // begin/partial_max are only meaningful for partial files; for a 0-row file the bounds
+            // stay at their sentinels but the caller drops empty fragments before committing.
+            outputs.add(MergedOutput(fragment, if (minBegin == Long.MAX_VALUE) 0L else minBegin,
+                    if (maxBegin == Long.MIN_VALUE) 0L else maxBegin))
+            writer = null
+        }
+    }
+
     private fun requireArg(value: String?, name: String): String {
         if (value.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "$name is required")
@@ -313,13 +362,13 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         return value
     }
 
-    private fun parseThreshold(value: String?): Long {
-        val raw = if (value.isNullOrBlank()) "100MB" else value
+    private fun parseDataSize(value: String?, argName: String, default: String): Long {
+        val raw = if (value.isNullOrBlank()) default else value
         return try {
             DataSize.valueOf(raw).toBytes()
         }
         catch (e: IllegalArgumentException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid file_size_threshold '$raw': ${e.message}", e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid $argName '$raw': ${e.message}", e)
         }
     }
 
@@ -344,6 +393,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 MethodType.methodType(
                         Void.TYPE,
                         ConnectorSession::class.java,
+                        String::class.java,
                         String::class.java,
                         String::class.java,
                         String::class.java,
