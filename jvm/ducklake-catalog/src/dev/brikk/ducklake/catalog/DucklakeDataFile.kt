@@ -40,6 +40,13 @@ data class DucklakeDataFile(
     val deleteFileFooterSize: Long?,
     val deleteFileFormat: String?,
     val mappingId: Long?,
+    /**
+     * `ducklake_data_file.partial_max` — the MAX `_ducklake_internal_snapshot_id` in a
+     * cross-snapshot compacted ("partial") file (`begin_snapshot` is the implicit MIN). NULL for
+     * ordinary files. A read at snapshot S must drop the file's rows whose internal snapshot id
+     * exceeds S, but only when `partial_max > S`.
+     */
+    val partialMax: Long? = null,
 ) {
     /**
      * Backwards-compatible constructor for call sites that don't carry a name-map id.

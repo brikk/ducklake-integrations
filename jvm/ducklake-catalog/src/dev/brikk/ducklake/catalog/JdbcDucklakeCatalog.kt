@@ -357,6 +357,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 file.ROW_ID_START,
                 file.PARTITION_ID,
                 file.MAPPING_ID,
+                file.PARTIAL_MAX,
                 deleteFilePath,
                 deleteFilePathIsRelative,
                 deleteFileFooterSize,
@@ -389,22 +390,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.get(deleteFileFooterSize),
                 r.get(delfile.FORMAT),
                 r.get(file.MAPPING_ID),
+                r.get(file.PARTIAL_MAX),
             )
         }
     }
 
-    override fun hasPartialFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean {
-        val df = DUCKLAKE_DATA_FILE.`as`("df")
-        val dataHit = dsl.selectOne().from(df)
-            .where(df.TABLE_ID.eq(tableId))
-            .and(activeAt(df, snapshotId))
-            .and(df.PARTIAL_MAX.isNotNull)
-            .and(df.PARTIAL_MAX.gt(snapshotId))
-            .limit(1)
-            .fetch().isNotEmpty
-        if (dataHit) {
-            return true
-        }
+    override fun hasPartialDeleteFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean {
         val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
         return dsl.selectOne().from(delf)
             .where(delf.TABLE_ID.eq(tableId))

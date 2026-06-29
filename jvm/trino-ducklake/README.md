@@ -542,11 +542,12 @@ Expire also GCs the metadata rows of fully-expired dropped tables; dead schema/v
 left as harmless dangling rows (a follow-up).
 
 **Partial (cross-snapshot compacted) files:** DuckLake's `merge_adjacent_files` can merge rows from
-multiple snapshots into one file (`ducklake_data_file.partial_max` set). Reading such a file
-correctly at an older snapshot requires per-row `_ducklake_internal_snapshot_id` filtering, which
-this connector does not yet do — so a **time-travel read below a partial file's `partial_max` is
-rejected** with a clear error rather than returning over-included rows. Reads at the latest snapshot
-(the common case) are unaffected. The full per-row filter is a planned follow-up.
+multiple snapshots into one file (`ducklake_data_file.partial_max` set), physically carrying each
+row's origin snapshot. The connector reads such files correctly: a time-travel read at snapshot `S`
+drops rows whose `_ducklake_internal_snapshot_id > S` (only when `partial_max > S`), so time travel
+over a DuckDB-compacted table returns the right rows. The one remaining gap is a *consolidated
+**delete** file* spanning snapshots (`ducklake_delete_file.partial_max`) — a time-travel read across
+one is rejected with a clear error rather than over-deleting; the symmetric filter is a follow-up.
 
 ## Cross-Engine Compatibility
 
@@ -601,8 +602,8 @@ Partially available. `remove_orphan_files` (see [Procedures](#procedures)) and `
 shared catalog. Design + roadmap in [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
 Still to come:
 
-- `ALTER TABLE ... EXECUTE optimize` (merge adjacent files) — note: cross-snapshot merges require
-  honoring `partial_max` on read first (see DESIGN-maintenance.md § 6)
+- `ALTER TABLE ... EXECUTE optimize` (merge adjacent files) — read side is now unblocked (the
+  connector reads cross-snapshot "partial" files correctly); emitting them is the remaining work
 - `ALTER TABLE ... EXECUTE rewrite_data_files`
 - ✅ `expire_snapshots` (connector procedure) — **shipped**
 - ✅ `cleanup_old_files` (connector procedure — drains scheduled-for-deletion files) — **shipped**

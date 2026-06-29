@@ -403,7 +403,8 @@ class DucklakePageSourceProvider @Inject constructor(
     {
         val hasDeleteFiles: Boolean = split.deleteFilePaths.isNotEmpty()
         val hasInlinedDeletes: Boolean = split.inlinedDeletedRowPositions.isNotEmpty()
-        if (!hasDeleteFiles && !hasInlinedDeletes) {
+        val hasSnapshotFilter: Boolean = split.snapshotFilterMax != null
+        if (!hasDeleteFiles && !hasInlinedDeletes && !hasSnapshotFilter) {
             return dataSource
         }
 
@@ -416,6 +417,14 @@ class DucklakePageSourceProvider @Inject constructor(
         // alias local offsets (caught by AbstractDucklakeRowLevelFormatTest's spread-delete).
         val localOffsets: MutableSet<Long> = split.inlinedDeletedRowPositions.toMutableSet()
         val globalRowIds: MutableSet<Long> = mutableSetOf()
+        // Partial (cross-snapshot compacted) data file: drop file-local positions whose
+        // _ducklake_internal_snapshot_id exceeds the read snapshot — same file-local-offset
+        // vocabulary as DuckLake-spec deletes, so they merge into localOffsets.
+        split.snapshotFilterMax?.let { filterMax ->
+            localOffsets.addAll(DucklakeDeleteFileReader.readSnapshotDropPositions(
+                    fileSystem, split.dataFilePath, split.footerSize, filterMax,
+                    parquetReaderOptions, fileFormatDataSourceStats))
+        }
         for (deleteFilePath in split.deleteFilePaths) {
             if (isPuffinPath(deleteFilePath)) {
                 localOffsets.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
@@ -1063,7 +1072,10 @@ class DucklakePageSourceProvider @Inject constructor(
          * fix in `.ai/kotlin-port/BEFORE-RESUME.md`).
          */
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
-            split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty()
+            split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty() ||
+                    // A partial-file snapshot filter drops rows by file-local position too, so the
+                    // reader must stream contiguously (no row-group pruning) for positions to align.
+                    split.snapshotFilterMax != null
 
         private fun isPuffinPath(path: String): Boolean =
             // DuckLake's delete-file path always ends with .puffin when format='puffin'

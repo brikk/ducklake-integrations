@@ -78,12 +78,13 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     dead files (absolute paths); cleanup drains them age-gated, resolving both absolute (ours) and
     root-relative (DuckLake's) scheduled paths. v1 leaves dead dropped-table/schema/view METADATA
     rows (harmless dangling; no file leak) — a tidy-up follow-up.
-  • **partial_max read gate** (`TestDucklakePartialFileGuard`) — cross-snapshot compacted files
-    (DuckDB `merge_adjacent_files`) carry per-row `_ducklake_internal_snapshot_id`; correct read at
-    `S` filters `<= S`, needed when `partial_max > S`. We ignored it → time-travel over-inclusion.
-    Now GATED: split manager rejects a read when an active file's `partial_max > snapshotId` (loud
-    error, not wrong rows); reads at/above pass. Full per-row filter is the follow-up (+ hard
-    prereq before EMITTING compacted files).
+  • **partial_max read filter** — cross-snapshot compacted files (DuckDB `merge_adjacent_files`)
+    carry per-row `_ducklake_internal_snapshot_id`; correct read at `S` keeps `<= S`, needed when
+    `partial_max > S`. ✅ DATA files now FILTERED (2026-06-29): split carries `snapshotFilterMax`,
+    page source reads the column + drops positions `> S` via the delete-filter set; time-travel of a
+    DuckDB-compacted table is correct (`TestDucklakePartialFileFilter`, cross-engine via real
+    `merge_adjacent_files`). Partial DELETE files still GATED (`TestDucklakePartialFileGuard`) — the
+    symmetric filter is the remaining follow-up. **Compaction read side is now unblocked.**
   • **dead-table metadata GC** — expire now also deletes the table_id-keyed metadata rows of
     fully-expired dropped tables (reusing validated deadTableIds). Dead schema/view/macro rows +
     dynamic inlined tables still deferred (harmless dangling).

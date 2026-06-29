@@ -20,19 +20,15 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * Guard for cross-snapshot compacted ("partial") files. DuckLake's `merge_adjacent_files` can merge
- * rows from multiple snapshots into one Parquet file that physically carries each row's origin
- * snapshot in a `_ducklake_internal_snapshot_id` column; the file's `ducklake_data_file.partial_max`
- * records the MAX such snapshot. A correct read at snapshot S must filter
- * `_ducklake_internal_snapshot_id <= S` — which this connector does not yet do. So rather than
- * silently OVER-INCLUDE rows newer than S, the split manager rejects a read whose snapshot is below
- * a partial file's `partial_max` (see DESIGN-maintenance.md § 6). Reads at the latest snapshot (or
- * any S >= partial_max) need no filter and must still work.
+ * Guard for cross-snapshot consolidated DELETE files. Partial DATA files are now FILTERED on read
+ * (see [TestDucklakePartialFileFilter]); the one remaining unhandled case is a partial DELETE file
+ * (`ducklake_delete_file.partial_max` set) — its deletions span snapshots and applying it at an
+ * older snapshot would over-delete. Until per-row delete-snapshot filtering lands, a time-travel
+ * read below such a delete file's `partial_max` is rejected rather than returning wrong rows.
  *
- * We can't produce a partial file from Trino (the connector never runs merge_adjacent_files and
- * gates its writes), so we simulate the catalog state DuckLake would leave — set `partial_max`
- * directly on the data file — and assert the connector's gate fires for time-travel below it and
- * stays out of the way otherwise.
+ * We simulate the catalog state by setting `partial_max` directly on a delete file (we can't
+ * produce a consolidated partial delete file from Trino), and assert the gate fires below it and
+ * stays out of the way at/above it. See DESIGN-maintenance.md § 6.
  *
  * SAME_THREAD: writes to the shared isolated catalog.
  */
@@ -41,37 +37,34 @@ class TestDucklakePartialFileGuard : AbstractDucklakeIntegrationTest() {
     override fun isolatedCatalogName(): String = "partial-file-guard"
 
     @Throws(Exception::class)
-    private fun setPartialMax(tableName: String, beginSnapshot: Long, partialMax: Long) {
+    private fun setDeleteFilePartialMax(tableName: String, partialMax: Long) {
         openCatalogConnection().use { conn ->
             conn.prepareStatement(
-                    "UPDATE ducklake_data_file SET partial_max = ? "
-                            + "WHERE begin_snapshot = ? AND table_id = "
+                    "UPDATE ducklake_delete_file SET partial_max = ? WHERE table_id = "
                             + "(SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL)").use { ps ->
                 ps.setLong(1, partialMax)
-                ps.setLong(2, beginSnapshot)
-                ps.setString(3, tableName)
-                assertThat(ps.executeUpdate()).`as`("partial_max applied to the data file").isEqualTo(1)
+                ps.setString(2, tableName)
+                assertThat(ps.executeUpdate()).`as`("partial_max applied to the delete file").isGreaterThanOrEqualTo(1)
             }
         }
     }
 
     @Test
     @Throws(Exception::class)
-    fun timeTravelBelowPartialMaxIsRejected() {
-        val table = "test_schema.partial_guard_reject"
+    fun timeTravelBelowPartialDeleteMaxIsRejected() {
+        val table = "test_schema.partial_del_reject"
         try {
-            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
-            val s1 = computeScalar("SELECT max(snapshot_id) FROM \"partial_guard_reject\$snapshots\"") as Long
-            computeActual("INSERT INTO $table VALUES (2, 'b')")
-            val s2 = computeScalar("SELECT max(snapshot_id) FROM \"partial_guard_reject\$snapshots\"") as Long
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
+            computeActual("DELETE FROM $table WHERE id = 2")   // writes a delete file (begin = s2)
+            val s2 = computeScalar("SELECT max(snapshot_id) FROM \"partial_del_reject\$snapshots\"") as Long
 
-            // Simulate: the file written at s1 is now a partial file holding rows up to s2.
-            setPartialMax("partial_guard_reject", beginSnapshot = s1, partialMax = s2)
+            // Simulate the delete file being a consolidated one holding deletions past s2.
+            setDeleteFilePartialMax("partial_del_reject", partialMax = s2 + 1)
 
-            // Reading AS OF s1 would over-include the s2 rows in that file → must be gated.
-            assertThatThrownBy { computeActual("SELECT * FROM $table FOR VERSION AS OF $s1") }
-                    .hasMessageContaining("partial")
-                    .hasMessageContaining("snapshot $s1")
+            // Read AS OF s2 (where the delete file is active); partial_max > s2 → gated.
+            assertThatThrownBy { computeActual("SELECT * FROM $table FOR VERSION AS OF $s2") }
+                    .hasMessageContaining("delete file")
+                    .hasMessageContaining("snapshot $s2")
         }
         finally {
             tryDropTable(table)
@@ -80,20 +73,17 @@ class TestDucklakePartialFileGuard : AbstractDucklakeIntegrationTest() {
 
     @Test
     @Throws(Exception::class)
-    fun latestReadNotGatedWhenSnapshotAtOrAbovePartialMax() {
-        val table = "test_schema.partial_guard_latest"
+    fun latestReadNotGatedByPartialDelete() {
+        val table = "test_schema.partial_del_latest"
         try {
-            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
-            val s1 = computeScalar("SELECT max(snapshot_id) FROM \"partial_guard_latest\$snapshots\"") as Long
-            computeActual("INSERT INTO $table VALUES (2, 'b')")
-            val s2 = computeScalar("SELECT max(snapshot_id) FROM \"partial_guard_latest\$snapshots\"") as Long
-
-            // partial_max == s2: at the latest snapshot every row in the file is valid → no filter
-            // needed → no gate.
-            setPartialMax("partial_guard_latest", beginSnapshot = s1, partialMax = s2)
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
+            computeActual("DELETE FROM $table WHERE id = 2")
+            val s2 = computeScalar("SELECT max(snapshot_id) FROM \"partial_del_latest\$snapshots\"") as Long
+            // partial_max == latest: at the latest snapshot every deletion is valid → no gate.
+            setDeleteFilePartialMax("partial_del_latest", partialMax = s2)
 
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
-                    .`as`("read at latest (snapshot >= partial_max) is not gated").containsExactly(1, 2)
+                    .containsExactly(1, 3)
         }
         finally {
             tryDropTable(table)
@@ -102,12 +92,11 @@ class TestDucklakePartialFileGuard : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun normalTableNeverGated() {
-        val table = "test_schema.partial_guard_normal"
+        val table = "test_schema.partial_normal"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
-            val s1 = computeScalar("SELECT max(snapshot_id) FROM \"partial_guard_normal\$snapshots\"") as Long
+            val s1 = computeScalar("SELECT max(snapshot_id) FROM \"partial_normal\$snapshots\"") as Long
             computeActual("INSERT INTO $table VALUES (2, 'b')")
-            // No partial_max set anywhere → time travel and latest both read normally.
             assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $s1").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1)
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(2L)

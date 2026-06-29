@@ -328,17 +328,15 @@ Improvements, Inlined-Read Type Gaps).
   Parquet reader the same way we do for data files? Saves IO on narrow predicates
   (e.g. single `pos` value in a MERGE plan). Scoping spike against Trino's
   `ConnectorPageSource` filter-pushdown surface.
-- **partial_max time-travel correctness** — ⚠️→✅ GATED 2026-06-29 (full filter still open).
-  `ducklake_data_file` / `ducklake_delete_file` carry `partial_max BIGINT` for **cross-snapshot
-  compacted files** (DuckLake's `merge_adjacent_files`): a correct read at snapshot `S` filters the
-  file's physical `_ducklake_internal_snapshot_id <= S`, needed only when `partial_max > S`. We
-  ignored it → time-travel over-inclusion. `DucklakeSplitManager` now **rejects** a read when an
-  active file's `partial_max > snapshotId` (`catalog.hasPartialFilesRequiringSnapshotFilter`) — a
-  loud `NOT_SUPPORTED` instead of wrong rows; reads at/above `partial_max` (incl. the latest) pass.
-  `TestDucklakePartialFileGuard`. **Still open (follow-up):** the full per-row filter (project
-  `_ducklake_internal_snapshot_id`, push `<= S`) so time-travel of compacted tables WORKS rather
-  than erroring — and the hard prerequisite before we EMIT compacted files. See
-  [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+- **partial_max time-travel correctness** — ✅ DATA files FILTERED 2026-06-29 (delete files still
+  gated). Cross-snapshot compacted files (DuckLake's `merge_adjacent_files`) physically carry per-row
+  `_ducklake_internal_snapshot_id`; a correct read at `S` keeps only rows `<= S`, needed when
+  `partial_max > S`. The connector now reads the column and drops file-local positions `> S` via the
+  `DeleteRowFilterTransform` set (split carries `snapshotFilterMax`); time-travel of a DuckDB-compacted
+  table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). **Still open:** the
+  symmetric **partial DELETE file** case (consolidated deletes spanning snapshots) is gated, not yet
+  filtered — `hasPartialDeleteFilesRequiringSnapshotFilter` rejects those reads
+  (`TestDucklakePartialFileGuard`). See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
 - **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
   Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field

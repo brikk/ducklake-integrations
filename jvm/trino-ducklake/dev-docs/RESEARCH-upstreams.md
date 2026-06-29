@@ -202,12 +202,15 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `f1af7dd5` (post-v0.2.1) | 2026-05-29 |
-| `ducklake/` | `v1.5-variegata`, `main` | (see archive entry 2026-05-19) | 2026-05-19 |
-| `ducklake-web/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
-| `pg_ducklake/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
-| `duckdb-quack/` | `main` | (see archive entry 2026-05-22) | 2026-05-22 |
-| `duckdb-web/` | `main` | (see archive entry 2026-05-19) | 2026-05-19 |
+| `datafusion-ducklake/` | `main` | `8abedc97` (post-v0.3.1) | 2026-06-29 |
+| `ducklake/` | `v1.5-variegata` | `c23aca43` | 2026-06-29 |
+| `ducklake/` | `main` | `96a4574d` | 2026-06-29 |
+| `ducklake-web/` | `main` | `82231c20` | 2026-06-29 |
+| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-06-29 |
+| `pg_ducklake/` | `main` | `e906c7ae` (v1.1.0; duckdb v1.5.4) | 2026-06-29 |
+| `duckdb-quack/` | `main` | `ebf88413` | 2026-06-29 |
+| `duckdb-quack/` | `v1.5-variegata` | `40de7bad` | 2026-06-29 |
+| `duckdb-web/` | `main` | (see archive entry 2026-05-22; not refreshed this run) | 2026-05-22 |
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The
