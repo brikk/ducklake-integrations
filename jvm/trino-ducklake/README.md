@@ -462,6 +462,7 @@ operates on whichever DuckLake catalog you invoke through.
 |-----------|-------------|
 | `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map, unpartitioned tables only). |
 | `flush_inlined_data(schema_name, table_name)` | Materialize a table's inlined rows (written cross-engine by DuckDB under `data_inlining_row_limit`) into a Parquet data file and clear the inlined rows, atomically. Unblocks DELETE/UPDATE/MERGE, which are gated while a table has inlined rows. No-op when nothing is inlined; not supported for partitioned tables yet. |
+| `remove_orphan_files(schema_name, table_name, [retention_threshold], [dry_run])` | Delete files under the table's data path that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — that grace period protects files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` logs what would be deleted and removes nothing. Touches storage only (no catalog mutation). Mirrors upstream `ducklake_delete_orphaned_files`. |
 
 ### `add_files`
 
@@ -493,6 +494,28 @@ partition value is derived (not the original column value) and can't be projecte
 back. Identity-partition columns missing from the parquet body are projected from
 the catalog's `ducklake_file_partition_value` row at read time, so hive-style
 external file imports round-trip through `SELECT`.
+
+### `remove_orphan_files`
+
+```sql
+CALL ducklake.system.remove_orphan_files(
+    schema_name => 'sales',
+    table_name => 'orders',
+    retention_threshold => '7d',    -- default '7d'; floored by ducklake.remove-orphan-files.min-retention
+    dry_run => false                -- default false; true logs candidates and deletes nothing
+)
+```
+
+Deletes files under the table's data path that no catalog row references — the residue of
+failed/aborted commits, which previously had no Trino-side remedy. Only files **older than the
+retention threshold** are removed; that grace period is what makes the op safe without a global
+lock (a file young enough to still be referenced by an in-flight, possibly cross-engine, writer is
+never touched), and the threshold is floored by the `ducklake.remove-orphan-files.min-retention`
+config so it can't be set dangerously low. The known set spans every data/delete-file path the
+catalog references at **any** snapshot (so end-snapshotted-but-not-yet-cleaned files are safe) plus
+files already scheduled for deletion; lance/vortex dataset *directories* are matched by prefix so
+their member files are never mistaken for orphans. Touches storage only — no snapshot, no catalog
+mutation. See [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
 
 ## Cross-Engine Compatibility
 
@@ -542,15 +565,18 @@ Snapshot resolution precedence: query clause > session property > catalog config
 
 ### Maintenance Operations
 
-Not available through Trino. Use DuckDB's ducklake extension against the shared PostgreSQL
-catalog for these operations. Planned for a future milestone:
+Partially available. `remove_orphan_files` (see [Procedures](#procedures)) and `ANALYZE`
+(stats recompute) ship today; the rest still require DuckDB's ducklake extension against the
+shared catalog. Design + roadmap in [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
+Still to come:
 
-- `ALTER TABLE ... EXECUTE optimize` (merge adjacent files)
+- `ALTER TABLE ... EXECUTE optimize` (merge adjacent files) — note: cross-snapshot merges require
+  honoring `partial_max` on read first (see DESIGN-maintenance.md § 6)
 - `ALTER TABLE ... EXECUTE rewrite_data_files`
 - `expire_snapshots` (connector procedure)
-- `cleanup_old_files` (connector procedure)
-- `remove_orphan_files` (connector procedure)
-- `recalc stats` (rescan data files and recompute table/column stats)
+- `cleanup_old_files` (connector procedure — drains scheduled-for-deletion files)
+- ✅ `remove_orphan_files` (connector procedure) — **shipped**
+- ✅ `recalc stats` — **shipped as `ANALYZE`**
 
 ### DDL
 

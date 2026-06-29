@@ -69,3 +69,12 @@ data class DucklakeDataFile(
         null,
     )
 }
+
+/**
+ * A raw storage-path reference held by the catalog (relative or absolute per [pathIsRelative]).
+ * Used by orphan-file detection to build the "known set" of paths the catalog owns for a table.
+ */
+data class DucklakeFilePathRef(
+    val path: String,
+    val pathIsRelative: Boolean,
+)

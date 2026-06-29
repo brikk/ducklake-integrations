@@ -745,24 +745,32 @@ decisions, just translation.
 
 ## M8: Maintenance Operations
 
-- [ ] Stats maintenance utilities:
-  - `recalc stats` procedure(s) to rescan active data files and recompute
-    table/column stats into catalog metadata.
-  - Decoupled from rewrite/merge; callable independently as maintenance.
-  - Regression tests for recompute-after-delete and recompute-after-schema-evolution
-    snapshots.
+**Design + snapshot-safety model: [DESIGN-maintenance.md](DESIGN-maintenance.md)** (two-phase
+deletion: catalog retirement only *schedules* files; physical unlink is a separate age-gated step).
+
+- [x] Stats maintenance — shipped as `ANALYZE` (rescans for the live row count, rebuilds column
+  stats from per-file stats; recompute-after-delete + drift-repair tested).
 - [ ] Maintenance verbs that map to Trino conventions:
-  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent)
+  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent) — **blocked on
+    the `partial_max` read gap** (cross-snapshot compacted files need
+    `_ducklake_internal_snapshot_id <= partial_max` time-travel filtering, which the connector
+    ignores today; see DESIGN-maintenance.md § 6 + TODO-READ-MODE). A within-single-snapshot
+    compaction variant could ship first.
   - `ALTER TABLE ... EXECUTE rewrite_data_files`
 - [ ] Connector procedures in `ducklake.system`:
-  - `expire_snapshots`
-  - `cleanup_old_files`
-  - `remove_orphan_files`
-  - `flush_inlined_data`
-- [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed).
+  - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
+    (no catalog mutation): deletes files under the table data path with no catalog row, older than
+    `retention_threshold` (default 7d, floored by `ducklake.remove-orphan-files.min-retention`).
+  - [ ] `expire_snapshots` — next: catalog mutation (delete snapshot rows + cascade) that
+    *schedules* dead files; needs new `WriteChange`/`InterveningChanges`/`ConflictMatrix`/
+    `LogicalConflictCheck` entries.
+  - [ ] `cleanup_old_files` — drains `ducklake_files_scheduled_for_deletion` past the grace period.
+  - [x] `flush_inlined_data` — shipped earlier.
+- [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed). v1 procs log
+  counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
-Suggested kickoff: `expire_snapshots` + `remove_orphan_files` (both catalog-driven,
-don't require a compaction engine).
+Done first: `remove_orphan_files` (storage-only, fixes the un-remediable-orphan hole). Next:
+`expire_snapshots` + `cleanup_old_files` (the catalog-driven reclaim pair).
 
 ## Commit-Failure File Cleanup
 

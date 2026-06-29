@@ -134,6 +134,7 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         val procedureBinder = Multibinder.newSetBinder(binder, Procedure::class.java)
         procedureBinder.addBinding().toProvider(DucklakeAddFilesProcedure::class.java).`in`(Scopes.SINGLETON)
         procedureBinder.addBinding().toProvider(DucklakeFlushInlinedDataProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeRemoveOrphanFilesProcedure::class.java).`in`(Scopes.SINGLETON)
 
         // Table functions (per-catalog, invoked as TABLE(<catalog>.system.<name>(...))).
         // DucklakeFunctionProvider routes each function's handle to its split processor.
