@@ -99,6 +99,44 @@ interface DucklakeCatalog {
     fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef>
 
     /**
+     * Snapshot ids eligible for expiry — every snapshot EXCEPT the latest (which is never
+     * expirable), optionally narrowed to those older than [olderThan] or to an explicit [versions]
+     * set. [olderThan] and [versions] are mutually exclusive; pass both null to list all
+     * non-latest snapshots. Returned ascending. Read-only (used by both the dry-run and the op).
+     */
+    fun listExpirableSnapshots(olderThan: java.time.Instant?, versions: Set<Long>?): List<Long>
+
+    /**
+     * Expire [snapshotIds] (must NOT include the latest snapshot). Deletes the snapshot +
+     * snapshot_changes rows, then cascade-deletes the now-dead data/delete files (+ their column
+     * stats, variant stats, and partition values), **scheduling** those files into
+     * `ducklake_files_scheduled_for_deletion` (stored as absolute paths) for a later age-gated
+     * [physical cleanup][listFilesScheduledForDeletion]. Liveness uses the half-open
+     * `[begin_snapshot, end_snapshot)` survivor test against the snapshots that REMAIN; files of a
+     * fully-expired dropped table are caught via that table's id too, so no data file leaks.
+     * A plain catalog transaction — no new snapshot, no `changes_made` entry (matches `ANALYZE`;
+     * expiry is destructive GC, not a forward commit).
+     *
+     * v1 reclaims the FILES (the space + the file-keyed stats); it does NOT yet GC the dead
+     * *metadata* rows of fully-expired dropped tables/schemas/views/macros (`ducklake_table`,
+     * `ducklake_column`, …). Those are harmless dangling rows — no surviving snapshot references
+     * them so they never surface in reads, and they leak no files — left to a follow-up. Not
+     * supported on the Quack backend yet.
+     */
+    fun expireSnapshots(snapshotIds: Set<Long>): ExpireSnapshotsResult
+
+    /**
+     * Files due for physical deletion: `ducklake_files_scheduled_for_deletion` rows whose
+     * `schedule_start` is strictly before [olderThan] (the grace period). Paths are returned raw;
+     * relative ones are resolved by the caller against the catalog `data_path` ROOT (NOT a table
+     * dir — see [DucklakeScheduledFile]).
+     */
+    fun listFilesScheduledForDeletion(olderThan: java.time.Instant): List<DucklakeScheduledFile>
+
+    /** Delete the schedule rows for [dataFileIds] (after their physical files were removed). */
+    fun removeScheduledFileRows(dataFileIds: Collection<Long>)
+
+    /**
      * Get the `file_format` of the most recent active data file for this table at the given
      * snapshot. Used by INSERT (and the insert leg of MERGE/UPDATE) to inherit the format of the
      * existing data when neither a session property nor a statement-level override is in play.

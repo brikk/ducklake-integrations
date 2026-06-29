@@ -99,4 +99,12 @@ class TestDucklakeConfig {
         val config = DucklakeConfig().setRemoveOrphanFilesMinRetention(Duration.valueOf("3d"))
         assertThat(config.getRemoveOrphanFilesMinRetention()).isEqualTo(Duration.valueOf("3d"))
     }
+
+    @Test
+    fun testMaintenanceMinRetentionDefaultAndParsing() {
+        // 7d default — floors expire_snapshots (retention mode) + cleanup_old_files grace period.
+        assertThat(DucklakeConfig().getMaintenanceMinRetention()).isEqualTo(Duration.valueOf("7d"))
+        assertThat(DucklakeConfig().setMaintenanceMinRetention(Duration.valueOf("2d")).getMaintenanceMinRetention())
+                .isEqualTo(Duration.valueOf("2d"))
+    }
 }

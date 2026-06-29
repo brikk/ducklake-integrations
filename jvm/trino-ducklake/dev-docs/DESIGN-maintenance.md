@@ -118,15 +118,22 @@ actually reclaim space. That is the next increment, built on the model above —
 
 ## 4. Roadmap (built on the same two-phase model)
 
-1. **`remove_orphan_files`** — this PR.
-2. **`expire_snapshots`** — delete `ducklake_snapshot`/`_changes` rows for snapshots chosen by
-   `retention_threshold` or explicit `versions`; never the latest. Cascade dead tables/views/macros
-   and **schedule** (don't delete) data/delete files whose `[begin,end)` window no longer contains a
-   surviving snapshot. New `WriteChange.ExpiredSnapshots` + matching `InterveningChanges` /
-   `ConflictMatrix` / `LogicalConflictCheck` entries (conflict against any intervening commit that
-   touched the files being retired).
-3. **`cleanup_old_files`** — drain `ducklake_files_scheduled_for_deletion` where
-   `schedule_start < now - grace`; physical delete + remove the schedule rows.
+1. ✅ **`remove_orphan_files`** — DONE.
+2. ✅ **`expire_snapshots`** — DONE. Deletes `ducklake_snapshot`/`_changes` rows for snapshots
+   chosen by `retention_threshold` (floored by `ducklake.maintenance.min-retention`) or an explicit
+   `snapshot_ids` array; never the latest. Cascade-deletes dead data/delete files (+ their column
+   stats, variant stats, partition values) whose `[begin,end)` window no longer contains a surviving
+   snapshot — dropped-table files caught via the dead-table id too — and **schedules** them (stored
+   ABSOLUTE) for cleanup. Catalog-wide (DuckLake snapshots are catalog versions). **CORRECTION to
+   the earlier assumption that this needs `WriteChange`/`ConflictMatrix` entries:** it does NOT —
+   expiry is destructive GC, so it runs as a **plain catalog transaction with no new snapshot**
+   (exactly like `ANALYZE`), bypassing the snapshot-mint + conflict machinery entirely. v1 reclaims
+   the FILES; it leaves dead *metadata* rows of fully-expired dropped tables/schemas/views as
+   harmless dangling rows (no surviving snapshot references them; no file leak) — a follow-up.
+3. ✅ **`cleanup_old_files`** — DONE. Drains `ducklake_files_scheduled_for_deletion` where
+   `schedule_start < now - retention` (floored by `ducklake.maintenance.min-retention`); deletes the
+   file then removes the row (a failed delete keeps its row for retry). Resolves connector-written
+   ABSOLUTE paths directly and DuckLake-written ROOT-relative paths against the catalog `data_path`.
 4. **`optimize` / `rewrite_data_files`** — compact small files; the rewrite registers new files and
    *schedules* the old ones (same two-phase reclaim). This is where the cross-engine concurrency
    matrix matters most; design when scheduled. **HARD PREREQUISITE: `partial_max` (see § 6)** —

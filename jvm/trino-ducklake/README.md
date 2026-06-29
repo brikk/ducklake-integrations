@@ -463,6 +463,8 @@ operates on whichever DuckLake catalog you invoke through.
 | `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map, unpartitioned tables only). |
 | `flush_inlined_data(schema_name, table_name)` | Materialize a table's inlined rows (written cross-engine by DuckDB under `data_inlining_row_limit`) into a Parquet data file and clear the inlined rows, atomically. Unblocks DELETE/UPDATE/MERGE, which are gated while a table has inlined rows. No-op when nothing is inlined; not supported for partitioned tables yet. |
 | `remove_orphan_files(schema_name, table_name, [retention_threshold], [dry_run])` | Delete files under the table's data path that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — that grace period protects files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` logs what would be deleted and removes nothing. Touches storage only (no catalog mutation). Mirrors upstream `ducklake_delete_orphaned_files`. |
+| `expire_snapshots([retention_threshold], [snapshot_ids], [dry_run])` | Catalog-wide. Remove old DuckLake snapshots and reclaim the data/delete files only they referenced. Select either by `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention`) or an explicit `snapshot_ids` ARRAY (not floored); the latest snapshot is never expirable. Plain catalog transaction (no new snapshot); only **schedules** dead files for deletion — run `cleanup_old_files` to reclaim the space. `dry_run => true` lists the snapshots that would be expired. Mirrors upstream `ducklake_expire_snapshots`. |
+| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
 
 ### `add_files`
 
@@ -516,6 +518,28 @@ catalog references at **any** snapshot (so end-snapshotted-but-not-yet-cleaned f
 files already scheduled for deletion; lance/vortex dataset *directories* are matched by prefix so
 their member files are never mistaken for orphans. Touches storage only — no snapshot, no catalog
 mutation. See [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
+
+### `expire_snapshots` + `cleanup_old_files`
+
+```sql
+-- Expire snapshots older than 30 days (catalog-wide), then reclaim the freed files.
+CALL ducklake.system.expire_snapshots(retention_threshold => '30d');
+CALL ducklake.system.cleanup_old_files(retention_threshold => '7d');
+
+-- Or expire specific snapshot ids (not floored by min-retention):
+CALL ducklake.system.expire_snapshots(snapshot_ids => ARRAY[12, 13, 14]);
+```
+
+`expire_snapshots` removes old DuckLake snapshots — which are **catalog-wide** versions, so this is
+a catalog-scoped procedure, not table-scoped — and reclaims the data/delete files that only those
+snapshots referenced (liveness is the half-open `[begin_snapshot, end_snapshot)` window against the
+surviving snapshots; the latest snapshot is never expirable). It is a plain catalog transaction
+(no new snapshot) that only **schedules** the dead files into `ducklake_files_scheduled_for_deletion`;
+`cleanup_old_files` is the second phase that physically deletes them once they age past the grace
+period. This two-phase split (schedule, then age-gated unlink) is what keeps deletion safe against
+in-flight readers on other engines — see [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
+v1 reclaims the files; dead *metadata* rows of fully-expired dropped tables/schemas/views are left
+as harmless dangling rows (a follow-up).
 
 ## Cross-Engine Compatibility
 
@@ -573,8 +597,8 @@ Still to come:
 - `ALTER TABLE ... EXECUTE optimize` (merge adjacent files) — note: cross-snapshot merges require
   honoring `partial_max` on read first (see DESIGN-maintenance.md § 6)
 - `ALTER TABLE ... EXECUTE rewrite_data_files`
-- `expire_snapshots` (connector procedure)
-- `cleanup_old_files` (connector procedure — drains scheduled-for-deletion files)
+- ✅ `expire_snapshots` (connector procedure) — **shipped**
+- ✅ `cleanup_old_files` (connector procedure — drains scheduled-for-deletion files) — **shipped**
 - ✅ `remove_orphan_files` (connector procedure) — **shipped**
 - ✅ `recalc stats` — **shipped as `ANALYZE`**
 
