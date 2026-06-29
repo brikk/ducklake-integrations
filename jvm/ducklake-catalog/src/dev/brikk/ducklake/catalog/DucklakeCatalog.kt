@@ -87,12 +87,12 @@ interface DucklakeCatalog {
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>
 
     /**
-     * True if the table has a **non-parquet (puffin) DELETE** file active at [snapshotId] whose
-     * `partial_max` exceeds [snapshotId] — a consolidated deletion-vector holding deletions from
-     * snapshots NEWER than this read, which the puffin reader does not yet snapshot-filter. PARQUET
-     * partial data AND delete files ARE handled on read (filtered via [DucklakeDataFile.partialMax]
-     * / [DucklakeDataFile.deleteFilePartialMax]); only the rarer partial *puffin* delete file
-     * remains gated. See dev-docs/DESIGN-maintenance.md § 6.
+     * True only if the table has a partial DELETE file active at [snapshotId] in a format this
+     * connector cannot snapshot-filter. Both PARQUET (filtered via `_ducklake_internal_snapshot_id`)
+     * and PUFFIN (each blob's embedded `ducklake-snapshot-id`) partial delete files are now handled
+     * on read, so this returns false for them; it only flags an unknown delete-file format, which
+     * [io.trino] validateDeleteFileFormats already rejects regardless of `partial_max`. Kept as a
+     * defensive double-gate. See dev-docs/DESIGN-maintenance.md § 6.
      */
     fun hasPartialDeleteFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean
 

@@ -427,8 +427,18 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         for (deleteFilePath in split.deleteFilePaths) {
             if (isPuffinPath(deleteFilePath)) {
-                localOffsets.addAll(DucklakePuffinDeleteReader.readDeletedPositions(
-                        fileSystem.newInputFile(toLocation(deleteFilePath))))
+                val inputFile = fileSystem.newInputFile(toLocation(deleteFilePath))
+                // Consolidated ("partial") puffin file holding deletions newer than this read →
+                // apply only the per-blob deletion vectors whose ducklake-snapshot-id <= the read
+                // snapshot. A non-partial file (no snapshot filter) reads the full union.
+                val snapshotFilter: Long? = split.deleteFileSnapshotFilters[deleteFilePath]
+                localOffsets.addAll(
+                        if (snapshotFilter != null) {
+                            DucklakePuffinDeleteReader.readDeletedPositions(inputFile, snapshotFilter)
+                        }
+                        else {
+                            DucklakePuffinDeleteReader.readDeletedPositions(inputFile)
+                        })
             }
             else {
                 val positions = readDeletedRowsFromFile(fileSystem, deleteFilePath, split)

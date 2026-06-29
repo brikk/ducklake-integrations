@@ -548,6 +548,20 @@ class DucklakeSplitManager @Inject constructor(
         }
     }
 
+    /**
+     * True when a data file's joined DELETE file is a cross-snapshot consolidated ("partial") file
+     * holding deletions NEWER than [snapshotId] in a format we snapshot-filter on read (parquet or
+     * puffin) — i.e. the page source must apply only the deletions recorded at/before [snapshotId].
+     */
+    private fun needsPartialDeleteSnapshotFilter(df: DucklakeDataFile, snapshotId: Long): Boolean {
+        val deletePartialMax = df.deleteFilePartialMax ?: return false
+        if (deletePartialMax <= snapshotId) {
+            return false
+        }
+        val deleteFormat = df.deleteFileFormat?.lowercase(Locale.ROOT)
+        return deleteFormat == "parquet" || deleteFormat == "puffin"
+    }
+
     private data class PartitionKeyMapping(val keyIndex: Int, val transform: DucklakePartitionTransform, val arity: java.util.OptionalInt)
 
     private fun createMergedSplit(
@@ -577,12 +591,12 @@ class DucklakeSplitManager @Inject constructor(
                     tableDataPath)
             val hint: Long = df.deleteFileFooterSize ?: 0L
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
-            // Consolidated PARQUET delete file holding deletions newer than this read → filter its
-            // positions by _ducklake_internal_snapshot_id <= snapshotId. (Puffin partial delete
-            // files are gated upstream in validateNoUnfilterablePartialFiles.)
-            val deletePartialMax = df.deleteFilePartialMax
-            if (deletePartialMax != null && deletePartialMax > snapshotId
-                    && "parquet".equals(df.deleteFileFormat, ignoreCase = true)) {
+            // Consolidated ("partial") delete file holding deletions newer than this read → filter
+            // its deletions to those recorded at/before snapshotId. PARQUET filters by the
+            // file's _ducklake_internal_snapshot_id column; PUFFIN by each blob's embedded
+            // ducklake-snapshot-id (DucklakePuffinDeleteReader). Both consumed via this map by the
+            // page source.
+            if (needsPartialDeleteSnapshotFilter(df, snapshotId)) {
                 deleteFileSnapshotFilters[resolvedDeletePath] = snapshotId
             }
         }
@@ -629,20 +643,17 @@ class DucklakeSplitManager @Inject constructor(
     }
 
     /**
-     * Gate the one partial-file case not yet handled on read: a cross-snapshot consolidated DELETE
-     * file whose `partial_max > snapshotId` holds deletions newer than this read. Partial DATA
-     * files ARE handled — their rows are filtered via [DucklakeSplit.snapshotFilterMax]. Applying a
-     * partial delete file correctly needs per-row snapshot filtering of the delete positions (not
-     * yet implemented), so rather than over-delete, reject. Reads at/above the delete file's
-     * partial_max (incl. the latest snapshot) pass. See dev-docs/DESIGN-maintenance.md § 6.
+     * Defensive gate for a partial DELETE file in a format we cannot snapshot-filter. Partial DATA
+     * files and partial PARQUET + PUFFIN delete files are all filtered on read now (via
+     * [DucklakeSplit.snapshotFilterMax] / [DucklakeSplit.deleteFileSnapshotFilters]); this only
+     * fires for an unknown delete-file format (which [validateDeleteFileFormats] also rejects). See
+     * dev-docs/DESIGN-maintenance.md § 6.
      */
     private fun validateNoUnfilterablePartialFiles(tableHandle: DucklakeTableHandle) {
         if (catalog.hasPartialDeleteFilesRequiringSnapshotFilter(tableHandle.tableId, tableHandle.snapshotId)) {
             throw TrinoException(NOT_SUPPORTED, String.format(
-                    "Table %s.%s has a cross-snapshot consolidated delete file whose deletions extend beyond " +
-                            "snapshot %d. Time-travel reads across such partial delete files are not yet supported; " +
-                            "read at the latest snapshot, or expire old snapshots. (Partial delete files are produced " +
-                            "by DuckLake's delete consolidation / merge.)",
+                    "Table %s.%s has a cross-snapshot consolidated delete file in an unsupported format whose " +
+                            "deletions extend beyond snapshot %d. Read at the latest snapshot, or expire old snapshots.",
                     tableHandle.schemaName,
                     tableHandle.tableName,
                     tableHandle.snapshotId))

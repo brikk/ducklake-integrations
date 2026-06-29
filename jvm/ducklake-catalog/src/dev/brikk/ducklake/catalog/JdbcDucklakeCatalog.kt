@@ -407,9 +407,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .and(activeAt(delf, snapshotId))
             .and(delf.PARTIAL_MAX.isNotNull)
             .and(delf.PARTIAL_MAX.gt(snapshotId))
-            // PARQUET partial delete files are filtered on read (DucklakeSplit.deleteFileSnapshotFilters);
-            // only non-parquet (puffin deletion-vector) partial delete files remain unhandled → gated.
-            .and(delf.FORMAT.isNull.or(DSL.lower(delf.FORMAT).ne("parquet")))
+            // Both PARQUET (via _ducklake_internal_snapshot_id) and PUFFIN (via each blob's embedded
+            // ducklake-snapshot-id) partial delete files are now snapshot-filtered on read
+            // (DucklakeSplit.deleteFileSnapshotFilters). Anything else is an unknown format that
+            // validateDeleteFileFormats already rejects — this stays only as a defensive double-gate.
+            .and(delf.FORMAT.isNotNull)
+            .and(DSL.lower(delf.FORMAT).ne("parquet"))
+            .and(DSL.lower(delf.FORMAT).ne("puffin"))
             .limit(1)
             .fetch().isNotEmpty
     }

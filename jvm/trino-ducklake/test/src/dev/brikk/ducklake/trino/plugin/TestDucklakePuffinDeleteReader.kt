@@ -149,6 +149,64 @@ class TestDucklakePuffinDeleteReader {
             .hasMessageContaining("vector_size")
     }
 
+    // ---- PFA1 container (consolidated / "partial" puffin delete file) ----
+
+    @Test
+    fun containerWithSnapshotTaggedBlobsFiltersByReadSnapshot() {
+        // Two cumulative deletion-vector blobs: snapshot 10 deletes {1}, snapshot 20 deletes {1,2}.
+        val container = buildContainer(listOf(
+            10L to mapOf(0 to longArrayOf(1L)),
+            20L to mapOf(0 to longArrayOf(1L, 2L))))
+
+        // Read AS OF 10 → only the first blob's deletions.
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 10L)).containsExactlyInAnyOrder(1L)
+        // Read AS OF 15 → still only snapshot-10 deletions (snapshot 20 > 15 is excluded).
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 15L)).containsExactlyInAnyOrder(1L)
+        // Read AS OF 20 → both.
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 20L)).containsExactlyInAnyOrder(1L, 2L)
+        // Unfiltered (latest) → the full union.
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", null)).containsExactlyInAnyOrder(1L, 2L)
+    }
+
+    @Test
+    fun containerReadBelowEarliestSnapshotDeletesNothing() {
+        val container = buildContainer(listOf(
+            10L to mapOf(0 to longArrayOf(1L)),
+            20L to mapOf(0 to longArrayOf(1L, 2L))))
+        // Read AS OF 9 — before any consolidated deletion → empty.
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 9L)).isEmpty()
+    }
+
+    @Test
+    fun containerWithoutSnapshotsReturnsFullUnionEvenWhenFiltered() {
+        // A container whose blobs carry NO ducklake-snapshot-id (has_embedded_snapshots = false):
+        // every deletion already applied, so a filter is a no-op.
+        val container = buildContainer(listOf(
+            null to mapOf(0 to longArrayOf(1L)),
+            null to mapOf(0 to longArrayOf(2L, 3L))))
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 5L)).containsExactlyInAnyOrder(1L, 2L, 3L)
+        assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", null)).containsExactlyInAnyOrder(1L, 2L, 3L)
+    }
+
+    @Test
+    fun containerMixingSnapshotTaggedAndUntaggedBlobsIsRejected() {
+        val container = buildContainer(listOf(
+            10L to mapOf(0 to longArrayOf(1L)),
+            null to mapOf(0 to longArrayOf(2L))))
+        assertThatThrownBy { DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 10L) }
+            .isInstanceOf(IOException::class.java)
+            .hasMessageContaining("mixes deletion vectors")
+    }
+
+    @Test
+    fun bareBlobIsTreatedAsAnUntaggedSingleBlobFile() {
+        // A bare (non-container) blob decoded through decodeFile = the whole file is one untagged
+        // blob; a snapshot filter is a no-op (its snapshot is the catalog begin_snapshot).
+        val bare = buildBlob(mapOf(0 to longArrayOf(7L, 8L)))
+        assertThat(DucklakePuffinDeleteReader.decodeFile(bare, "bare.puffin", 3L)).containsExactlyInAnyOrder(7L, 8L)
+        assertThat(DucklakePuffinDeleteReader.decodeFile(bare, "bare.puffin", null)).containsExactlyInAnyOrder(7L, 8L)
+    }
+
     @Test
     fun testHelperBuildsBlobsTheReaderAccepts() {
         // Sanity: every other test depends on buildBlob producing a valid blob; this is the
@@ -166,6 +224,49 @@ class TestDucklakePuffinDeleteReader {
 
     companion object {
         private val DELETION_VECTOR_MAGIC = byteArrayOf(0xD1.toByte(), 0xD3.toByte(), 0x39.toByte(), 0x64.toByte())
+        private val PUFFIN_MAGIC = byteArrayOf('P'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte(), '1'.code.toByte())
+
+        /**
+         * Build a PFA1 puffin CONTAINER from a list of (snapshotId?, bitmaps) blobs, mirroring
+         * `DuckLakePuffinWriter::Write` (multi-blob branch): `Magic Blob1..BlobN Footer`, footer =
+         * `Magic | JSON | payloadSize(4 LE) | flags(4=0) | Magic`. A null snapshotId omits the
+         * `ducklake-snapshot-id` property (an untagged blob).
+         */
+        @Throws(IOException::class)
+        private fun buildContainer(blobs: List<Pair<Long?, Map<Int, LongArray>>>): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            out.write(PUFFIN_MAGIC)
+            data class Info(val snapshotId: Long?, val offset: Int, val length: Int)
+            val infos = mutableListOf<Info>()
+            var offset = PUFFIN_MAGIC.size
+            for ((snap, bitmaps) in blobs) {
+                val blobBytes = buildBlob(bitmaps)
+                infos.add(Info(snap, offset, blobBytes.size))
+                out.write(blobBytes)
+                offset += blobBytes.size
+            }
+            val json = buildString {
+                append("{\"blobs\":[")
+                infos.forEachIndexed { i, info ->
+                    if (i > 0) append(",")
+                    append("{\"type\":\"deletion-vector-v1\",\"offset\":").append(info.offset)
+                    append(",\"length\":").append(info.length)
+                    if (info.snapshotId != null) {
+                        append(",\"properties\":{\"ducklake-snapshot-id\":\"").append(info.snapshotId).append("\"}")
+                    }
+                    append("}")
+                }
+                append("],\"properties\":{\"created-by\":\"ducklake\"}}")
+            }
+            val payload = json.toByteArray(Charsets.UTF_8)
+            out.write(PUFFIN_MAGIC)
+            out.write(payload)
+            val tail = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(payload.size).array()
+            out.write(tail)
+            out.write(ByteArray(4)) // flags = 0
+            out.write(PUFFIN_MAGIC)
+            return out.toByteArray()
+        }
 
         /**
          * Build a DuckLake puffin delete blob from the given bitmaps. Mirrors
