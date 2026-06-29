@@ -161,16 +161,23 @@ when `partial_max > S`** (`begin_snapshot = MIN`, `partial_max = MAX` of that co
 bound is implicit via the catalog's `begin_snapshot <= S` visibility). Partial *delete* files work
 the same way (a deletion takes effect at `S` iff its embedded snapshot id `<= S`).
 
-**v1 status — a GATE, not the full filter (shipped 2026-06-29).** Rather than silently over-include
-rows, `DucklakeSplitManager` now rejects a read when any data/delete file active at the scan
-snapshot has `partial_max > snapshotId` (`catalog.hasPartialFilesRequiringSnapshotFilter`). This
-turns the silent correctness bug into a loud `NOT_SUPPORTED`. Reads at the latest snapshot (or any
-`S >= partial_max`) need no filter and pass. `TestDucklakePartialFileGuard` pins it (reject below
-partial_max, allow at/above, never gate a normal table). The **full per-row filter** (project the
-`_ducklake_internal_snapshot_id` column and push `<= S`) remains the follow-up and is the hard
-prerequisite for shipping cross-snapshot compaction (`optimize` / `rewrite_data_files`) — until it
-lands we must not EMIT partial files either, or we'd manufacture the same situation. (A
-within-single-snapshot compaction variant sidesteps `partial_max` and could ship first.)
+**Status — DATA-file filter SHIPPED 2026-06-29; partial DELETE files still gated.**
+- **Partial data files: filtered (correct).** When a data file's `partial_max > scanSnapshot`,
+  `DucklakeSplitManager` sets `DucklakeSplit.snapshotFilterMax = scanSnapshot`; the page source reads
+  the file's `_ducklake_internal_snapshot_id` column and drops the file-local positions whose value
+  exceeds it, folding them into the same `DeleteRowFilterTransform` position set as deletes (so it
+  inherits the contiguous-position invariant — pushdown is disabled for these files). Time-travel of
+  a DuckDB-compacted table now returns the CORRECT rows. Pinned cross-engine by
+  `TestDucklakePartialFileFilter` (DuckDB `merge_adjacent_files` produces the partial file; Trino
+  reads at first-insert → 100 rows, at partial_max / latest → 200).
+- **Partial delete files: still GATED.** A consolidated delete file with `partial_max > scanSnapshot`
+  would over-delete; `hasPartialDeleteFilesRequiringSnapshotFilter` rejects the read
+  (`TestDucklakePartialFileGuard`). The symmetric fix (project the delete file's
+  `_ducklake_internal_snapshot_id` and drop delete positions `> S`) is the remaining follow-up.
+
+**Compaction unblocked (read side).** Because the connector now reads partial data files correctly,
+a future `optimize` / `rewrite_data_files` that emits cross-snapshot-merged files is read-safe
+(modulo the partial-delete-file follow-up if compacting tables with consolidated deletes).
 
 ## 5. Upstream parity / cross-engine notes
 

@@ -83,6 +83,12 @@ object DucklakeDeleteFileReader {
     const val SPEC_POSITION_COLUMN: String = "pos"
 
     /**
+     * Physical per-row column DuckLake writes into a cross-snapshot compacted ("partial") data
+     * file: each row's origin snapshot id. A read at snapshot S keeps only rows whose value <= S.
+     */
+    const val INTERNAL_SNAPSHOT_ID_COLUMN: String = "_ducklake_internal_snapshot_id"
+
+    /**
      * Non-null values of one delete file, unordered and dedup'd, plus their vocabulary:
      * [global] = true for global row ids (`row_id` schema), false for file-local offsets
      * (DuckLake-spec `pos` schema).
@@ -125,7 +131,8 @@ object DucklakeDeleteFileReader {
                     parquetMetadata.fileMetaData.schema,
                     getColumnIO(parquetMetadata.fileMetaData.schema, parquetMetadata.fileMetaData.schema))
             val parquetReader = createParquetReader(
-                    dataSource, inputFile.length(), parquetMetadata, deleteFileColumn, memoryContext, parquetReaderOptions)
+                    dataSource, inputFile.length(), parquetMetadata,
+                    Column(deleteFileColumn.columnName, deleteFileColumn.field), memoryContext, parquetReaderOptions)
 
             val deletedRows: Set<Long> = readNonNullValues(ParquetPageSource(parquetReader), deleteFileColumn.columnType)
             val global: Boolean = deleteFileColumn.columnName.equals(TRINO_ROW_ID_COLUMN, ignoreCase = true)
@@ -137,6 +144,67 @@ object DucklakeDeleteFileReader {
         catch (e: RuntimeException) {
             throw closeAndWrap(dataSource, deleteFilePath, e)
         }
+    }
+
+    /**
+     * Reads the `_ducklake_internal_snapshot_id` column of a cross-snapshot compacted ("partial")
+     * DATA file and returns the FILE-LOCAL row positions whose origin snapshot id exceeds
+     * [snapshotFilterMax] — i.e. rows written by a snapshot NEWER than the read, which a
+     * time-travel read at that snapshot must drop. Positions are physical row indices in file
+     * order, matching the file-local-offset vocabulary [DeleteRowFilterTransform] applies. Returns
+     * empty if the column is absent (file isn't actually partial).
+     */
+    @Throws(IOException::class)
+    fun readSnapshotDropPositions(
+            fileSystem: TrinoFileSystem,
+            dataFilePath: String,
+            footerSizeHint: Long,
+            snapshotFilterMax: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats): Set<Long> {
+        val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
+        val memoryContext = newSimpleAggregatedMemoryContext()
+        var dataSource: ParquetDataSource? = null
+        try {
+            dataSource = createDataSource(inputFile, OptionalLong.empty(), parquetReaderOptions, memoryContext, stats)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
+            val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            val schema = parquetMetadata.fileMetaData.schema
+            val messageColumnIO = getColumnIO(schema, schema)
+            val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN) ?: return emptySet()
+            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
+                    .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
+            val parquetReader = createParquetReader(
+                    dataSource, inputFile.length(), parquetMetadata,
+                    Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
+            return collectPositionsAbove(ParquetPageSource(parquetReader), snapshotFilterMax)
+        }
+        catch (e: IOException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+        catch (e: RuntimeException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+    }
+
+    /** File-local positions whose BIGINT value is strictly greater than [threshold], in file order. */
+    private fun collectPositionsAbove(pageSource: ConnectorPageSource, threshold: Long): Set<Long> {
+        val positions = mutableSetOf<Long>()
+        var base = 0L
+        pageSource.use { source ->
+            while (!source.isFinished) {
+                val page = source.nextSourcePage ?: continue
+                val block = page.getBlock(0)
+                for (i in 0 until block.positionCount) {
+                    if (!block.isNull(i) && BIGINT.getLong(block, i) > threshold) {
+                        positions.add(base + i)
+                    }
+                }
+                base += block.positionCount
+            }
+        }
+        return positions
     }
 
     /** Best-effort close of [dataSource] (suppressing its failure into [e]), then wrap [e]. */
@@ -158,7 +226,7 @@ object DucklakeDeleteFileReader {
             dataSource: ParquetDataSource,
             fileLength: Long,
             parquetMetadata: ParquetMetadata,
-            deleteFileColumn: DeleteFileColumn,
+            column: Column,
             memoryContext: io.trino.memory.context.AggregatedMemoryContext,
             parquetReaderOptions: ParquetReaderOptions): ParquetReader {
         val fileMetadata = parquetMetadata.fileMetaData
@@ -181,7 +249,7 @@ object DucklakeDeleteFileReader {
         val dataSourceId: ParquetDataSourceId = dataSource.id
         return ParquetReader(
                 Optional.ofNullable(fileMetadata.createdBy),
-                ImmutableList.of(Column(deleteFileColumn.columnName, deleteFileColumn.field)),
+                ImmutableList.of(column),
                 false,
                 rowGroups,
                 dataSource,

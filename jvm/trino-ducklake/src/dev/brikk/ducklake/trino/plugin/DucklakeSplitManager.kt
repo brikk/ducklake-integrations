@@ -162,7 +162,7 @@ class DucklakeSplitManager @Inject constructor(
             // (a data file can accumulate multiple delete files across snapshots)
             val groupedFiles: Map<Long, List<DucklakeDataFile>> = dataFiles.groupBy { it.dataFileId }
             parquetSplits = groupedFiles.values
-                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId) }
+                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId) }
         }
 
         // Empty table (no data files at all) with an inlined data table: emit an inlined
@@ -557,7 +557,8 @@ class DucklakeSplitManager @Inject constructor(
             activePartitionSpec: Optional<DucklakePartitionSpec>,
             partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>,
             nameMapsByMappingId: Map<Long, Map<Long, String>>,
-            inlinedDeletesByFileId: Map<Long, Set<Long>>): DucklakeSplit {
+            inlinedDeletesByFileId: Map<Long, Set<Long>>,
+            snapshotId: Long): DucklakeSplit {
         val primary: DucklakeDataFile = dataFileGroup.first()
         val dataFilePath: String = pathResolver.resolveFilePath(primary.path, primary.pathIsRelative, tableDataPath)
 
@@ -593,6 +594,12 @@ class DucklakeSplitManager @Inject constructor(
 
         val affinityKey: Optional<String> = splitAffinityProvider.getKey(dataFilePath, 0L, primary.fileSizeBytes)
 
+        // Partial (cross-snapshot compacted) file holding rows newer than this read → the page
+        // source must drop rows whose _ducklake_internal_snapshot_id > snapshotId. partial_max <=
+        // snapshotId means every row is valid → no filter.
+        val partialMax: Long? = primary.partialMax
+        val snapshotFilterMax: Long? = if (partialMax != null && partialMax > snapshotId) snapshotId else null
+
         return DucklakeSplit(
                 dataFilePath,
                 deleteFilePaths,
@@ -607,27 +614,25 @@ class DucklakeSplitManager @Inject constructor(
                 fieldIdToParquetSourceName,
                 inlinedDeletedRowPositions,
                 affinityKey,
-                primary.beginSnapshot)
+                primary.beginSnapshot,
+                snapshotFilterMax)
     }
 
     /**
-     * Gate cross-snapshot compacted ("partial") files that this read can't yet filter correctly.
-     * A file with `partial_max > snapshotId` physically holds rows from snapshots NEWER than this
-     * read; reading it correctly needs a per-row `_ducklake_internal_snapshot_id <= snapshotId`
-     * filter (DuckLake's mechanism) that this connector does not yet apply. Rather than silently
-     * over-include those rows, reject the read with a clear error. Reads at the latest snapshot
-     * (or any `snapshotId >= partial_max`) need no filter and pass. Such files only appear when
-     * DuckLake's `merge_adjacent_files` ran on a shared catalog — see dev-docs/DESIGN-maintenance.md
-     * § 6.
+     * Gate the one partial-file case not yet handled on read: a cross-snapshot consolidated DELETE
+     * file whose `partial_max > snapshotId` holds deletions newer than this read. Partial DATA
+     * files ARE handled — their rows are filtered via [DucklakeSplit.snapshotFilterMax]. Applying a
+     * partial delete file correctly needs per-row snapshot filtering of the delete positions (not
+     * yet implemented), so rather than over-delete, reject. Reads at/above the delete file's
+     * partial_max (incl. the latest snapshot) pass. See dev-docs/DESIGN-maintenance.md § 6.
      */
     private fun validateNoUnfilterablePartialFiles(tableHandle: DucklakeTableHandle) {
-        if (catalog.hasPartialFilesRequiringSnapshotFilter(tableHandle.tableId, tableHandle.snapshotId)) {
+        if (catalog.hasPartialDeleteFilesRequiringSnapshotFilter(tableHandle.tableId, tableHandle.snapshotId)) {
             throw TrinoException(NOT_SUPPORTED, String.format(
-                    "Table %s.%s has a cross-snapshot compacted (partial) file whose rows extend beyond " +
-                            "snapshot %d. Time-travel reads of partial files require per-row snapshot filtering " +
-                            "that this connector does not yet support; read at the latest snapshot, or expire old " +
-                            "snapshots so the file is no longer partial. (Partial files are produced by DuckLake's " +
-                            "merge_adjacent_files.)",
+                    "Table %s.%s has a cross-snapshot consolidated delete file whose deletions extend beyond " +
+                            "snapshot %d. Time-travel reads across such partial delete files are not yet supported; " +
+                            "read at the latest snapshot, or expire old snapshots. (Partial delete files are produced " +
+                            "by DuckLake's delete consolidation / merge.)",
                     tableHandle.schemaName,
                     tableHandle.tableName,
                     tableHandle.snapshotId))
