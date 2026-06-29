@@ -89,6 +89,9 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         binder.bind(ConnectorSplitManager::class.java)
                 .to(ClassLoaderSafeConnectorSplitManager::class.java)
                 .`in`(Scopes.SINGLETON)
+        // Explicit self-binding so procedures (rewrite_data_files) can inject the concrete split
+        // manager to drive the real read path; JIT bindings are disabled.
+        binder.bind(DucklakeSplitManager::class.java).`in`(Scopes.SINGLETON)
 
         // Page source provider
         binder.bind(ConnectorPageSourceProviderFactory::class.java)
@@ -149,5 +152,6 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         procedureBinder.addBinding().toProvider(DucklakeRemoveOrphanFilesProcedure::class.java).`in`(Scopes.SINGLETON)
         procedureBinder.addBinding().toProvider(DucklakeExpireSnapshotsProcedure::class.java).`in`(Scopes.SINGLETON)
         procedureBinder.addBinding().toProvider(DucklakeCleanupOldFilesProcedure::class.java).`in`(Scopes.SINGLETON)
+        procedureBinder.addBinding().toProvider(DucklakeRewriteDataFilesProcedure::class.java).`in`(Scopes.SINGLETON)
     }
 }

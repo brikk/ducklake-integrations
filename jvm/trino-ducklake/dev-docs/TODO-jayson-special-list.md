@@ -90,10 +90,22 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   • **dead-table metadata GC** — expire now also deletes the table_id-keyed metadata rows of
     fully-expired dropped tables (reusing validated deadTableIds). Dead schema/view/macro rows +
     dynamic inlined tables still deferred (harmless dangling).
-  Remaining F6: **optimize/rewrite_data_files (the compaction WRITER)** — read side now unblocked
-  (partial data + parquet-delete files read correctly); a non-partial (Iceberg-style) v1 reuses the
-  expire/cleanup reclaim, a partial-emitting variant must POPULATE `partial_max` +
-  `_ducklake_internal_snapshot_id` on write. Plus: puffin partial-delete per-blob filter (rare); the
+  • **optimize/rewrite_data_files — the compaction WRITER (non-partial v1)** ✅ DONE (uncommitted,
+    pending review). `CALL system.rewrite_data_files(schema_name, table_name, file_size_threshold =>
+    '100MB')` reads a table's small parquet files through the REAL read path (so delete files /
+    partial_max / schema evolution all apply), writes one merged file, and atomically registers it +
+    end-snapshots the sources via the new `DucklakeCatalog.rewriteDataFiles` primitive. Key design
+    (DESIGN-maintenance.md § 7): modeled as `DeletedFromTable`+`InsertedIntoTable` so ALL conflict
+    machinery applies with ZERO spec-locked edits; row-count-preserving stats; a `readSnapshotId`
+    guard aborts non-retryably if a concurrent delete lands on a source after the read (the active-
+    file check alone wouldn't catch that). Gates: unpartitioned only, parquet + non-partial sources,
+    ≥2 candidates. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles` (4, incl. concurrent-delete
+    conflict), `TestDucklakeRewriteDataFiles` (5 e2e: compaction+time-travel, delete-applying,
+    partitioned reject, single-file no-op).
+  Remaining F6: **partial-emitting compaction variant** (POPULATE `partial_max` +
+  `_ducklake_internal_snapshot_id` on write, reclaim sources immediately — needs the WRITE side of
+  partial_max); rewrite_data_files follow-ups (partitioned tables; size-bounded multi-file output;
+  re-compacting already-partial sources). Plus: puffin partial-delete per-blob filter (rare); the
   deferred dead schema/view/macro metadata GC. stats-recalc already shipped as ANALYZE.
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,

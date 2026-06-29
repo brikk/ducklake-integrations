@@ -2942,6 +2942,131 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun rewriteDataFiles(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragments: List<DucklakeWriteFragment>,
+        readSnapshotId: Long,
+    ) {
+        if (sourceDataFileIds.isEmpty() || fragments.isEmpty()) {
+            return
+        }
+        executeWriteTransaction("rewrite data files for table $tableId") { tx ->
+            assertNoNewerDeleteOnRewriteSources(tx, sourceDataFileIds, readSnapshotId)
+            val retiredFileSize = sumActiveSourceFileSize(tx, tableId, sourceDataFileIds)
+
+            // Register the merged file(s): begin = newSnapshotId, ordinary (no partial_max). This
+            // also bumps table_stats record_count/file_size/next_row_id UP by the merged amounts and
+            // widens the per-column table stats (a no-op since merged ⊆ source range).
+            applyInsertFragments(tx, tableId, fragments)
+            endSnapshotRewriteSources(tx, tableId, sourceDataFileIds)
+            netRewriteStats(tx, tableId, fragments.sumOf { it.recordCount }, retiredFileSize)
+
+            // Recorded as delete + insert: reuses the full conflict machinery (LogicalConflictCheck
+            // verifies the sources are still active at commit → stale-read aborts non-retryably;
+            // ConflictMatrix aborts on concurrent drop/alter). No new snapshot-change vocabulary.
+            tx.recordChange(WriteChange.DeletedFromTable(tableId, sourceDataFileIds))
+            tx.recordChange(WriteChange.InsertedIntoTable(tableId, referencedColumnIds(fragments)))
+        }
+    }
+
+    /**
+     * Stale-read guard for [rewriteDataFiles]: a concurrent DELETE/MERGE attaches a delete file to a
+     * source WITHOUT end-snapshotting the data file, so the `DeletedFromTable` active-file check
+     * would miss it and the pre-built merged file (which didn't apply that delete) would resurrect
+     * the deleted rows. Abort non-retryably if any delete file on a source is newer than the
+     * snapshot the caller read at. Runs inside the action so it re-checks on every retry.
+     */
+    private fun assertNoNewerDeleteOnRewriteSources(
+        tx: DucklakeWriteTransaction,
+        sourceDataFileIds: Set<Long>,
+        readSnapshotId: Long,
+    ) {
+        val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
+        val hasNewerDelete: Boolean = tx.dsl().fetchExists(
+            DSL.selectOne()
+                .from(delfile)
+                .where(delfile.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(delfile.BEGIN_SNAPSHOT.gt(readSnapshotId)),
+        )
+        if (hasNewerDelete) {
+            throw LogicalConflictException(
+                "Failed to rewrite data files: a concurrent commit added a delete file to a " +
+                    "compaction source after this operation read it (read snapshot $readSnapshotId). " +
+                    "The merged file would resurrect the newly-deleted rows; re-running with the " +
+                    "same merged payload would fail identically, so this conflict is not retried.",
+            )
+        }
+    }
+
+    /**
+     * Total `file_size_bytes` of the active source files about to be retired — used to net
+     * `ducklake_table_stats.file_size_bytes`. record_count is intentionally NOT read here:
+     * compaction is row-count-preserving, so [netRewriteStats] backs the merged file's record_count
+     * out and leaves record_count unchanged.
+     */
+    private fun sumActiveSourceFileSize(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>): Long {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        return tx.dsl().select(file.FILE_SIZE_BYTES)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+            .and(activeAt(file, tx.getCurrentSnapshotId()))
+            .fetch(file.FILE_SIZE_BYTES)
+            .filterNotNull()
+            .sum()
+    }
+
+    /**
+     * End-snapshot the retired sources' active delete files first (they reference the data files),
+     * then the source data files themselves, at the new snapshot. The merged file has those deletes
+     * applied to its bytes, so the delete files are no longer needed going forward (kept for
+     * time-travel until expire/cleanup reclaims them). Routed through `metadata` so the Quack RPC
+     * binder accepts the UPDATE.
+     */
+    private fun endSnapshotRewriteSources(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>) {
+        val ctx = tx.dsl()
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")
+        val newSnapshotId = tx.getNewSnapshotId()
+        metadata.execute(
+            ctx,
+            ctx.update(delfile)
+                .set(delfile.END_SNAPSHOT, newSnapshotId)
+                .where(delfile.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(delfile.END_SNAPSHOT.isNull),
+        )
+        metadata.execute(
+            ctx,
+            ctx.update(file)
+                .set(file.END_SNAPSHOT, newSnapshotId)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+                .and(file.END_SNAPSHOT.isNull),
+        )
+    }
+
+    /**
+     * Net the table stats back to a row-count-preserving result: subtract the merged file's
+     * record_count ([applyInsertFragments] added it; the live row set is unchanged by compaction)
+     * and subtract the retired sources' total file_size. GREATEST(0, …) defends against underflow
+     * if stats were ever inconsistent with the file ledger.
+     */
+    private fun netRewriteStats(tx: DucklakeWriteTransaction, tableId: Long, mergedRecordCount: Long, retiredFileSize: Long) {
+        val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
+        tx.dsl().update(tabstats)
+            .set(
+                tabstats.RECORD_COUNT,
+                DSL.greatest(DSL.inline(0L), tabstats.RECORD_COUNT.minus(mergedRecordCount)),
+            )
+            .set(
+                tabstats.FILE_SIZE_BYTES,
+                DSL.greatest(DSL.inline(0L), tabstats.FILE_SIZE_BYTES.minus(retiredFileSize)),
+            )
+            .where(tabstats.TABLE_ID.eq(tableId))
+            .execute()
+    }
+
     private fun applyDeleteFragments(tx: DucklakeWriteTransaction, tableId: Long, deleteFragments: List<DucklakeDeleteFragment>) {
         val ctx = tx.dsl()
         val delfile = DUCKLAKE_DELETE_FILE.`as`("delfile")

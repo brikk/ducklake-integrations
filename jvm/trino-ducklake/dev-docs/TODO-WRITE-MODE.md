@@ -750,14 +750,21 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
 
 - [x] Stats maintenance — shipped as `ANALYZE` (rescans for the live row count, rebuilds column
   stats from per-file stats; recompute-after-delete + drift-repair tested).
-- [ ] Maintenance verbs that map to Trino conventions:
-  - `ALTER TABLE ... EXECUTE optimize` (DuckDB `merge_adjacent_files` equivalent) — **read side
-    UNBLOCKED** (the connector now reads cross-snapshot partial data + parquet-delete files
-    correctly, DESIGN-maintenance.md § 6). Remaining is the WRITER: either a non-partial
-    (Iceberg-style) v1 that end-snapshots sources + registers a new file (begin = current snapshot;
-    sources reclaimed later by expire), or a partial-emitting variant that POPULATES `partial_max` +
-    the `_ducklake_internal_snapshot_id` column on write (reclaims sources immediately).
-  - `ALTER TABLE ... EXECUTE rewrite_data_files`
+- [x] **`rewrite_data_files` (compaction WRITER, non-partial v1)** — DONE (uncommitted, pending
+    review). Shipped as the procedure `CALL system.rewrite_data_files(schema_name, table_name,
+    file_size_threshold => '100MB')` rather than `ALTER TABLE ... EXECUTE` (procedure surface matches
+    the other F6 ops). Reads the table's small parquet files through the REAL read path (delete files
+    / partial_max / schema evolution all apply), writes one merged file, and atomically registers it
+    + end-snapshots the sources via `DucklakeCatalog.rewriteDataFiles`. Non-partial / Iceberg-style:
+    sources stay readable via time-travel until expire/cleanup reclaim them. Modeled as
+    `DeletedFromTable`+`InsertedIntoTable` (no spec-locked conflict-matrix edits) + a `readSnapshotId`
+    guard for the concurrent-delete-on-source race. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles`
+    (4), `TestDucklakeRewriteDataFiles` (5). See DESIGN-maintenance.md § 7.
+- [ ] Maintenance-writer follow-ups:
+  - The **partial-emitting** compaction variant that POPULATES `partial_max` + the
+    `_ducklake_internal_snapshot_id` column on write (reclaims sources immediately, no expire needed).
+  - `rewrite_data_files` v1 follow-ups: partitioned tables, size-bounded multi-file output,
+    re-compacting already-partial sources, an `ALTER TABLE ... EXECUTE optimize` alias.
 - [ ] Connector procedures in `ducklake.system`:
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
     (no catalog mutation): deletes files under the table data path with no catalog row, older than
@@ -776,9 +783,10 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
 Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
-pair + the partial-file READ filters (data + parquet-delete). Remaining: `optimize` /
-`rewrite_data_files` (compaction WRITER — read side now unblocked; see above); puffin partial-delete
-per-blob filter (rare); GC of dead dropped-schema/view/macro metadata rows (tidy-up follow-up).
+pair + the partial-file READ filters (data + parquet-delete) + the **`rewrite_data_files` compaction
+WRITER (non-partial v1)**. Remaining: the partial-EMITTING compaction variant (writes `partial_max`);
+puffin partial-delete per-blob filter (rare); GC of dead dropped-schema/view/macro metadata rows
+(tidy-up follow-up).
 
 ## Commit-Failure File Cleanup
 

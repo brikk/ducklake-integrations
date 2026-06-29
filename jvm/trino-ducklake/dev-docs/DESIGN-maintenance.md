@@ -136,16 +136,22 @@ actually reclaim space. That is the next increment, built on the model above —
    `schedule_start < now - retention` (floored by `ducklake.maintenance.min-retention`); deletes the
    file then removes the row (a failed delete keeps its row for retry). Resolves connector-written
    ABSOLUTE paths directly and DuckLake-written ROOT-relative paths against the catalog `data_path`.
-4. **`optimize` / `rewrite_data_files`** — compact small files. **Read side now UNBLOCKED** (§ 6:
-   the connector reads partial data + parquet-delete files correctly). Two writer shapes:
+4. **`optimize` / `rewrite_data_files`** — compact small files. **Read side UNBLOCKED** (§ 6:
+   the connector reads partial data + parquet-delete files correctly). ✅ **Non-partial v1 DONE —
+   see § 7 for the full contract/decisions** (`DucklakeRewriteDataFilesProcedure` +
+   `DucklakeCatalog.rewriteDataFiles`; catalog pins in `TestJdbcDucklakeCatalogRewriteDataFiles`,
+   e2e in `TestDucklakeRewriteDataFiles`). Two writer shapes:
    (a) **non-partial / Iceberg-style** — end-snapshot the source files at the current snapshot and
    register one new file (begin = current snapshot, NO `partial_max`); time-travel to older
    snapshots still uses the (end-snapshotted) source files until `expire_snapshots` removes them.
-   Simplest; no `partial_max` writing; sources reclaimed only on expiry. (b) **partial-emitting** —
-   write the merged file with `begin = min source begin`, `partial_max = max source snapshot`, and a
-   per-row `_ducklake_internal_snapshot_id` column; reclaims sources immediately. Needs the WRITE
-   side of `partial_max` (the read side is done). Start with (a). Cross-engine concurrency matters
-   most here; design when scheduled.
+   Simplest; no `partial_max` writing; sources reclaimed only on expiry. **THIS is v1.** Key
+   decisions (§ 7): model the commit as `DeletedFromTable`+`InsertedIntoTable` (reuses ALL conflict
+   machinery, ZERO spec-locked edits); reuse the real read path (split manager + page source) so the
+   merge inherits delete/partial/schema-evolution correctness; row-count-preserving stats. (b)
+   **partial-emitting** — write the merged file with `begin = min source begin`, `partial_max = max
+   source snapshot`, and a per-row `_ducklake_internal_snapshot_id` column; reclaims sources
+   immediately. Needs the WRITE side of `partial_max` (the read side is done). Deferred. Cross-engine
+   concurrency matters most here; design when scheduled.
 5. **stats-recalc** — already shipped as `ANALYZE`.
 
 ## 6. `partial_max` — a standing read-correctness gap (compaction-coupled)
@@ -199,3 +205,113 @@ read-safe.
   set, mtime-gated). We scope to one table's data path rather than globbing the whole catalog data
   path; running it per table covers the same ground and fits Trino's procedure ergonomics.
 - The grace period is the single safety knob shared across engines; keep the default conservative.
+
+## 7. `optimize` / `rewrite_data_files` — non-partial v1 (the compaction WRITER) — ✅ DONE
+
+This is the headline-value remaining F6 op. § 4 #4 settled the *shape* (start with the non-partial /
+Iceberg-style writer); this section nails the v1 *contract*, the load-bearing decisions, and the
+test plan, built on the two-phase model in § 1. **Status: implemented + green** —
+`DucklakeRewriteDataFilesProcedure` (`CALL <catalog>.system.rewrite_data_files(schema_name,
+table_name, file_size_threshold => '100MB')`) on top of the `DucklakeCatalog.rewriteDataFiles`
+primitive; catalog-layer pins in `TestJdbcDucklakeCatalogRewriteDataFiles` (4) and full-Trino e2e in
+`TestDucklakeRewriteDataFiles` (5).
+
+### 7.1 What it does (the catalog state transition)
+
+`optimize` reads the live rows of a set of small source data files, writes them into one (or a few,
+size-bounded) larger Parquet file(s), and **atomically**:
+
+1. registers the merged file(s) with `begin_snapshot = <new snapshot>` (NO `partial_max` — these are
+   ordinary files; this is the non-partial shape),
+2. **end-snapshots** the source data files at the same new snapshot (`end_snapshot = <new>`), and
+3. end-snapshots any **active delete file** attached to a retired source (the merged file has those
+   deletes already applied to its bytes, so the delete file is no longer needed going forward).
+
+Reads at the new (or a later) snapshot see the single merged file; time-travel reads at older
+snapshots still resolve the (now end-snapshotted) source files via the half-open `[begin,end)`
+liveness test — exactly as today. The retired source + delete files are physically reclaimed later
+by `expire_snapshots` → `cleanup_old_files` (the two-phase pipeline; § 1), never inside this commit.
+This matches upstream DuckLake `merge_adjacent_files`'s catalog effect.
+
+### 7.2 The load-bearing decisions
+
+**(D1) Conflict model — reuse `DeletedFromTable` + `InsertedIntoTable`; touch NOTHING spec-locked.**
+A compaction is, at the catalog level, exactly "retire these source files' rows + add a file holding
+the same rows." So we record `WriteChange.DeletedFromTable(tableId, sourceDataFileIds)` +
+`WriteChange.InsertedIntoTable(tableId, mergedColumnIds)`. This gives *correct, complete* conflict
+protection with ZERO edits to the spec-locked `ConflictMatrix` / `WriteChange` / `InterveningChanges`
+/ `LogicalConflictCheck`:
+  - `LogicalConflictCheck.checkDeletedFromTable` already verifies every `sourceDataFileId` is **still
+    active** at commit time → if any concurrent commit (DELETE/UPDATE/MERGE, another compaction, or
+    DROP) end-snapshotted a source between our read and our commit, we abort **non-retryably** (the
+    stale read can't be salvaged by retry). This is precisely the safety a compactor needs.
+  - `ConflictMatrix.checkDeletedFromTable` / `checkInsertedIntoTable` additionally abort on a
+    concurrent drop/alter of the table.
+  - The `changes_made` text we emit is `deleted_from_table:<id>,inserted_into_table:<id>` rather than
+    upstream's `merge_adjacent:<id>`. This is **strictly more conservative** for cross-engine
+    concurrency (a concurrent reader treats it as a data change) and semantically honest (rows moved
+    files). The *physical catalog state* is byte-identical to what `merge_adjacent` produces, so a
+    later DuckDB/pg_ducklake read or compaction is unaffected. We deliberately do NOT introduce a
+    `MergedAdjacentFiles` `WriteChange` variant in v1: it would force new entries into the
+    spec-locked matrix `when`s (high blast radius, "keep in lock-step with upstream") for no
+    correctness gain.
+
+**(D2) Read mechanism — reuse the connector's REAL read path, do not reimplement.** The procedure
+drives `DucklakeSplitManager.getSplits(...)` + `DucklakePageSourceProvider.createPageSource(...)`
+for the target table at the current snapshot, then streams the resulting `Page`s into a
+`ParquetFileWriter` (the same writer `flush_inlined_data` and INSERT use). Reusing the real read path
+means the merge **inherits every read-side correctness property for free**: positional + parquet
+delete-file application, `partial_max` snapshot filtering, schema evolution / name maps, nested
+struct reshape. Because the *output* is written by the connector's own `ParquetFileWriter` (column
+names == table column names, field_id annotations), it is guaranteed read-compatible. The merged
+file's `record_count` is therefore the **live** row count (deletes already applied), which makes the
+stats math (D3) trivially correct whether or not the sources carried deletes.
+
+**(D3) Table-stats adjustment — compaction is row-count-preserving.** `ducklake_table_stats`:
+  - `record_count`: **unchanged**. `applyInsertFragments` adds the merged file's `record_count`; we
+    then subtract the same amount. Net zero — correct because the live row set is unchanged by
+    compaction (the merged file holds exactly the live rows of the retired sources).
+  - `file_size_bytes`: `+= merged size` (via `applyInsertFragments`) then `-= Σ(retired source
+    file_size_bytes)`. Net = the real space delta. `GREATEST(0, …)` guards underflow.
+  - `next_row_id`: left as advanced by `applyInsertFragments` (monotonic; retired files keep their
+    old `row_id_start`, no reuse).
+  - `ducklake_file_column_stats` of retired sources are **left in place** (still needed for
+    time-travel reads of those files until `expire_snapshots` removes them). `applyInsertFragments`
+    widens `ducklake_table_column_stats` with the merged file — a no-op/correct since merged ⊆
+    source value range.
+
+**(D4) The catalog primitive** is `DucklakeCatalog.rewriteDataFiles(tableId, sourceDataFileIds,
+fragments)` — one `executeWriteTransaction` doing (1)+(2)+(3)+(D3). It is the reusable core for BOTH
+writer shapes (the partial-emitting variant later adds `partial_max` + the internal-snapshot column
+to the fragment/registration; the retire+stats logic is identical). Tested directly at the catalog
+layer (no parity extension needed).
+
+### 7.3 v1 gates (kept honest and explicit)
+
+  - **Unpartitioned tables only** (matches `flush_inlined_data`'s v1 gate). Partitioned compaction
+    must merge per-partition and assign partition values — deferred.
+  - **Source candidate selection**: active data files at the current snapshot whose
+    `file_size_bytes < target` (a `file_size_threshold` arg, default e.g. 100MB), of a compactable
+    format (parquet; mixed-format tables compact only their parquet files). Lance/vortex/duckdb
+    source files are skipped in v1.
+  - **`partial_max` source files** (cross-snapshot DuckDB-compacted) are read correctly (§ 6) but in
+    v1 we do not *re-emit* partial files; a source already carrying `partial_max` is skipped (it is
+    already compacted). A clean follow-up, not a correctness gap.
+  - **Inlined rows**: if the table has live inlined rows, require `flush_inlined_data` first (same as
+    the merge gate) — or skip them (they are not file-resident). v1: leave inlined rows untouched
+    (compaction only touches file-resident data).
+  - If fewer than 2 candidates qualify, it's a no-op (nothing to compact).
+
+### 7.4 Test plan (every cell proves a real success/failure)
+
+  - **Catalog-level** (`TestJdbcDucklakeCatalogRewriteDataFiles`, postgres-backed, no extension):
+    register-merged + retire-sources atomicity; `record_count` unchanged; `file_size_bytes` adjusted;
+    `next_row_id` monotonic; source delete files end-snapshotted; **concurrent-modification conflict**
+    — a delete that end-snapshots a source between our read and commit makes `rewriteDataFiles` throw
+    a non-retryable `TransactionConflictException` (and the catalog is left untouched).
+  - **Cross-engine e2e** (`TestDucklakeOptimize`, full-Trino, parity extension): CTAS/INSERT producing
+    N small files → `CALL optimize` → file count drops, **row set + values identical**, time-travel to
+    the pre-optimize snapshot still returns the old rows from the old files; a DELETE-then-optimize
+    case proving tombstoned rows are physically dropped from the merged file while the live result is
+    unchanged; a partitioned-table call rejected with a clear `NOT_SUPPORTED`; a below-threshold /
+    single-file no-op.

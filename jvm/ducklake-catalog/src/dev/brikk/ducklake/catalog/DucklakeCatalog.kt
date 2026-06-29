@@ -500,6 +500,42 @@ interface DucklakeCatalog {
         insertFragments: List<DucklakeWriteFragment>,
     )
 
+    /**
+     * Compaction primitive: atomically register the merged [fragments] (begin = the new snapshot)
+     * and **end-snapshot** the source data files in [sourceDataFileIds] (and any active delete file
+     * attached to them) at that same new snapshot — the non-partial / Iceberg-style `optimize` /
+     * `rewrite_data_files` shape (see dev-docs/DESIGN-maintenance.md § 7).
+     *
+     * Contract: the merged fragments must hold **exactly the live rows** of the retired sources
+     * (deletes already applied), so compaction is **row-count-preserving** — `ducklake_table_stats`
+     * `record_count` is left unchanged, `file_size_bytes` is adjusted by (Σmerged − Σretired), and
+     * `next_row_id` advances monotonically. The retired source/delete files are NOT physically
+     * removed here; time-travel still resolves them via `[begin,end)` liveness until
+     * `expire_snapshots` → `cleanup_old_files` reclaims them.
+     *
+     * Recorded as `DeletedFromTable(sourceDataFileIds)` + `InsertedIntoTable(mergedColumnIds)`, so
+     * the existing conflict machinery applies with no spec-locked changes: a concurrent commit that
+     * end-snapshotted any source between the caller's read and this commit aborts non-retryably
+     * (the read is stale), and a concurrent drop/alter of the table aborts too.
+     *
+     * [readSnapshotId] is the snapshot the caller read the source rows at. A concurrent DELETE/MERGE
+     * adds a delete file to a source **without** end-snapshotting the data file, so the active-file
+     * check alone would NOT catch it — the merged file (built before that delete) would resurrect
+     * the deleted rows. We therefore additionally abort non-retryably if any delete file referencing
+     * a source has `begin_snapshot > readSnapshotId` (a deletion newer than the caller's read). v1
+     * limitation: a concurrent DuckDB-written *inlined* delete (dynamic `ducklake_inlined_delete_*`
+     * table) on a source is not covered by this guard (the connector never writes inlined deletes;
+     * same rarity class as the gated partial-puffin deletes).
+     *
+     * No-op if [sourceDataFileIds] or [fragments] is empty.
+     */
+    fun rewriteDataFiles(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragments: List<DucklakeWriteFragment>,
+        readSnapshotId: Long,
+    )
+
     // ==================== View operations ====================
 
     /**
