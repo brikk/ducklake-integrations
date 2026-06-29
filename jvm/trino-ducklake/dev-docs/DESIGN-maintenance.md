@@ -172,7 +172,7 @@ when `partial_max > S`** (`begin_snapshot = MIN`, `partial_max = MAX` of that co
 bound is implicit via the catalog's `begin_snapshot <= S` visibility). Partial *delete* files work
 the same way (a deletion takes effect at `S` iff its embedded snapshot id `<= S`).
 
-**Status — DATA-file filter SHIPPED 2026-06-29; partial DELETE files still gated.**
+**Status — ALL partial-file read filters SHIPPED (data + parquet-delete + puffin-delete). No gate remains.**
 - **Partial data files: filtered (correct).** When a data file's `partial_max > scanSnapshot`,
   `DucklakeSplitManager` sets `DucklakeSplit.snapshotFilterMax = scanSnapshot`; the page source reads
   the file's `_ducklake_internal_snapshot_id` column and drops the file-local positions whose value
@@ -188,15 +188,20 @@ the same way (a deletion takes effect at `S` iff its embedded snapshot id `<= S`
   cross-engine by `TestDucklakePartialDeleteFilter` (DuckDB consolidates two deletes via
   `flush_inlined_data`; Trino reads at the first deletion → only that row deleted, at partial_max →
   both).
-- **Partial PUFFIN delete files: still GATED.** The Roaring-bitmap deletion-vector reader does not
-  yet snapshot-filter, so a non-parquet partial delete file with `partial_max > S` is rejected
-  (`hasPartialDeleteFilesRequiringSnapshotFilter`, `TestDucklakePartialFileGuard`). Rare (requires
-  `write_deletion_vectors` + cross-snapshot consolidation); the per-blob snapshot filter is the
-  remaining follow-up.
+- **Partial PUFFIN delete files: filtered (correct) — gate LIFTED 2026-06-29.** A consolidated
+  deletion-vector file is a real Iceberg PFA1 puffin container (`Magic Blob1…BlobN Footer`) whose
+  JSON footer tags each blob with a `ducklake-snapshot-id`. `DucklakePuffinDeleteReader` parses the
+  container and, when `partial_max > S`, applies only the blobs whose snapshot id `<= S` (mirrors
+  `DuckLakeDeleteFilter::ScanDeletionVectorFile`; a mix of tagged/untagged blobs is rejected as
+  corrupt). Wired via the same `deleteFileSnapshotFilters` the parquet path uses. Pinned by
+  `TestDucklakePuffinDeleteReader` (PFA1 parse + per-blob filter) and `TestDucklakePuffinPartialDelete`
+  (full-Trino: a real consolidated puffin file, reads at different snapshots apply the right
+  deletions). `hasPartialDeleteFilesRequiringSnapshotFilter` now only flags an unknown delete-file
+  format (already rejected by `validateDeleteFileFormats`).
 
-**Compaction unblocked (read side).** The connector now reads partial data AND parquet delete files
-correctly, so a future `optimize` / `rewrite_data_files` that emits cross-snapshot-merged files is
-read-safe.
+**Compaction unblocked (read side), fully.** The connector now reads partial data AND partial delete
+files (parquet AND puffin) correctly, so an `optimize` / `rewrite_data_files` that emits
+cross-snapshot-merged files — including the partial-emitting variant — is read-safe in every format.
 
 ## 5. Upstream parity / cross-engine notes
 

@@ -783,10 +783,10 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
 Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
-pair + the partial-file READ filters (data + parquet-delete) + the **`rewrite_data_files` compaction
-WRITER (non-partial v1)** + dead schema/view/macro/name-mapping metadata GC on expire. Remaining:
-the partial-EMITTING compaction variant (writes `partial_max`); puffin partial-delete per-blob
-filter (rare, last read gate).
+pair + the partial-file READ filters (data + parquet-delete + **puffin-delete, gate now lifted**) +
+the **`rewrite_data_files` compaction WRITER (non-partial v1)** + dead schema/view/macro/name-mapping
+metadata GC on expire. Remaining: only the partial-EMITTING compaction variant (writes `partial_max`
++ `_ducklake_internal_snapshot_id` on write to reclaim sources immediately).
 
 ## Commit-Failure File Cleanup
 

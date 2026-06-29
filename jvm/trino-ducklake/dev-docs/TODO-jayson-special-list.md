@@ -83,10 +83,11 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     `partial_max > S`. ✅ DATA files now FILTERED (2026-06-29): split carries `snapshotFilterMax`,
     page source reads the column + drops positions `> S` via the delete-filter set; time-travel of a
     DuckDB-compacted table is correct (`TestDucklakePartialFileFilter`, cross-engine via real
-    `merge_adjacent_files`). Consolidated **parquet DELETE files** also filtered now
-    (`TestDucklakePartialDeleteFilter`, cross-engine via `flush_inlined_data`); only **puffin**
-    partial delete files remain gated (`TestDucklakePartialFileGuard`). **Compaction read side fully
-    unblocked.**
+    `merge_adjacent_files`). Consolidated **parquet DELETE files** also filtered
+    (`TestDucklakePartialDeleteFilter`, cross-engine via `flush_inlined_data`); **puffin DELETE files
+    now filtered too** (PFA1 container + per-blob `ducklake-snapshot-id`; `TestDucklakePuffinDeleteReader`,
+    `TestDucklakePuffinPartialDelete`). **Every partial-file read is now correct — no gate remains;
+    compaction read side fully unblocked in all formats.**
   • **dead metadata GC** — expire deletes the metadata rows of fully-expired dropped
     tables/views/macros/schemas (`ducklake_table`+deps, `ducklake_view`, `ducklake_macro`/_impl/
     _parameters, `ducklake_schema`) + name-mapping rows orphaned by the table GC
@@ -104,11 +105,14 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     ≥2 candidates. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles` (4, incl. concurrent-delete
     conflict), `TestDucklakeRewriteDataFiles` (5 e2e: compaction+time-travel, delete-applying,
     partitioned reject, single-file no-op).
+  • **puffin partial-delete per-blob filter** ✅ DONE — the last partial-file READ gate is lifted.
+    `DucklakePuffinDeleteReader` parses the real PFA1 container + per-blob `ducklake-snapshot-id` and
+    applies only blobs `<= S` (`TestDucklakePuffinDeleteReader` +5, `TestDucklakePuffinPartialDelete`
+    full-Trino). All partial-file reads (data + parquet-delete + puffin-delete) now correct.
   Remaining F6: **partial-emitting compaction variant** (POPULATE `partial_max` +
   `_ducklake_internal_snapshot_id` on write, reclaim sources immediately — needs the WRITE side of
-  partial_max); **puffin partial-delete per-blob filter** (rare, last read gate); rewrite_data_files
-  follow-ups (partitioned tables; size-bounded multi-file output; re-compacting already-partial
-  sources). stats-recalc already shipped as ANALYZE; dead schema/view/macro GC done.
+  partial_max); rewrite_data_files follow-ups (partitioned tables; size-bounded multi-file output;
+  re-compacting already-partial sources). stats-recalc shipped as ANALYZE; dead metadata GC done.
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino
