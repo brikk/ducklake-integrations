@@ -34,4 +34,10 @@ data class DucklakeDeleteFragment(
     val fileSizeBytes: Long,
     val footerSize: Long,
     val newDeleteCount: Long,
+    /**
+     * Delete-file format: `"parquet"` (the default — `(file_path, pos)` positional delete file) or
+     * `"puffin"` (a DuckLake deletion-vector blob, written when `write_deletion_vectors` is on).
+     * Persisted to `ducklake_delete_file.format`; both are read by Trino and DuckDB.
+     */
+    val format: String = "parquet",
 )

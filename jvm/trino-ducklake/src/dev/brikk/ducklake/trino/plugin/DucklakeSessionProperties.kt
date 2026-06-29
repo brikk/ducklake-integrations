@@ -76,6 +76,14 @@ open class DucklakeSessionProperties @Inject constructor() {
                             "to Trino-side evaluation for that attach). Set to false to keep these predicates " +
                             "above the scan. See dev-docs/archive/REPORT-datetime-tz-handling.md.",
                     true,
+                    false),
+            booleanProperty(
+                    WRITE_DELETION_VECTORS,
+                    "Write DELETE/UPDATE/MERGE tombstones as DuckLake puffin deletion-vector (.puffin) " +
+                            "files (a Roaring bitmap of file-local positions) instead of parquet " +
+                            "(file_path, pos) delete files. Off by default. Both shapes are read by Trino " +
+                            "AND DuckDB; this mirrors DuckDB's write_deletion_vectors table option.",
+                    false,
                     false))
 
     open fun getSessionProperties(): List<PropertyMetadata<*>> = sessionProperties
@@ -129,6 +137,14 @@ open class DucklakeSessionProperties @Inject constructor() {
          * dev-docs/archive/REPORT-datetime-tz-handling.md.
          */
         const val PUSHDOWN_TIMESTAMP_WITH_TIMEZONE: String = "pushdown_timestamp_with_timezone"
+
+        const val WRITE_DELETION_VECTORS: String = "write_deletion_vectors"
+
+        /** @return true iff this session writes tombstones as puffin deletion-vector files. Default false. */
+        fun isWriteDeletionVectors(session: ConnectorSession): Boolean {
+            val v = session.getProperty(WRITE_DELETION_VECTORS, Boolean::class.javaObjectType)
+            return v != null && v
+        }
 
         fun getReadSnapshotId(session: ConnectorSession): OptionalLong =
             session.getProperty(READ_SNAPSHOT_ID, Long::class.javaObjectType)

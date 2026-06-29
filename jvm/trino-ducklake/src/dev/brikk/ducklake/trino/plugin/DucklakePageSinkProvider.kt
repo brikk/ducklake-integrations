@@ -94,6 +94,7 @@ class DucklakePageSinkProvider @Inject constructor(
                 parquetReaderOptions,
                 fileFormatDataSourceStats,
                 trinoVersion,
+                DucklakeSessionProperties.isWriteDeletionVectors(session),
                 insertSink)
     }
 

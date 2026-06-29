@@ -3320,7 +3320,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             r.setDataFileId(fragment.dataFileId)
             r.setPath(fragment.path)
             r.setPathIsRelative(true)
-            r.setFormat("parquet")
+            r.setFormat(fragment.format)
             r.setDeleteCount(fragment.deleteCount)
             r.setFileSizeBytes(fragment.fileSizeBytes)
             // footer_size is a hint column: SQL NULL means "no hint" and the reader falls back
