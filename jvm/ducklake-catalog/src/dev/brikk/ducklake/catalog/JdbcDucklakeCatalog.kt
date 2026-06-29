@@ -19,6 +19,7 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import dev.brikk.ducklake.catalog.SnapshotRange.activeAt
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_COLUMN_TAG
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
@@ -392,6 +393,28 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun hasPartialFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean {
+        val df = DUCKLAKE_DATA_FILE.`as`("df")
+        val dataHit = dsl.selectOne().from(df)
+            .where(df.TABLE_ID.eq(tableId))
+            .and(activeAt(df, snapshotId))
+            .and(df.PARTIAL_MAX.isNotNull)
+            .and(df.PARTIAL_MAX.gt(snapshotId))
+            .limit(1)
+            .fetch().isNotEmpty
+        if (dataHit) {
+            return true
+        }
+        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
+        return dsl.selectOne().from(delf)
+            .where(delf.TABLE_ID.eq(tableId))
+            .and(activeAt(delf, snapshotId))
+            .and(delf.PARTIAL_MAX.isNotNull)
+            .and(delf.PARTIAL_MAX.gt(snapshotId))
+            .limit(1)
+            .fetch().isNotEmpty
+    }
+
     override fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef> {
         val refs = mutableListOf<DucklakeFilePathRef>()
         val collect: (String?, Boolean?) -> Unit = { path, isRelative ->
@@ -488,6 +511,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                         .where(DUCKLAKE_DELETE_FILE.DELETE_FILE_ID.`in`(deadDeleteIds)))
                 }
 
+                // GC the metadata rows of fully-expired DROPPED tables (every row dead — see
+                // findDeadTableIds). Reuses the already-validated deadTableIds, so it can't touch a
+                // live table. (Dead schema/view/macro rows + dynamic inlined-data tables are left to
+                // a follow-up — harmless dangling rows, no file leak.)
+                if (deadTableIds.isNotEmpty()) {
+                    deleteDeadTableMetadata(ctx, deadTableIds)
+                }
+
                 conn.commit()
                 return ExpireSnapshotsResult(snapshotIds.size, scheduledCount)
             }
@@ -500,6 +531,23 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
     /** A dead data/delete file row carrying just what scheduling needs. */
     private data class DeadFile(val fileId: Long, val tableId: Long, val path: String, val pathIsRelative: Boolean)
+
+    /** Deletes every `table_id`-keyed metadata row for fully-expired dropped tables. */
+    private fun deleteDeadTableMetadata(ctx: DSLContext, deadTableIds: List<Long>) {
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE_STATS).where(DUCKLAKE_TABLE_STATS.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE_COLUMN_STATS).where(DUCKLAKE_TABLE_COLUMN_STATS.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_PARTITION_INFO).where(DUCKLAKE_PARTITION_INFO.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_PARTITION_COLUMN).where(DUCKLAKE_PARTITION_COLUMN.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN_TAG).where(DUCKLAKE_COLUMN_TAG.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN).where(DUCKLAKE_COLUMN.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_EXPRESSION).where(DUCKLAKE_SORT_EXPRESSION.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_INFO).where(DUCKLAKE_SORT_INFO.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SCHEMA_VERSIONS).where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_INLINED_DATA_TABLES).where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.`in`(deadTableIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN_MAPPING).where(DUCKLAKE_COLUMN_MAPPING.TABLE_ID.`in`(deadTableIds)))
+        // The ducklake_table rows last (others reference table_id).
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE).where(DUCKLAKE_TABLE.TABLE_ID.`in`(deadTableIds)))
+    }
 
     private fun findDeadTableIds(ctx: DSLContext): List<Long> {
         val t1 = DUCKLAKE_TABLE.`as`("t1")

@@ -87,6 +87,7 @@ class DucklakeSplitManager @Inject constructor(
         log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName)
 
         validateDeleteFileFormats(dataFiles, tableHandle)
+        validateNoUnfilterablePartialFiles(tableHandle)
 
         val tableHasNoDataFiles: Boolean = dataFiles.isEmpty()
         // getInlinedDataInfos already records, per schema version, whether rows are live at the
@@ -607,6 +608,30 @@ class DucklakeSplitManager @Inject constructor(
                 inlinedDeletedRowPositions,
                 affinityKey,
                 primary.beginSnapshot)
+    }
+
+    /**
+     * Gate cross-snapshot compacted ("partial") files that this read can't yet filter correctly.
+     * A file with `partial_max > snapshotId` physically holds rows from snapshots NEWER than this
+     * read; reading it correctly needs a per-row `_ducklake_internal_snapshot_id <= snapshotId`
+     * filter (DuckLake's mechanism) that this connector does not yet apply. Rather than silently
+     * over-include those rows, reject the read with a clear error. Reads at the latest snapshot
+     * (or any `snapshotId >= partial_max`) need no filter and pass. Such files only appear when
+     * DuckLake's `merge_adjacent_files` ran on a shared catalog — see dev-docs/DESIGN-maintenance.md
+     * § 6.
+     */
+    private fun validateNoUnfilterablePartialFiles(tableHandle: DucklakeTableHandle) {
+        if (catalog.hasPartialFilesRequiringSnapshotFilter(tableHandle.tableId, tableHandle.snapshotId)) {
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s has a cross-snapshot compacted (partial) file whose rows extend beyond " +
+                            "snapshot %d. Time-travel reads of partial files require per-row snapshot filtering " +
+                            "that this connector does not yet support; read at the latest snapshot, or expire old " +
+                            "snapshots so the file is no longer partial. (Partial files are produced by DuckLake's " +
+                            "merge_adjacent_files.)",
+                    tableHandle.schemaName,
+                    tableHandle.tableName,
+                    tableHandle.snapshotId))
+        }
     }
 
     private data class PredicateBounds(val minValue: String?, val maxValue: String?)

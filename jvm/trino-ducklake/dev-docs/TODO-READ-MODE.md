@@ -328,15 +328,16 @@ Improvements, Inlined-Read Type Gaps).
   Parquet reader the same way we do for data files? Saves IO on narrow predicates
   (e.g. single `pos` value in a MERGE plan). Scoping spike against Trino's
   `ConnectorPageSource` filter-pushdown surface.
-- **partial_max time-travel correctness (read gap)** — `ducklake_data_file` /
-  `ducklake_delete_file` carry a `partial_max BIGINT` we ignore entirely. It's the
-  row-level snapshot bound for **cross-snapshot compacted files** (DuckLake's
-  `merge_adjacent_files`): correct time-travel must filter
-  `_ducklake_internal_snapshot_id <= partial_max`. Today a table compacted by DuckDB
-  on a shared catalog can be **time-travel-read with over-inclusion** of later-snapshot
-  rows (current-snapshot reads unaffected). Narrow (compacted × time-travel only) but
-  real. Fix = project `partial_max` onto `DucklakeDataFile` + apply the internal-snapshot
-  filter in the page source. Also a hard prerequisite for our own compaction — see
+- **partial_max time-travel correctness** — ⚠️→✅ GATED 2026-06-29 (full filter still open).
+  `ducklake_data_file` / `ducklake_delete_file` carry `partial_max BIGINT` for **cross-snapshot
+  compacted files** (DuckLake's `merge_adjacent_files`): a correct read at snapshot `S` filters the
+  file's physical `_ducklake_internal_snapshot_id <= S`, needed only when `partial_max > S`. We
+  ignored it → time-travel over-inclusion. `DucklakeSplitManager` now **rejects** a read when an
+  active file's `partial_max > snapshotId` (`catalog.hasPartialFilesRequiringSnapshotFilter`) — a
+  loud `NOT_SUPPORTED` instead of wrong rows; reads at/above `partial_max` (incl. the latest) pass.
+  `TestDucklakePartialFileGuard`. **Still open (follow-up):** the full per-row filter (project
+  `_ducklake_internal_snapshot_id`, push `<= S`) so time-travel of compacted tables WORKS rather
+  than erroring — and the hard prerequisite before we EMIT compacted files. See
   [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
 - **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off

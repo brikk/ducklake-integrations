@@ -284,6 +284,70 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         }
     }
 
+    @Throws(Exception::class)
+    private fun maxSnapshot(): Long =
+            DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                    pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+                conn.createStatement().use { st ->
+                    st.executeQuery("SELECT max(snapshot_id) FROM ducklake_snapshot").use { rs ->
+                        rs.next(); rs.getLong(1)
+                    }
+                }
+            }
+
+    @Throws(Exception::class)
+    private fun allSnapshotIds(): List<Long> =
+            DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                    pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+                conn.createStatement().use { st ->
+                    st.executeQuery("SELECT snapshot_id FROM ducklake_snapshot ORDER BY snapshot_id").use { rs ->
+                        val ids = mutableListOf<Long>()
+                        while (rs.next()) {
+                            ids.add(rs.getLong(1))
+                        }
+                        ids
+                    }
+                }
+            }
+
+    @Throws(Exception::class)
+    private fun tableMetadataRowCount(tableName: String): Long =
+            DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                    pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+                conn.prepareStatement("SELECT count(*) FROM ducklake_table WHERE table_name = ?").use { ps ->
+                    ps.setString(1, tableName)
+                    ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+                }
+            }
+
+    /**
+     * Expiring all snapshots in a dropped table's lifetime GCs its dangling metadata rows (the
+     * table_id-keyed cleanup), while a live table's metadata is untouched.
+     */
+    @Test
+    @Throws(Exception::class)
+    fun deadDroppedTableMetadataIsGarbageCollected() {
+        computeActual("CREATE TABLE test_schema.gc_target AS SELECT 1 AS id")
+        computeActual("DROP TABLE test_schema.gc_target")
+        // Advance the latest past the drop so gc_target's whole lifetime is expirable.
+        computeActual("CREATE TABLE test_schema.gc_keeper AS SELECT 1 AS id")
+        try {
+            assertThat(tableMetadataRowCount("gc_target")).`as`("dropped table row present before expiry").isEqualTo(1L)
+
+            // Expire every snapshot except the latest — gc_target's [begin,end) then has no survivor.
+            val latest = maxSnapshot()
+            val toExpire = allSnapshotIds().filter { it != latest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(toExpire)}, dry_run => false)")
+
+            assertThat(tableMetadataRowCount("gc_target")).`as`("dead dropped-table metadata GC'd").isEqualTo(0L)
+            assertThat(tableMetadataRowCount("gc_keeper")).`as`("live table metadata untouched").isGreaterThanOrEqualTo(1L)
+            assertThat(computeScalar("SELECT count(*) FROM test_schema.gc_keeper")).isEqualTo(1L)
+        }
+        finally {
+            tryDrop("test_schema.gc_keeper")
+        }
+    }
+
     private fun tryDrop(table: String) {
         try {
             computeActual("DROP TABLE $table")
