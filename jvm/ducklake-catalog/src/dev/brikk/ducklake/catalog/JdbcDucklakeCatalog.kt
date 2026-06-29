@@ -339,6 +339,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val deleteFilePath = delfile.PATH.`as`("delete_file_path")
         val deleteFilePathIsRelative = delfile.PATH_IS_RELATIVE.`as`("delete_file_path_is_relative")
         val deleteFileFooterSize = delfile.FOOTER_SIZE.`as`("delete_file_footer_size")
+        val deleteFilePartialMax = delfile.PARTIAL_MAX.`as`("delete_file_partial_max")
         // Multi-table JOIN — routed through `metadata` for Quack compatibility.
         return metadata.fetch(
             dsl,
@@ -362,6 +363,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 deleteFilePathIsRelative,
                 deleteFileFooterSize,
                 delfile.FORMAT,
+                deleteFilePartialMax,
             )
                 .from(file)
                 .leftJoin(delfile)
@@ -391,6 +393,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.get(delfile.FORMAT),
                 r.get(file.MAPPING_ID),
                 r.get(file.PARTIAL_MAX),
+                r.get(deleteFilePartialMax),
             )
         }
     }
@@ -402,6 +405,9 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .and(activeAt(delf, snapshotId))
             .and(delf.PARTIAL_MAX.isNotNull)
             .and(delf.PARTIAL_MAX.gt(snapshotId))
+            // PARQUET partial delete files are filtered on read (DucklakeSplit.deleteFileSnapshotFilters);
+            // only non-parquet (puffin deletion-vector) partial delete files remain unhandled → gated.
+            .and(delf.FORMAT.isNull.or(DSL.lower(delf.FORMAT).ne("parquet")))
             .limit(1)
             .fetch().isNotEmpty
     }

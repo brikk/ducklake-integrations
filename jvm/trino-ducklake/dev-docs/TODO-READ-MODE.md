@@ -333,10 +333,12 @@ Improvements, Inlined-Read Type Gaps).
   `_ducklake_internal_snapshot_id`; a correct read at `S` keeps only rows `<= S`, needed when
   `partial_max > S`. The connector now reads the column and drops file-local positions `> S` via the
   `DeleteRowFilterTransform` set (split carries `snapshotFilterMax`); time-travel of a DuckDB-compacted
-  table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). **Still open:** the
-  symmetric **partial DELETE file** case (consolidated deletes spanning snapshots) is gated, not yet
-  filtered — `hasPartialDeleteFilesRequiringSnapshotFilter` rejects those reads
-  (`TestDucklakePartialFileGuard`). See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+  table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). Consolidated **parquet
+  DELETE files** are also filtered now (split carries `deleteFileSnapshotFilters`; the delete reader
+  keeps only deletions whose `_ducklake_internal_snapshot_id <= S` — `TestDucklakePartialDeleteFilter`,
+  cross-engine via `flush_inlined_data` consolidation). **Only remaining:** consolidated **PUFFIN**
+  delete files are gated (the deletion-vector reader doesn't yet snapshot-filter per blob) —
+  `TestDucklakePartialFileGuard`. See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
 - **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
   Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field

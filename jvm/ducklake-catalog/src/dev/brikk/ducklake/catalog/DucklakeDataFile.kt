@@ -47,6 +47,13 @@ data class DucklakeDataFile(
      * exceeds S, but only when `partial_max > S`.
      */
     val partialMax: Long? = null,
+    /**
+     * `ducklake_delete_file.partial_max` for the joined delete file — the MAX
+     * `_ducklake_internal_snapshot_id` in a consolidated ("partial") delete file. NULL for
+     * ordinary delete files (or none). A read at S applies only the deletions whose internal
+     * snapshot id is <= S, but only when this exceeds S.
+     */
+    val deleteFilePartialMax: Long? = null,
 ) {
     /**
      * Backwards-compatible constructor for call sites that don't carry a name-map id.

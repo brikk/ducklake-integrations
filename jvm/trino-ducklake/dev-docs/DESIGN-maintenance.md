@@ -170,14 +170,22 @@ the same way (a deletion takes effect at `S` iff its embedded snapshot id `<= S`
   a DuckDB-compacted table now returns the CORRECT rows. Pinned cross-engine by
   `TestDucklakePartialFileFilter` (DuckDB `merge_adjacent_files` produces the partial file; Trino
   reads at first-insert → 100 rows, at partial_max / latest → 200).
-- **Partial delete files: still GATED.** A consolidated delete file with `partial_max > scanSnapshot`
-  would over-delete; `hasPartialDeleteFilesRequiringSnapshotFilter` rejects the read
-  (`TestDucklakePartialFileGuard`). The symmetric fix (project the delete file's
-  `_ducklake_internal_snapshot_id` and drop delete positions `> S`) is the remaining follow-up.
+- **Partial PARQUET delete files: filtered (correct).** A consolidated delete file
+  (`file_path, pos, _ducklake_internal_snapshot_id`) with `partial_max > scanSnapshot` is read with
+  a snapshot filter: only deletions whose `_ducklake_internal_snapshot_id <= S` are applied (the
+  split carries `deleteFileSnapshotFilters`; the reader keeps matching `pos` values). Pinned
+  cross-engine by `TestDucklakePartialDeleteFilter` (DuckDB consolidates two deletes via
+  `flush_inlined_data`; Trino reads at the first deletion → only that row deleted, at partial_max →
+  both).
+- **Partial PUFFIN delete files: still GATED.** The Roaring-bitmap deletion-vector reader does not
+  yet snapshot-filter, so a non-parquet partial delete file with `partial_max > S` is rejected
+  (`hasPartialDeleteFilesRequiringSnapshotFilter`, `TestDucklakePartialFileGuard`). Rare (requires
+  `write_deletion_vectors` + cross-snapshot consolidation); the per-blob snapshot filter is the
+  remaining follow-up.
 
-**Compaction unblocked (read side).** Because the connector now reads partial data files correctly,
-a future `optimize` / `rewrite_data_files` that emits cross-snapshot-merged files is read-safe
-(modulo the partial-delete-file follow-up if compacting tables with consolidated deletes).
+**Compaction unblocked (read side).** The connector now reads partial data AND parquet delete files
+correctly, so a future `optimize` / `rewrite_data_files` that emits cross-snapshot-merged files is
+read-safe.
 
 ## 5. Upstream parity / cross-engine notes
 

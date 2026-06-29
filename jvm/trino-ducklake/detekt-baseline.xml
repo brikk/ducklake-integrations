@@ -43,6 +43,7 @@
     <ID>ForbiddenComment:DucklakeTypeConverter.kt:DucklakeTypeConverter$// TODO: Add validation to ensure values don't exceed signed range</ID>
     <ID>LargeClass:DucklakeCatalogGenerator.kt:DucklakeCatalogGenerator</ID>
     <ID>LargeClass:DucklakeMetadata.kt:DucklakeMetadata : ConnectorMetadata</ID>
+    <ID>LargeClass:DucklakePageSourceProvider.kt:DucklakePageSourceProvider : ConnectorPageSourceProvider</ID>
     <ID>LargeClass:TestDuckDbExpressionTranslator.kt:TestDuckDbExpressionTranslator</ID>
     <ID>LargeClass:TestDucklakePartitionPruning.kt:TestDucklakePartitionPruning</ID>
     <ID>LongMethod:DuckDbArrowStreamFileWriter.kt:DuckDbArrowStreamFileWriter.Companion$private fun populateVector</ID>
