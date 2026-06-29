@@ -35,6 +35,7 @@ import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
+import io.trino.spi.block.RunLengthEncodedBlock
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.connector.ConnectorSession
@@ -43,7 +44,9 @@ import io.trino.spi.connector.ConnectorSplitSource
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
 import io.trino.spi.procedure.Procedure
+import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
+import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
 import java.lang.invoke.MethodHandle
@@ -96,12 +99,22 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 ImmutableList.of(
                         Procedure.Argument("SCHEMA_NAME", VARCHAR),
                         Procedure.Argument("TABLE_NAME", VARCHAR),
-                        Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, "100MB")),
+                        Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, "100MB"),
+                        // When true, emit a PARTIAL (merge_adjacent) file that carries a per-row
+                        // _ducklake_internal_snapshot_id column and reclaims the source files
+                        // immediately (they are deleted + scheduled, not kept until expire). Default
+                        // false = the simpler non-partial / Iceberg-style shape.
+                        Procedure.Argument("RECLAIM_SOURCES_IMMEDIATELY", BOOLEAN, false, false)),
                 REWRITE_DATA_FILES.bindTo(this),
                 true)
 
     @Suppress("unused") // invoked via MethodHandle
-    fun rewriteDataFiles(session: ConnectorSession, schemaName: String?, tableName: String?, fileSizeThreshold: String?) {
+    fun rewriteDataFiles(
+            session: ConnectorSession,
+            schemaName: String?,
+            tableName: String?,
+            fileSizeThreshold: String?,
+            reclaimSourcesImmediately: Boolean) {
         val schemaArg = requireArg(schemaName, "schema_name")
         val tableArg = requireArg(tableName, "table_name")
         val threshold: Long = parseThreshold(fileSizeThreshold)
@@ -153,7 +166,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
         val fragment: DucklakeWriteFragment = writeMergedParquetFile(
                 session, fileSystem, tableDataPath, tableHandle, matchedSplits,
-                columnHandles, allCatalogColumns, columnTypes)
+                columnHandles, allCatalogColumns, columnTypes, reclaimSourcesImmediately)
 
         if (fragment.recordCount == 0L) {
             // Every source row was deleted — registering an empty file is pointless; just retire the
@@ -163,10 +176,26 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             return
         }
 
+        commitRewrite(tableId, sourceIds, fragment, snapshotId, reclaimSourcesImmediately, schemaArg, tableArg)
+    }
+
+    private fun commitRewrite(
+            tableId: Long,
+            sourceIds: Set<Long>,
+            fragment: DucklakeWriteFragment,
+            snapshotId: Long,
+            partial: Boolean,
+            schemaArg: String,
+            tableArg: String) {
         try {
-            catalog.rewriteDataFiles(tableId, sourceIds, ImmutableList.of(fragment), snapshotId)
-            log.info("rewrite_data_files: %s.%s compacted %d files into 1 (%d rows)",
-                    schemaArg, tableArg, sourceIds.size, fragment.recordCount)
+            if (partial) {
+                catalog.rewriteDataFilesPartial(tableId, sourceIds, fragment, snapshotId)
+            }
+            else {
+                catalog.rewriteDataFiles(tableId, sourceIds, ImmutableList.of(fragment), snapshotId)
+            }
+            log.info("rewrite_data_files: %s.%s compacted %d files into 1 (%d rows, partial=%b)",
+                    schemaArg, tableArg, sourceIds.size, fragment.recordCount, partial)
         }
         catch (e: TransactionConflictException) {
             throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
@@ -197,7 +226,14 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         return matched
     }
 
-    /** Read the live rows of [splits] through the real read path and write them into one Parquet file. */
+    /**
+     * Read the live rows of [splits] through the real read path and write them into one Parquet
+     * file. When [partial], a trailing `_ducklake_internal_snapshot_id` BIGINT column is written —
+     * every row tagged with its source file's begin_snapshot — so the merged file can serve
+     * time-travel reads on its own (read at S keeps rows whose value <= S). The internal column is
+     * appended LAST and carries no field_id, so the catalog stats (built over the table columns
+     * only) are unaffected and the read path finds it by name (DucklakeDeleteFileReader).
+     */
     private fun writeMergedParquetFile(
             session: ConnectorSession,
             fileSystem: TrinoFileSystem,
@@ -206,9 +242,15 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             splits: List<DucklakeSplit>,
             columnHandles: List<DucklakeColumnHandle>,
             allCatalogColumns: List<DucklakeColumn>,
-            columnTypes: List<Type>): DucklakeWriteFragment {
-        val columnNames: List<String> = columnHandles.map { it.columnName }
-        val schemaConverter = ParquetSchemaConverter(columnTypes, columnNames, false, false)
+            columnTypes: List<Type>,
+            partial: Boolean): DucklakeWriteFragment {
+        val writerColumnNames: List<String> =
+                columnHandles.map { it.columnName } +
+                    if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()
+        val writerColumnTypes: List<Type> = columnTypes + if (partial) listOf<Type>(BIGINT) else emptyList()
+        val schemaConverter = ParquetSchemaConverter(writerColumnTypes, writerColumnNames, false, false)
+        // buildMessageType annotates only the table columns by name; the internal column (unknown to
+        // the catalog) is kept un-annotated — exactly how DuckLake writes it.
         val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                 columnHandles, allCatalogColumns, schemaConverter.messageType)
 
@@ -225,6 +267,8 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 trinoVersion,
                 Optional.empty(),
                 Optional.empty())
+        // Stats/fragment are built over the TABLE columns only (the internal column is not a catalog
+        // column), so the fragment's column-stats + recordCount stay correct.
         val writer = ParquetFileWriter(
                 parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns)
 
@@ -235,7 +279,12 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 pageSource(session, tableHandle, split, readColumns).use { source ->
                     while (!source.isFinished) {
                         val sourcePage = source.nextSourcePage ?: continue
-                        writer.write(sourcePage.page)
+                        val page = sourcePage.page
+                        // Tag every row of this source with the source file's begin_snapshot.
+                        writer.write(
+                                if (partial) page.appendColumn(
+                                        RunLengthEncodedBlock.create(BIGINT, split.beginSnapshot, page.positionCount))
+                                else page)
                     }
                 }
             }
@@ -297,6 +346,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         ConnectorSession::class.java,
                         String::class.java,
                         String::class.java,
-                        String::class.java))
+                        String::class.java,
+                        java.lang.Boolean.TYPE))
     }
 }

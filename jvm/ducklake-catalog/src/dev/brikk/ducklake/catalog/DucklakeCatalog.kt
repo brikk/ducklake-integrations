@@ -536,6 +536,30 @@ interface DucklakeCatalog {
         readSnapshotId: Long,
     )
 
+    /**
+     * Partial-emitting ("merge_adjacent") compaction primitive — the variant that reclaims sources
+     * IMMEDIATELY (dev-docs/DESIGN-maintenance.md § 7). The single merged [fragment] physically
+     * carries a per-row `_ducklake_internal_snapshot_id` column (each row tagged with its source
+     * file's begin_snapshot), so it can serve time-travel reads across the whole `[minSourceBegin,
+     * now]` range on its own. The merged file is therefore registered **back-dated** to
+     * `begin_snapshot = minSourceBegin` with `partial_max = maxSourceBegin`, and the source files are
+     * **deleted from the catalog entirely** (their `ducklake_data_file` + stats + delete-file +
+     * partition-value + variant-stats rows) and scheduled for physical deletion — NOT end-snapshotted.
+     * Mirrors upstream `DuckLakeMetadataManager::WriteMergeAdjacent`.
+     *
+     * Contract: every source must be NON-partial (`partial_max IS NULL`) so each source's rows share
+     * one origin snapshot (its begin), and [fragment] must hold exactly the live source rows (row-
+     * count-preserving). Sources are removed entirely, so this is gated like the non-partial variant
+     * but validated up front (active-source + no-newer-delete since [readSnapshotId]); a concurrent
+     * commit touching a source aborts non-retryably. No-op if [sourceDataFileIds] is empty.
+     */
+    fun rewriteDataFilesPartial(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragment: DucklakeWriteFragment,
+        readSnapshotId: Long,
+    )
+
     // ==================== View operations ====================
 
     /**

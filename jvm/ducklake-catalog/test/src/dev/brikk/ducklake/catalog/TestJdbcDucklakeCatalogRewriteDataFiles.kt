@@ -13,7 +13,9 @@
  */
 package dev.brikk.ducklake.catalog
 
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DATA_FILE
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_DELETE_FILE
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILES_SCHEDULED_FOR_DELETION
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_TABLE_STATS
 import dev.brikk.ducklake.catalog.testing.CatalogTestSupport
 import org.assertj.core.api.Assertions.assertThat
@@ -261,5 +263,92 @@ class TestJdbcDucklakeCatalogRewriteDataFiles {
         assertThat(catalog.currentSnapshotId)
             .`as`("no-op calls mint no snapshot")
             .isEqualTo(before)
+    }
+
+    private fun beginSnapshotOf(path: String): Long {
+        val f = DUCKLAKE_DATA_FILE.`as`("f")
+        DriverManager.getConnection(isolated.jdbcUrl, isolated.user, isolated.password).use { conn ->
+            return CatalogTestSupport.dsl(conn).select(f.BEGIN_SNAPSHOT).from(f)
+                .where(f.PATH.eq(path)).fetchOne(f.BEGIN_SNAPSHOT) ?: -1L
+        }
+    }
+
+    private fun fileRow(path: String): Pair<Long?, Long?> {
+        val f = DUCKLAKE_DATA_FILE.`as`("f")
+        DriverManager.getConnection(isolated.jdbcUrl, isolated.user, isolated.password).use { conn ->
+            val r = CatalogTestSupport.dsl(conn).select(f.BEGIN_SNAPSHOT, f.PARTIAL_MAX).from(f)
+                .where(f.PATH.eq(path)).fetchOne() ?: return null to null
+            return r.value1() to r.value2()
+        }
+    }
+
+    private fun dataFileRowCount(dataFileId: Long): Long {
+        val f = DUCKLAKE_DATA_FILE.`as`("f")
+        DriverManager.getConnection(isolated.jdbcUrl, isolated.user, isolated.password).use { conn ->
+            return CatalogTestSupport.dsl(conn).selectCount().from(f)
+                .where(f.DATA_FILE_ID.eq(dataFileId)).fetchOne(0, Long::class.java) ?: 0L
+        }
+    }
+
+    private fun scheduledForDeletion(dataFileId: Long): Long {
+        val s = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("s")
+        DriverManager.getConnection(isolated.jdbcUrl, isolated.user, isolated.password).use { conn ->
+            return CatalogTestSupport.dsl(conn).selectCount().from(s)
+                .where(s.DATA_FILE_ID.eq(dataFileId)).fetchOne(0, Long::class.java) ?: 0L
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun partialRewriteBackDatesMergedFileAndReclaimsSources() {
+        // Two files at DIFFERENT begin snapshots (separate commits).
+        val (pathE, idE) = insertFile(10L, 1024L, 400L, 409L)
+        val beginE = beginSnapshotOf(pathE)
+        val (pathF, idF) = insertFile(10L, 2048L, 410L, 419L)
+        val beginF = beginSnapshotOf(pathF)
+        assertThat(beginF).`as`("second insert is a later snapshot").isGreaterThan(beginE)
+
+        val readSnapshot = catalog.currentSnapshotId
+        val statsBefore = catalog.getTableStats(tableId)!!
+
+        val mergedPath = uniquePath("pmerged")
+        catalog.rewriteDataFilesPartial(tableId, setOf(idE, idF), fragmentFor(mergedPath, 20L, 1500L, 400L, 419L), readSnapshot)
+
+        // Merged file back-dated to min(begin), tagged partial_max = max(begin).
+        val (mergedBegin, mergedPartialMax) = fileRow(mergedPath)
+        assertThat(mergedBegin).`as`("back-dated begin = min source begin").isEqualTo(beginE)
+        assertThat(mergedPartialMax).`as`("partial_max = max source begin").isEqualTo(beginF)
+
+        // Sources DELETED entirely (not end-snapshotted) + scheduled for physical deletion.
+        assertThat(dataFileRowCount(idE)).`as`("source E row deleted entirely").isEqualTo(0L)
+        assertThat(dataFileRowCount(idF)).`as`("source F row deleted entirely").isEqualTo(0L)
+        assertThat(scheduledForDeletion(idE)).`as`("source E scheduled for deletion").isEqualTo(1L)
+        assertThat(scheduledForDeletion(idF)).`as`("source F scheduled for deletion").isEqualTo(1L)
+
+        // Live row count preserved; merged file is the only active one of the three.
+        assertThat(catalog.getTableStats(tableId)!!.recordCount).isEqualTo(statsBefore.recordCount)
+        val activePaths = catalog.getDataFiles(tableId, catalog.currentSnapshotId).map { it.path }
+        assertThat(activePaths).contains(mergedPath).doesNotContain(pathE, pathF)
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun partialRewriteConcurrentDeleteOnSourceConflicts() {
+        val (_, idG) = insertFile(10L, 1024L, 500L, 509L)
+        val readSnapshot = catalog.currentSnapshotId
+        val mergedPath = uniquePath("pmerged")
+        val merged = fragmentFor(mergedPath, 10L, 900L, 500L, 509L)
+        val winnerDelete = DucklakeDeleteFragment(idG, uniquePath("pwin"), 1L, 256L, 64L, 1L)
+
+        val result = ConcurrentWriterHarness.runWinnerWhileLoserParked(
+            catalog,
+            Runnable { catalog.commitDelete(tableId, listOf(winnerDelete)) },
+            Runnable { catalog.rewriteDataFilesPartial(tableId, setOf(idG), merged, readSnapshot) },
+        )
+        assertThat(result.loserException)
+            .`as`("partial compaction racing a delete on its source must conflict")
+            .isInstanceOf(LogicalConflictException::class.java)
+        assertThat((result.loserException as TransactionConflictException).retryable()).isFalse()
+        assertThat(dataFileRowCount(idG)).`as`("source survives the aborted partial compaction").isEqualTo(1L)
     }
 }

@@ -185,6 +185,41 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
     }
 
     @Test
+    fun partialReclaimsSourcesImmediatelyAndTimeTravelStaysCorrect() {
+        val table = "test_schema.rewrite_partial"
+        try {
+            // One row per snapshot so each source file has a distinct begin_snapshot.
+            computeActual("CREATE TABLE $table AS SELECT 1 AS id")
+            val s1 = latestSnapshot(table)
+            computeActual("INSERT INTO $table VALUES (2)")
+            val s2 = latestSnapshot(table)
+            computeActual("INSERT INTO $table VALUES (3)")
+            assertThat(fileCount(table)).`as`("three small files before compaction").isGreaterThanOrEqualTo(3L)
+
+            // Partial / merge_adjacent: the merged file carries _ducklake_internal_snapshot_id and
+            // back-dates to begin = s1 with partial_max = s3, so the sources can be dropped now.
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', "
+                    + "table_name => 'rewrite_partial', reclaim_sources_immediately => true)")
+
+            assertThat(fileCount(table)).`as`("compacted to a single partial file").isEqualTo(1L)
+            // Latest read: every row.
+            assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1, 2, 3)
+            // Time-travel reads are served by the merged file alone (sources are gone), filtered by
+            // _ducklake_internal_snapshot_id: AS OF s1 → only the row added at s1; AS OF s2 → s1+s2.
+            assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $s1 ORDER BY id")
+                    .materializedRows.map { it.getField(0) as Int })
+                    .`as`("partial file reproduces the s1 snapshot on its own").containsExactly(1)
+            assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $s2 ORDER BY id")
+                    .materializedRows.map { it.getField(0) as Int })
+                    .`as`("partial file reproduces the s2 snapshot on its own").containsExactly(1, 2)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
     fun singleFileIsNoOp() {
         val table = "test_schema.rewrite_single"
         try {

@@ -3070,6 +3070,115 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun rewriteDataFilesPartial(
+        tableId: Long,
+        sourceDataFileIds: Set<Long>,
+        fragment: DucklakeWriteFragment,
+        readSnapshotId: Long,
+    ) {
+        if (sourceDataFileIds.isEmpty()) {
+            return
+        }
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        executeWriteTransaction("partial-rewrite data files for table $tableId") { tx ->
+            val ctx = tx.dsl()
+            // Up-front validation (re-checked on retry): sources still active + no deletion newer
+            // than the caller's read. Recorded only as InsertedIntoTable (the sources are DELETED,
+            // not end-snapshotted, so the DeletedFromTable active-file check would misfire).
+            assertRewriteSourcesStillPresent(tx, tableId, sourceDataFileIds)
+            assertNoNewerDeleteOnRewriteSources(tx, sourceDataFileIds, readSnapshotId)
+
+            // begin = min source begin (back-date so the merged file covers the whole history);
+            // partial_max = max source begin (rows newer than a time-travel read are filtered via
+            // the file's _ducklake_internal_snapshot_id column).
+            val (minBegin, maxBegin) = sourceBeginRange(tx, tableId, sourceDataFileIds)
+            val retiredFileSize = sumActiveSourceFileSize(tx, tableId, sourceDataFileIds)
+
+            applyInsertFragments(tx, tableId, listOf(fragment))
+            // Back-date the just-registered merged file + tag it partial.
+            ctx.update(file)
+                .set(file.BEGIN_SNAPSHOT, minBegin)
+                .set(file.PARTIAL_MAX, maxBegin)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(file.PATH.eq(fragment.path))
+                .and(file.BEGIN_SNAPSHOT.eq(tx.getNewSnapshotId()))
+                .execute()
+
+            scheduleAndDeleteRewriteSources(tx, sourceDataFileIds)
+            netRewriteStats(tx, tableId, fragment.recordCount, retiredFileSize)
+            tx.recordChange(WriteChange.InsertedIntoTable(tableId, referencedColumnIds(listOf(fragment))))
+        }
+    }
+
+    /** Min/max `begin_snapshot` across the active source files (for the merged file's begin + partial_max). */
+    private fun sourceBeginRange(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>): Pair<Long, Long> {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val begins: List<Long> = tx.dsl().select(file.BEGIN_SNAPSHOT)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+            .and(activeAt(file, tx.getCurrentSnapshotId()))
+            .fetch(file.BEGIN_SNAPSHOT)
+            .filterNotNull()
+        require(begins.isNotEmpty()) { "no active source files for partial rewrite of table $tableId" }
+        return begins.min() to begins.max()
+    }
+
+    /** Abort non-retryably if any source is no longer active (a concurrent drop/compaction removed it). */
+    private fun assertRewriteSourcesStillPresent(tx: DucklakeWriteTransaction, tableId: Long, sourceDataFileIds: Set<Long>) {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val active: Set<Long> = tx.dsl().select(file.DATA_FILE_ID)
+            .from(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(sourceDataFileIds))
+            .and(activeAt(file, tx.getCurrentSnapshotId()))
+            .fetchSet(file.DATA_FILE_ID)
+            .filterNotNull().toSet()
+        val missing = sourceDataFileIds.filterNot { it in active }
+        if (missing.isNotEmpty()) {
+            throw LogicalConflictException(
+                "Failed to partial-rewrite data files for table $tableId: source data_file_id(s) $missing " +
+                    "are no longer active (a concurrent DROP/compaction removed them). Not retried.")
+        }
+    }
+
+    /**
+     * Schedule the source data files AND their delete files for physical deletion (immediate
+     * reclaim, age-gated cleanup), then delete every catalog row keyed by the source data_file_ids
+     * (data file, column/variant stats, partition values, delete files). Mirrors WriteMergeAdjacent.
+     */
+    private fun scheduleAndDeleteRewriteSources(tx: DucklakeWriteTransaction, sourceDataFileIds: Set<Long>) {
+        val ctx = tx.dsl()
+        val cache = HashMap<Long, String?>()
+        val dataFiles = findRewriteSourceFiles(ctx, DUCKLAKE_DATA_FILE.DATA_FILE_ID, DUCKLAKE_DATA_FILE.TABLE_ID,
+            DUCKLAKE_DATA_FILE.PATH, DUCKLAKE_DATA_FILE.PATH_IS_RELATIVE, sourceDataFileIds)
+        val delFiles = findRewriteSourceFiles(ctx, DUCKLAKE_DELETE_FILE.DELETE_FILE_ID, DUCKLAKE_DELETE_FILE.TABLE_ID,
+            DUCKLAKE_DELETE_FILE.PATH, DUCKLAKE_DELETE_FILE.PATH_IS_RELATIVE,
+            sourceDataFileIds, DUCKLAKE_DELETE_FILE.DATA_FILE_ID)
+        for (f in dataFiles + delFiles) {
+            scheduleFile(ctx, f, cache)
+        }
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_COLUMN_STATS).where(DUCKLAKE_FILE_COLUMN_STATS.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_VARIANT_STATS).where(DUCKLAKE_FILE_VARIANT_STATS.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_FILE_PARTITION_VALUE).where(DUCKLAKE_FILE_PARTITION_VALUE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DELETE_FILE).where(DUCKLAKE_DELETE_FILE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_DATA_FILE).where(DUCKLAKE_DATA_FILE.DATA_FILE_ID.`in`(sourceDataFileIds)))
+    }
+
+    private fun findRewriteSourceFiles(
+        ctx: DSLContext,
+        idField: org.jooq.TableField<*, Long>,
+        tableIdField: org.jooq.TableField<*, Long>,
+        pathField: org.jooq.TableField<*, String>,
+        pathRelField: org.jooq.TableField<*, Boolean>,
+        sourceDataFileIds: Set<Long>,
+        keyField: org.jooq.TableField<*, Long> = idField,
+    ): List<DeadFile> =
+        ctx.select(idField, tableIdField, pathField, pathRelField)
+            .from(idField.table)
+            .where(keyField.`in`(sourceDataFileIds))
+            .fetch { DeadFile(it.value1(), it.value2(), it.value3(), it.value4() ?: false) }
+
     /**
      * Stale-read guard for [rewriteDataFiles]: a concurrent DELETE/MERGE attaches a delete file to a
      * source WITHOUT end-snapshotting the data file, so the `DeletedFromTable` active-file check
