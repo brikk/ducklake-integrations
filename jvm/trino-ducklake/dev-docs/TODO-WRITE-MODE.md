@@ -766,7 +766,8 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
     `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest. Turned out
     NOT to need `WriteChange`/`ConflictMatrix` — it's a **plain catalog transaction, no new
     snapshot** (like `ANALYZE`), since expiry is destructive GC. Schedules dead files (absolute
-    paths); v1 leaves dead dropped-table/schema/view METADATA rows (harmless, no file leak).
+    paths); also GCs the table_id-keyed metadata of fully-expired dropped tables (2026-06-29).
+    Still deferred: dead schema/view/macro rows + dynamic inlined-data tables (harmless dangling).
   - [x] `cleanup_old_files` — DONE 2026-06-29. Drains `ducklake_files_scheduled_for_deletion` past
     the grace period; resolves connector-written absolute + DuckLake-written root-relative paths.
   - [x] `flush_inlined_data` — shipped earlier.

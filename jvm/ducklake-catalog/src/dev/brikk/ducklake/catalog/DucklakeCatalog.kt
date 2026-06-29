@@ -87,6 +87,18 @@ interface DucklakeCatalog {
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>
 
     /**
+     * True if the table has any data or delete file active at [snapshotId] whose `partial_max`
+     * exceeds [snapshotId] — i.e. a cross-snapshot **compacted ("partial") file** (produced by
+     * DuckLake's `merge_adjacent_files`) that physically holds rows/deletions from snapshots NEWER
+     * than this read. Reading such a file correctly requires filtering its per-row
+     * `_ducklake_internal_snapshot_id <= snapshotId` column, which this connector does not yet do;
+     * callers gate the read instead of returning over-included rows. `partial_max <= snapshotId`
+     * (e.g. reading at the latest snapshot) needs no filter and is always safe. See
+     * dev-docs/DESIGN-maintenance.md § 6.
+     */
+    fun hasPartialFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean
+
+    /**
      * Every storage path the catalog references for this table, regardless of snapshot liveness:
      * all `ducklake_data_file` and `ducklake_delete_file` rows for the table (including
      * end-snapshotted ones — those physical files are still owned by the catalog until cleanup),

@@ -127,9 +127,11 @@ actually reclaim space. That is the next increment, built on the model above —
    ABSOLUTE) for cleanup. Catalog-wide (DuckLake snapshots are catalog versions). **CORRECTION to
    the earlier assumption that this needs `WriteChange`/`ConflictMatrix` entries:** it does NOT —
    expiry is destructive GC, so it runs as a **plain catalog transaction with no new snapshot**
-   (exactly like `ANALYZE`), bypassing the snapshot-mint + conflict machinery entirely. v1 reclaims
-   the FILES; it leaves dead *metadata* rows of fully-expired dropped tables/schemas/views as
-   harmless dangling rows (no surviving snapshot references them; no file leak) — a follow-up.
+   (exactly like `ANALYZE`), bypassing the snapshot-mint + conflict machinery entirely. Now also
+   GCs the **table_id-keyed metadata rows of fully-expired dropped tables** (2026-06-29:
+   `ducklake_table` + column/stats/partition/sort/mapping rows, reusing the validated `deadTableIds`).
+   Still deferred (harmless dangling rows, no file leak): dead **schema/view/macro/name_mapping**
+   rows and dropping the dynamic `ducklake_inlined_data_*` tables.
 3. ✅ **`cleanup_old_files`** — DONE. Drains `ducklake_files_scheduled_for_deletion` where
    `schedule_start < now - retention` (floored by `ducklake.maintenance.min-retention`); deletes the
    file then removes the row (a failed delete keeps its row for retry). Resolves connector-written
@@ -152,19 +154,23 @@ file gets an internal `_ducklake_internal_snapshot_id` per row, and a correct re
 must filter `_ducklake_internal_snapshot_id <= partial_max` (and the symmetric min bound) so
 **time-travel doesn't over-include rows that were actually added in a later snapshot**.
 
-Two consequences:
+Exact mechanics (verified against vendored DuckLake): a partial file physically carries a per-row
+`_ducklake_internal_snapshot_id` BIGINT column; a correct read at snapshot `S` filters
+`_ducklake_internal_snapshot_id <= S` (the *query* snapshot, NOT `partial_max`), applied **only
+when `partial_max > S`** (`begin_snapshot = MIN`, `partial_max = MAX` of that column; the lower
+bound is implicit via the catalog's `begin_snapshot <= S` visibility). Partial *delete* files work
+the same way (a deletion takes effect at `S` iff its embedded snapshot id `<= S`).
 
-- **Already-live gap (narrow).** A table compacted by *DuckDB* `merge_adjacent_files` on a shared
-  catalog can today be **time-travel-read incorrectly** by this connector (over-inclusion of
-  later-snapshot rows). Current-snapshot reads are unaffected (every row is live at the latest
-  snapshot). Scope: compacted-cross-snapshot tables × time-travel only. Tracked in TODO-READ-MODE.
-- **Blocks our own compaction.** We must NOT emit cross-snapshot-merged files from `optimize` /
-  `rewrite_data_files` until the read path projects and applies `partial_max` — otherwise we'd
-  manufacture the same corruption. (A compaction variant that only merges files *within a single
-  snapshot* sidesteps `partial_max` and could ship first.)
-
-This note exists so the read fix and the compaction write are designed together; `remove_orphan_files`
-(§ 3) is independent of it.
+**v1 status — a GATE, not the full filter (shipped 2026-06-29).** Rather than silently over-include
+rows, `DucklakeSplitManager` now rejects a read when any data/delete file active at the scan
+snapshot has `partial_max > snapshotId` (`catalog.hasPartialFilesRequiringSnapshotFilter`). This
+turns the silent correctness bug into a loud `NOT_SUPPORTED`. Reads at the latest snapshot (or any
+`S >= partial_max`) need no filter and pass. `TestDucklakePartialFileGuard` pins it (reject below
+partial_max, allow at/above, never gate a normal table). The **full per-row filter** (project the
+`_ducklake_internal_snapshot_id` column and push `<= S`) remains the follow-up and is the hard
+prerequisite for shipping cross-snapshot compaction (`optimize` / `rewrite_data_files`) — until it
+lands we must not EMIT partial files either, or we'd manufacture the same situation. (A
+within-single-snapshot compaction variant sidesteps `partial_max` and could ship first.)
 
 ## 5. Upstream parity / cross-engine notes
 

@@ -538,8 +538,15 @@ surviving snapshots; the latest snapshot is never expirable). It is a plain cata
 `cleanup_old_files` is the second phase that physically deletes them once they age past the grace
 period. This two-phase split (schedule, then age-gated unlink) is what keeps deletion safe against
 in-flight readers on other engines — see [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
-v1 reclaims the files; dead *metadata* rows of fully-expired dropped tables/schemas/views are left
-as harmless dangling rows (a follow-up).
+Expire also GCs the metadata rows of fully-expired dropped tables; dead schema/view/macro rows are
+left as harmless dangling rows (a follow-up).
+
+**Partial (cross-snapshot compacted) files:** DuckLake's `merge_adjacent_files` can merge rows from
+multiple snapshots into one file (`ducklake_data_file.partial_max` set). Reading such a file
+correctly at an older snapshot requires per-row `_ducklake_internal_snapshot_id` filtering, which
+this connector does not yet do — so a **time-travel read below a partial file's `partial_max` is
+rejected** with a clear error rather than returning over-included rows. Reads at the latest snapshot
+(the common case) are unaffected. The full per-row filter is a planned follow-up.
 
 ## Cross-Engine Compatibility
 
