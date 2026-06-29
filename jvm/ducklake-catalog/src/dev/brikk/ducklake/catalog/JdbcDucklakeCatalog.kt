@@ -549,10 +549,35 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_EXPRESSION).where(DUCKLAKE_SORT_EXPRESSION.TABLE_ID.`in`(deadTableIds)))
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SORT_INFO).where(DUCKLAKE_SORT_INFO.TABLE_ID.`in`(deadTableIds)))
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SCHEMA_VERSIONS).where(DUCKLAKE_SCHEMA_VERSIONS.TABLE_ID.`in`(deadTableIds)))
+        // Drop the dynamic per-(table,schema-version) inlined-data tables before forgetting they
+        // exist, then delete the directory rows.
+        dropDeadInlinedDataTables(ctx, deadTableIds)
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_INLINED_DATA_TABLES).where(DUCKLAKE_INLINED_DATA_TABLES.TABLE_ID.`in`(deadTableIds)))
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_COLUMN_MAPPING).where(DUCKLAKE_COLUMN_MAPPING.TABLE_ID.`in`(deadTableIds)))
         // The ducklake_table rows last (others reference table_id).
         metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_TABLE).where(DUCKLAKE_TABLE.TABLE_ID.`in`(deadTableIds)))
+    }
+
+    /**
+     * DROP the dynamic `ducklake_inlined_data_<tableId>_<schemaVersion>` tables of fully-expired
+     * dropped tables. A missing/never-materialized table is skipped (DROP TABLE IF EXISTS, and any
+     * DataAccessException is swallowed) — the same tolerance [endSnapshotLiveInlinedRows] uses.
+     */
+    private fun dropDeadInlinedDataTables(ctx: DSLContext, deadTableIds: List<Long>) {
+        val inlinedTables = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
+        val tablePairs: List<Pair<Long, Long>> = ctx.select(inlinedTables.TABLE_ID, inlinedTables.SCHEMA_VERSION)
+            .from(inlinedTables)
+            .where(inlinedTables.TABLE_ID.`in`(deadTableIds))
+            .fetch()
+            .mapNotNull { r -> val tid = r.value1(); val sv = r.value2(); if (tid != null && sv != null) tid to sv else null }
+        for ((tid, sv) in tablePairs) {
+            try {
+                ctx.dropTableIfExists(InlinedDataTable.of(tid, sv).table).execute()
+            }
+            catch (e: DataAccessException) {
+                log.log(System.Logger.Level.DEBUG, "Skipping drop of dead inlined-data table for $tid/$sv", e)
+            }
+        }
     }
 
     private fun findDeadTableIds(ctx: DSLContext): List<Long> {

@@ -366,6 +366,49 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
                 }
             }
 
+    @Throws(Exception::class)
+    private fun exec(sql: String) {
+        DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+            conn.createStatement().use { it.execute(sql) }
+        }
+    }
+
+    private fun tableExists(name: String): Boolean =
+            rowCount("SELECT count(*) FROM information_schema.tables WHERE table_name = ?", name) > 0L
+
+    /**
+     * Expiring a dropped table's whole lifetime DROPs its dynamic `ducklake_inlined_data_*` tables
+     * (the last deferred GC item). We simulate a DuckDB-written inlined table by creating the
+     * dynamic table + a directory row for the dropped table, then assert expiry drops both.
+     */
+    @Test
+    @Throws(Exception::class)
+    fun deadDroppedTableInlinedDataTableIsDropped() {
+        computeActual("CREATE TABLE test_schema.inlined_gc AS SELECT 1 AS id")
+        val tableId = rowCount("SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL", "inlined_gc")
+        computeActual("DROP TABLE test_schema.inlined_gc")
+        computeActual("CREATE TABLE test_schema.inlined_gc_keeper AS SELECT 1 AS id") // advance latest past the drop
+        val dynName = "ducklake_inlined_data_${tableId}_0"
+        try {
+            exec("CREATE TABLE $dynName (val INTEGER)")
+            exec("INSERT INTO ducklake_inlined_data_tables (table_id, table_name, schema_version) VALUES ($tableId, 'inlined_gc', 0)")
+            assertThat(tableExists(dynName)).`as`("dynamic inlined-data table present before expiry").isTrue()
+
+            val latest = maxSnapshot()
+            val toExpire = allSnapshotIds().filter { it != latest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(toExpire)}, dry_run => false)")
+
+            assertThat(tableExists(dynName)).`as`("dead table's dynamic inlined-data table dropped").isFalse()
+            assertThat(rowCount("SELECT count(*) FROM ducklake_inlined_data_tables WHERE table_id = $tableId"))
+                    .`as`("directory row removed").isEqualTo(0L)
+        }
+        finally {
+            try { exec("DROP TABLE IF EXISTS $dynName") } catch (ignored: Exception) {}
+            tryDrop("test_schema.inlined_gc_keeper")
+        }
+    }
+
     /**
      * Expiring a dropped VIEW's whole lifetime GCs its dangling `ducklake_view` rows, while a live
      * view is untouched. Companion to deadDroppedTableMetadataIsGarbageCollected for the

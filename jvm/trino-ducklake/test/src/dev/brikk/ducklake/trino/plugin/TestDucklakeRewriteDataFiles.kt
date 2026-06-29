@@ -269,6 +269,36 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
     }
 
     @Test
+    fun nonPartialFoldsAnAlreadyPartialSource() {
+        val table = "test_schema.rewrite_recompact"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT 1 AS id")
+            computeActual("INSERT INTO $table VALUES (2)")
+            // First: a PARTIAL compaction produces one partial file (begin=s1, partial_max=s2).
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', "
+                    + "table_name => 'rewrite_recompact', reclaim_sources_immediately => true)")
+            assertThat(fileCount(table)).isEqualTo(1L)
+            val sPartial = latestSnapshot(table)
+
+            // Add another small file, then a NON-PARTIAL compaction must fold the partial file in.
+            computeActual("INSERT INTO $table VALUES (3)")
+            computeActual(call(table))
+
+            assertThat(fileCount(table)).`as`("partial source folded into one non-partial file").isEqualTo(1L)
+            assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1, 2, 3)
+            // Time-travel to just after the partial compaction still reads the (now end-snapshotted)
+            // partial file — proving the non-partial fold didn't break history.
+            assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $sPartial ORDER BY id")
+                    .materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1, 2)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
     fun singleFileIsNoOp() {
         val table = "test_schema.rewrite_single"
         try {
