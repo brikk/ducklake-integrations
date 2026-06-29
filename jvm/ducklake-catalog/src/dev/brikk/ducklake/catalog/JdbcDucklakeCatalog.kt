@@ -29,6 +29,8 @@ import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_PARTITION_
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_FILE_VARIANT_STATS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_INLINED_DATA_TABLES
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO_IMPL
+import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_MACRO_PARAMETERS
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_METADATA
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_NAME_MAPPING
 import dev.brikk.ducklake.catalog.schema.PublicDbTables.DUCKLAKE_PARTITION_COLUMN
@@ -510,11 +512,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
                 // GC the metadata rows of fully-expired DROPPED tables (every row dead — see
                 // findDeadTableIds). Reuses the already-validated deadTableIds, so it can't touch a
-                // live table. (Dead schema/view/macro rows + dynamic inlined-data tables are left to
-                // a follow-up — harmless dangling rows, no file leak.)
+                // live table.
                 if (deadTableIds.isNotEmpty()) {
                     deleteDeadTableMetadata(ctx, deadTableIds)
                 }
+                // GC fully-expired schema/view/macro rows + name-mapping rows orphaned by the
+                // table GC above. Pure tidiness (no file leak either way) but completes the catalog
+                // sweep so a long-lived warehouse doesn't accumulate dead metadata.
+                deleteDeadSchemaViewMacroMetadata(ctx)
 
                 conn.commit()
                 return ExpireSnapshotsResult(snapshotIds.size, scheduledCount)
@@ -560,6 +565,97 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 .and(t2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
                     .where(surv2.SNAPSHOT_ID.ge(t2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(t2.END_SNAPSHOT)))))))
             .fetch(t1.TABLE_ID)
+            .distinct()
+    }
+
+    /**
+     * GC of dead schema/view/macro metadata + name-mapping rows orphaned by [deleteDeadTableMetadata].
+     * Views and macros are versioned like tables (same half-open survivor test); a schema carries a
+     * single PK row. Runs AFTER the table-metadata GC so it sees the post-cleanup state (a dead
+     * schema can only be removed once its tables' rows are gone; orphaned name mappings are those
+     * whose `mapping_id` lost its `ducklake_column_mapping` owner). All "no file leak" tidiness.
+     */
+    private fun deleteDeadSchemaViewMacroMetadata(ctx: DSLContext) {
+        val deadViewIds = findDeadViewIds(ctx)
+        if (deadViewIds.isNotEmpty()) {
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_VIEW).where(DUCKLAKE_VIEW.VIEW_ID.`in`(deadViewIds)))
+        }
+        val deadMacroIds = findDeadMacroIds(ctx)
+        if (deadMacroIds.isNotEmpty()) {
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO_IMPL).where(DUCKLAKE_MACRO_IMPL.MACRO_ID.`in`(deadMacroIds)))
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO_PARAMETERS).where(DUCKLAKE_MACRO_PARAMETERS.MACRO_ID.`in`(deadMacroIds)))
+            metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_MACRO).where(DUCKLAKE_MACRO.MACRO_ID.`in`(deadMacroIds)))
+        }
+        // Name-mapping rows whose mapping_id no longer has a column_mapping owner (the table GC
+        // removed it). mapping_id originates in ducklake_column_mapping, so an unreferenced one is
+        // dead. Routed through a NOT IN subquery on the surviving column_mapping owners.
+        metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_NAME_MAPPING)
+            .where(DUCKLAKE_NAME_MAPPING.MAPPING_ID.notIn(
+                ctx.select(DUCKLAKE_COLUMN_MAPPING.MAPPING_ID).from(DUCKLAKE_COLUMN_MAPPING))))
+        // Dead schemas last: every row dead AND nothing (live or dead-but-surviving) still references
+        // schema_id. The survivor test already implies emptiness, but the extra guard keeps the
+        // delete from ever stranding a referencing row.
+        val deadSchemaIds = findDeadSchemaIds(ctx)
+        if (deadSchemaIds.isNotEmpty()) {
+            val tab = DUCKLAKE_TABLE.`as`("tab")
+            val vw = DUCKLAKE_VIEW.`as`("vw")
+            val mac = DUCKLAKE_MACRO.`as`("mac")
+            val referenced: Set<Long> = (
+                ctx.select(tab.SCHEMA_ID).from(tab).where(tab.SCHEMA_ID.`in`(deadSchemaIds)).fetch(tab.SCHEMA_ID) +
+                ctx.select(vw.SCHEMA_ID).from(vw).where(vw.SCHEMA_ID.`in`(deadSchemaIds)).fetch(vw.SCHEMA_ID) +
+                ctx.select(mac.SCHEMA_ID).from(mac).where(mac.SCHEMA_ID.`in`(deadSchemaIds)).fetch(mac.SCHEMA_ID)
+                ).filterNotNull().toSet()
+            val removable = deadSchemaIds.filterNot { it in referenced }
+            if (removable.isNotEmpty()) {
+                metadata.execute(ctx, ctx.deleteFrom(DUCKLAKE_SCHEMA).where(DUCKLAKE_SCHEMA.SCHEMA_ID.`in`(removable)))
+            }
+        }
+    }
+
+    private fun findDeadViewIds(ctx: DSLContext): List<Long> {
+        val v1 = DUCKLAKE_VIEW.`as`("v1")
+        val v2 = DUCKLAKE_VIEW.`as`("v2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(v1.VIEW_ID).from(v1)
+            .where(v1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(v1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(v1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(v2)
+                .where(v2.VIEW_ID.eq(v1.VIEW_ID))
+                .and(v2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(v2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(v2.END_SNAPSHOT)))))))
+            .fetch(v1.VIEW_ID)
+            .distinct()
+    }
+
+    private fun findDeadMacroIds(ctx: DSLContext): List<Long> {
+        val m1 = DUCKLAKE_MACRO.`as`("m1")
+        val m2 = DUCKLAKE_MACRO.`as`("m2")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        val surv2 = DUCKLAKE_SNAPSHOT.`as`("surv2")
+        return ctx.select(m1.MACRO_ID).from(m1)
+            .where(m1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(m1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(m1.END_SNAPSHOT))))
+            .and(DSL.notExists(ctx.selectOne().from(m2)
+                .where(m2.MACRO_ID.eq(m1.MACRO_ID))
+                .and(m2.END_SNAPSHOT.isNull.or(DSL.exists(ctx.selectOne().from(surv2)
+                    .where(surv2.SNAPSHOT_ID.ge(m2.BEGIN_SNAPSHOT)).and(surv2.SNAPSHOT_ID.lt(m2.END_SNAPSHOT)))))))
+            .fetch(m1.MACRO_ID)
+            .distinct()
+    }
+
+    private fun findDeadSchemaIds(ctx: DSLContext): List<Long> {
+        val s1 = DUCKLAKE_SCHEMA.`as`("s1")
+        val surv = DUCKLAKE_SNAPSHOT.`as`("surv")
+        // ducklake_schema has a PK on schema_id (one row per id), so a dead schema is simply an
+        // end-snapshotted row with no surviving snapshot in [begin,end).
+        return ctx.select(s1.SCHEMA_ID).from(s1)
+            .where(s1.END_SNAPSHOT.isNotNull)
+            .and(DSL.notExists(ctx.selectOne().from(surv)
+                .where(surv.SNAPSHOT_ID.ge(s1.BEGIN_SNAPSHOT)).and(surv.SNAPSHOT_ID.lt(s1.END_SNAPSHOT))))
+            .fetch(s1.SCHEMA_ID)
             .distinct()
     }
 

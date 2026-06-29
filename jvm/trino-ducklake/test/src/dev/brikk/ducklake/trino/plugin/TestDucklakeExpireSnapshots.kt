@@ -355,4 +355,73 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         catch (ignored: Exception) {
         }
     }
+
+    @Throws(Exception::class)
+    private fun rowCount(sql: String, vararg args: String): Long =
+            DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                    pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+                conn.prepareStatement(sql).use { ps ->
+                    args.forEachIndexed { i, a -> ps.setString(i + 1, a) }
+                    ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+                }
+            }
+
+    /**
+     * Expiring a dropped VIEW's whole lifetime GCs its dangling `ducklake_view` rows, while a live
+     * view is untouched. Companion to deadDroppedTableMetadataIsGarbageCollected for the
+     * schema/view/macro sweep added with the compaction work.
+     */
+    @Test
+    @Throws(Exception::class)
+    fun deadDroppedViewMetadataIsGarbageCollected() {
+        computeActual("CREATE TABLE test_schema.view_src AS SELECT 1 AS id")
+        computeActual("CREATE VIEW test_schema.gc_view AS SELECT id FROM test_schema.view_src")
+        computeActual("DROP VIEW test_schema.gc_view")
+        computeActual("CREATE VIEW test_schema.keep_view AS SELECT id FROM test_schema.view_src")
+        try {
+            assertThat(rowCount("SELECT count(*) FROM ducklake_view WHERE view_name = ?", "gc_view"))
+                    .`as`("dropped view row present before expiry").isEqualTo(1L)
+
+            val latest = maxSnapshot()
+            val toExpire = allSnapshotIds().filter { it != latest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(toExpire)}, dry_run => false)")
+
+            assertThat(rowCount("SELECT count(*) FROM ducklake_view WHERE view_name = ?", "gc_view"))
+                    .`as`("dead dropped-view metadata GC'd").isEqualTo(0L)
+            assertThat(rowCount("SELECT count(*) FROM ducklake_view WHERE view_name = ?", "keep_view"))
+                    .`as`("live view metadata untouched").isGreaterThanOrEqualTo(1L)
+            assertThat(computeActual("SELECT id FROM test_schema.keep_view").materializedRows
+                    .map { it.getField(0) as Int }).containsExactly(1)
+        }
+        finally {
+            try { computeActual("DROP VIEW test_schema.keep_view") } catch (ignored: Exception) {}
+            tryDrop("test_schema.view_src")
+        }
+    }
+
+    /** Expiring a dropped (empty) SCHEMA's whole lifetime GCs its dangling `ducklake_schema` row. */
+    @Test
+    @Throws(Exception::class)
+    fun deadDroppedSchemaMetadataIsGarbageCollected() {
+        computeActual("CREATE SCHEMA gc_schema")
+        computeActual("DROP SCHEMA gc_schema")
+        // Advance the latest past the drop so gc_schema's whole lifetime is expirable.
+        computeActual("CREATE TABLE test_schema.schema_gc_keeper AS SELECT 1 AS id")
+        try {
+            assertThat(rowCount("SELECT count(*) FROM ducklake_schema WHERE schema_name = ?", "gc_schema"))
+                    .`as`("dropped schema row present before expiry").isEqualTo(1L)
+
+            val latest = maxSnapshot()
+            val toExpire = allSnapshotIds().filter { it != latest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(toExpire)}, dry_run => false)")
+
+            assertThat(rowCount("SELECT count(*) FROM ducklake_schema WHERE schema_name = ?", "gc_schema"))
+                    .`as`("dead dropped-schema metadata GC'd").isEqualTo(0L)
+            assertThat(rowCount("SELECT count(*) FROM ducklake_schema WHERE schema_name = ?", "test_schema"))
+                    .`as`("live schema untouched").isGreaterThanOrEqualTo(1L)
+        }
+        finally {
+            tryDrop("test_schema.schema_gc_keeper")
+        }
+    }
 }

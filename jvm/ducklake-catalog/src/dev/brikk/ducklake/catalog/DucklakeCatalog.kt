@@ -127,11 +127,11 @@ interface DucklakeCatalog {
      * A plain catalog transaction — no new snapshot, no `changes_made` entry (matches `ANALYZE`;
      * expiry is destructive GC, not a forward commit).
      *
-     * v1 reclaims the FILES (the space + the file-keyed stats); it does NOT yet GC the dead
-     * *metadata* rows of fully-expired dropped tables/schemas/views/macros (`ducklake_table`,
-     * `ducklake_column`, …). Those are harmless dangling rows — no surviving snapshot references
-     * them so they never surface in reads, and they leak no files — left to a follow-up. Not
-     * supported on the Quack backend yet.
+     * Also GCs the dead *metadata* rows of fully-expired dropped tables/views/macros/schemas
+     * (`ducklake_table` + column/stats/partition/sort/mapping rows; `ducklake_view`;
+     * `ducklake_macro`/`_impl`/`_parameters`; `ducklake_schema`) and name-mapping rows orphaned by
+     * that cleanup — a full catalog sweep so a long-lived warehouse doesn't accumulate dead
+     * metadata. Not supported on the Quack backend yet.
      */
     fun expireSnapshots(snapshotIds: Set<Long>): ExpireSnapshotsResult
 
