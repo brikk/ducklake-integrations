@@ -93,7 +93,12 @@ data class DucklakeSplit @JsonCreator constructor(
         // read. Its value is the QUERY snapshot S: the page source drops rows whose
         // `_ducklake_internal_snapshot_id > S`. Null for ordinary files (no filter needed).
         @get:JvmName("snapshotFilterMax")
-        @param:JsonProperty("snapshotFilterMax") val snapshotFilterMax: Long? = null)
+        @param:JsonProperty("snapshotFilterMax") val snapshotFilterMax: Long? = null,
+        // For consolidated ("partial") PARQUET delete files whose partial_max exceeds the read
+        // snapshot: resolved delete-file path -> the query snapshot S. The delete reader keeps only
+        // the deletions whose _ducklake_internal_snapshot_id <= S. Empty for ordinary delete files.
+        @get:JvmName("deleteFileSnapshotFilters")
+        @param:JsonProperty("deleteFileSnapshotFilters") val deleteFileSnapshotFilters: Map<String, Long> = mapOf())
         : ConnectorSplit
 {
     // Convenience constructor without footer-size hints / partition values — used by

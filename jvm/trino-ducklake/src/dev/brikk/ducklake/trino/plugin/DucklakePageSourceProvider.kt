@@ -458,6 +458,18 @@ class DucklakePageSourceProvider @Inject constructor(
     {
         // Delete files carry their own footer_size in ducklake_delete_file.
         val deleteFooterHint: Long = split.deleteFileFooterSizes.getOrDefault(deleteFilePath, 0L)
+        // Consolidated ("partial") delete file: apply only the deletions recorded at or before the
+        // read snapshot (filter by _ducklake_internal_snapshot_id).
+        val snapshotFilter: Long? = split.deleteFileSnapshotFilters[deleteFilePath]
+        if (snapshotFilter != null) {
+            return DucklakeDeleteFileReader.readPositionsWithSnapshotFilter(
+                    fileSystem,
+                    deleteFilePath,
+                    deleteFooterHint,
+                    snapshotFilter,
+                    parquetReaderOptions,
+                    fileFormatDataSourceStats)
+        }
         return DucklakeDeleteFileReader.readPositions(
                 fileSystem,
                 deleteFilePath,

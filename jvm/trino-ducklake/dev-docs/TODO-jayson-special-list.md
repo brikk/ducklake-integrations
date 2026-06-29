@@ -83,8 +83,10 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     `partial_max > S`. ✅ DATA files now FILTERED (2026-06-29): split carries `snapshotFilterMax`,
     page source reads the column + drops positions `> S` via the delete-filter set; time-travel of a
     DuckDB-compacted table is correct (`TestDucklakePartialFileFilter`, cross-engine via real
-    `merge_adjacent_files`). Partial DELETE files still GATED (`TestDucklakePartialFileGuard`) — the
-    symmetric filter is the remaining follow-up. **Compaction read side is now unblocked.**
+    `merge_adjacent_files`). Consolidated **parquet DELETE files** also filtered now
+    (`TestDucklakePartialDeleteFilter`, cross-engine via `flush_inlined_data`); only **puffin**
+    partial delete files remain gated (`TestDucklakePartialFileGuard`). **Compaction read side fully
+    unblocked.**
   • **dead-table metadata GC** — expire now also deletes the table_id-keyed metadata rows of
     fully-expired dropped tables (reusing validated deadTableIds). Dead schema/view/macro rows +
     dynamic inlined tables still deferred (harmless dangling).

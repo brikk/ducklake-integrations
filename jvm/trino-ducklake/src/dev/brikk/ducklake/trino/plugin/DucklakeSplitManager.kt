@@ -568,6 +568,7 @@ class DucklakeSplitManager @Inject constructor(
         // are still deduplicated, and when duplicates carry different (or absent) hints we
         // prefer the first recorded positive hint.
         val deleteFileFooterSizes: LinkedHashMap<String, Long> = linkedMapOf()
+        val deleteFileSnapshotFilters: LinkedHashMap<String, Long> = linkedMapOf()
         for (df in dataFileGroup) {
             val deleteFilePath = df.deleteFilePath ?: continue
             val resolvedDeletePath: String = pathResolver.resolveFilePath(
@@ -576,6 +577,14 @@ class DucklakeSplitManager @Inject constructor(
                     tableDataPath)
             val hint: Long = df.deleteFileFooterSize ?: 0L
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
+            // Consolidated PARQUET delete file holding deletions newer than this read → filter its
+            // positions by _ducklake_internal_snapshot_id <= snapshotId. (Puffin partial delete
+            // files are gated upstream in validateNoUnfilterablePartialFiles.)
+            val deletePartialMax = df.deleteFilePartialMax
+            if (deletePartialMax != null && deletePartialMax > snapshotId
+                    && "parquet".equals(df.deleteFileFormat, ignoreCase = true)) {
+                deleteFileSnapshotFilters[resolvedDeletePath] = snapshotId
+            }
         }
         val deleteFilePaths: List<String> = deleteFileFooterSizes.keys.toList()
 
@@ -615,7 +624,8 @@ class DucklakeSplitManager @Inject constructor(
                 inlinedDeletedRowPositions,
                 affinityKey,
                 primary.beginSnapshot,
-                snapshotFilterMax)
+                snapshotFilterMax,
+                deleteFileSnapshotFilters)
     }
 
     /**

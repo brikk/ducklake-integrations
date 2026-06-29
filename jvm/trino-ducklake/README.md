@@ -545,9 +545,11 @@ left as harmless dangling rows (a follow-up).
 multiple snapshots into one file (`ducklake_data_file.partial_max` set), physically carrying each
 row's origin snapshot. The connector reads such files correctly: a time-travel read at snapshot `S`
 drops rows whose `_ducklake_internal_snapshot_id > S` (only when `partial_max > S`), so time travel
-over a DuckDB-compacted table returns the right rows. The one remaining gap is a *consolidated
-**delete** file* spanning snapshots (`ducklake_delete_file.partial_max`) — a time-travel read across
-one is rejected with a clear error rather than over-deleting; the symmetric filter is a follow-up.
+over a DuckDB-compacted table returns the right rows. Consolidated **parquet delete files** spanning
+snapshots (`ducklake_delete_file.partial_max`) are filtered the same way — only the deletions
+recorded at or before the read snapshot apply. The one remaining gap is a consolidated **puffin**
+(deletion-vector) delete file: a time-travel read below its `partial_max` is rejected with a clear
+error rather than over-deleting; the per-blob snapshot filter is a follow-up.
 
 ## Cross-Engine Compatibility
 
