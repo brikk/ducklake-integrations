@@ -850,3 +850,49 @@ promote it into a real task in the appropriate section above and prune the bulle
   spec text lands. Detailed previews in
   [`archive/archive/DUCKLAKE_1_0_IMPACT.md`](archive/archive/DUCKLAKE_1_0_IMPACT.md)
   "DuckLake v1.1 / v2.0 Preview" sections.
+
+### Added 2026-06-23 upstream refresh (see RESEARCH-upstreams.md "Latest baselines")
+
+- **upstream-deletion-vectors** (ducklake `main` + `v1.5-variegata`) — upstream
+  landed a full **Puffin deletion-vector WRITE** path (multiple DVs per puffin,
+  snapshot-filtered, hooked into `ducklake_delete` and the merge): commits
+  `1e805b2d`/`4d16f7a1`/`48ea3aa5`/`16ee5948`/`4cf...`. We READ DVs but always
+  WRITE parquet positional deletes (TODO-WRITE-MODE § F7). This narrows the gap
+  to a known feature, not a research unknown — promote F7 Puffin-DV-writes when
+  picked up. Bug-shaped watch: our DV *reader* must stay correct against the new
+  multi-DV-per-puffin layout (canary: cross-engine delete round-trip).
+- **upstream-maintenance-ops** (ducklake `v1.5-variegata`) — `ducklake_merge_adjacent_files`
+  + `ducklake_rewrite_data_files` now run **server-side** (`5bceaccc`), plus
+  `REWRITE_DELETES` honors `target_file_size` (`b32c1577`) and recomputes exact
+  global stats after compaction (`4de135fd`/`ed4b5e3a`). Direct reference material
+  for our F6/M8 maintenance program. `ducklake_delete_orphaned_files()` got a
+  Quack remote-exec fix (`61a0fa1f`). ~½-day read to extract the commit/stats-refresh
+  shape before M8 design.
+- **upstream-inlined-merge-insert** (ducklake `main`) — inlining now covers the
+  `MERGE INTO ... INSERT` case (`b849b051`, fixes #1186) and inline-data inserts +
+  `tables_flushed_inlined`/`tables_deleted_inlined` in `ducklake_commit`
+  (`2f00f057`/`5e8f73d7`/`4cfc3ca8`). Cross-check our `flush_inlined_data` +
+  T2-B inlined-DELETE gate against the new commit vocabulary so a Trino-written
+  inlined table round-trips. ~½-day verify spike; bug-shaped if commit fields drift.
+- **upstream-commit-retry-partition-ids** (ducklake `main`) — a cluster of
+  commit-retry correctness fixes around transaction-local partition ids
+  (`4f658a2f`/`6d078382`/`c6a20e92`/`a5a6be4d`) and "preserve externally added
+  transaction-local files" (`fcf8e5e8`). Directly relevant to our concurrent-conflict
+  / commit-retry path (`DuckDbCatalogWriteRetry`) — verify our partition-id handling
+  on retry doesn't have the same off-by-one they fixed. Bug-shaped; ~1-day spike.
+- **upstream-stats-on-delete** (ducklake `main` + release) — "Decrement stats when
+  deletes drop data files" (`3be1c235`), "Keep column stats accurate on drop-to-empty
+  + same-txn insert" (`8f51c142`), MIN/MAX answered from catalog when exact
+  (`8c1e97ab`). Our ANALYZE recompute (shipped) overlaps; confirm our incremental
+  stats on DELETE match the new upstream decrement semantics. ~½-day cross-check.
+- **upstream-change-feed-views** (ducklake `v1.5-variegata`) — "now allow views in
+  the data change feed" (`7cefdf4b`). Signal that the change-feed surface (our F9,
+  absent) is maturing upstream — re-scope F9 against the current `table_changes`
+  shape when picked up.
+- **datafusion-maintenance-shipped** (datafusion-ducklake v0.3.0, 2026-06-22) — the
+  Rust impl now ships `expire_snapshots`, `cleanup_old_files`, `delete_orphaned_files`
+  (#122/#123) and a `rowid` virtual column / row lineage (#115). This is the
+  cross-engine oracle the existing `datafusion-maintenance-ops-reference` bullet
+  predicted — it has now LANDED in a release. Also: schema-evolution read fixes
+  (#140/#141) worth diffing against our T2-A work, and nanosecond-tz → `timestamptz_ns`
+  mapping (#133). Promote alongside M8.
