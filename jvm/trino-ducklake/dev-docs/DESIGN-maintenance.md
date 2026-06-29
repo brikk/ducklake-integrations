@@ -149,10 +149,12 @@ actually reclaim space. That is the next increment, built on the model above —
    decisions (§ 7): model the commit as `DeletedFromTable`+`InsertedIntoTable` (reuses ALL conflict
    machinery, ZERO spec-locked edits); reuse the real read path (split manager + page source) so the
    merge inherits delete/partial/schema-evolution correctness; row-count-preserving stats. (b)
-   **partial-emitting** — write the merged file with `begin = min source begin`, `partial_max = max
-   source snapshot`, and a per-row `_ducklake_internal_snapshot_id` column; reclaims sources
-   immediately. Needs the WRITE side of `partial_max` (the read side is done). Deferred. Cross-engine
-   concurrency matters most here; design when scheduled.
+   ✅ **partial-emitting DONE** (`reclaim_sources_immediately => true`) — writes the merged file with
+   `begin = min source begin`, `partial_max = max source begin`, and a per-row
+   `_ducklake_internal_snapshot_id` column, then DELETES the sources entirely + schedules them
+   (mirrors DuckLake `WriteMergeAdjacent`). The merged file reproduces every historical snapshot on
+   its own (read at S keeps rows whose internal id `<= S`), so sources reclaim immediately.
+   `DucklakeCatalog.rewriteDataFilesPartial`; round-trip pinned by `TestDucklakeRewriteDataFiles`.
 5. **stats-recalc** — already shipped as `ANALYZE`.
 
 ## 6. `partial_max` — a standing read-correctness gap (compaction-coupled)
@@ -286,11 +288,18 @@ stats math (D3) trivially correct whether or not the sources carried deletes.
     widens `ducklake_table_column_stats` with the merged file — a no-op/correct since merged ⊆
     source value range.
 
-**(D4) The catalog primitive** is `DucklakeCatalog.rewriteDataFiles(tableId, sourceDataFileIds,
-fragments)` — one `executeWriteTransaction` doing (1)+(2)+(3)+(D3). It is the reusable core for BOTH
-writer shapes (the partial-emitting variant later adds `partial_max` + the internal-snapshot column
-to the fragment/registration; the retire+stats logic is identical). Tested directly at the catalog
-layer (no parity extension needed).
+**(D4) The catalog primitives** are `DucklakeCatalog.rewriteDataFiles(...)` (non-partial) and
+`rewriteDataFilesPartial(...)` (partial-emitting) — each one `executeWriteTransaction`. Non-partial
+does (1)+(2)+(3)+(D3) and end-snapshots sources. Partial-emitting instead **back-dates** the merged
+file to `begin = min(source begin)` with `partial_max = max(source begin)`, then **deletes the source
+rows entirely** + schedules their paths for cleanup (immediate reclaim — mirrors DuckLake's
+`WriteMergeAdjacent`); since sources are deleted (not end-snapshotted) it records only
+`InsertedIntoTable` and validates the sources up front (active + no-newer-delete) instead of relying
+on `DeletedFromTable`'s post-action active check. The procedure writes the per-row
+`_ducklake_internal_snapshot_id` column (each row = its source file's begin_snapshot) as an
+un-annotated trailing parquet field, so catalog stats (built over the table columns only) and the
+read path (which finds the column by name) are both unaffected. Tested at the catalog layer (no
+parity extension needed) + a full-Trino round trip.
 
 ### 7.3 v1 gates (kept honest and explicit)
 

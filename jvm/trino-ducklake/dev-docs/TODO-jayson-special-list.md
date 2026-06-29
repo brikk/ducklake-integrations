@@ -109,10 +109,19 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     `DucklakePuffinDeleteReader` parses the real PFA1 container + per-blob `ducklake-snapshot-id` and
     applies only blobs `<= S` (`TestDucklakePuffinDeleteReader` +5, `TestDucklakePuffinPartialDelete`
     full-Trino). All partial-file reads (data + parquet-delete + puffin-delete) now correct.
-  Remaining F6: **partial-emitting compaction variant** (POPULATE `partial_max` +
-  `_ducklake_internal_snapshot_id` on write, reclaim sources immediately — needs the WRITE side of
-  partial_max); rewrite_data_files follow-ups (partitioned tables; size-bounded multi-file output;
-  re-compacting already-partial sources). stats-recalc shipped as ANALYZE; dead metadata GC done.
+  • **partial-emitting compaction variant** ✅ DONE — `rewrite_data_files(..,
+    reclaim_sources_immediately => true)` writes the merged file with `_ducklake_internal_snapshot_id`
+    per row (= source begin), back-dated begin = min(source begin), partial_max = max(source begin),
+    and DELETES the sources entirely + schedules them (mirrors DuckLake WriteMergeAdjacent). Catalog
+    primitive `rewriteDataFilesPartial`; `TestJdbcDucklakeCatalogRewriteDataFiles` +2,
+    `TestDucklakeRewriteDataFiles` +1 (round trip: sources gone, time-travel AS OF s1/s2 reproduced
+    from the merged file alone).
+  **F6 CORE COMPLETE.** All maintenance ops shipped: remove_orphan_files, expire_snapshots (+ full
+  metadata GC), cleanup_old_files, ANALYZE, the partial_max READ filters (all formats), and BOTH
+  compaction WRITER shapes (non-partial + partial-emitting). Remaining are optional ENHANCEMENTS:
+  partitioned-table compaction (currently gated like flush), size-bounded multi-file output,
+  re-compacting already-partial sources, and dropping the dynamic `ducklake_inlined_data_*` tables on
+  expire (harmless dangling).
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino

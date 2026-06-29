@@ -760,11 +760,14 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
     `DeletedFromTable`+`InsertedIntoTable` (no spec-locked conflict-matrix edits) + a `readSnapshotId`
     guard for the concurrent-delete-on-source race. Tests: `TestJdbcDucklakeCatalogRewriteDataFiles`
     (4), `TestDucklakeRewriteDataFiles` (5). See DESIGN-maintenance.md § 7.
-- [ ] Maintenance-writer follow-ups:
-  - The **partial-emitting** compaction variant that POPULATES `partial_max` + the
-    `_ducklake_internal_snapshot_id` column on write (reclaims sources immediately, no expire needed).
-  - `rewrite_data_files` v1 follow-ups: partitioned tables, size-bounded multi-file output,
-    re-compacting already-partial sources, an `ALTER TABLE ... EXECUTE optimize` alias.
+- [x] **partial-emitting compaction variant** — DONE. `rewrite_data_files(.., reclaim_sources_-
+    immediately => true)` writes `partial_max` + the `_ducklake_internal_snapshot_id` column on
+    write, back-dates begin = min(source begin), and DELETES the sources entirely + schedules them
+    (mirrors DuckLake WriteMergeAdjacent). `DucklakeCatalog.rewriteDataFilesPartial`;
+    `TestJdbcDucklakeCatalogRewriteDataFiles` +2, `TestDucklakeRewriteDataFiles` +1 round trip.
+- [ ] `rewrite_data_files` ENHANCEMENT follow-ups (out of F6 core): partitioned tables (currently
+    gated like flush), size-bounded multi-file output, re-compacting already-partial sources, an
+    `ALTER TABLE ... EXECUTE optimize` alias.
 - [ ] Connector procedures in `ducklake.system`:
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
     (no catalog mutation): deletes files under the table data path with no catalog row, older than
@@ -782,11 +785,11 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
 - [ ] Result tables from procedures (rows affected / files deleted / bytes reclaimed). v1 procs log
   counts; Trino's `Procedure` SPI is void, so a richer result surface is a separate item.
 
-Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
-pair + the partial-file READ filters (data + parquet-delete + **puffin-delete, gate now lifted**) +
-the **`rewrite_data_files` compaction WRITER (non-partial v1)** + dead schema/view/macro/name-mapping
-metadata GC on expire. Remaining: only the partial-EMITTING compaction variant (writes `partial_max`
-+ `_ducklake_internal_snapshot_id` on write to reclaim sources immediately).
+**F6 CORE COMPLETE.** `remove_orphan_files` + `expire_snapshots` (+ full metadata GC) +
+`cleanup_old_files` + `ANALYZE` + the partial-file READ filters (data + parquet-delete + puffin-delete,
+all gates lifted) + the `rewrite_data_files` compaction WRITER in BOTH shapes (non-partial v1 +
+partial-emitting / merge_adjacent). Remaining are optional enhancements only (partitioned compaction,
+size-bounded multi-file output, re-compact-already-partial, dropping dynamic inlined-data tables).
 
 ## Commit-Failure File Cleanup
 
