@@ -183,9 +183,9 @@ class TestLanceExtensionCanary {
     companion object {
         /**
          * The lance-duckdb build (its `extension_version`, a git short hash) this connector's
-         * surface was last verified against, on DuckDB v1.5.3. Bump ONLY after the rest of this
+         * surface was last verified against, on DuckDB v1.5.4. Bump ONLY after the rest of this
          * test passes against the new build — see the class doc for the workflow.
          */
-        private const val PINNED_LANCE_EXTENSION_VERSION = "533e0ee"
+        private const val PINNED_LANCE_EXTENSION_VERSION = "3500606"
     }
 }

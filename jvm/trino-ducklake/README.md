@@ -7,7 +7,7 @@ deployments) as catalog metadata backends. SQLite, and a remote-DuckDB backend
 over [Quack RPC](https://duckdb.org/2026/05/12/quack-remote-protocol) for shared
 DuckDB-as-catalog without filesystem mounting, are planned next.
 
-Tested with DuckDB 1.5.3 for cross-engine compatibility.
+Tested with DuckDB 1.5.4 for cross-engine compatibility.
 
 The [DuckLake spec](ducklake-web/docs/stable/specification/) is included as a submodule.
 All documentation and feature tables in this module are current against that version of the spec.
