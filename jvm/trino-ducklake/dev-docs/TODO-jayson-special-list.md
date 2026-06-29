@@ -347,20 +347,28 @@ Verification spike from T1 first; then fix whatever it finds (write-side may nee
 reject cleanly; read-side delete filtering over .db/vortex/lance positions must be proven),
 then e2e tests per format. Lance search functions currently reject tables with row-level
 deletes (v1 gate) — revisit that gate once plain reads are proven.
-✅ MOSTLY DONE 2026-06-12 via T1.1 (spike + fixes + per-format e2e all green; plain reads
-over deleted lance data proven and the search-gate rejection pinned in
-`TestDucklakeRowLevelLanceFormat`). Remaining: the deliberate gate-revisit itself —
-loosening lance search over deleted tables needs the search positions to respect tombstones.
+✅ DONE — gate-revisit concluded 2026-06-29: **KEEP the gate** (deliberate, not a TODO). The lance
+search functions return ranked top-k rows (table columns + `_distance`/`_score`) with NO row-position
+column, and the search page source bypasses `applyDeleteFile`; DuckLake tombstones key on file-local
+positions the DuckDB `lance_*` functions don't surface, so deleted rows can't be filtered out.
+Allowing search over a table with active deletes would silently return deleted rows. Lifting needs
+the lance extension to expose a delete-aligned row id. The check is snapshot-precise (a search at a
+pre-delete snapshot is not gated). Error message + `AbstractLanceSearchTableFunction` class doc now
+explain the technical reason + workarounds; `TestDucklakeRowLevelLanceFormat` still pins it.
 
 ### F5. Partitioned CTAS/INSERT for non-parquet formats
 
 Plumbing exists (writers take partition values); verify end-to-end per format, fix what
 breaks, pin with tests. Interplay to check: lance `add_files` rejects partitioned tables —
 decide whether partitioned lance CTAS should work or be gated with a clear error.
-✅ MOSTLY DONE 2026-06-12 via T1.2 (verified + fixed + pinned; partitioned lance CTAS WORKS —
-dataset directories nest under `key=value/` partition dirs — so the add_files gate is about
-registration, not the format). Remaining: decide whether partitioned-table lance/vortex
-`add_files` should learn partition values or stay gated.
+✅ DONE 2026-06-29 — decision: partitioned lance/vortex `add_files` LEARNS partition values from the
+hive-style `key=value/` path via `hive_partitioning => true` (identity transforms only; reuses the
+parquet path's `parseHivePartitions`). Contract: because opaque scan-registered files are
+column-projected by the DuckDB engine (no constant-fill like the parquet path), the partition column
+must be PRESENT in the file — the path value is recorded so the registered file is PRUNABLE without a
+scan. A partitioned lance/vortex `add_files` WITHOUT `hive_partitioning` is rejected with a clear
+"requires hive_partitioning => true" error. Tests: `TestDucklakeVortexAddFiles` +1 (partitioned
+register + prune), `TestDucklakeLanceAddFiles` +1; gate test updated.
 
 ### F6. Maintenance operations
 

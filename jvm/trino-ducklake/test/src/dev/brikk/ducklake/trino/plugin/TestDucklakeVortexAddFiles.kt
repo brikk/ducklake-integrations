@@ -98,25 +98,63 @@ class TestDucklakeVortexAddFiles : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
-    fun vortexAddFilesRejectsPartitionedTablesAndHivePartitioning() {
+    fun vortexAddFilesIntoPartitionedTableRequiresHivePartitioning() {
         FormatExtensionAssumptions.assumeDuckDbExtensionAvailable("vortex")
-        val table = "vortex_added_part"
+        val table = "vortex_added_part_gate"
         try {
             computeActual("CREATE TABLE $table (id INTEGER, region VARCHAR) " +
                     "WITH (partitioned_by = ARRAY['region'])")
 
+            // Without hive_partitioning we can't know which partition the opaque file belongs to.
             assertThatThrownBy {
                 computeActual("CALL ducklake.system.add_files("
                         + "schema_name => 'test_schema', table_name => '$table', "
                         + "files => ARRAY['/nonexistent.vortex'], file_format => 'vortex')")
-            }.hasMessageContaining("does not support partitioned tables")
+            }.hasMessageContaining("requires hive_partitioning => true")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
 
-            assertThatThrownBy {
-                computeActual("CALL ducklake.system.add_files("
-                        + "schema_name => 'test_schema', table_name => '$table', "
-                        + "files => ARRAY['/nonexistent.vortex'], "
-                        + "hive_partitioning => true, file_format => 'vortex')")
-            }.hasMessageContaining("does not support hive_partitioning")
+    @Test
+    fun vortexAddFilesIntoPartitionedTableWithHivePartitioning() {
+        FormatExtensionAssumptions.assumeDuckDbExtensionAvailable("vortex")
+        val table = "vortex_added_part"
+        // Write a vortex file under a hive-style region=US/ directory. Opaque (lance/vortex) files
+        // are read column-projected by the DuckDB engine, so the partition column must be PRESENT in
+        // the file (unlike the parquet path which can constant-fill an omitted column); hive_-
+        // partitioning records the value from the path so the file is PRUNABLE without a scan.
+        val dir = Files.createTempDirectory("vortex-add-part").resolve("region=US")
+        Files.createDirectories(dir)
+        val file = dir.resolve("data.vortex")
+        val escaped = file.toString().replace("'", "''")
+        DriverManager.getConnection("jdbc:duckdb:").use { c ->
+            c.createStatement().use { s ->
+                s.execute("INSTALL vortex")
+                s.execute("LOAD vortex")
+                s.execute("COPY (SELECT * FROM (VALUES (1, 'US'), (2, 'US')) v(id, region)) TO '$escaped' (FORMAT vortex)")
+            }
+        }
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, region VARCHAR) " +
+                    "WITH (partitioned_by = ARRAY['region'])")
+            val filePath = file.toAbsolutePath().toString().replace("'", "''")
+            computeActual("CALL ducklake.system.add_files("
+                    + "schema_name => 'test_schema', table_name => '$table', "
+                    + "files => ARRAY['$filePath'], hive_partitioning => true, file_format => 'vortex')")
+
+            // The partition value is read from the path and constant-filled at read time.
+            assertThat(computeActual("SELECT id, region FROM $table ORDER BY id").materializedRows
+                    .map { (it.getField(0) as Number).toLong() to it.getField(1) as String })
+                    .containsExactly(1L to "US", 2L to "US")
+
+            // Partition pruning resolves the registered file's stored partition value.
+            assertThat(computeActual("SELECT id FROM $table WHERE region = 'US' ORDER BY id").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(1L, 2L)
+            assertThat(computeScalar("SELECT count(*) FROM $table WHERE region = 'EU'") as Long)
+                    .`as`("pruning excludes the US file for a non-matching partition predicate").isEqualTo(0L)
         }
         finally {
             tryDropTable(table)

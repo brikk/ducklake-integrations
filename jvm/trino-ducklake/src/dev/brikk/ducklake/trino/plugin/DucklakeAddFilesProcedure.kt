@@ -70,8 +70,14 @@ import java.util.OptionalLong
  *       names must match the table's exactly (as DuckDB renders them).
  *   - Hive partitioning supports the IDENTITY transform only (path segments of the
  *       form `key=value/`). Files for tables with transform-based partition
- *       specs (year / month / etc.) are out of scope for v1; lance/vortex reject
- *       partitioned tables entirely.
+ *       specs (year / month / etc.) are out of scope for v1.
+ *   - Partitioned tables: parquet uses `hive_partitioning => true` to read each partition value
+ *       from the `key=value/` path (the column may be omitted from the file body — it is
+ *       constant-filled on read). lance/vortex ALSO support `hive_partitioning => true` now, but
+ *       because opaque scan-registered files are column-projected by the DuckDB engine (no
+ *       constant-fill), the partition column must be PRESENT in the file; the path value is
+ *       recorded so the registered file is prunable without a scan. A partitioned lance/vortex
+ *       `add_files` WITHOUT `hive_partitioning` is rejected (we can't place the opaque file).
  *
  */
 class DucklakeAddFilesProcedure @Inject constructor(
@@ -133,12 +139,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
                     "add_files file_format must be 'parquet', 'lance', or 'vortex', got '$format'")
         }
-        // lance + vortex register opaquely (no footer, no stats, no name map) and share the
-        // v1 partitioning gates.
+        // lance + vortex register opaquely (no footer, no stats, no name map). Partitioned
+        // registration is supported via hive_partitioning => true (the partition values are read
+        // from the key=value/ path layout, identity transforms only — see the gate below).
         val isScanRegistered: Boolean = format != FORMAT_PARQUET
-        if (isScanRegistered && hivePartitioning) {
-            throw TrinoException(NOT_SUPPORTED, "add_files file_format => '$format' does not support hive_partitioning")
-        }
 
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
@@ -159,9 +163,13 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
-        if (isScanRegistered && activePartitionSpec.isPresent) {
+        // A lance/vortex file is registered opaquely (no column read), so the only way to know
+        // which partition it belongs to is the hive-style key=value/ path layout. Require
+        // hive_partitioning => true for a partitioned table; without it we can't place the file.
+        if (isScanRegistered && activePartitionSpec.isPresent && !hivePartitioning) {
             throw TrinoException(NOT_SUPPORTED,
-                    "add_files file_format => '$format' does not support partitioned tables yet (table \"$schemaName.$tableName\" is partitioned)")
+                    "add_files file_format => '$format' into a partitioned table requires hive_partitioning => true "
+                            + "(the partition value is read from the key=value/ path); table \"$schemaName.$tableName\" is partitioned")
         }
 
         if (activePartitionSpec.isPresent && hivePartitioning) {
@@ -189,8 +197,14 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 continue
             }
             fragments.add(when (format) {
-                DucklakeSessionProperties.FORMAT_LANCE -> buildLanceFragment(fileSystem, filePath)
-                DucklakeSessionProperties.FORMAT_VORTEX -> buildVortexFragment(fileSystem, filePath)
+                DucklakeSessionProperties.FORMAT_LANCE -> {
+                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
+                    buildLanceFragment(fileSystem, filePath, pv, pid)
+                }
+                DucklakeSessionProperties.FORMAT_VORTEX -> {
+                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
+                    buildVortexFragment(fileSystem, filePath, pv, pid)
+                }
                 else -> buildFragment(
                         fileSystem,
                         filePath,
@@ -348,9 +362,41 @@ class DucklakeAddFilesProcedure @Inject constructor(
      * files. No column stats and no name map — Lance reads project columns by name, so the
      * dataset's column names must match the table's (as DuckDB renders them).
      */
+    /**
+     * Partition values + partition_id for a scan-registered (lance/vortex) file, read from the
+     * hive-style `key=value/` path layout. Empty/null when the table is unpartitioned or
+     * `hive_partitioning` is off. Identity transforms only — the caller already gated non-identity.
+     */
+    private fun scanPartitionValues(
+            filePath: String,
+            activePartitionSpec: Optional<DucklakePartitionSpec>,
+            topLevelColumns: List<DucklakeColumn>,
+            hivePartitioning: Boolean,
+    ): Pair<Map<Int, String?>, Long?> {
+        if (!hivePartitioning || activePartitionSpec.isEmpty) {
+            return emptyMap<Int, String?>() to null
+        }
+        val spec = activePartitionSpec.get()
+        val hiveValues: Map<String, String> = parseHivePartitions(filePath)
+        val columnNameById: Map<Long, String> = topLevelColumns.associate { it.columnId to it.columnName }
+        val out: MutableMap<Int, String?> = linkedMapOf()
+        for (field in spec.fields) {
+            if (field.transform != DucklakePartitionTransform.IDENTITY) {
+                continue
+            }
+            val value: String? = columnNameById[field.columnId]?.let { hiveValues[it] }
+            if (value != null) {
+                out[field.partitionKeyIndex] = value
+            }
+        }
+        return out to (if (out.isEmpty()) null else spec.partitionId)
+    }
+
     private fun buildLanceFragment(
             fileSystem: TrinoFileSystem,
             filePath: String,
+            partitionValues: Map<Int, String?>,
+            partitionId: Long?,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
         val recordCount: Long = countRowsViaFileScan(filePath, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE)
         val fileSize: Long = bestEffortDirectorySize(fileSystem, filePath)
@@ -362,8 +408,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 /* footerSize */ 0L,
                 recordCount,
                 /* columnStats */ emptyList(),
-                /* partitionValues */ emptyMap(),
-                /* partitionId */ null,
+                partitionValues,
+                partitionId,
                 /* nameMap */ null)
     }
 
@@ -378,6 +424,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
     private fun buildVortexFragment(
             fileSystem: TrinoFileSystem,
             filePath: String,
+            partitionValues: Map<Int, String?>,
+            partitionId: Long?,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
         val fileSize: Long
         try {
@@ -399,8 +447,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 /* footerSize */ 0L,
                 recordCount,
                 /* columnStats */ emptyList(),
-                /* partitionValues */ emptyMap(),
-                /* partitionId */ null,
+                partitionValues,
+                partitionId,
                 /* nameMap */ null)
     }
 
