@@ -128,10 +128,11 @@ actually reclaim space. That is the next increment, built on the model above —
    the earlier assumption that this needs `WriteChange`/`ConflictMatrix` entries:** it does NOT —
    expiry is destructive GC, so it runs as a **plain catalog transaction with no new snapshot**
    (exactly like `ANALYZE`), bypassing the snapshot-mint + conflict machinery entirely. Now also
-   GCs the **table_id-keyed metadata rows of fully-expired dropped tables** (2026-06-29:
-   `ducklake_table` + column/stats/partition/sort/mapping rows, reusing the validated `deadTableIds`).
-   Still deferred (harmless dangling rows, no file leak): dead **schema/view/macro/name_mapping**
-   rows and dropping the dynamic `ducklake_inlined_data_*` tables.
+    GCs the **metadata rows of fully-expired dropped tables/views/macros/schemas**: `ducklake_table`
+   + column/stats/partition/sort/mapping rows (reusing validated `deadTableIds`); `ducklake_view`;
+   `ducklake_macro`/`_impl`/`_parameters`; `ducklake_schema` (single-PK survivor test + a guard that
+   nothing still references the schema_id); and `ducklake_name_mapping` rows orphaned by the table GC.
+   Still deferred (harmless, no file leak): dropping the dynamic `ducklake_inlined_data_*` tables.
 3. ✅ **`cleanup_old_files`** — DONE. Drains `ducklake_files_scheduled_for_deletion` where
    `schedule_start < now - retention` (floored by `ducklake.maintenance.min-retention`); deletes the
    file then removes the row (a failed delete keeps its row for retry). Resolves connector-written

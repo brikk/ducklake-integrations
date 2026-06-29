@@ -87,9 +87,11 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     (`TestDucklakePartialDeleteFilter`, cross-engine via `flush_inlined_data`); only **puffin**
     partial delete files remain gated (`TestDucklakePartialFileGuard`). **Compaction read side fully
     unblocked.**
-  • **dead-table metadata GC** — expire now also deletes the table_id-keyed metadata rows of
-    fully-expired dropped tables (reusing validated deadTableIds). Dead schema/view/macro rows +
-    dynamic inlined tables still deferred (harmless dangling).
+  • **dead metadata GC** — expire deletes the metadata rows of fully-expired dropped
+    tables/views/macros/schemas (`ducklake_table`+deps, `ducklake_view`, `ducklake_macro`/_impl/
+    _parameters, `ducklake_schema`) + name-mapping rows orphaned by the table GC
+    (`TestDucklakeExpireSnapshots` +2). Only the dynamic `ducklake_inlined_data_*` tables still
+    deferred (harmless dangling, no file leak).
   • **optimize/rewrite_data_files — the compaction WRITER (non-partial v1)** ✅ DONE (uncommitted,
     pending review). `CALL system.rewrite_data_files(schema_name, table_name, file_size_threshold =>
     '100MB')` reads a table's small parquet files through the REAL read path (so delete files /
@@ -104,9 +106,9 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
     partitioned reject, single-file no-op).
   Remaining F6: **partial-emitting compaction variant** (POPULATE `partial_max` +
   `_ducklake_internal_snapshot_id` on write, reclaim sources immediately — needs the WRITE side of
-  partial_max); rewrite_data_files follow-ups (partitioned tables; size-bounded multi-file output;
-  re-compacting already-partial sources). Plus: puffin partial-delete per-blob filter (rare); the
-  deferred dead schema/view/macro metadata GC. stats-recalc already shipped as ANALYZE.
+  partial_max); **puffin partial-delete per-blob filter** (rare, last read gate); rewrite_data_files
+  follow-ups (partitioned tables; size-bounded multi-file output; re-compacting already-partial
+  sources). stats-recalc already shipped as ANALYZE; dead schema/view/macro GC done.
 - **More T2** — ✅ the s3/MinIO cell is now FILLED on amd64 (2026-06-24): the whole
   MinIO+Quack container suite (`TestDucklakeQuackS3InitRace`, `TestDucklakeLanceS3QuackRead`,
   `TestDucklakeDuckDbExecutorBackends`) runs with 0 skips, and the genuine hole — **full-Trino

@@ -774,8 +774,8 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
     `ducklake.maintenance.min-retention`) or explicit `snapshot_ids`; never the latest. Turned out
     NOT to need `WriteChange`/`ConflictMatrix` — it's a **plain catalog transaction, no new
     snapshot** (like `ANALYZE`), since expiry is destructive GC. Schedules dead files (absolute
-    paths); also GCs the table_id-keyed metadata of fully-expired dropped tables (2026-06-29).
-    Still deferred: dead schema/view/macro rows + dynamic inlined-data tables (harmless dangling).
+     paths); also GCs the metadata of fully-expired dropped tables/views/macros/schemas + orphaned
+    name-mapping rows. Still deferred: dynamic inlined-data tables only (harmless dangling).
   - [x] `cleanup_old_files` — DONE 2026-06-29. Drains `ducklake_files_scheduled_for_deletion` past
     the grace period; resolves connector-written absolute + DuckLake-written root-relative paths.
   - [x] `flush_inlined_data` — shipped earlier.
@@ -784,9 +784,9 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
 
 Done: `remove_orphan_files` (storage-only) + the `expire_snapshots` / `cleanup_old_files` reclaim
 pair + the partial-file READ filters (data + parquet-delete) + the **`rewrite_data_files` compaction
-WRITER (non-partial v1)**. Remaining: the partial-EMITTING compaction variant (writes `partial_max`);
-puffin partial-delete per-blob filter (rare); GC of dead dropped-schema/view/macro metadata rows
-(tidy-up follow-up).
+WRITER (non-partial v1)** + dead schema/view/macro/name-mapping metadata GC on expire. Remaining:
+the partial-EMITTING compaction variant (writes `partial_max`); puffin partial-delete per-blob
+filter (rare, last read gate).
 
 ## Commit-Failure File Cleanup
 
