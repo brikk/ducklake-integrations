@@ -25,10 +25,10 @@ import org.junit.jupiter.api.Test
 
 /**
  * Direct unit coverage of [ChangeFeedPageSource]'s per-page transform: constant `snapshot_id`,
- * `rowid` passthrough, `change_type` classification (including the `update_preimage` /
- * `update_postimage` pairing — which real SQL rarely reaches because the `row_id_start + position`
- * rowid vocabulary doesn't carry cross-file lineage), delete-position filtering, unit
- * concatenation, and projection.
+ * `rowid` (positional OR from the embedded lineage array), `change_type` classification (including
+ * the `update_preimage` / `update_postimage` pairing that fires when a preserved lineage rowid is
+ * deleted and re-inserted in one snapshot), delete-position filtering, unit concatenation, and
+ * projection.
  */
 class TestChangeFeedPageSource {
     private val valColumn = DucklakeColumnHandle(1L, "val", VARCHAR, true)
@@ -89,10 +89,13 @@ class TestChangeFeedPageSource {
     @Test
     fun insertUnitStampsSnapshotRowidAndInsertType() {
         val columns = changeColumns()
+        // rowIdStart=0, positions 0..1 -> positional rowids 0,1 (no lineage).
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("a", "b"), longArrayOf(0L, 1L)),
                 snapshotId = 7L,
-                keepRowids = null,
+                rowIdStart = 0L,
+                lineageRowIds = null,
+                keepPositions = null,
                 updatedRowids = emptySet(),
                 isDelete = false)
         val rows = readRows(ChangeFeedPageSource(listOf(unit), columns, listOf(valColumn), true), columns)
@@ -102,12 +105,15 @@ class TestChangeFeedPageSource {
     }
 
     @Test
-    fun deleteUnitKeepsOnlyDeletedRowidsWithDeleteType() {
+    fun deleteUnitKeepsOnlyDeletedPositionsWithDeleteType() {
         val columns = changeColumns()
+        // rowIdStart=10, positions 0..2 -> positional rowids 10,11,12. Delete file position 1.
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("a", "b", "c"), longArrayOf(10L, 11L, 12L)),
                 snapshotId = 9L,
-                keepRowids = setOf(11L),
+                rowIdStart = 10L,
+                lineageRowIds = null,
+                keepPositions = setOf(1L),
                 updatedRowids = emptySet(),
                 isDelete = true)
         val rows = readRows(ChangeFeedPageSource(listOf(unit), columns, listOf(valColumn), true), columns)
@@ -115,25 +121,31 @@ class TestChangeFeedPageSource {
     }
 
     @Test
-    fun updatedRowidsProduceUpdatePreAndPostImage() {
+    fun embeddedLineagePairsUpdatePreAndPostImage() {
         val columns = changeColumns()
+        // Mirrors a lineage-preserving UPDATE of rowid 1:
+        //  - old file (rowIdStart=0, no lineage): delete file position 1 -> deleted rowid 1.
+        //  - new file (rowIdStart=100, lineage=[1]): its one row carries preserved rowid 1.
         val postImage = ChangeFeedUnit(
-                baseSource = basePage(arrayOf("new"), longArrayOf(5L)),
+                baseSource = basePage(arrayOf("new"), longArrayOf(100L)),
                 snapshotId = 3L,
-                keepRowids = null,
-                updatedRowids = setOf(5L),
+                rowIdStart = 100L,
+                lineageRowIds = longArrayOf(1L),
+                keepPositions = null,
+                updatedRowids = setOf(1L),
                 isDelete = false)
         val preImage = ChangeFeedUnit(
-                baseSource = basePage(arrayOf("old", "gone"), longArrayOf(5L, 6L)),
+                baseSource = basePage(arrayOf("keep", "old"), longArrayOf(0L, 1L)),
                 snapshotId = 3L,
-                keepRowids = setOf(5L, 6L),
-                updatedRowids = setOf(5L),
+                rowIdStart = 0L,
+                lineageRowIds = null,
+                keepPositions = setOf(1L),
+                updatedRowids = setOf(1L),
                 isDelete = true)
         val rows = readRows(ChangeFeedPageSource(listOf(postImage, preImage), columns, listOf(valColumn), true), columns)
         assertThat(rows).containsExactly(
-                listOf(3L, 5L, "update_postimage", "new"),
-                listOf(3L, 5L, "update_preimage", "old"),
-                listOf(3L, 6L, "delete", "gone"))
+                listOf(3L, 1L, "update_postimage", "new"),
+                listOf(3L, 1L, "update_preimage", "old"))
     }
 
     @Test
@@ -143,7 +155,9 @@ class TestChangeFeedPageSource {
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("x", "y"), longArrayOf(0L, 1L)),
                 snapshotId = 2L,
-                keepRowids = setOf(1L),
+                rowIdStart = 0L,
+                lineageRowIds = null,
+                keepPositions = setOf(1L),
                 updatedRowids = emptySet(),
                 isDelete = true)
         val rows = readRows(ChangeFeedPageSource(listOf(unit), columns, listOf(valColumn), false), columns)
@@ -156,7 +170,9 @@ class TestChangeFeedPageSource {
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("a", "b"), longArrayOf(0L, 1L)),
                 snapshotId = 1L,
-                keepRowids = setOf(99L),
+                rowIdStart = 0L,
+                lineageRowIds = null,
+                keepPositions = setOf(99L),
                 updatedRowids = emptySet(),
                 isDelete = true)
         val rows = readRows(ChangeFeedPageSource(listOf(unit), columns, listOf(valColumn), true), columns)

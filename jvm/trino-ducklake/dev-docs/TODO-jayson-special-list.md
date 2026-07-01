@@ -454,14 +454,18 @@ the `row_id_start + position` rowid vocabulary Jayson chose): (1) UPDATEs surfac
 DuckDB update allocated a fresh rowid too), so the pre/post-image pairing (implemented + correct) only
 fires when a deleted rowid is re-inserted with the same value in a snapshot; (2) inlined data/deletes
 are **gated** at analyze time (clear "flush_inlined_data first" error) rather than silently omitted.
-**Follow-up for REAL update pairing (found during the 2026-07 doc sweep):** DuckLake DOES persist
-cross-file row lineage — but in the DATA file, not the catalog: an embedded reserved column
-`_ducklake_internal_row_id` (Iceberg field-id `2_147_483_540`) that UPDATE/compaction writes, holding
-the preserved rowid. datafusion-ducklake's `RowIdExec` reads it (see COMPARE-datafusion § row lineage).
-Our `$row_id` = `row_id_start + position` ignores that column, which is exactly why update pairing
-doesn't fire. Making pairing spec-accurate = read `_ducklake_internal_row_id` when present and use it
-as the rowid (falling back to `row_id_start + position`). Not done here; the earlier "no readable
-lineage" conclusion was catalog-only and incomplete.
+**REAL update pairing — DONE (2026-07).** DuckLake persists cross-file row lineage in the DATA file
+(not the catalog): an embedded column tagged with the reserved parquet field-id `2_147_483_540`
+(typically named `_ducklake_internal_row_id`) that lineage-preserving UPDATE/compaction writers
+(e.g. DuckDB) emit, holding each row's preserved rowid. The change feed now reads it
+(`DucklakeDeleteFileReader.readInternalRowIds`, matched by field-id): rowid = embedded value when
+present, else `row_id_start + position`. So a DuckDB-written UPDATE's delete + re-insert land on the
+SAME rowid in one snapshot and PAIR into `update_preimage`/`update_postimage` — verified full-Trino
+cross-engine (`TestDucklakeChangeFeedCrossEngine.duckdbUpdatePairsIntoPreAndPostImage`) + unit
+(`TestChangeFeedPageSource.embeddedLineagePairsUpdatePreAndPostImage`). This connector's own
+UPDATE/MERGE writes don't emit the lineage column, so Trino-written updates still surface as
+delete+insert (accurate for its delete-then-insert impl). Parquet only (the non-parquet formats this
+connector writes never carry lineage). The earlier "no readable lineage" conclusion was catalog-only.
 Tests: `TestDucklakeChangeFeed` (11 e2e: insertions/deletions/changes, inclusive+scoped bounds,
 end-default, timestamp bounds, non-parquet duckdb, projection/COUNT(*), empty window, schema-evolution
 as-of-end), `TestDucklakeChangeFeedCrossEngine` (3: DuckDB-written update read as delete+insert,

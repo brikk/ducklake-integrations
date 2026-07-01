@@ -452,11 +452,14 @@ ORDER BY snapshot_id;
   A bound may not be given both ways; `start` is required, `end` defaults to the current snapshot.
 - Columns are read as of the **end**-snapshot schema (schema evolution applies — a column added in
   the window shows as its default/NULL for earlier changes; a dropped column is omitted).
-- `rowid` is the connector's `row_id_start + file position`. This does **not** carry DuckLake's
-  cross-file row lineage: an UPDATE (Trino or DuckDB) rewrites the moved row into a new file with a
-  fresh `row_id_start`, so it surfaces as a `delete` + `insert` rather than
-  `update_preimage`/`update_postimage`. The pre/post-image pairing fires only when a deleted
-  `rowid` is re-inserted with the same value within one snapshot.
+- `rowid` follows DuckLake row lineage: when a file carries the embedded lineage column (parquet
+  field-id `2147483540` / `_ducklake_internal_row_id`, written by lineage-preserving UPDATE /
+  compaction — e.g. DuckDB), that preserved rowid is used; otherwise it's `row_id_start + file
+  position`. So a lineage-preserving UPDATE's delete and re-insert land on the same `rowid` in one
+  snapshot and pair into `update_preimage` + `update_postimage`. This connector's OWN
+  UPDATE/MERGE writes do not emit the lineage column (the rewritten row gets a fresh `row_id_start`),
+  so a Trino-written UPDATE surfaces as a `delete` + `insert` — a faithful description of its
+  delete-then-insert implementation.
 - The feed reads file-based data and delete files. Tables carrying **inlined** data/deletes (small
   writes DuckDB keeps in `ducklake_inlined_*` tables) are rejected with a pointer to
   `flush_inlined_data` rather than silently omitting those changes. Compaction that expires

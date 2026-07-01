@@ -453,55 +453,119 @@ class DucklakePageSourceProvider @Inject constructor(
         else
             emptyList()
 
-        // Delete side: read the newly-deleted rowids per deletion event; then pair (a rowid both
-        // deleted and re-inserted in the same snapshot is an update — see ChangeFeedUnit).
+        // Read DuckLake's embedded row-lineage column (parquet field-id 2147483540) for each file
+        // that carries it (UPDATE/compaction output); null files use `row_id_start + position`.
+        // This is what lets an UPDATE's delete + re-insert land on the SAME rowid and pair.
+        val insertLineage: Map<Long, LongArray?> = readInsertLineage(fileSystem, tableDataPath, insertFiles)
+
+        // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids;
+        // then pair (a rowid both deleted and re-inserted in the same snapshot is an update).
         val deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
-        val resolvedDeletions: List<Pair<DucklakeChangeFeedDeletion, Set<Long>>> =
+        val resolvedDeletions: List<ResolvedChangeFeedDeletion> =
                 resolveChangeFeedDeletions(fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
-        val updatedBySnapshot: Map<Long, Set<Long>> = computeUpdatedRowids(deletedRowidsBySnapshot, insertFiles)
+        val updatedBySnapshot: Map<Long, Set<Long>> =
+                computeUpdatedRowids(deletedRowidsBySnapshot, insertFiles, insertLineage)
 
         val units: MutableList<ChangeFeedUnit> = mutableListOf()
         for (file in insertFiles) {
-            units.add(insertUnit(session, table, tableDataPath, requestedDataColumns, file, updatedBySnapshot))
+            units.add(insertUnit(session, table, tableDataPath, requestedDataColumns, file,
+                    insertLineage[file.dataFileId], updatedBySnapshot))
         }
-        for ((deletion, deletedRowids) in resolvedDeletions) {
-            units.add(deleteUnit(session, table, tableDataPath, requestedDataColumns, deletion, deletedRowids, updatedBySnapshot))
+        for (resolved in resolvedDeletions) {
+            units.add(deleteUnit(session, table, requestedDataColumns, resolved, updatedBySnapshot))
         }
 
         return ChangeFeedPageSource(units, requestedColumns, requestedDataColumns, table.feedType.hasChangeType)
     }
 
-    /** Reads the newly-deleted rowids for each deletion event, dropping no-op events, and records
-     * them by snapshot (for update pairing). */
+    private class ResolvedChangeFeedDeletion(
+            val deletion: DucklakeChangeFeedDeletion,
+            val resolvedPath: String,
+            val deletedPositions: Set<Long>,
+            val lineage: LongArray?)
+
+    /** Per insert-file embedded row-lineage array (keyed by data_file_id), null when absent. */
+    private fun readInsertLineage(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            insertFiles: List<DucklakeDataFile>): Map<Long, LongArray?> {
+        val lineage: MutableMap<Long, LongArray?> = mutableMapOf()
+        for (file in insertFiles) {
+            val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
+            lineage[file.dataFileId] = readLineage(fileSystem, resolvedPath, file.fileFormat, file.footerSize)
+        }
+        return lineage
+    }
+
+    /** The embedded row-lineage array for a data file (parquet only), or null when it isn't carried. */
+    private fun readLineage(fileSystem: TrinoFileSystem, resolvedPath: String, fileFormat: String, footerSize: Long): LongArray? {
+        if (!DucklakeSessionProperties.FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
+            return null
+        }
+        return try {
+            DucklakeDeleteFileReader.readInternalRowIds(
+                    fileSystem, resolvedPath, footerSize, parquetReaderOptions, fileFormatDataSourceStats)
+        }
+        catch (e: IOException) {
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read row lineage: $resolvedPath", e)
+        }
+    }
+
+    /** The DuckLake rowid of a file-local [position]: the embedded lineage value when present. */
+    private fun rowIdForPosition(lineage: LongArray?, rowIdStart: Long, position: Long): Long {
+        if (lineage != null && position in 0 until lineage.size.toLong()) {
+            return lineage[position.toInt()]
+        }
+        return rowIdStart + position
+    }
+
+    /** Resolves each deletion to its newly-deleted positions + lineage, dropping no-op events and
+     * recording the deleted rowids by snapshot (for update pairing). */
     private fun resolveChangeFeedDeletions(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             deletions: List<DucklakeChangeFeedDeletion>,
-            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<Pair<DucklakeChangeFeedDeletion, Set<Long>>> {
-        val resolved: MutableList<Pair<DucklakeChangeFeedDeletion, Set<Long>>> = mutableListOf()
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<ResolvedChangeFeedDeletion> {
+        val resolved: MutableList<ResolvedChangeFeedDeletion> = mutableListOf()
         for (deletion in deletions) {
-            val deletedRowids: Set<Long> = newlyDeletedRowids(fileSystem, tableDataPath, deletion)
-            if (deletedRowids.isEmpty()) {
+            val positions: Set<Long> = newlyDeletedPositions(fileSystem, tableDataPath, deletion)
+            if (positions.isEmpty()) {
                 continue
             }
+            val resolvedPath: String = pathResolver.resolveFilePath(
+                    deletion.dataFilePath, deletion.dataFilePathIsRelative, tableDataPath)
+            val lineage: LongArray? = readLineage(fileSystem, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize)
+            val deletedRowids: Set<Long> = positions.mapTo(mutableSetOf()) { rowIdForPosition(lineage, deletion.rowIdStart, it) }
             deletedRowidsBySnapshot.getOrPut(deletion.snapshotId) { mutableSetOf() }.addAll(deletedRowids)
-            resolved.add(deletion to deletedRowids)
+            resolved.add(ResolvedChangeFeedDeletion(deletion, resolvedPath, positions, lineage))
         }
         return resolved
     }
 
-    /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). */
+    /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). Inserted
+     * rowids come from lineage values (update/compaction files) or the `[rowIdStart, +count)` range. */
     private fun computeUpdatedRowids(
             deletedRowidsBySnapshot: Map<Long, Set<Long>>,
-            insertFiles: List<DucklakeDataFile>): Map<Long, Set<Long>> {
-        val insertRangesBySnapshot: MutableMap<Long, MutableList<LongRange>> = mutableMapOf()
+            insertFiles: List<DucklakeDataFile>,
+            insertLineage: Map<Long, LongArray?>): Map<Long, Set<Long>> {
+        val rangesBySnapshot: MutableMap<Long, MutableList<LongRange>> = mutableMapOf()
+        val lineageSetBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
         for (file in insertFiles) {
-            insertRangesBySnapshot.getOrPut(file.beginSnapshot) { mutableListOf() }
-                    .add(file.rowIdStart until (file.rowIdStart + file.recordCount))
+            val lineage: LongArray? = insertLineage[file.dataFileId]
+            if (lineage != null) {
+                lineageSetBySnapshot.getOrPut(file.beginSnapshot) { mutableSetOf() }.addAll(lineage.asList())
+            }
+            else {
+                rangesBySnapshot.getOrPut(file.beginSnapshot) { mutableListOf() }
+                        .add(file.rowIdStart until (file.rowIdStart + file.recordCount))
+            }
         }
         return deletedRowidsBySnapshot.mapNotNull { (snapshot, deletedRowids) ->
-            val ranges: List<LongRange> = insertRangesBySnapshot[snapshot] ?: return@mapNotNull null
-            val updated: Set<Long> = deletedRowids.filterTo(mutableSetOf()) { rowId -> ranges.any { rowId in it } }
+            val ranges: List<LongRange> = rangesBySnapshot[snapshot] ?: emptyList()
+            val lineageSet: Set<Long> = lineageSetBySnapshot[snapshot] ?: emptySet()
+            val updated: Set<Long> = deletedRowids.filterTo(mutableSetOf()) { rowId ->
+                lineageSet.contains(rowId) || ranges.any { rowId in it }
+            }
             if (updated.isEmpty()) null else snapshot to updated
         }.toMap()
     }
@@ -512,6 +576,7 @@ class DucklakePageSourceProvider @Inject constructor(
             tableDataPath: String,
             dataColumns: List<DucklakeColumnHandle>,
             file: DucklakeDataFile,
+            lineage: LongArray?,
             updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
         val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
         return ChangeFeedUnit(
@@ -520,7 +585,9 @@ class DucklakePageSourceProvider @Inject constructor(
                             file.fileSizeBytes, file.rowIdStart, file.recordCount, file.beginSnapshot, table, dataColumns)
                 },
                 snapshotId = file.beginSnapshot,
-                keepRowids = null,
+                rowIdStart = file.rowIdStart,
+                lineageRowIds = lineage,
+                keepPositions = null,
                 updatedRowids = updatedBySnapshot[file.beginSnapshot] ?: emptySet(),
                 isDelete = false)
     }
@@ -528,20 +595,20 @@ class DucklakePageSourceProvider @Inject constructor(
     private fun deleteUnit(
             session: ConnectorSession,
             table: ChangeFeedTableHandle,
-            tableDataPath: String,
             dataColumns: List<DucklakeColumnHandle>,
-            deletion: DucklakeChangeFeedDeletion,
-            deletedRowids: Set<Long>,
+            resolved: ResolvedChangeFeedDeletion,
             updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
-        val resolvedPath: String = pathResolver.resolveFilePath(deletion.dataFilePath, deletion.dataFilePathIsRelative, tableDataPath)
+        val deletion: DucklakeChangeFeedDeletion = resolved.deletion
         return ChangeFeedUnit(
                 baseSource = {
-                    openChangeFeedFile(session, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize,
+                    openChangeFeedFile(session, resolved.resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize,
                             deletion.dataFileSizeBytes, deletion.rowIdStart, deletion.recordCount,
                             deletion.dataFileBeginSnapshot, table, dataColumns)
                 },
                 snapshotId = deletion.snapshotId,
-                keepRowids = deletedRowids,
+                rowIdStart = deletion.rowIdStart,
+                lineageRowIds = resolved.lineage,
+                keepPositions = resolved.deletedPositions,
                 updatedRowids = updatedBySnapshot[deletion.snapshotId] ?: emptySet(),
                 isDelete = true)
     }
@@ -588,9 +655,9 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
-    /** The file-local row ids newly deleted at [deletion]'s snapshot: current delete positions
-     * minus the predecessor's, mapped to `rowIdStart + position`. */
-    private fun newlyDeletedRowids(
+    /** The FILE-LOCAL positions newly deleted at [deletion]'s snapshot: current delete positions
+     * minus the predecessor's. (Mapped to rowids by the caller, lineage-aware.) */
+    private fun newlyDeletedPositions(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             deletion: DucklakeChangeFeedDeletion): Set<Long>
@@ -604,7 +671,7 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         val previous: Set<Long> = readDeletePositions(fileSystem, tableDataPath, deletion.previousDeletePath,
                 deletion.previousDeletePathIsRelative, deletion.previousDeleteFormat, deletion.previousDeleteFooterSize, deletion.rowIdStart)
-        return (current - previous).mapTo(mutableSetOf()) { deletion.rowIdStart + it }
+        return current - previous
     }
 
     /** Reads a delete file's FILE-LOCAL positions (parquet or puffin); empty when [path] is null. */

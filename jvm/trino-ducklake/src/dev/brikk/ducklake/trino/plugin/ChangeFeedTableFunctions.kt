@@ -37,10 +37,10 @@ class TableDeletionsTableFunction @Inject constructor(
 /**
  * `TABLE(<catalog>.system.table_changes(schema, table, ...))` — inserts and deletes in the
  * snapshot window, prefixed with `snapshot_id` + `rowid` + `change_type` (`insert`, `delete`,
- * `update_preimage`, `update_postimage`). UPDATEs surface as `delete` + `insert` under this
- * connector's `row_id_start + position` rowid vocabulary (which does not carry cross-file lineage);
- * pre/post-image pairing fires only when a deleted rowid is re-inserted with the same value in a
- * snapshot. See [AbstractChangeFeedTableFunction].
+ * `update_preimage`, `update_postimage`). Lineage-preserving UPDATEs (DuckDB / compaction, which
+ * embed the preserved rowid) pair into `update_preimage`/`update_postimage`; this connector's own
+ * UPDATE/MERGE writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete` +
+ * `insert`. See [AbstractChangeFeedTableFunction] and [ChangeFeedUnit].
  */
 class TableChangesTableFunction @Inject constructor(
         catalog: DucklakeCatalog,

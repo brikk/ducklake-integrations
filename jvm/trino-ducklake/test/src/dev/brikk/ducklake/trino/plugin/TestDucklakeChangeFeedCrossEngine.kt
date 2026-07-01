@@ -25,14 +25,10 @@ import java.sql.DriverManager
 /**
  * Cross-engine change feed: DuckDB writes an UPDATE against the shared PostgreSQL-backed DuckLake
  * catalog, and Trino's `table_changes` reads it back through the connector's data/delete-file read
- * path. This proves the feed's file diffing (a DuckDB-written delete file minus its predecessor,
- * plus the DuckDB-written replacement data file) works across engines.
- *
- * On `change_type`: the UPDATE surfaces as a `delete` of the old row + an `insert` of the new row
- * with a DISTINCT `rowid`. DuckLake preserves row lineage internally, but this connector's `rowid`
- * is `row_id_start + file position` — the rewritten row lands in a new file with a fresh
- * `row_id_start`, so its `rowid` differs and the two are not paired into update pre/post-image.
- * (The pairing logic itself is unit-tested directly in `TestChangeFeedPageSource`.)
+ * path. DuckDB preserves row lineage by embedding the original rowid in the rewritten file (parquet
+ * field-id 2147483540 / `_ducklake_internal_row_id`); the connector reads that column, so the
+ * UPDATE's delete + re-insert land on the SAME rowid in one snapshot and PAIR into
+ * `update_preimage` + `update_postimage` — full DuckLake `table_changes` semantics.
  *
  * SAME_THREAD: writes to the shared catalog.
  */
@@ -51,7 +47,7 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
 
     @Test
     @Throws(Exception::class)
-    fun duckdbWrittenUpdateIsReadAsDeletePlusInsert() {
+    fun duckdbUpdatePairsIntoPreAndPostImage() {
         val trino = "test_schema.cf_xengine_update"
         val duckdb = "ducklake_db.test_schema.cf_xengine_update"
         try {
@@ -61,6 +57,7 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
 
             // DuckDB UPDATE with data inlining disabled, so the change lands in real data/delete
             // files (the feed reads file-based changes; inlined changes are gated at analyze time).
+            // DuckDB embeds the preserved rowid in the rewritten file.
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 0, " +
@@ -70,23 +67,18 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
             }
             val afterUpdate = currentSnapshot()
 
-            // Just the UPDATE snapshot window: the DuckDB-written delete + insert.
             val result = rows(
-                    "SELECT change_type, id, val FROM " +
+                    "SELECT change_type, rowid, id, val FROM " +
                             "TABLE(ducklake.system.table_changes('test_schema', 'cf_xengine_update', " +
                             "${afterInsert + 1}, $afterUpdate)) ORDER BY change_type")
-            assertThat(result.map { it.getField(0) as String }).containsExactly("delete", "insert")
-            val delete = result.first { it.getField(0) == "delete" }
-            val insert = result.first { it.getField(0) == "insert" }
-            assertThat(delete.getField(2) as String).isEqualTo("DuckLake")
-            assertThat(insert.getField(2) as String).isEqualTo("DuckLakeDuckLakeDuckLake")
-
-            // And the deletion side alone reports the retired original row.
-            val deletions = rows(
-                    "SELECT id, val FROM TABLE(ducklake.system.table_deletions('test_schema', " +
-                            "'cf_xengine_update', ${afterInsert + 1}, $afterUpdate))")
-            assertThat(deletions).hasSize(1)
-            assertThat(deletions[0].getField(1) as String).isEqualTo("DuckLake")
+            // The lineage-preserving UPDATE pairs into pre/post-image on the same rowid.
+            assertThat(result.map { it.getField(0) as String })
+                    .containsExactly("update_postimage", "update_preimage")
+            val postImage = result.first { it.getField(0) == "update_postimage" }
+            val preImage = result.first { it.getField(0) == "update_preimage" }
+            assertThat(preImage.getField(1) as Long).isEqualTo(postImage.getField(1) as Long)
+            assertThat(preImage.getField(3) as String).isEqualTo("DuckLake")
+            assertThat(postImage.getField(3) as String).isEqualTo("DuckLakeDuckLakeDuckLake")
         }
         finally {
             tryDropTable(trino)
