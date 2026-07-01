@@ -400,6 +400,135 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun getDataFilesAddedBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeDataFile> {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        // Single-table read (no delete join): the insert side reads ALL rows of each file, so
+        // delete-file columns are irrelevant here and left null on the returned DucklakeDataFile.
+        return dsl.selectFrom(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.BEGIN_SNAPSHOT.ge(startSnapshot))
+            .and(file.BEGIN_SNAPSHOT.le(endSnapshot))
+            .orderBy(file.BEGIN_SNAPSHOT, file.FILE_ORDER)
+            .fetch { r -> toDataFileNoDelete(r) }
+    }
+
+    override fun getDeletionsBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeChangeFeedDeletion> {
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
+        // All data files of the table (any snapshot) and all delete files of the table (any
+        // snapshot). Bounded by the table's file/delete-operation history; the diff (which delete
+        // file superseded which) is computed in memory, which is Quack-safe (no lateral join) and
+        // keeps the SQL to two single-table scans.
+        val dataFilesById: Map<Long, DucklakeDataFileRecord> = dsl.selectFrom(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .fetch()
+            .associateBy { orZero(it.dataFileId) }
+        val deletesByDataFileId: Map<Long, List<DucklakeDeleteFileRecord>> = dsl.selectFrom(delf)
+            .where(delf.TABLE_ID.eq(tableId))
+            .fetch()
+            .groupBy { orZero(it.dataFileId) }
+            .mapValues { (_, rows) -> rows.sortedBy { orZero(it.beginSnapshot) } }
+
+        val window = startSnapshot..endSnapshot
+        val result = mutableListOf<DucklakeChangeFeedDeletion>()
+        result.addAll(incrementalDeletions(window, deletesByDataFileId, dataFilesById))
+        result.addAll(fullFileDeletions(window, deletesByDataFileId, dataFilesById))
+        return result.sortedWith(compareBy({ it.snapshotId }, { it.dataFilePath }))
+    }
+
+    /** The delete file of [dataFileId] active just before [before] (largest begin < before). */
+    private fun previousDelete(
+        deletesByDataFileId: Map<Long, List<DucklakeDeleteFileRecord>>,
+        dataFileId: Long,
+        before: Long,
+    ): DucklakeDeleteFileRecord? =
+        deletesByDataFileId[dataFileId]?.lastOrNull { orZero(it.beginSnapshot) < before }
+
+    /** Incremental arm: delete files newly written within [window] (new deletions = current minus
+     * the predecessor delete file). */
+    private fun incrementalDeletions(
+        window: LongRange,
+        deletesByDataFileId: Map<Long, List<DucklakeDeleteFileRecord>>,
+        dataFilesById: Map<Long, DucklakeDataFileRecord>,
+    ): List<DucklakeChangeFeedDeletion> =
+        deletesByDataFileId.values.flatten()
+            .filter { orZero(it.beginSnapshot) in window }
+            .mapNotNull { current ->
+                val dataFile = dataFilesById[orZero(current.dataFileId)] ?: return@mapNotNull null
+                val begin = orZero(current.beginSnapshot)
+                buildDeletion(begin, dataFile, fullFileDelete = false, current = current,
+                    previous = previousDelete(deletesByDataFileId, orZero(current.dataFileId), begin))
+            }
+
+    /** Full-file arm: data files retired within [window] (TRUNCATE / DROP / a DELETE that removed
+     * the last live rows / compaction) — every position not already deleted is retired. */
+    private fun fullFileDeletions(
+        window: LongRange,
+        deletesByDataFileId: Map<Long, List<DucklakeDeleteFileRecord>>,
+        dataFilesById: Map<Long, DucklakeDataFileRecord>,
+    ): List<DucklakeChangeFeedDeletion> =
+        dataFilesById.values
+            .filter { (it.endSnapshot ?: return@filter false) in window }
+            .map { dataFile ->
+                val end = orZero(dataFile.endSnapshot)
+                buildDeletion(end, dataFile, fullFileDelete = true, current = null,
+                    previous = previousDelete(deletesByDataFileId, orZero(dataFile.dataFileId), end))
+            }
+
+    private fun toDataFileNoDelete(r: DucklakeDataFileRecord): DucklakeDataFile =
+        DucklakeDataFile(
+            orZero(r.dataFileId),
+            orZero(r.tableId),
+            orZero(r.beginSnapshot),
+            r.endSnapshot,
+            orZero(r.fileOrder),
+            r.path!!,
+            r.pathIsRelative == true,
+            r.fileFormat!!,
+            orZero(r.recordCount),
+            orZero(r.fileSizeBytes),
+            orZero(r.footerSize),
+            orZero(r.rowIdStart),
+            r.partitionId,
+            null,
+            null,
+            null,
+            null,
+            r.mappingId,
+            r.partialMax,
+            null,
+        )
+
+    private fun buildDeletion(
+        snapshotId: Long,
+        dataFile: DucklakeDataFileRecord,
+        fullFileDelete: Boolean,
+        current: DucklakeDeleteFileRecord?,
+        previous: DucklakeDeleteFileRecord?,
+    ): DucklakeChangeFeedDeletion =
+        DucklakeChangeFeedDeletion(
+            snapshotId,
+            orZero(dataFile.beginSnapshot),
+            dataFile.path!!,
+            dataFile.pathIsRelative == true,
+            dataFile.fileFormat!!,
+            orZero(dataFile.footerSize),
+            orZero(dataFile.fileSizeBytes),
+            orZero(dataFile.rowIdStart),
+            orZero(dataFile.recordCount),
+            fullFileDelete,
+            current?.path,
+            current?.pathIsRelative,
+            current?.format,
+            current?.footerSize,
+            current?.partialMax,
+            previous?.path,
+            previous?.pathIsRelative,
+            previous?.format,
+            previous?.footerSize,
+            previous?.partialMax,
+        )
+
     override fun hasPartialDeleteFilesRequiringSnapshotFilter(tableId: Long, snapshotId: Long): Boolean {
         val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
         return dsl.selectOne().from(delf)

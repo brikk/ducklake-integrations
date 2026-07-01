@@ -142,6 +142,10 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         tableFunctionBinder.addBinding().to(LanceVectorSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(LanceFtsTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(LanceHybridSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
+        // Change feed (F9): table_insertions / table_deletions / table_changes.
+        tableFunctionBinder.addBinding().to(TableInsertionsTableFunction::class.java).`in`(Scopes.SINGLETON)
+        tableFunctionBinder.addBinding().to(TableDeletionsTableFunction::class.java).`in`(Scopes.SINGLETON)
+        tableFunctionBinder.addBinding().to(TableChangesTableFunction::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeFunctionProvider::class.java).`in`(Scopes.SINGLETON)
     }
 

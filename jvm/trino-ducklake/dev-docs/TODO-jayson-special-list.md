@@ -438,6 +438,28 @@ are the plausible upgrades; uint128 is likely permanent VARCHAR.
 `table_changes`/`insertions`/`deletions`: absent. Medium-large — the snapshot machinery and
 the table-function pattern (split-based, from the lance searches) both exist, so it's
 tractable.
+✅ DONE (this branch, `trino-focus`, uncommitted→push). All three functions shipped under
+`system.*` as scan-rewrite PTFs (like the lance searches — `ChangeFeedFunctionHandle` →
+`applyTableFunction` → `ChangeFeedTableHandle` → single `ChangeFeedSplit` → `ChangeFeedPageSource`).
+Catalog side: `getDataFilesAddedBetween` (insert side: `begin_snapshot ∈ [start,end]`) +
+`getDeletionsBetween` (delete side: current-minus-previous cumulative delete-file diff + full-file
+retire arm, computed in memory → Quack-safe). The page source reuses the ORDINARY data-file read
+pipeline per unit (`createDataFilePageSource`, extracted) requesting the table columns + `$row_id`
+read AS OF the END-snapshot schema — so schema evolution + every format (parquet/duckdb/vortex/lance)
+work for free; delete units keep only the newly-deleted positions and stamp the delete snapshot;
+`change_type` classifies pairing. **Bounds** inclusive both ends, snapshot-id OR timestamp
+(`getSnapshotAtOrBefore`), start required / end defaults to current. **Two honest edges** (both from
+the `row_id_start + position` rowid vocabulary Jayson chose): (1) UPDATEs surface as `delete`+`insert`
+— neither Trino nor DuckDB's rewritten row keeps a `rowIdStart+position`-equal rowid (verified live:
+DuckDB update allocated a fresh rowid too), so the pre/post-image pairing (implemented + correct) only
+fires when a deleted rowid is re-inserted with the same value in a snapshot; (2) inlined data/deletes
+are **gated** at analyze time (clear "flush_inlined_data first" error) rather than silently omitted.
+Tests: `TestDucklakeChangeFeed` (11 e2e: insertions/deletions/changes, inclusive+scoped bounds,
+end-default, timestamp bounds, non-parquet duckdb, projection/COUNT(*), empty window, schema-evolution
+as-of-end), `TestDucklakeChangeFeedCrossEngine` (3: DuckDB-written update read as delete+insert,
+deletions side, inlined-data gate), `TestChangeFeedPageSource` (5 unit: insert/delete/**update
+pre-post pairing**/projection/empty-filter). Both `:module:detekt` gates green. README "Change Feed"
+section flipped from roadmap to shipped.
 
 ### F10. Variant
 
@@ -513,7 +535,7 @@ ask is the real fix.)
 ## Per-area completeness snapshot (sweep verbatim, 2026-06-12)
 
 **DuckLake core — the real gaps live here.** Maintenance operations (F6) are the biggest
-single hole. Change feed (F9) absent but tractable. DDL gaps (F1) small-to-medium. Write-side
+single hole. Change feed (F9) shipped (all three functions; see § F9). DDL gaps (F1) small-to-medium. Write-side
 polish (F7). Degraded types (F8/F10) working-as-degraded. Views: only Trino-dialect exposed.
 SQLite + Quack catalog backends planned/in-progress.
 

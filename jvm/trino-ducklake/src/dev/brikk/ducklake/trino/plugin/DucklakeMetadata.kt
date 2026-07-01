@@ -222,6 +222,20 @@ class DucklakeMetadata(
                     getMetadataColumns(tableHandle.metadataTableType))
         }
 
+        if (tableHandle is ChangeFeedTableHandle) {
+            // PTF-scan handle (applyTableFunction). Reached by EXPLAIN / plan printing; the
+            // synthetic name is the change-feed function, columns are the function output.
+            return ConnectorTableMetadata(
+                    SchemaTableName("system", tableHandle.feedType.functionName),
+                    tableHandle.outputColumns().map { column ->
+                        ColumnMetadata.builder()
+                                .setName(column.columnName)
+                                .setType(column.columnType)
+                                .setNullable(column.nullable)
+                                .build()
+                    })
+        }
+
         if (tableHandle is LanceSearchTableHandle) {
             // PTF-scan handle (applyTableFunction). Reached by EXPLAIN / plan printing; the
             // synthetic name is the backing DuckDB function, columns are the function output.
@@ -348,6 +362,11 @@ class DucklakeMetadata(
             return tableHandle.search().outputColumns.associateBy { it.columnName }
         }
 
+        if (tableHandle is ChangeFeedTableHandle) {
+            // PTF-scan handle: output columns (snapshot_id/rowid[/change_type] + table columns).
+            return tableHandle.outputColumns().associateBy { it.columnName }
+        }
+
         val ducklakeTableHandle = tableHandle as DucklakeTableHandle
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
@@ -392,7 +411,8 @@ class DucklakeMetadata(
 
     override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics
     {
-        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle) {
+        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle
+                || tableHandle is ChangeFeedTableHandle) {
             return TableStatistics.empty()
         }
 
@@ -496,7 +516,8 @@ class DucklakeMetadata(
             tableHandle: ConnectorTableHandle,
             analyzeProperties: Map<String, Any>): ConnectorAnalyzeMetadata
     {
-        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle) {
+        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle
+                || tableHandle is ChangeFeedTableHandle) {
             throw TrinoException(NOT_SUPPORTED, "ANALYZE is not supported for this table")
         }
         val statisticsMetadata = TableStatisticsMetadata(
@@ -567,12 +588,24 @@ class DucklakeMetadata(
             session: ConnectorSession,
             handle: ConnectorTableFunctionHandle): Optional<TableFunctionApplicationResult<ConnectorTableHandle>>
     {
-        if (handle !is LanceSearchHandle) {
-            return Optional.empty()
+        if (handle is LanceSearchHandle) {
+            return Optional.of(TableFunctionApplicationResult(
+                    LanceSearchTableHandle(handle, TupleDomain.all(), null),
+                    handle.outputColumns.toList()))
         }
-        return Optional.of(TableFunctionApplicationResult(
-                LanceSearchTableHandle(handle, TupleDomain.all(), null),
-                handle.outputColumns.toList()))
+        if (handle is ChangeFeedHandle) {
+            return Optional.of(TableFunctionApplicationResult(
+                    ChangeFeedTableHandle(
+                            handle.feedType,
+                            handle.schemaName,
+                            handle.tableName,
+                            handle.tableId,
+                            handle.startSnapshot,
+                            handle.endSnapshot,
+                            handle.dataColumns),
+                    handle.outputColumns()))
+        }
+        return Optional.empty()
     }
 
     /**
@@ -631,12 +664,16 @@ class DucklakeMetadata(
                 false))
     }
 
+    /** Table handles with no TupleDomain pushdown surface (predicates stay in the engine filter). */
+    private fun isFilterExemptHandle(handle: ConnectorTableHandle): Boolean =
+            handle is DucklakeMetadataTableHandle || handle is ChangeFeedTableHandle
+
     override fun applyFilter(
             session: ConnectorSession,
             handle: ConnectorTableHandle,
             constraint: Constraint): Optional<ConstraintApplicationResult<ConnectorTableHandle>>
     {
-        if (handle is DucklakeMetadataTableHandle) {
+        if (isFilterExemptHandle(handle)) {
             return Optional.empty()
         }
 

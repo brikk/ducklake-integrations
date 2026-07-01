@@ -205,6 +205,7 @@ class DucklakeSplitManager @Inject constructor(
                 table.snapshotId,
                 table.metadataTableType)))
         is LanceSearchTableHandle -> FixedSplitSource(table.search().datasetPaths.map { LanceSearchSplit(it) })
+        is ChangeFeedTableHandle -> FixedSplitSource(listOf(ChangeFeedSplit(table.tableId)))
         else -> null
     }
 
