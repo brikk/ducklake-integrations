@@ -49,6 +49,18 @@ import java.util.Optional
  * needs ([DuckDbS3Config.toObjectStoreEnv], HANDOFF O1); the in-process engine would need the
  * env set on the Trino JVM itself, which the connector can't verify, so it stays rejected.
  * An empty table analyzes fine and yields zero splits.
+ *
+ * **Why row-level deletes are rejected (deliberate, not a TODO).** DuckLake tombstones key on a
+ * data file's FILE-LOCAL row position, and the normal read path applies them by tracking each
+ * row's position through a full ordered scan ([DucklakePageSourceProvider.applyDeleteFile]). The
+ * lance search functions instead return a ranked top-k subset (table columns + a `_distance` /
+ * `_score`) with NO row-position column — the DuckDB `lance_*` functions don't surface the lance
+ * row address — so there is no key to match deleted positions against, and the search page source
+ * bypasses `applyDeleteFile` entirely. Allowing search over a table with active deletes would
+ * silently return deleted rows. Lifting this gate needs the lance extension to expose a row id in
+ * the search output that aligns with DuckLake delete positions. The check is snapshot-precise: a
+ * time-travel search at a snapshot before the deletes is NOT gated (the delete file isn't active
+ * there).
  */
 abstract class AbstractLanceSearchTableFunction(
         private val catalog: DucklakeCatalog,
@@ -122,6 +134,13 @@ abstract class AbstractLanceSearchTableFunction(
                 .handle(handle)
                 .build()
 
+    /** Shared rejection message for a table that has active row-level deletes (see the class doc). */
+    private fun rowDeleteRejection(schemaName: String, tableName: String): String =
+        "$name cannot run over $schemaName.$tableName: it has active row-level deletes, and the lance " +
+            "search functions return ranked rows without a position to apply the tombstones against, so " +
+            "deleted rows could not be excluded. Search a snapshot from before the deletes, or rewrite " +
+            "the dataset to physically drop the deleted rows."
+
     private fun resolveLanceDatasetPaths(
             schema: DucklakeSchema,
             table: DucklakeTable,
@@ -133,7 +152,7 @@ abstract class AbstractLanceSearchTableFunction(
             return emptyList()
         }
         if (catalog.hasInlinedDeletes(table.tableId, snapshotId)) {
-            notSupported("$name does not support tables with row-level deletes yet: $schemaName.$tableName")
+            notSupported(rowDeleteRejection(schemaName, tableName))
         }
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
         return dataFiles.map { dataFile ->
@@ -142,7 +161,7 @@ abstract class AbstractLanceSearchTableFunction(
                         + "found '${dataFile.fileFormat}' (${dataFile.path})")
             }
             if (dataFile.deleteFilePath != null) {
-                notSupported("$name does not support tables with row-level deletes yet: $schemaName.$tableName")
+                notSupported(rowDeleteRejection(schemaName, tableName))
             }
             val resolved: String = pathResolver.resolveFilePath(dataFile.path, dataFile.pathIsRelative, tableDataPath)
             if (isS3Url(resolved) && executionEngine != DucklakeExecutionEngine.QUACK) {

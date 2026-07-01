@@ -116,9 +116,13 @@ class TestJacksonWireFormat {
             DucklakeDeleteFragment::class.java,
             instance,
             """{"dataFileId":11,"path":"del.parquet","deleteCount":5,""" +
-                """"fileSizeBytes":1024,"footerSize":200,"newDeleteCount":2}""",
+                """"fileSizeBytes":1024,"footerSize":200,"newDeleteCount":2,"format":"parquet"}""",
         )
         assertRoundTrip(DucklakeDeleteFragment::class.java, instance)
+
+        // Puffin variant round-trips with the explicit format too.
+        assertRoundTrip(DucklakeDeleteFragment::class.java,
+            DucklakeDeleteFragment(11L, "del.puffin", 5L, 1024L, 0L, 2L, "puffin"))
     }
 
     // --- DucklakeWriteFragment (OptionalLong partitionId, Optional<DucklakeNameMap> nameMap) ---

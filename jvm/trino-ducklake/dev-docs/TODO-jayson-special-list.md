@@ -347,20 +347,28 @@ Verification spike from T1 first; then fix whatever it finds (write-side may nee
 reject cleanly; read-side delete filtering over .db/vortex/lance positions must be proven),
 then e2e tests per format. Lance search functions currently reject tables with row-level
 deletes (v1 gate) — revisit that gate once plain reads are proven.
-✅ MOSTLY DONE 2026-06-12 via T1.1 (spike + fixes + per-format e2e all green; plain reads
-over deleted lance data proven and the search-gate rejection pinned in
-`TestDucklakeRowLevelLanceFormat`). Remaining: the deliberate gate-revisit itself —
-loosening lance search over deleted tables needs the search positions to respect tombstones.
+✅ DONE — gate-revisit concluded 2026-06-29: **KEEP the gate** (deliberate, not a TODO). The lance
+search functions return ranked top-k rows (table columns + `_distance`/`_score`) with NO row-position
+column, and the search page source bypasses `applyDeleteFile`; DuckLake tombstones key on file-local
+positions the DuckDB `lance_*` functions don't surface, so deleted rows can't be filtered out.
+Allowing search over a table with active deletes would silently return deleted rows. Lifting needs
+the lance extension to expose a delete-aligned row id. The check is snapshot-precise (a search at a
+pre-delete snapshot is not gated). Error message + `AbstractLanceSearchTableFunction` class doc now
+explain the technical reason + workarounds; `TestDucklakeRowLevelLanceFormat` still pins it.
 
 ### F5. Partitioned CTAS/INSERT for non-parquet formats
 
 Plumbing exists (writers take partition values); verify end-to-end per format, fix what
 breaks, pin with tests. Interplay to check: lance `add_files` rejects partitioned tables —
 decide whether partitioned lance CTAS should work or be gated with a clear error.
-✅ MOSTLY DONE 2026-06-12 via T1.2 (verified + fixed + pinned; partitioned lance CTAS WORKS —
-dataset directories nest under `key=value/` partition dirs — so the add_files gate is about
-registration, not the format). Remaining: decide whether partitioned-table lance/vortex
-`add_files` should learn partition values or stay gated.
+✅ DONE 2026-06-29 — decision: partitioned lance/vortex `add_files` LEARNS partition values from the
+hive-style `key=value/` path via `hive_partitioning => true` (identity transforms only; reuses the
+parquet path's `parseHivePartitions`). Contract: because opaque scan-registered files are
+column-projected by the DuckDB engine (no constant-fill like the parquet path), the partition column
+must be PRESENT in the file — the path value is recorded so the registered file is PRUNABLE without a
+scan. A partitioned lance/vortex `add_files` WITHOUT `hive_partitioning` is rejected with a clear
+"requires hive_partitioning => true" error. Tests: `TestDucklakeVortexAddFiles` +1 (partitioned
+register + prune), `TestDucklakeLanceAddFiles` +1; gate test updated.
 
 ### F6. Maintenance operations
 
@@ -383,8 +391,38 @@ question from RESEARCH-lance-index-lifecycle.md.
 
 ### F7. Write-side polish
 
-Sorted writes (the catalog sort spec is read and exposed to the planner but not applied on
-write), Puffin deletion-vector *writes* (reads done), commit-context session props (small).
+- ✅ **Puffin deletion-vector WRITES** — DONE 2026-06-29 (commit `722f95b`). New `write_deletion_vectors`
+  session property (default off); `DucklakeMergeSink` writes tombstones as DuckLake `.puffin`
+  deletion-vector files (`DucklakePuffinDeleteWriter`, byte-exact encode counterpart to the reader),
+  prior-position union now reads puffin AND parquet; `DucklakeDeleteFragment` gained a `format` field,
+  catalog persists `ducklake_delete_file.format`. Cross-engine: Trino writes puffin deletes, BOTH
+  Trino and DuckDB read the survivors (`TestDucklakeTrinoPuffinDeleteWrite`); reader round-trip unit
+  (`TestDucklakePuffinDeleteReader.writerEncodeRoundTripsThroughReader`).
+- ⏸ **Sorted writes — PARKED, awaiting Jayson's scope decision (2026-06-29).** Today the catalog sort
+  spec is read + exposed to the planner only (`DucklakeSortPropertyMapper` → `SortingProperty`);
+  nothing sorts on write. Applying it is a **central write-path change** (touches
+  `DucklakeWritableTableHandle` (Jackson record + all construction sites), `beginInsert`/
+  `beginCreateTable`, `DucklakePageSinkProvider`, and the core `DucklakePageSink` shared by ALL
+  INSERT/CTAS across parquet/duckdb/lance/vortex + partitioning + rollover). Scoping facts gathered:
+  - **Memory model fork:** `io.trino.spi.PageSorter` (engine-provided, in-memory, bound by
+    `ConnectorContextModule`, injectable like `PageIndexerFactory`) vs `io.trino.plugin.hive.Sorting-
+    FileWriter` (spill-capable, in trino-hive — but needs a Hive-`FileWriter` adapter + temp-file/
+    `TypeOperators` infra; the fragment-producing lifecycle is an impedance mismatch).
+  - **Scope fork:** unpartitioned-only first (memory bounded to one buffer ≈ file target; simplest)
+    vs partitioned+sorted (memory = partitions × buffer — real OOM risk).
+  - **`sorted_by` table property:** NONE exists — Trino can't *create* a sorted table, so sorted
+    writes only benefit DuckDB-created sorted tables receiving Trino INSERTs unless we also add it.
+  - **Recommended approach (for when unparked):** isolated + GATED — in-memory `PageSorter`, parquet
+    + unpartitioned + only when a sort spec exists (every existing write keeps the unchanged path;
+    zero risk to the 99% case), per-file sorted output. Buffer pages per file up to the rollover
+    target, sort via PageSorter, write; roll by buffered retained-bytes. `sorted_by` property +
+    spill (SortingFileWriter) + partitioned-sorted are follow-ups.
+- ❌ **Commit-context session props — recommended NON-GOAL (2026-06-29).** Would need new
+  `author`/`commit_message` columns on `ducklake_snapshot`, which are NOT in the DuckLake spec →
+  cross-engine divergence risk (DuckDB owns that table's schema/migrations). `insertSnapshotRow`
+  writes only the 5 spec columns; `operationDescription` is conflict-message-only, never persisted.
+  Don't add unless DuckLake upstream defines the columns.
+
 The quack-as-catalog backend group is the active migration thread — its remaining boxes are
 mostly verification/CI, not construction. Related standing direction: **retire the in-process
 DuckDB engine entirely once quack safety allows** — quack-only is the destination.

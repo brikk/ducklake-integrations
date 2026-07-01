@@ -207,6 +207,23 @@ class TestDucklakePuffinDeleteReader {
         assertThat(DucklakePuffinDeleteReader.decodeFile(bare, "bare.puffin", null)).containsExactlyInAnyOrder(7L, 8L)
     }
 
+    // ---- Writer round trip (DucklakePuffinDeleteWriter encode → reader decode) ----
+
+    @Test
+    fun writerEncodeRoundTripsThroughReader() {
+        for (positions in listOf(
+                setOf<Long>(),
+                setOf(0L),
+                setOf(0L, 5L, 1000L, 65535L),
+                setOf(1L, 2L, (1L shl 32) or 7L, (1L shl 32) or 99L),
+                (0L until 5000L).toSet() + setOf(4_000_000L, 4_294_967_290L))) {
+            val blob = DucklakePuffinDeleteWriter.encodeBlob(positions)
+            assertThat(DucklakePuffinDeleteReader.decodeBlob(blob))
+                .`as`("encode→decode round trip for %d positions", positions.size)
+                .containsExactlyInAnyOrderElementsOf(positions)
+        }
+    }
+
     @Test
     fun testHelperBuildsBlobsTheReaderAccepts() {
         // Sanity: every other test depends on buildBlob producing a valid blob; this is the

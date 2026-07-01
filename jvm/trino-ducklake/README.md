@@ -547,9 +547,10 @@ row's origin snapshot. The connector reads such files correctly: a time-travel r
 drops rows whose `_ducklake_internal_snapshot_id > S` (only when `partial_max > S`), so time travel
 over a DuckDB-compacted table returns the right rows. Consolidated **parquet delete files** spanning
 snapshots (`ducklake_delete_file.partial_max`) are filtered the same way — only the deletions
-recorded at or before the read snapshot apply. The one remaining gap is a consolidated **puffin**
-(deletion-vector) delete file: a time-travel read below its `partial_max` is rejected with a clear
-error rather than over-deleting; the per-blob snapshot filter is a follow-up.
+recorded at or before the read snapshot apply. Consolidated **puffin** (deletion-vector) delete
+files are filtered too: a real PFA1 container tags each blob with a `ducklake-snapshot-id`, and a
+time-travel read applies only the blobs whose snapshot id is `<= S`. Every partial-file shape (data,
+parquet-delete, puffin-delete) is now read correctly — no gate remains.
 
 ## Cross-Engine Compatibility
 
@@ -667,12 +668,13 @@ research item.
   wrapping to 44.
 - Files written before a failed commit become orphans. DuckLake's
   `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
-- Puffin deletion vectors (DuckLake's Roaring-bitmap delete files, written when
-  `write_deletion_vectors=true`) are read but not written. Trino-side DELETE/UPDATE/MERGE
-  always emits DuckLake-spec parquet positional delete files (`(file_path, pos)` with
-  file-local positions — readable by DuckDB), regardless of the data file format —
-  position-delete filtering is verified against parquet, duckdb, vortex, and lance data
-  files, and the Trino-deletes-then-DuckDB-reads direction is cross-engine tested.
+- Puffin deletion vectors (DuckLake's Roaring-bitmap delete files) are both read AND written.
+  By default Trino-side DELETE/UPDATE/MERGE emits DuckLake-spec parquet positional delete files
+  (`(file_path, pos)` with file-local positions — readable by DuckDB); set the session property
+  `write_deletion_vectors = true` to emit `.puffin` deletion-vector files instead (matching DuckDB's
+  `write_deletion_vectors` option). Both shapes are read by Trino and DuckDB. Position-delete
+  filtering is verified against parquet, duckdb, vortex, and lance data files, and both directions
+  (Trino-writes/DuckDB-reads and DuckDB-writes/Trino-reads) are cross-engine tested for each format.
 - The duckdb-format data file path (`data_file_format = 'duckdb'`) is **EXPERIMENTAL**.
   Read modes (`materialize` / `httpfs` / `auto`), writer modes (`arrow_stream` / `appender`),
   function pushdown, and Tier C TIMESTAMP-WITH-TIME-ZONE semantics are all wired and

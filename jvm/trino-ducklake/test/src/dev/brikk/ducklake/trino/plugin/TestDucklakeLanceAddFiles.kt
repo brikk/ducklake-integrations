@@ -91,6 +91,45 @@ class TestDucklakeLanceAddFiles : AbstractDucklakeIntegrationTest() {
         }
     }
 
+    @Test
+    fun addFilesRegistersPartitionedLanceDatasetWithHivePartitioning() {
+        assumeLanceExtensionAvailable()
+        val table = "lance_added_part"
+        // Lance dataset directory under a hive-style region=US/ path. The partition column is
+        // present in the dataset (opaque files are column-projected by the DuckDB engine);
+        // hive_partitioning records the value from the path so the file is prunable.
+        val base = Files.createTempDirectory("lance-add-part").resolve("region=US")
+        Files.createDirectories(base)
+        val dataset = base.resolve("data.lance")
+        val escaped = dataset.toString().replace("'", "''")
+        DriverManager.getConnection("jdbc:duckdb:").use { c ->
+            c.createStatement().use { s ->
+                s.execute("INSTALL lance")
+                s.execute("LOAD lance")
+                s.execute("COPY (SELECT * FROM (VALUES (1, 'US'), (2, 'US')) v(id, region)) TO '$escaped' (FORMAT lance)")
+            }
+        }
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, region VARCHAR) WITH (partitioned_by = ARRAY['region'])")
+            val datasetPath = dataset.toAbsolutePath().toString().replace("'", "''")
+            computeActual("CALL ducklake.system.add_files("
+                    + "schema_name => 'test_schema', table_name => '$table', "
+                    + "files => ARRAY['$datasetPath'], hive_partitioning => true, file_format => 'lance')")
+
+            assertThat(computeActual("SELECT id, region FROM $table ORDER BY id").materializedRows
+                    .map { (it.getField(0) as Number).toLong() to it.getField(1) as String })
+                    .containsExactly(1L to "US", 2L to "US")
+            assertThat(computeActual("SELECT id FROM $table WHERE region = 'US' ORDER BY id").materializedRows
+                    .map { (it.getField(0) as Number).toLong() })
+                    .containsExactly(1L, 2L)
+            assertThat(computeScalar("SELECT count(*) FROM $table WHERE region = 'EU'") as Long)
+                    .`as`("pruning excludes the US dataset for a non-matching partition predicate").isEqualTo(0L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     private fun assumeLanceExtensionAvailable() {
         try {
             DriverManager.getConnection("jdbc:duckdb:").use { c ->

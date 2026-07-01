@@ -60,6 +60,9 @@ open class DucklakeMergeSink(
         private val parquetReaderOptions: ParquetReaderOptions,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val trinoVersion: String,
+        // When true, tombstones are written as DuckLake puffin deletion-vector (.puffin) files
+        // instead of parquet (file_path, pos) delete files (session write_deletion_vectors).
+        private val writeDeletionVectors: Boolean,
         // Insert sink for handling UPDATE inserts
         private val insertSink: ConnectorPageSink)
     : ConnectorMergeSink
@@ -171,18 +174,7 @@ open class DucklakeMergeSink(
         }
         val unionPositions: LinkedHashSet<Long> = LinkedHashSet()
         for (existingPath in range.existingDeleteFilePaths) {
-            val prior = DucklakeDeleteFileReader.readPositions(
-                    fileSystem,
-                    existingPath,
-                    0L,
-                    parquetReaderOptions,
-                    fileFormatDataSourceStats)
-            if (prior.global) {
-                prior.values.forEach { rowId -> unionPositions.add(rowId - range.rowIdStart) }
-            }
-            else {
-                unionPositions.addAll(prior.values)
-            }
+            unionPositions.addAll(readPriorPositions(existingPath, range))
         }
         // rowIds are disjoint from prior positions by engine invariant: the SELECT phase of
         // DELETE/UPDATE/MERGE only sees rows that aren't already tombstoned, so the engine
@@ -194,6 +186,51 @@ open class DucklakeMergeSink(
         val totalPositions: Long = unionPositions.size.toLong()
         val newDeleteCount: Long = totalPositions - preNewSize
 
+        return if (writeDeletionVectors) {
+            writePuffinDeleteFile(dataFileId, unionPositions, totalPositions, newDeleteCount)
+        }
+        else {
+            writeParquetDeleteFile(dataFileId, range, unionPositions, totalPositions, newDeleteCount)
+        }
+    }
+
+    /** Read a prior active delete file's positions as FILE-LOCAL offsets (handles parquet + puffin). */
+    @Throws(IOException::class)
+    private fun readPriorPositions(existingPath: String, range: DataFileRange): Set<Long> {
+        if (existingPath.endsWith(".puffin", ignoreCase = true)) {
+            return DucklakePuffinDeleteReader.readDeletedPositions(fileSystem.newInputFile(toLocation(existingPath)))
+        }
+        val prior = DucklakeDeleteFileReader.readPositions(
+                fileSystem, existingPath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
+        // Legacy `row_id` files carry GLOBAL ids → rebase to file-local; spec/puffin are already local.
+        return if (prior.global) prior.values.mapTo(LinkedHashSet()) { it - range.rowIdStart } else prior.values
+    }
+
+    /** Write the union positions as a DuckLake puffin deletion-vector (bare blob) delete file. */
+    @Throws(IOException::class)
+    private fun writePuffinDeleteFile(
+            dataFileId: Long,
+            unionPositions: Set<Long>,
+            totalPositions: Long,
+            newDeleteCount: Long): DucklakeDeleteFragment {
+        val fileName = "ducklake-delete-" + UUID.randomUUID() + ".puffin"
+        val filePath: Location = Location.of(mergeHandle.insertHandle.tableDataPath).appendPath(fileName)
+        val blob: ByteArray = DucklakePuffinDeleteWriter.encodeBlob(unionPositions)
+        fileSystem.newOutputFile(filePath).create().use { out -> out.write(blob) }
+        log.debug("Wrote puffin delete file %s with %d positions (%d new) for data file %d",
+                filePath, totalPositions, newDeleteCount, dataFileId)
+        // footer_size = 0: a puffin file has no parquet footer (the reader reads the whole file);
+        // the catalog maps 0 to SQL NULL.
+        return DucklakeDeleteFragment(dataFileId, fileName, totalPositions, blob.size.toLong(), 0L, newDeleteCount, "puffin")
+    }
+
+    @Throws(IOException::class)
+    private fun writeParquetDeleteFile(
+            dataFileId: Long,
+            range: DataFileRange,
+            unionPositions: Set<Long>,
+            totalPositions: Long,
+            newDeleteCount: Long): DucklakeDeleteFragment {
         val fileName = "ducklake-delete-" + UUID.randomUUID() + ".parquet"
         val tableDataPath: String = mergeHandle.insertHandle.tableDataPath
         val filePath: Location = Location.of(tableDataPath).appendPath(fileName)
@@ -243,27 +280,33 @@ open class DucklakeMergeSink(
             throw t
         }
 
-        // Compute footer size
-        var footerSize: Long
-        try {
-            val footerOutput = io.airlift.slice.DynamicSliceOutput(40)
-            org.apache.parquet.format.Util.writeFileMetaData(fileMetaData, footerOutput)
-            footerSize = footerOutput.size().toLong()
-        }
-        catch (e: IOException) {
-            footerSize = 0
-        }
-
-        log.debug("Wrote delete file %s with %d total positions (%d new this commit, %d superseded from %d prior file(s)) for data file %d",
-                filePath, totalPositions, newDeleteCount, preNewSize, range.existingDeleteFilePaths.size, dataFileId)
+        log.debug("Wrote parquet delete file %s with %d total positions (%d new this commit) for data file %d",
+                filePath, totalPositions, newDeleteCount, dataFileId)
 
         return DucklakeDeleteFragment(
                 dataFileId,
                 fileName,
                 totalPositions,
                 fileSize,
-                footerSize,
-                newDeleteCount)
+                footerSizeOf(fileMetaData),
+                newDeleteCount,
+                "parquet")
+    }
+
+    private fun footerSizeOf(fileMetaData: org.apache.parquet.format.FileMetaData): Long =
+        try {
+            val footerOutput = io.airlift.slice.DynamicSliceOutput(40)
+            org.apache.parquet.format.Util.writeFileMetaData(fileMetaData, footerOutput)
+            footerOutput.size().toLong()
+        }
+        catch (e: IOException) {
+            0
+        }
+
+    /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI. */
+    private fun toLocation(path: String): Location {
+        val location = Location.of(path)
+        return if (location.scheme().isPresent) location else Location.of(java.nio.file.Path.of(path).toUri().toString())
     }
 
     private fun findDataFileRange(dataFileId: Long): DataFileRange? =

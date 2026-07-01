@@ -410,12 +410,29 @@ generate new parquet files and need a similar metadata-insert path.
     cover round-trip insert+read on VARCHAR and BIGINT columns, plus
     equality-predicate pruning.
 
-## Sorted Table Writes
+## Sorted Table Writes — ⏸ PARKED (awaiting scope decision, 2026-06-29)
 
-- [ ] **Apply table sort spec during Parquet writes** in `DucklakePageSink`.
-  Trino-written files would then be pre-sorted for DuckDB compaction. Medium-high
-  effort — requires Trino `ParquetWriter` sort integration. See
-  [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+- [ ] **Apply table sort spec during Parquet writes** in `DucklakePageSink`. Today the spec is read
+  + exposed to the planner only (`DucklakeSortPropertyMapper` → `SortingProperty`); nothing sorts on
+  write. Central write-path change (handle + `beginInsert`/`beginCreateTable` + sink provider + core
+  sink). Scoping done — see TODO-jayson-special-list.md § F7 for the full notes. Forks: in-memory
+  `io.trino.spi.PageSorter` (injectable) vs spill `io.trino.plugin.hive.SortingFileWriter`;
+  unpartitioned-only vs partitioned+sorted (OOM); no `sorted_by` table property exists yet (so only
+  DuckDB-sorted tables + Trino INSERT benefit). **Recommended when unparked:** gated in-memory
+  PageSorter, parquet + unpartitioned + sort-spec-present only (existing writes unchanged), per-file
+  sorted output. See [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+
+## Puffin deletion-vector writes — ✅ DONE 2026-06-29
+
+- [x] `write_deletion_vectors` session property (default off) → `DucklakeMergeSink` writes tombstones
+  as DuckLake `.puffin` deletion-vector files (`DucklakePuffinDeleteWriter`); `DucklakeDeleteFragment`
+  carries `format`, catalog persists `ducklake_delete_file.format`; cross-engine round-trip tested
+  (`TestDucklakeTrinoPuffinDeleteWrite`). Completes the puffin read/write symmetry.
+
+## Commit-context session props — ❌ recommended NON-GOAL
+
+- Snapshot author/commit-message would need columns NOT in the DuckLake spec on `ducklake_snapshot`
+  → cross-engine divergence risk (DuckDB owns that table). Don't add unless upstream defines them.
 
 ## Schema Evolution Gaps
 
