@@ -87,6 +87,27 @@ interface DucklakeCatalog {
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>
 
     /**
+     * Data files whose rows were INSERTED in the inclusive snapshot window `[startSnapshot,
+     * endSnapshot]` — i.e. `begin_snapshot >= startSnapshot AND begin_snapshot <= endSnapshot`.
+     * The change-feed insert side (`table_insertions` / the insert half of `table_changes`): every
+     * row of such a file was inserted at the file's `begin_snapshot`, with row identifier
+     * `row_id_start + file position`. Delete-file columns are left null (the feed reads ALL rows of
+     * the file regardless of any later deletions — those are separate delete events). Ordered by
+     * `begin_snapshot`, then `file_order`.
+     */
+    fun getDataFilesAddedBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeDataFile>
+
+    /**
+     * Deletion events in the inclusive snapshot window `[startSnapshot, endSnapshot]` — the
+     * change-feed delete side (`table_deletions` / the delete half of `table_changes`). Each
+     * [DucklakeChangeFeedDeletion] captures, per data file, the rows retired at one snapshot as the
+     * difference between the delete state at that snapshot and the state just before it (see that
+     * class for the two shapes: incremental delete file vs. full-file retire). The caller reads the
+     * actual deleted positions from the current/previous delete files and subtracts.
+     */
+    fun getDeletionsBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeChangeFeedDeletion>
+
+    /**
      * True only if the table has a partial DELETE file active at [snapshotId] in a format this
      * connector cannot snapshot-filter. Both PARQUET (filtered via `_ducklake_internal_snapshot_id`)
      * and PUFFIN (each blob's embedded `ducklake-snapshot-id`) partial delete files are now handled

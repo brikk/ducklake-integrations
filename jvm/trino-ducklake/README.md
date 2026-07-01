@@ -427,6 +427,41 @@ ORDER BY _distance LIMIT 10;
 [`README-lance-format.md`](README-lance-format.md). Architecture decision (DuckDB extension vs
 lance-core JNI): [`dev-docs/archive/REPORT-lance-route-a-vs-b.md`](dev-docs/archive/REPORT-lance-route-a-vs-b.md).
 
+## Change Feed
+
+Three table functions expose the rows that changed between two snapshots (DuckLake's data change
+feed), for **all** data file formats:
+
+```sql
+-- Rows changed between snapshots 3 and 4 (bounds inclusive):
+SELECT * FROM TABLE(ducklake.system.table_changes(
+        schema_name => 'sales', table_name => 'orders',
+        start_snapshot => 3, end_snapshot => 4))
+ORDER BY snapshot_id;
+```
+
+| Function | Output columns |
+|---|---|
+| `table_insertions(schema_name, table_name, ...)` | `snapshot_id`, `rowid`, then the table's columns |
+| `table_deletions(schema_name, table_name, ...)` | `snapshot_id`, `rowid`, then the table's columns |
+| `table_changes(schema_name, table_name, ...)` | `snapshot_id`, `rowid`, `change_type` (`insert` / `delete` / `update_preimage` / `update_postimage`), then the table's columns |
+
+- **Bounds** are inclusive on both ends. Each bound is given as a snapshot id
+  (`start_snapshot` / `end_snapshot`, BIGINT) or a timestamp (`start_timestamp` / `end_timestamp`,
+  `TIMESTAMP WITH TIME ZONE`, resolved to the snapshot active at-or-before it — like `AS OF`).
+  A bound may not be given both ways; `start` is required, `end` defaults to the current snapshot.
+- Columns are read as of the **end**-snapshot schema (schema evolution applies — a column added in
+  the window shows as its default/NULL for earlier changes; a dropped column is omitted).
+- `rowid` is the connector's `row_id_start + file position`. This does **not** carry DuckLake's
+  cross-file row lineage: an UPDATE (Trino or DuckDB) rewrites the moved row into a new file with a
+  fresh `row_id_start`, so it surfaces as a `delete` + `insert` rather than
+  `update_preimage`/`update_postimage`. The pre/post-image pairing fires only when a deleted
+  `rowid` is re-inserted with the same value within one snapshot.
+- The feed reads file-based data and delete files. Tables carrying **inlined** data/deletes (small
+  writes DuckDB keeps in `ducklake_inlined_*` tables) are rejected with a pointer to
+  `flush_inlined_data` rather than silently omitting those changes. Compaction that expires
+  snapshots can also limit what the feed can report (per the DuckLake spec).
+
 ## Table Properties
 
 Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (...)`.
@@ -625,14 +660,6 @@ equivalent):
 - `commit_author`
 - `commit_message`
 - `commit_extra_info`
-
-### Change Feed
-
-DuckDB equivalents not yet exposed through Trino:
-
-- `table_changes(table, start_snapshot, end_snapshot)`
-- `table_insertions(table, start_snapshot, end_snapshot)`
-- `table_deletions(table, start_snapshot, end_snapshot)`
 
 ### Cross-Dialect View Transpilation
 

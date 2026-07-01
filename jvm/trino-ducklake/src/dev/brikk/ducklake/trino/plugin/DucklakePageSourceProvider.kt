@@ -19,10 +19,13 @@ import com.google.common.collect.ImmutableMap
 import com.google.common.collect.ImmutableMap.toImmutableMap
 import com.google.inject.Inject
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeChangeFeedDeletion
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeDataFile
+import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import dev.brikk.ducklake.catalog.DucklakeSnapshotChange
+import dev.brikk.ducklake.catalog.DucklakeTable
 import io.airlift.log.Logger
 import io.airlift.slice.Slices
 import io.trino.filesystem.Location
@@ -51,6 +54,7 @@ import io.trino.plugin.hive.TransformConnectorPageSource
 import io.trino.plugin.hive.parquet.ParquetPageSource
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.spi.Page
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
@@ -108,6 +112,11 @@ class DucklakePageSourceProvider @Inject constructor(
 {
     private val autoHttpfsThresholdBytes: Long = ducklakeConfig
             .getDuckdbAutoHttpfsThreshold().toBytes()
+
+    // Resolves relative catalog file paths (data/delete files) to full paths for the change feed,
+    // which reads files the way the split manager does. Built from the same inputs the split
+    // manager's injected resolver uses; the provider isn't handed one directly.
+    private val pathResolver: DucklakePathResolver = DucklakePathResolver(catalog, ducklakeConfig)
 
     // Schema-evolution resolution cache: (tableId, file begin_snapshot) -> column_id ->
     // physical name in the file. The DuckDB-engine read path (.db / vortex / lance) reads
@@ -223,61 +232,73 @@ class DucklakePageSourceProvider @Inject constructor(
         try {
             // Get file system for the session
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
-
-            // Resolve the data file location. NOTE: do NOT open a TrinoInputFile here — only the
-            // parquet branch needs one. Lance data files are *directories* (the catalog path ends
-            // in a trailing slash for an existing dir), and fileSystem.newInputFile rejects a
-            // directory/trailing-slash location; the DuckDB-engine branch reads via the path string
-            // (`__lance_scan('<dir>')`), not a TrinoInputFile, so opening one is both unnecessary
-            // and fatal for lance.
-            val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
-
-            // Dispatch on file format
-            val format = ducklakeSplit.fileFormat
-            if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
-                val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
-                val delegate: ConnectorPageSource = createParquetPageSource(
-                        inputFile,
-                        sourceColumns,
-                        ducklakeSplit,
-                        effectivePredicate,
-                        fileSystem)
-                return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
-            }
-            // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
-            // (vortex + lance). createDuckDbPageSource picks the source shape per
-            // split.fileFormat via resolveDuckDbReadTarget.
-            if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true) ||
-                    DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true) ||
-                    DucklakeSessionProperties.FORMAT_LANCE.equals(format, ignoreCase = true)) {
-                val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
-                    table.pushedExpressions
-                else
-                    emptyList()
-                // Resolve physical (file-snapshot) column names so the DuckDB-engine read
-                // survives schema evolution (renamed/added columns) — see DuckDbSelectSqlBuilder.
-                val fileColumnNamesById: Map<Long, String> = resolveFileColumnNames(table, ducklakeSplit)
-                // ...and per-file struct reshape plans for NESTED schema evolution (added/dropped/
-                // renamed struct subfields), which the SQL builder normalizes with struct_pack.
-                val structReshapePlans: Map<Long, List<StructFieldPlan>> =
-                        resolveStructReshapePlans(table, ducklakeSplit, sourceColumns)
-                val delegate: ConnectorPageSource = createDuckDbPageSource(
-                        dataFileLocation,
-                        sourceColumns,
-                        ducklakeSplit,
-                        effectivePredicate,
-                        pushedExpressions,
-                        fileSystem,
-                        session,
-                        fileColumnNamesById,
-                        structReshapePlans)
-                return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
-            }
-            throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
+            val delegate: ConnectorPageSource = createDataFilePageSource(
+                    session, ducklakeSplit, table, sourceColumns, effectivePredicate, fileSystem)
+            return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
         }
         catch (e: IOException) {
             throw RuntimeException("Failed to create page source for file: ${ducklakeSplit.dataFilePath}", e)
         }
+    }
+
+    /**
+     * The per-format data-file read dispatch (parquet reader vs the DuckDB-engine file scan for
+     * duckdb/vortex/lance), returning the raw delegate WITHOUT the constant-virtual wrapper. Shared
+     * by [createPageSource] (which wraps it) and the change feed ([createChangeFeedPageSource]),
+     * which drives it per data file requesting the table columns + `$row_id`. Positional virtuals
+     * ($row_id / $file_row_number) requested in [sourceColumns] are still injected in-pipeline by
+     * the underlying readers; the split's own delete files (if any) are applied there too.
+     */
+    @Throws(IOException::class)
+    private fun createDataFilePageSource(
+            session: ConnectorSession,
+            ducklakeSplit: DucklakeSplit,
+            table: ConnectorTableHandle,
+            sourceColumns: List<DucklakeColumnHandle>,
+            effectivePredicate: TupleDomain<DucklakeColumnHandle>,
+            fileSystem: TrinoFileSystem): ConnectorPageSource
+    {
+        // Resolve the data file location. NOTE: do NOT open a TrinoInputFile here — only the
+        // parquet branch needs one. Lance data files are *directories* (the catalog path ends
+        // in a trailing slash for an existing dir), and fileSystem.newInputFile rejects a
+        // directory/trailing-slash location; the DuckDB-engine branch reads via the path string
+        // (`__lance_scan('<dir>')`), not a TrinoInputFile, so opening one is both unnecessary
+        // and fatal for lance.
+        val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
+        val format = ducklakeSplit.fileFormat
+        if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
+            val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
+            return createParquetPageSource(inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+        }
+        // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
+        // (vortex + lance). createDuckDbPageSource picks the source shape per
+        // split.fileFormat via resolveDuckDbReadTarget.
+        if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true) ||
+                DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true) ||
+                DucklakeSessionProperties.FORMAT_LANCE.equals(format, ignoreCase = true)) {
+            val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
+                table.pushedExpressions
+            else
+                emptyList()
+            // Resolve physical (file-snapshot) column names so the DuckDB-engine read
+            // survives schema evolution (renamed/added columns) — see DuckDbSelectSqlBuilder.
+            val fileColumnNamesById: Map<Long, String> = resolveFileColumnNames(table, ducklakeSplit)
+            // ...and per-file struct reshape plans for NESTED schema evolution (added/dropped/
+            // renamed struct subfields), which the SQL builder normalizes with struct_pack.
+            val structReshapePlans: Map<Long, List<StructFieldPlan>> =
+                    resolveStructReshapePlans(table, ducklakeSplit, sourceColumns)
+            return createDuckDbPageSource(
+                    dataFileLocation,
+                    sourceColumns,
+                    ducklakeSplit,
+                    effectivePredicate,
+                    pushedExpressions,
+                    fileSystem,
+                    session,
+                    fileColumnNamesById,
+                    structReshapePlans)
+        }
+        throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
     }
 
     private fun createInlinedPageSource(
@@ -397,6 +418,216 @@ class DucklakePageSourceProvider @Inject constructor(
             rows.add(row)
         }
         return rows
+    }
+
+    /**
+     * Page source for a change-feed scan ([ChangeFeedTableHandle]; F9). Builds the read plan from
+     * the catalog: the data files inserted in the window (insert side) and, for the delete side,
+     * the newly-deleted positions per snapshot (current delete file minus its predecessor, read
+     * here through the delete-file readers). Update pairing = the `rowid`s that are BOTH deleted
+     * and re-inserted in the same snapshot. Each unit reads its data file through the ordinary
+     * data-file pipeline ([createDataFilePageSource]) as of the END-snapshot schema, so schema
+     * evolution and every file format work unchanged. See [ChangeFeedPageSource].
+     */
+    private fun createChangeFeedPageSource(
+            session: ConnectorSession,
+            table: ChangeFeedTableHandle,
+            columns: List<ColumnHandle>): ConnectorPageSource
+    {
+        val requestedColumns: List<DucklakeColumnHandle> = columns.map { it as DucklakeColumnHandle }
+        val requestedDataColumns: List<DucklakeColumnHandle> = requestedColumns.filter { it.columnId >= 0 }
+
+        val schema: DucklakeSchema = catalog.getSchema(table.schemaName, table.endSnapshot)
+                ?: throw TrinoException(NOT_SUPPORTED, "Schema not found for change feed: ${table.schemaName}")
+        val tableMetadata: DucklakeTable = catalog.getTableById(table.tableId, table.endSnapshot)
+                ?: throw TrinoException(NOT_SUPPORTED, "Table not found for change feed: ${table.tableName}")
+        val tableDataPath: String = pathResolver.resolveTableDataPath(schema, tableMetadata)
+        val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
+
+        val insertFiles: List<DucklakeDataFile> = if (table.feedType != ChangeFeedType.DELETIONS)
+            catalog.getDataFilesAddedBetween(table.tableId, table.startSnapshot, table.endSnapshot)
+        else
+            emptyList()
+        val deletions: List<DucklakeChangeFeedDeletion> = if (table.feedType != ChangeFeedType.INSERTIONS)
+            catalog.getDeletionsBetween(table.tableId, table.startSnapshot, table.endSnapshot)
+        else
+            emptyList()
+
+        // Delete side: read the newly-deleted rowids per deletion event; then pair (a rowid both
+        // deleted and re-inserted in the same snapshot is an update — see ChangeFeedUnit).
+        val deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+        val resolvedDeletions: List<Pair<DucklakeChangeFeedDeletion, Set<Long>>> =
+                resolveChangeFeedDeletions(fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
+        val updatedBySnapshot: Map<Long, Set<Long>> = computeUpdatedRowids(deletedRowidsBySnapshot, insertFiles)
+
+        val units: MutableList<ChangeFeedUnit> = mutableListOf()
+        for (file in insertFiles) {
+            units.add(insertUnit(session, table, tableDataPath, requestedDataColumns, file, updatedBySnapshot))
+        }
+        for ((deletion, deletedRowids) in resolvedDeletions) {
+            units.add(deleteUnit(session, table, tableDataPath, requestedDataColumns, deletion, deletedRowids, updatedBySnapshot))
+        }
+
+        return ChangeFeedPageSource(units, requestedColumns, requestedDataColumns, table.feedType.hasChangeType)
+    }
+
+    /** Reads the newly-deleted rowids for each deletion event, dropping no-op events, and records
+     * them by snapshot (for update pairing). */
+    private fun resolveChangeFeedDeletions(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            deletions: List<DucklakeChangeFeedDeletion>,
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<Pair<DucklakeChangeFeedDeletion, Set<Long>>> {
+        val resolved: MutableList<Pair<DucklakeChangeFeedDeletion, Set<Long>>> = mutableListOf()
+        for (deletion in deletions) {
+            val deletedRowids: Set<Long> = newlyDeletedRowids(fileSystem, tableDataPath, deletion)
+            if (deletedRowids.isEmpty()) {
+                continue
+            }
+            deletedRowidsBySnapshot.getOrPut(deletion.snapshotId) { mutableSetOf() }.addAll(deletedRowids)
+            resolved.add(deletion to deletedRowids)
+        }
+        return resolved
+    }
+
+    /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). */
+    private fun computeUpdatedRowids(
+            deletedRowidsBySnapshot: Map<Long, Set<Long>>,
+            insertFiles: List<DucklakeDataFile>): Map<Long, Set<Long>> {
+        val insertRangesBySnapshot: MutableMap<Long, MutableList<LongRange>> = mutableMapOf()
+        for (file in insertFiles) {
+            insertRangesBySnapshot.getOrPut(file.beginSnapshot) { mutableListOf() }
+                    .add(file.rowIdStart until (file.rowIdStart + file.recordCount))
+        }
+        return deletedRowidsBySnapshot.mapNotNull { (snapshot, deletedRowids) ->
+            val ranges: List<LongRange> = insertRangesBySnapshot[snapshot] ?: return@mapNotNull null
+            val updated: Set<Long> = deletedRowids.filterTo(mutableSetOf()) { rowId -> ranges.any { rowId in it } }
+            if (updated.isEmpty()) null else snapshot to updated
+        }.toMap()
+    }
+
+    private fun insertUnit(
+            session: ConnectorSession,
+            table: ChangeFeedTableHandle,
+            tableDataPath: String,
+            dataColumns: List<DucklakeColumnHandle>,
+            file: DucklakeDataFile,
+            updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
+        val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
+        return ChangeFeedUnit(
+                baseSource = {
+                    openChangeFeedFile(session, resolvedPath, file.fileFormat, file.footerSize,
+                            file.fileSizeBytes, file.rowIdStart, file.recordCount, file.beginSnapshot, table, dataColumns)
+                },
+                snapshotId = file.beginSnapshot,
+                keepRowids = null,
+                updatedRowids = updatedBySnapshot[file.beginSnapshot] ?: emptySet(),
+                isDelete = false)
+    }
+
+    private fun deleteUnit(
+            session: ConnectorSession,
+            table: ChangeFeedTableHandle,
+            tableDataPath: String,
+            dataColumns: List<DucklakeColumnHandle>,
+            deletion: DucklakeChangeFeedDeletion,
+            deletedRowids: Set<Long>,
+            updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
+        val resolvedPath: String = pathResolver.resolveFilePath(deletion.dataFilePath, deletion.dataFilePathIsRelative, tableDataPath)
+        return ChangeFeedUnit(
+                baseSource = {
+                    openChangeFeedFile(session, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize,
+                            deletion.dataFileSizeBytes, deletion.rowIdStart, deletion.recordCount,
+                            deletion.dataFileBeginSnapshot, table, dataColumns)
+                },
+                snapshotId = deletion.snapshotId,
+                keepRowids = deletedRowids,
+                updatedRowids = updatedBySnapshot[deletion.snapshotId] ?: emptySet(),
+                isDelete = true)
+    }
+
+    /** Opens one change-feed data file through the ordinary read pipeline, projecting the data
+     * columns followed by `$row_id`, reading as of [table]'s END-snapshot schema. */
+    private fun openChangeFeedFile(
+            session: ConnectorSession,
+            resolvedPath: String,
+            fileFormat: String,
+            footerSize: Long,
+            fileSizeBytes: Long,
+            rowIdStart: Long,
+            recordCount: Long,
+            beginSnapshot: Long,
+            table: ChangeFeedTableHandle,
+            dataColumns: List<DucklakeColumnHandle>): ConnectorPageSource
+    {
+        val split = DucklakeSplit(
+                resolvedPath,
+                emptyList(),
+                rowIdStart,
+                recordCount,
+                fileSizeBytes,
+                fileFormat,
+                TupleDomain.all(),
+                footerSize,
+                emptyMap(),
+                emptyMap(),
+                emptyMap(),
+                emptySet(),
+                Optional.empty(),
+                beginSnapshot,
+                null,
+                emptyMap())
+        val syntheticHandle = DucklakeTableHandle(table.schemaName, table.tableName, table.tableId, table.endSnapshot)
+        val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.ROW_ID.columnHandle()
+        return try {
+            val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
+            createDataFilePageSource(session, split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
+        }
+        catch (e: IOException) {
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to open change-feed data file: $resolvedPath", e)
+        }
+    }
+
+    /** The file-local row ids newly deleted at [deletion]'s snapshot: current delete positions
+     * minus the predecessor's, mapped to `rowIdStart + position`. */
+    private fun newlyDeletedRowids(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            deletion: DucklakeChangeFeedDeletion): Set<Long>
+    {
+        val current: Set<Long> = if (deletion.fullFileDelete) {
+            (0 until deletion.recordCount).toSet()
+        }
+        else {
+            readDeletePositions(fileSystem, tableDataPath, deletion.currentDeletePath, deletion.currentDeletePathIsRelative,
+                    deletion.currentDeleteFormat, deletion.currentDeleteFooterSize, deletion.rowIdStart)
+        }
+        val previous: Set<Long> = readDeletePositions(fileSystem, tableDataPath, deletion.previousDeletePath,
+                deletion.previousDeletePathIsRelative, deletion.previousDeleteFormat, deletion.previousDeleteFooterSize, deletion.rowIdStart)
+        return (current - previous).mapTo(mutableSetOf()) { deletion.rowIdStart + it }
+    }
+
+    /** Reads a delete file's FILE-LOCAL positions (parquet or puffin); empty when [path] is null. */
+    private fun readDeletePositions(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            path: String?,
+            pathIsRelative: Boolean?,
+            format: String?,
+            footerSize: Long?,
+            rowIdStart: Long): Set<Long>
+    {
+        if (path == null) {
+            return emptySet()
+        }
+        val resolved: String = pathResolver.resolveFilePath(path, pathIsRelative ?: false, tableDataPath)
+        if (isPuffinPath(resolved) || "puffin".equals(format, ignoreCase = true)) {
+            return DucklakePuffinDeleteReader.readDeletedPositions(fileSystem.newInputFile(toLocation(resolved)))
+        }
+        val positions = DucklakeDeleteFileReader.readPositions(
+                fileSystem, resolved, footerSize ?: 0L, parquetReaderOptions, fileFormatDataSourceStats)
+        // Legacy Trino delete files store GLOBAL row ids (rowIdStart + pos); normalize to file-local.
+        return if (positions.global) positions.values.mapTo(mutableSetOf()) { it - rowIdStart } else positions.values
     }
 
     private fun applyDeleteFile(fileSystem: TrinoFileSystem, split: DucklakeSplit, dataSource: ConnectorPageSource): ConnectorPageSource
@@ -816,6 +1047,7 @@ class DucklakePageSourceProvider @Inject constructor(
         is DucklakeMetadataSplit -> createMetadataPageSource(split, columns)
         is DucklakeInlinedSplit -> createInlinedPageSource(split, columns)
         is LanceSearchSplit -> createLanceSearchPageSource(session, split, table as LanceSearchTableHandle, columns, dynamicFilter)
+        is ChangeFeedSplit -> createChangeFeedPageSource(session, table as ChangeFeedTableHandle, columns)
         else -> null
     }
 
