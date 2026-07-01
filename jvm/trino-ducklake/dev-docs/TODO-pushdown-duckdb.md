@@ -22,8 +22,8 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
 > match natively — full-case-folding `lower`/`upper`, code-point `reverse` —
 > are native C++ in the extension too (the old `@placeholder` / warn-on-emit
 > machinery and the SQL-resource replay path are gone).
-> Current open work: items 5 (DuckDB-namespaced exclusives via
-> `ConnectorFunctionProvider`), 6 (Lance), plus the extension repo's own
+> Current open work: item 5 (DuckDB-namespaced exclusives via
+> `ConnectorFunctionProvider`), plus the extension repo's own
 > [TODO.md](../../../duckdb-trino-parity-extension/TODO.md). (Tier C default-on
 > flip landed 2026-06-06 — `pushdown_timestamp_with_timezone` now defaults on.)
 
@@ -50,7 +50,7 @@ Function mapping reference: see [RESEARCH-function-mapping.md](RESEARCH-function
    - Regex (RE2 on both): `regexp_like/2`, `regexp_extract/{2,3}`. `regexp_like` exercises the rename pattern (Trino `regexp_like` → DuckDB `regexp_matches` via macro body).
 4. ✅ **Date / time** — complete. Plan in [archive/PLAN-pushdown-datetime.md](archive/PLAN-pushdown-datetime.md). Empirical TZ findings in [archive/REPORT-datetime-tz-handling.md](archive/REPORT-datetime-tz-handling.md). Chunk-by-chunk record in [archive/TODO-pushdown-datetime.md](archive/TODO-pushdown-datetime.md). Shipped: 1 = translator type-gate + Tier A (DATE) + Tier B (TIMESTAMP no-TZ); 2 = session-TZ plumbing + normaliser; 3 = Tier C session-property gate (narrow, `to_unixtime` only); 3.5 = Arrow converter fix unblocks full Tier C surface (year/month/day/hour/...); 4 = `from_unixtime`/`with_timezone` extras + `at_timezone` documented as not-pushable.
 5. ⏳ **DuckDB-namespaced exclusives** — vector / JSON / list / struct / regex variants that exist in DuckDB but not in Trino. Register through `ConnectorFunctionProvider`, route through the same translator. Lower-risk than #4 because we own both ends of the semantic contract. Not started.
-6. ⏳ **Lance table functions** when we get there. Sits on top of the infrastructure above.
+6. ✅ **Lance table functions** — shipped (`lance_vector_search` / `lance_fts` / `lance_hybrid_search` via `applyTableFunction`/`applyFilter`/`applyTopN`). Change-feed table functions (`table_insertions`/`table_deletions`/`table_changes`) also shipped on the same scan-rewrite pattern.
 
 ## Infrastructure to land before any specific mapping
 
@@ -141,8 +141,12 @@ genuinely use the secret and are fully covered by the regression test.
   - `chr`, `url_encode/decode`, `to_hex/from_hex`, `to_base64/from_base64`, `levenshtein_distance`, `hamming_distance` (round 4).
   - Still deferred: `concat` (NULL-propagation differs), `position` (operator-form).
 - Step 4 (date / time) — **complete (chunks 1 + 2 + 3 + 3.5 + 4 shipped)**. Chunk 1 (round 6j) added the translator's argument-type-gate registry plus 12 new pushable entries (Tier A DATE-only, Tier B DATE or TIMESTAMP no-TZ). Chunk 2 added `TrinoTimeZoneNormaliser` and threaded Trino's session `TimeZoneKey` through the page-source / executor stack so `SET TimeZone` fires at attach in both `InProcessDuckDbExecutor` and `QuackDuckDbExecutor`. Chunk 3 added the `pushdown_timestamp_with_timezone` session property (default off), threaded `ConnectorSession` through the translator's gates. Chunk 3.5 fixed `DucklakeArrowToPageConverter` to use the Arrow schema TZ instead of hardcoding `UTC_KEY` and promoted the full Tier C surface (`year/month/day/quarter/hour/minute/second/millisecond/date_trunc/date_diff`). Chunk 4 added `from_unixtime/1` and `with_timezone/2`; `at_timezone(WTZ, varchar)` was probed and confirmed **not pushable** through this connector (DuckDB's TIMESTAMPTZ has no per-value zone metadata, so the "rezone display" operation is fundamentally not expressible — documented). Year-boundary smoking gun confirmed end-to-end: Singapore session + property on + `WHERE year(ts) = 2025` over a `'2024-12-31 22:00 UTC'` literal matches the row through the full Trino stack. User-visible behaviour change: `SELECT timestamptz_col FROM duckdb_table` now renders in session zone (matches Iceberg / Hive / Parquet `isAdjustedToUtc=true`) instead of UTC. Date-specific design docs archived to [archive/](archive/). Open follow-up: parquet-format read path uses Trino's standard parquet reader which hardcodes `UTC_KEY` (same fault mode as our Arrow path pre-3.5) — documented in the archived TODO; not blocking since function-shape pushdown doesn't fire on parquet splits today. **Default-on flip landed 2026-06-06: `pushdown_timestamp_with_timezone` now defaults to `true`** (set `false` to keep Tier C predicates above the scan).
-- Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started.
-- Step 6 (Lance table functions) — not started.
+- Step 5 (DuckDB-namespaced exclusives via `ConnectorFunctionProvider`) — not started. NB: a
+  class named `DucklakeFunctionProvider` now exists, but it's the `FunctionProvider` for the Lance
+  and change-feed TABLE functions — a different SPI from the scalar `ConnectorFunctionProvider` this
+  step needs.
+- Step 6 (Lance table functions) — shipped (`lance_vector_search` / `lance_fts` /
+  `lance_hybrid_search`).
 
 ### Catalog totals (as of the native hash port — 2026-06-06)
 

@@ -9,6 +9,11 @@ Date: 2026-04-23
 > the conclusions remain discoverable in `git log` after deletion; once
 > removed, search `git log --diff-filter=D -- jvm/trino-ducklake/dev-docs/COMPARE-awitten1-trino-ducklake-plugin.md`
 > to find this file in history.
+>
+> **Amendment (2026-07):** the one stale claim below is catalog backends — brikk now supports
+> **PostgreSQL + local DuckDB** (SQLite/Quack still planned), so the "brikk PostgreSQL-only / others
+> removed" notes (catalog-backends row, Architecture § Catalog Layer, and "Things awitten1 Has That
+> We Don't → SQLite and DuckDB catalog backends") should read "SQLite only" as the remaining gap.
 
 This document compares the two independent Trino DuckLake connector implementations. The
 awitten1 plugin source was pulled into `ducklake-other-trino-plugin/` for analysis. The

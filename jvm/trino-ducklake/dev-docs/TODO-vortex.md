@@ -1,6 +1,6 @@
 # TODO: Vortex file format support
 
-**Status:** Planning. No code yet (grep confirms zero `vortex` references in connector src/test as of 2026-06-08).
+**Status:** SHIPPED (read + write + `add_files`, incl. partitioned via `hive_partitioning`), via the DuckDB `vortex` extension (V0 probe, V1 read dispatch, V3 write all done). Remaining: audit richer Vortex encodings beyond scalars/ARRAY/ROW, verify predicate-pushdown exploitation (V2), appender-mode + direct-to-s3 write. MAP writes gated on the upstream native crash.
 **Scope:** trino-ducklake connector — read via the DuckDB `vortex` extension only. There is **no Trino-Vortex project** to adopt (the Vortex team has not published one), so unlike Lance there is no native-JNI route in scope; Vortex is DuckDB-engine-only for now.
 **Shared machinery:** Route A in [TODO-lance.md](TODO-lance.md) — the "scan a file via a DuckDB format table-function" generalization of the DuckDB executor is the same work; Vortex is the second consumer. Land that generalization once, parameterize by format.
 

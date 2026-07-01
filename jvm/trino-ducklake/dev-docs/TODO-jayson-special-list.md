@@ -454,6 +454,14 @@ the `row_id_start + position` rowid vocabulary Jayson chose): (1) UPDATEs surfac
 DuckDB update allocated a fresh rowid too), so the pre/post-image pairing (implemented + correct) only
 fires when a deleted rowid is re-inserted with the same value in a snapshot; (2) inlined data/deletes
 are **gated** at analyze time (clear "flush_inlined_data first" error) rather than silently omitted.
+**Follow-up for REAL update pairing (found during the 2026-07 doc sweep):** DuckLake DOES persist
+cross-file row lineage — but in the DATA file, not the catalog: an embedded reserved column
+`_ducklake_internal_row_id` (Iceberg field-id `2_147_483_540`) that UPDATE/compaction writes, holding
+the preserved rowid. datafusion-ducklake's `RowIdExec` reads it (see COMPARE-datafusion § row lineage).
+Our `$row_id` = `row_id_start + position` ignores that column, which is exactly why update pairing
+doesn't fire. Making pairing spec-accurate = read `_ducklake_internal_row_id` when present and use it
+as the rowid (falling back to `row_id_start + position`). Not done here; the earlier "no readable
+lineage" conclusion was catalog-only and incomplete.
 Tests: `TestDucklakeChangeFeed` (11 e2e: insertions/deletions/changes, inclusive+scoped bounds,
 end-default, timestamp bounds, non-parquet duckdb, projection/COUNT(*), empty window, schema-evolution
 as-of-end), `TestDucklakeChangeFeedCrossEngine` (3: DuckDB-written update read as delete+insert,

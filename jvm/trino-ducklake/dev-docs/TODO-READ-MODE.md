@@ -23,10 +23,10 @@ deletion-vector reader (Roaring bitmaps inside DuckLake's `.puffin`
 delete files). See § Inlined Deletion Vector Reads, § Inlined-Read Type
 Gaps, and § Puffin Deletion Vector Reads below.
 
-Next bite-sized read items: virtual columns (rowid/file_row_number) and
-the `R7` cross-backend view tests. None are correctness blockers — pick
-whichever fits the current session. (Sorted-table read awareness landed
-2026-05-21; see § Sorted-Table Awareness (Read) below.)
+Next bite-sized read items: the `R7` cross-backend view tests (SQLite backend still planned).
+None are correctness blockers. (Virtual columns `$snapshot_id`/`$path`/`$row_id`/`$file_row_number`/
+`$file_size_bytes` shipped; only the DuckDB `rowid` name-alias is deferred to v2. Sorted-table read
+awareness landed 2026-05-21; see § Sorted-Table Awareness (Read) below.)
 
 ## Inlined Deletion Vector Reads
 
@@ -226,11 +226,14 @@ data file's scan.
 
 ## R6: Change Feed and Extended Metadata Parity
 
-- [ ] Evaluate Trino equivalents for:
-  - DuckDB `table_changes`, `table_insertions`, `table_deletions`
-  - DuckLake-specific metadata surfaces beyond `$files` / `$snapshots`
-- [ ] Implement only when there's a clear Trino use-case and a maintainable API
-  shape.
+- [x] **Change feed SHIPPED** — `system.table_insertions` / `table_deletions` / `table_changes`
+  table functions (scan-rewrite PTFs, all file formats, inclusive snapshot-id/timestamp bounds).
+  Two documented behaviors: tables with **inlined** data/deletes are gated (`flush_inlined_data`
+  first), and **UPDATEs surface as `delete`+`insert`** because the connector's `rowid` is
+  `row_id_start + position` and doesn't carry DuckLake's cross-file lineage. See README § Change
+  Feed and TODO-jayson-special-list.md § F9.
+- [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
+  `$snapshot_changes` — evaluate as use-cases surface.
 
 ## R7: Cross-Backend View Tests
 
@@ -245,7 +248,10 @@ is format-agnostic; adding a new format is a connector-side concern
 (reader plumbing + executor-side ATTACH, where applicable) plus a writer
 follow-up.
 
-Two epics tracked here at high level. Neither is scheduled; both are
+Two epics tracked here at high level. **UPDATE: both have SHIPPED** — Lance (read + write +
+add_files + vector/FTS/hybrid search) and Vortex (read + write + add_files) are in the connector;
+see TODO-lance.md / TODO-vortex.md. The section below is kept as the original design rationale. The
+epics were originally framed as unscheduled "when a workload pushes" items:
 "when a real workload pushes for them" items.
 
 **DuckDB extension availability (probed 2026-06-06, pinned DuckDB `1.5.3.0`):**
@@ -301,7 +307,7 @@ file-scan machinery with Lance. Scope summary:
   upstream DuckLake spec has reserved the string (it should be opaque
   to the spec; the connector decides what it can read).
 
-Open at the epic level — when a workload surfaces, start with a probe:
+SHIPPED (read + write + add_files). Original probe-first plan, kept for the record —
 write one Vortex file outside DuckLake, register it as `add_files` against
 a DuckLake table with `file_format='vortex'`, attempt to read via Trino,
 record what blows up. That tells us what the first PR scope is.
@@ -336,9 +342,11 @@ Improvements, Inlined-Read Type Gaps).
   table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). Consolidated **parquet
   DELETE files** are also filtered now (split carries `deleteFileSnapshotFilters`; the delete reader
   keeps only deletions whose `_ducklake_internal_snapshot_id <= S` — `TestDucklakePartialDeleteFilter`,
-  cross-engine via `flush_inlined_data` consolidation). **Only remaining:** consolidated **PUFFIN**
-  delete files are gated (the deletion-vector reader doesn't yet snapshot-filter per blob) —
-  `TestDucklakePartialFileGuard`. See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+  cross-engine via `flush_inlined_data` consolidation). Consolidated **PUFFIN** delete files are
+  now snapshot-filtered per blob too (`DucklakePuffinDeleteReader` reads each blob's
+  `ducklake-snapshot-id`) — `TestDucklakePuffinPartialDelete`. **All partial-file reads (data +
+  parquet-delete + puffin-delete) are correct; no read gate remains.** See
+  [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
 - **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
   Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
@@ -393,9 +401,9 @@ DuckDB→Trino transpilation quality against real DuckLake views.
 | DuckDB feature/function | Category | Trino equivalent | Decision |
 |---|---|---|---|
 | `FROM catalog.last_committed_snapshot()` | Connection-local state | None | Not planned |
-| `FROM table_changes(...)` | Change feed | Connector table function/system table | Open (R6) |
-| `FROM table_insertions(...)` | Change feed | Connector table function/system table | Open (R6) |
-| `FROM table_deletions(...)` | Change feed | Connector table function/system table | Open (R6) |
+| `FROM table_changes(...)` | Change feed | `system.table_changes(...)` table function | **Shipped** |
+| `FROM table_insertions(...)` | Change feed | `system.table_insertions(...)` table function | **Shipped** |
+| `FROM table_deletions(...)` | Change feed | `system.table_deletions(...)` table function | **Shipped** |
 | `FROM ducklake_list_files(...)` | Metadata utility | `table$files` covers it; standalone table function later | Later |
 | `rowid` virtual column | Lineage | Hidden column / metadata table if needed | Open (Virtual Columns) |
 | `FROM catalog.options()/settings()` | Config metadata | Session/catalog properties + optional system table | Later |

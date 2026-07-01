@@ -21,8 +21,8 @@ Next up:
    option upstream just added (merged 2026-05-12) that we MUST support
    and test against. See § Quack Catalog Backend (DuckDB RPC) below.
    Cross-cutting concern — affects both read and write paths.
-2. Sorted-table writes and the M8 maintenance procedures; both are
-   bigger commitments and sit further below.
+2. Sorted-table writes (PARKED, awaiting a scope decision). The M8 maintenance
+   procedures are all DONE (see § M8).
 
 (The `add_files` procedure, bucket partitioning, nested-leaf file
 column stats, and per-table `location` have all landed; see § Adopt
@@ -437,7 +437,9 @@ generate new parquet files and need a similar metadata-insert path.
 ## Schema Evolution Gaps
 
 - [ ] `ALTER TABLE SET TYPE` (type promotion)
-- [ ] `ALTER TABLE ADD/DROP FIELD` (nested struct field manipulation)
+- [x] `ALTER TABLE ADD/DROP FIELD` (nested struct field manipulation) — DONE (parquet self-heals;
+  non-parquet via per-file struct_pack reshaping; e2e on duckdb + vortex). See § F9/nested in
+  TODO-jayson-special-list.md and DESIGN-nested-field-evolution.md.
 
 ## `default_value_dialect = 'trino'` for User-Defined DEFAULTs
 
@@ -787,7 +789,8 @@ deletion: catalog retirement only *schedules* files; physical unlink is a separa
     sources (non-partial path). The `ALTER TABLE ... EXECUTE optimize` alias is a deliberate non-goal
     (procedure surface is the connector's convention; the alias needs the separate TableProcedures
     SPI for no capability gain).
-- [ ] Connector procedures in `ducklake.system`:
+- [x] Connector procedures in `ducklake.system` (ALL shipped — incl. `rewrite_data_files`/optimize;
+      see the § M8 optimize entry above):
   - [x] `remove_orphan_files` — DONE 2026-06-29 (`TestDucklakeRemoveOrphanFiles`). Storage-only
     (no catalog mutation): deletes files under the table data path with no catalog row, older than
     `retention_threshold` (default 7d, floored by `ducklake.remove-orphan-files.min-retention`).
@@ -813,10 +816,10 @@ and partial-source re-compaction. Only omission: the cosmetic `ALTER TABLE … E
 
 ## Commit-Failure File Cleanup
 
-Files written before a failed commit become orphans. Today this is delegated to
-DuckLake's `ducklake_delete_orphaned_files()` maintenance procedure rather than
-handled inline. Once the M8 maintenance verbs land, this becomes self-served from
-the connector.
+Files written before a failed commit become orphans. This is now self-served from the connector:
+`CALL system.remove_orphan_files(schema_name, table_name)` (shipped 2026-06-29) deletes catalog-
+unreferenced files older than the retention grace period. (DuckLake's own
+`ducklake_delete_orphaned_files()` remains available cross-engine.)
 
 ## Design Decisions
 
@@ -834,7 +837,8 @@ Why not a `% changed > N` threshold like Iceberg-style engines that keep stale
 manifest stats and rely on `OPTIMIZE`/`ANALYZE` to refresh? Cross-engine delete
 semantics and stale catalog metadata can make threshold-based stats unsafe — for
 DuckLake interoperability, prefer "unknown" over "potentially wrong" at read time.
-Refresh path is the planned `recalc stats` utility under M8 above.
+Refresh path is `ANALYZE` (shipped — recomputes `ducklake_table_stats` +
+`ducklake_table_column_stats`).
 
 ## Reality Check: Spec vs Actual Catalog Shape
 

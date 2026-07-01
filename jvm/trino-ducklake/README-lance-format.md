@@ -51,9 +51,11 @@ CALL ducklake.system.add_files(
 
 Registers a lance dataset **directory** as one data-file row: no parquet footer probing,
 `record_count` sourced by scanning the dataset (doubles as a readability check), best-effort
-directory size, no column stats, read-by-name. Guards reject hive-partitioning and partitioned
-tables for lance. This is the intended route for embedding datasets produced out-of-band
-(and currently the only route for lance datasets containing `ROW` columns).
+directory size, no column stats, read-by-name. A partitioned table is registered with
+`hive_partitioning => true`, which learns identity-partition values from the `key=value/` path
+(the partition column must be present in the dataset); a partitioned lance `add_files` without
+`hive_partitioning` is rejected. This is the intended route for embedding datasets produced
+out-of-band (and currently the only route for lance datasets containing `ROW` columns).
 
 ## Vector / full-text / hybrid search table functions
 

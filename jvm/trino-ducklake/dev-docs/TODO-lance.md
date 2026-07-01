@@ -1,6 +1,6 @@
 # TODO: Lance file format support
 
-**Status:** Planning. No code yet (grep confirms zero `lance` references in connector src/test as of 2026-06-08).
+**Status:** SHIPPED (Route A). Read + write + `add_files` (incl. partitioned via `hive_partitioning`) + the `lance_vector_search` / `lance_fts` / `lance_hybrid_search` table functions are all in the connector (Phases A0–A4 done). Route B (lance-core JNI) is MOOT — see REPORT-lance-route-a-vs-b.md. Index lifecycle (F3) is PARKED (RESEARCH-lance-index-lifecycle.md). Search v1 gates (all-lance tables, no row-level deletes, s3 quack-only) are deliberate.
 **Scope:** trino-ducklake connector — read first, then write. Two implementation routes (A: via the DuckDB `lance` extension; B: direct via `lance-core` JNI / the vendored `lance-trino` plugin). Both are tracked here; they are not mutually exclusive.
 **Design basis:** [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md) (deep design — Trino pushdown SPI surface, table-function shape for vector/FTS, route A vs B trade-offs, `ScanOptions` surface). This file is the actionable, chunked plan; that file is the rationale.
 **Sibling:** [TODO-vortex.md](TODO-vortex.md) shares Route A's "scan a file via a DuckDB format table-function" machinery.
