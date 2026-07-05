@@ -334,9 +334,17 @@ record what blows up. That tells us what the first PR scope is.
   bolt-on, not v1.
   **Multi-engine/multi-backend scope (decided 2026-07-05):** target Trino AND
   Doris, across all catalog backends. (a) Runner core (parser, replay driver,
-  DuckDB oracle) lives in **`ducklake-catalog/testFixtures`** — engine-agnostic;
-  thin `ReplayReadEngine` adapters per engine: DuckDB (identity control), Trino
-  (QueryRunner), Doris (JDBC→FE, compose infra exists). (b) Backend axis via the
+  `ReplayReadEngine` interface, DuckDB oracle) lives in
+  **`ducklake-catalog/testFixtures`** as a library export — it runs nowhere
+  itself. Suite entrypoints run ENGINE-SIDE: Trino adapter
+  (`DucklakeQueryRunner`-backed) + its corpus suite in `trino-ducklake/test`;
+  Doris adapter (JDBC→FE) + suite in `doris-ducklake` tests; the
+  DuckDB-identity control suite in `ducklake-catalog/test` (validates the
+  runner, zero engine deps). Engine testing stacks never enter the shared lib.
+  (Alternative if testFixtures feels overloaded: standalone
+  `jvm/ducklake-corpus-replay` module.) Corpus distribution: **pinned git
+  submodule of `duckdb/ducklake`** (vendor/ is git-ignored, unavailable in CI);
+  bump the pin during biweekly upstream refreshes. (b) Backend axis via the
   ATTACH-rewrite step (duckdb-local / Postgres / Quack / SQLite-when-shipped) —
   **seed skip lists from upstream's own `test/configs/{postgres,sqlite,quack}.json`**
   (structured skips with reasons; the corpus is already designed for
@@ -385,21 +393,20 @@ write-path; NOW-2/3 below are read-path).
   `ducklake-snapshot-id`) — `TestDucklakePuffinPartialDelete`. **All partial-file reads (data +
   parquet-delete + puffin-delete) are correct; no read gate remains.** See
   [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
-- **[NOW-3] nested-field-id-top-level-match** `[v: CURRENT — DuckLake v1.0-era;
-  read correctness]` — PARTIALLY VERIFIED 2026-07-05: the change-feed lineage
-  reader matches field-id 2147483540 on the top-level field — but that column is
-  a **scalar** BIGINT where top-level == leaf, so it *cannot* exhibit this bug;
-  it only proves the change feed adds no new exposure. **Remaining scope: the
-  general parquet read path for nested (List/struct/map) columns.** Cheapest
-  close: check whether the step2-m3 nested ADD/DROP FIELD e2e tests
-  value-assert a `List` column after evolution (all-NULL would have failed
-  them) — if yes, tick this with a pointer; if no, add the List roundtrip.
-  ~15-min check before writing anything. Original: datafusion-ducklake #148 (2026-06) fixed
-  List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
-  Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
-  (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
-  verify our nested field-id resolution reads ids off the top-level field, not the leaf,
-  with a List/struct write→read roundtrip across schema evolution. ~1h spike.
+- ✅ **[NOW-3] nested-field-id-top-level-match** — VERIFIED CLEAN 2026-07. Two-part check:
+  (1) STRUCTURAL — `DucklakePageSourceProvider.createParquetPageSource` builds its field-id index
+  from `fileSchema.fields` (TOP-LEVEL fields): `fieldIdToColumnIO[field.id] = messageColumnIO.
+  getChild(field.name)`, i.e. the top-level group `ColumnIO` for a nested type. The primary
+  name-match path also resolves the top-level `ColumnIO`, and `constructField(columnType, columnIO)`
+  builds the nested Field from it. So ids are read off the top-level field, not the leaf — the
+  opposite of the datafusion #148 bug — on BOTH the name-match and the field-id-fallback paths.
+  (2) EMPIRICAL — `TestDucklakeAlterTable.renameNestedColumnsPreserveTheirValues` renames a
+  top-level ARRAY, ROW, and MAP column (so the parquet file keeps the OLD name → the read falls
+  back to field-id matching, the exact bug analog) and value-asserts the nested contents survive
+  (a leaf-keyed matcher would return all-NULL). Passes. (Earlier "PARTIALLY VERIFIED" note was
+  right to distrust the scalar-lineage-column proof; this closes it on the general nested path.)
+  Original: datafusion-ducklake #148 (2026-06) — nested field-id matcher keyed off parquet leaf
+  columns → List/struct/map read back all-NULL.
 - ✅ **[NOW-2] inlined-insert-change-vocab** — VERIFIED CLEAN (2026-07), not applicable. Our
   `InterveningChanges.applyEntry` already uses the correct DuckLake-1.0 spelling `inlined_insert:<id>`
   / `inlined_delete:<id>` (not the old `inlined_data_insert` that caused pg_ducklake #216's data
