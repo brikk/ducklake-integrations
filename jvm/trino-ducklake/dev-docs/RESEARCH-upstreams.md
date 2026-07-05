@@ -21,6 +21,10 @@ docs in this same directory:
   `TODO-pushdown-duckdb.md`, `TODO-duckdb-lake-format.md`. Research-derived
   items get folded in there directly (each has an "Open Research Items"
   pointer section).
+- Parking lot: `TODO-uhoh.md` — concerns without a home yet (direction-of-travel
+  worries, protection tests, unplaceable ideas). **Glance at it on every refresh
+  run** — re-verify its "Watch" items against the new diff (e.g. server-side
+  commit trajectory, orphan-sweep `*.parquet` filter still in place).
 - Comparison audits: `COMPARE-datafusion-ducklake.md`,
   `COMPARE-pg_ducklake.md`.
 - Archived historical context:
