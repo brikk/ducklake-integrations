@@ -7,6 +7,9 @@
 # Usage:
 #   ./smoke.sh             # one-shot: build → drop plugin → up → drive
 #   ./smoke.sh --no-build  # skip plugin rebuild (assume zip is current)
+#   ./smoke.sh --up-only   # build → drop plugin → up → wait healthy → STOP
+#                          # (headless cluster for the corpus replay adapter /
+#                          # manual dev loop; combine with --no-build if wanted)
 #   ./smoke.sh --down      # tear everything down
 set -euo pipefail
 
@@ -18,12 +21,14 @@ PLUGIN_ZIP_GLOB="${JVM_ROOT}/doris-ducklake/build/distributions/doris-ducklake-*
 
 DO_BUILD=1
 DOWN=0
+UP_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --no-build) DO_BUILD=0 ;;
+        --up-only)  UP_ONLY=1 ;;
         --down)     DOWN=1 ;;
         -h|--help)
-            sed -n '2,9p' "$0"
+            sed -n '2,12p' "$0"
             exit 0
             ;;
         *) echo "Unknown arg: $arg" >&2; exit 2 ;;
@@ -159,6 +164,19 @@ log "Disabling FE-side local-exchange planning (4.1.0 BE lacks TPlanNodeType 38)
 docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
     SET GLOBAL enable_local_shuffle_planner = false;
 " 2>&1 | tail -5
+
+# 6c. Headless mode: everything above is cluster bring-up (substrate, plugin
+# install, FE+BE health, version-skew shim); everything below is the smoke
+# DRIVER. --up-only stops at this boundary so the corpus replay adapter (see
+# dev-docs/DESIGN-corpus-replay-adapter.md) and manual dev loops get a ready
+# cluster with no test data mutated. The FE is reachable on localhost:9030
+# (mysql protocol, user root, no password).
+if [[ "$UP_ONLY" -eq 1 ]]; then
+    log "--up-only: cluster is up and healthy; skipping the smoke driver."
+    log "  FE mysql endpoint: 127.0.0.1:9030 (root, no password)"
+    log "  Tear down with: ./smoke.sh --down"
+    exit 0
+fi
 
 # 7. Drive the plugin.
 #

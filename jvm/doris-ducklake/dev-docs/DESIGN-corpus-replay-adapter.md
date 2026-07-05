@@ -76,24 +76,29 @@ Trino contact as planned.
 
 ## Prep checklist (do-able before the backend axis lands)
 
-- [ ] **Corpus-mode compose profile**: headless FE+BE bring-up (today's
-  `compose/smoke.sh` couples cluster bring-up to the smoke driver). Factor a
-  `--up-only` mode (cluster + plugin install + `enable_local_shuffle_planner`
-  shim, no driver). Our stack already matches the backend-axis shape —
-  Postgres (`trino-ducklake-postgres`) + MinIO (`trino-ducklake-minio`) on a
-  shared network — so the only new requirement is that the RUNNER's oracle
-  attaches to that same Postgres + writes to the same MinIO bucket.
-- [ ] **`DorisValueNormalizer`** + unit tests (table above) — no cluster
-  needed, can build now against sample renderings captured from the smoke
-  cluster.
-- [ ] **`accepts()` v1 predicate** + unit tests (SELECT-only lexer-level
-  check + deny-list seeded from upstream `test/configs/*.json` where
-  applicable).
-- [ ] **Module wiring**: the adapter needs `ducklake-corpus-replay` on the
-  test classpath (or a small `doris-corpus-adapter` source set) — decide with
-  the runner owner whether adapters compile into the engine module (their
-  stated plan: "Doris adapter in doris-ducklake") and add the gradle
-  dependency once the branch merges.
+- [x] **Corpus-mode compose profile** — `compose/smoke.sh --up-only`
+  (2026-07-05, validated live): substrate + plugin install + FE/BE health +
+  `enable_local_shuffle_planner` shim, exits at the driver boundary; FE on
+  `127.0.0.1:9030` (root, no password). Our stack already matches the
+  backend-axis shape — Postgres (`trino-ducklake-postgres`) + MinIO
+  (`trino-ducklake-minio`) on a shared network — so the only new requirement
+  is that the RUNNER's oracle attaches to that same Postgres + writes the
+  same MinIO bucket.
+- [x] **`DorisValueNormalizer`** + unit tests —
+  `src/dev/brikk/ducklake/doris/corpus/DorisValueNormalizer.kt` (2026-07-05):
+  targets the oracle's `renderCell` forms (Java `toString` numerics incl.
+  `Infinity`/`NaN`, micro-trimmed timestamps, UTC `+00`, `\xHH` blobs,
+  `toPlainString` decimals, TINYINT(1)→boolean via metadata flag).
+- [x] **`accepts()` v1 predicate** + unit tests —
+  `src/dev/brikk/ducklake/doris/corpus/DorisCorpusDialect.kt` (2026-07-05):
+  SELECT-only (comment-tolerant), deny-tiers for DuckDB syntax (`::`, `[`,
+  `{`, lambdas), catalog/file table-functions, degraded type families
+  (INTERVAL/UNNEST/sampling), word-boundary precise. WITH-CTEs rejected in
+  v1 (Doris supports them — first widening candidate).
+- [ ] **Module wiring** (GATED): the adapter class needs
+  `ducklake-corpus-replay` on the classpath — add the gradle dependency +
+  `DorisReplayReadEngine` (JDBC + the two classes above) once the runner
+  branch merges and the backend axis lands.
 - [ ] **Skip-list seed** for Doris: start empty at the file level; rely on
   `accepts()` until real runs show file-level pathologies.
 
