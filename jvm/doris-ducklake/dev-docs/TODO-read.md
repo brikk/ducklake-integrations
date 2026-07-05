@@ -48,13 +48,17 @@ audit (full module suite green: 140+ tests + detekt):
   nested-type reconstruction through the real catalog
   (`resolveColumnType` path the pure-string tests never hit).
 
-**⏸️ PAUSE on new internally-written parity tests:** a shared **upstream
-DuckLake SQL test runner** (1000–2000+ upstream ducklake tests, one runner for
-trino + doris via per-engine adapters) is being built on the trino side. When
-it lands we integrate an adapter instead of hand-porting more coverage. For
-Doris the open adapter question is transport: mysql-protocol against a live
-compose FE+BE vs an in-process metadata-only hook — most upstream tests
-exercise full SQL, so expect the live-cluster route.
+**⏸️ PAUSE on new internally-written parity tests:** the shared **upstream
+DuckLake corpus replay runner** is BUILT and full-corpus green (7,681/7,681
+records through the DuckDB oracle; `jvm/ducklake-corpus-replay` on branch
+`ducklake-corpus-test` @ `5be8131`). Our adapter is read-only query mirroring
+(`ReplayReadEngine`: `connect`/`accepts`/`executeQuery`) — no golden-text
+parsing, live-vs-live row comparison. Blocked on the runner's backend axis
+(Postgres metadata catalog + shared/MinIO data path — next milestone after
+Trino contact). Design + prep checklist:
+[`DESIGN-corpus-replay-adapter.md`](./DESIGN-corpus-replay-adapter.md) — the
+normalizer, `accepts()` v1, and the headless compose profile are all
+build-able before the gate lifts.
 
 Follow-ups from the sweep (not yet done):
 - [ ] `add_files`-registered hive-layout files may lack partition columns in
