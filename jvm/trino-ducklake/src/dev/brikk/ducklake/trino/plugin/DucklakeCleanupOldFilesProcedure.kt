@@ -95,7 +95,7 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
                 continue
             }
             try {
-                fileSystem.deleteFile(Location.of(absolute))
+                deletePath(fileSystem, Location.of(absolute))
                 deletedIds.add(file.dataFileId)
             }
             catch (e: IOException) {
@@ -105,6 +105,24 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
         }
         catalog.removeScheduledFileRows(deletedIds)
         log.info("cleanup_old_files: deleted %d scheduled file(s)", deletedIds.size)
+    }
+
+    /**
+     * Physically removes a scheduled path. LANCE data files are dataset *directories*, not single
+     * files — `deleteFile` can't remove them (it errors on local FS and no-ops on object stores,
+     * leaking the member objects), so a directory-shaped path is removed recursively with
+     * `deleteDirectory`. `directoryExists` resolves the distinction on both local FS and s3
+     * (an s3 "directory" is a key prefix with member objects). Parquet/duckdb/vortex are single
+     * files and take the plain `deleteFile` path.
+     */
+    @Throws(IOException::class)
+    private fun deletePath(fileSystem: TrinoFileSystem, location: Location) {
+        if (fileSystem.directoryExists(location).orElse(false)) {
+            fileSystem.deleteDirectory(location)
+        }
+        else {
+            fileSystem.deleteFile(location)
+        }
     }
 
     private fun resolveAbsolute(file: DucklakeScheduledFile, root: String?): String? {
