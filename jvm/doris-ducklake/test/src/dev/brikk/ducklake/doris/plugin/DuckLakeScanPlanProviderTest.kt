@@ -157,7 +157,7 @@ internal class DuckLakeScanPlanProviderTest {
             "scratch location, then thread it through DuckLakeScanRange " +
             "the same way file-based deletes are threaded today. " +
             "See ducklake-doris-friction.md (2026-05-19) for the full " +
-            "writeup and Step 7.5 in ducklake-doris-todo.md.",
+            "writeup and Step 7.5 in dev-docs/TODO-read.md.",
     )
     @Test
     @Throws(Exception::class)

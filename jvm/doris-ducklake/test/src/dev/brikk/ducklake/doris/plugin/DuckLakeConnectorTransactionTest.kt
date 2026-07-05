@@ -25,7 +25,7 @@ import java.nio.ByteOrder
  * This is the validated core of write support (`supportsInsert=true`); the BE-coupled
  * half — the [DuckLakeWritePlanProvider] sink, Parquet field-ids, footer size — was
  * confirmed on a live cluster (W2 smoke). This headless test remains the independent
- * oracle for the commit mapping — see `ducklake-doris-todo-write.md`.
+ * oracle for the commit mapping — see `dev-docs/TODO-write.md`.
  */
 internal class DuckLakeConnectorTransactionTest {
 

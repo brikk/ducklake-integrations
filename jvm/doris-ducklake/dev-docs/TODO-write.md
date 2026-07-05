@@ -1,10 +1,23 @@
 # DuckLake-on-Doris — WRITE-path TODO
 
-Sibling todos:
-- 📖 [`ducklake-doris-todo.md`](./ducklake-doris-todo.md) — READ path (v1 essentially complete)
-- 🔬 [`ducklake-doris-todo-research.md`](./ducklake-doris-todo-research.md) — research
+**Phase W of [`PLAN.md`](./PLAN.md)** ("write side Parquet") — collect
+write-path items here. Sibling todos:
+- 📖 [`TODO-read.md`](./TODO-read.md) — READ path (phase R)
+- 🔬 [`TODO-research.md`](./TODO-research.md) — research
 
-## Where we stand (updated 2026-06-08)
+> **P6 baseline note (2026-07-05).** The write-framework unification on the P6
+> baseline (`8b391c7`) rewrote the write SPI described below: `supportsInsert()`
+> / `usesConnectorTransaction()` / `getWriteConfig()` and the per-op
+> begin/finish/abort model are **gone**; `beginTransaction()` is the single
+> mandatory entry, admission is `ConnectorWritePlanProvider.supportedOperations()`,
+> and row-level DML / OVERWRITE / sorted writes / procedures are now generic
+> capability-keyed seams. Read
+> [`REPORT-doris-p6-iceberg-spi-cutover.md`](./REPORT-doris-p6-iceberg-spi-cutover.md)
+> §1–2 before acting on P4-era mechanics in the sections below — the
+> DELETE/UPDATE/MERGE track especially got dramatically cheaper (the iceberg MoR
+> synthesis admits any connector declaring the ops).
+
+## Where we stand (updated 2026-06-08, mechanics partially superseded — see note above)
 
 **W0 (the write-feasibility spike) is DONE**, and the INSERT **commit path is built
 and tested** (gate-closed). The picture changed materially when

@@ -1,10 +1,11 @@
 # FE patches needed for the DuckLake plugin connector
 
 The DuckLake connector is a Doris **plugin (SPI) connector**. The Doris FE
-(`~/DEV/OSS/db/doris`, branch `branch-catalog-spi`, the P-series connector-SPI
-migration) carries a couple of generic guards that were written before any
-non-MaxCompute full-adopter existed, so they don't yet know about the
-`"ducklake"` catalog type. Until these land upstream we apply them as
+(worktree `~/DEV/OSS/doris-catalog-spi`, branch `branch-catalog-spi`, the
+P-series connector-SPI migration — **baseline: `8b391c7459d`, the P6 iceberg
+cutover**; see `../dev-docs/REPORT-doris-p6-iceberg-spi-cutover.md`) carries a couple of
+generic guards keyed on a hard-coded catalog-type set, so they don't yet know
+about the `"ducklake"` catalog type. Until these land upstream we apply them as
 working-tree patches to the local FE checkout, build the FE, and overlay it into
 the `doris-fe:pr62767-local` image used by `compose/docker-compose.yml`.
 
@@ -15,9 +16,12 @@ upstream asks are tracked. See [[doris-fe-build-macos]] + [[doris-compose-smoke-
 ## Apply + rebuild
 
 ```bash
-cd ~/DEV/OSS/db/doris            # branch-catalog-spi
+cd ~/DEV/OSS/doris-catalog-spi   # branch-catalog-spi @ 8b391c7459d
 git apply /path/to/jvm/doris-ducklake/fe-patches/ducklake-fe.patch   # or keep as WT changes
 JAVA_HOME=<jdk17> DISABLE_BUILD_UI=ON ./build.sh --fe                 # ~2 min incremental
+# then re-install the SPI artifacts our gradle build compiles against (mavenLocal):
+#   cd fe && <mvn> install -pl fe-connector/fe-connector-api,fe-connector/fe-connector-spi,fe-thrift -DskipTests
+# (stale ~/.m2 SPI jars => connector compiles against old API, NoSuchMethodError at FE load)
 # re-image the overlay (FROM apache/doris:fe-4.1.0, COPY ./output/fe):
 podman build -f docker/runtime/doris-fe-overlay/Dockerfile \
   -t doris-fe:pr62767-local \
@@ -33,8 +37,10 @@ podman build -f docker/runtime/doris-fe-overlay/Dockerfile \
 Whitelists `type=ducklake` as an SPI-driven catalog. Without it
 `CREATE CATALOG ... type=ducklake` → "Unknown catalog type", and INSERT/DDL are
 never routed to the connector. This is the gate the W2/W2c INSERT smokes already
-depend on. (Tracked in `ducklake-doris-friction.md`, 2026-05-19 "SPI_READY_TYPES
-whitelist silently drops unknown ConnectorProviders".)
+depend on. (Tracked in `../dev-docs/ducklake-doris-friction.md`, 2026-05-19 "SPI_READY_TYPES
+whitelist silently drops unknown ConnectorProviders".) As of P6 the upstream set
+is `{jdbc, es, trino-connector, max_compute, paimon, iceberg}` — still a
+hard-coded set, no connector-declared registration seam.
 
 ### 2. `CreateTableInfo.pluginCatalogTypeToEngine` += `case "ducklake" → ENGINE_ICEBERG`  — the CREATE TABLE gate
 `fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java`
@@ -67,6 +73,17 @@ getEngineTableTypeName()`) is intentionally **left generic** for ducklake: the r
 path is already shipped/green and some BE dispatch keys on the literal engine
 string, so we don't perturb it for a write-DDL fix.
 
+P6 note: upstream added `case "iceberg" → ENGINE_ICEBERG` to the same switch,
+so our patch is now literally one more case-arm beside it. Mapping to
+ENGINE_ICEBERG additionally opts ducklake CREATE TABLE into (a) catalog-level
+`table-default/override.format-version` + row-lineage-column validation and
+(b) `ORDER BY (...)` sort-order acceptance (flows into
+`ConnectorCreateTableRequest.getSortOrder()`). Acceptable; watch for
+iceberg-only validation semantics that don't fit DuckLake.
+
 **Upstream ask:** generalize `pluginCatalogTypeToEngine` (and the read-side
 switches) to consult the connector's declared capabilities/engine rather than a
 hardcoded per-type switch, so a new SPI full-adopter doesn't need an FE edit.
+(P6's own javadoc on the switch acknowledges the sync burden; the
+`RowLevelDmlRegistry` design doc hints capability-keyed engine dispatch is
+planned but not present at `8b391c7`.)

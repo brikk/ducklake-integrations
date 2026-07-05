@@ -1,20 +1,24 @@
 # DuckLake-on-Doris — READ-path Working TODO
 
-Living checklist for the **read path** (SELECT, pushdown, deletes-on-read,
-time travel, statistics). Sibling todo files hold the other tracks:
-- ✍️ [`ducklake-doris-todo-write.md`](./ducklake-doris-todo-write.md) — write path (INSERT/CTAS/DELETE/UPDATE/MERGE/DDL); post read-v1
-- 🔬 [`ducklake-doris-todo-research.md`](./ducklake-doris-todo-research.md) — research / feasibility / "remember this" ideas
+**Phase R of [`PLAN.md`](./PLAN.md)** ("read side Parquet fully") — collect
+read-path items here (SELECT, pushdown, deletes-on-read, time travel,
+statistics). Sibling todo files hold the other tracks:
+- ✍️ [`TODO-write.md`](./TODO-write.md) — write path (INSERT/CTAS/DELETE/UPDATE/MERGE/DDL); phase W
+- 🔬 [`TODO-research.md`](./TODO-research.md) — research / feasibility / "remember this" ideas
 
 Lead with the ordered roadmap to `SELECT *`; reference and historical sections
-follow. The phased read-path *extension* plan (capability matrix vs trino-ducklake)
-lives in [`ducklake-doris-development-roadmap.md`](./ducklake-doris-development-roadmap.md).
+follow. The pre-P6 capability matrix vs trino-ducklake lives in
+[`archive/ducklake-doris-development-roadmap.md`](./archive/ducklake-doris-development-roadmap.md)
+(superseded by PLAN.md; matrix still useful). New SPI seams available since the
+P6 baseline (count pushdown, `isPartitionBearing`, `VERSION_REF`, …) are
+catalogued in [`REPORT-doris-p6-iceberg-spi-cutover.md`](./REPORT-doris-p6-iceberg-spi-cutover.md).
 
 Cross-references:
 - ✅ [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md) — canonical plan (SPI mechanics, build, test)
-- ⚠️ [`ducklake-doris-integration-plan.md`](./ducklake-doris-integration-plan.md) — **IGNORE FOR NOW**, fallback only (hardcoded-dispatch path)
+- ⚠️ [`ducklake-doris-integration-plan.md`](./archive/ducklake-doris-integration-plan.md.ignore) — **IGNORE FOR NOW**, fallback only (hardcoded-dispatch path)
 - 📚 [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md) — dependency review, capability set, BE workaround
 - 🪤 [`ducklake-doris-friction.md`](./ducklake-doris-friction.md) — running log of SPI / FE / BE surprises and workarounds (Doris-team-monitorable)
-- 🚀 [`compose/smoke.sh`](./compose/smoke.sh) — one-command live-FE smoke loop
+- 🚀 [`compose/smoke.sh`](../compose/smoke.sh) — one-command live-FE smoke loop
 
 ## Where we are (2026-05-19)
 

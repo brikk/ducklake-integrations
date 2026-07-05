@@ -1,24 +1,24 @@
 diff --git a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
-index 882d4d0da73..8016131fb36 100644
+index 1746f9f33d4..d2930901c0e 100644
 --- a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
 +++ b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
-@@ -48,7 +48,7 @@ public class CatalogFactory {
-     // Other types (hms, iceberg, hudi) still use
+@@ -47,7 +47,7 @@ public class CatalogFactory {
+     // Other types (hms, hudi) still use
      // their built-in ExternalCatalog implementations until their ConnectorProviders are fully ready.
      private static final Set<String> SPI_READY_TYPES =
--            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon");
-+            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "ducklake");
+-            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg");
++            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg", "ducklake");
  
      /**
       * create the catalog instance from catalog log.
 diff --git a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-index f33bbc66d83..4f07bdb0e97 100644
+index cd194492e7b..707e511be5d 100644
 --- a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
 +++ b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-@@ -935,6 +935,8 @@ public class CreateTableInfo {
-                 return ENGINE_MAXCOMPUTE;
-             case "paimon":
+@@ -940,6 +940,8 @@ public class CreateTableInfo {
                  return ENGINE_PAIMON;
+             case "iceberg":
+                 return ENGINE_ICEBERG;
 +            case "ducklake":
 +                return ENGINE_ICEBERG;
              default:

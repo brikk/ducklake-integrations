@@ -31,7 +31,7 @@ import java.util.Optional
 
 /**
  * Read-side metadata for DuckLake. Today: schema + table listing. Pushdown,
- * statistics, time travel, and writes layer on top per `ducklake-doris-todo.md`.
+ * statistics, time travel, and writes layer on top per `dev-docs/TODO-read.md`.
  */
 internal class DuckLakeConnectorMetadata(
     private val catalog: DucklakeCatalog,
@@ -391,16 +391,16 @@ internal class DuckLakeConnectorMetadata(
         return dlHandle.copy(snapshotId = snapshot.snapshotId)
     }
 
-    // ---- Write: INSERT via the connector-transaction model (P4 MaxCompute template) ----
-    // The engine opens beginTransaction(), binds the resulting transaction to the
-    // session, then DuckLakeWritePlanProvider.planWrite emits a TIcebergTableSink and
-    // binds the target table onto the transaction; the BE writes Parquet and reports
+    // ---- Write: INSERT via the connector-transaction model ----
+    // P6 write-framework unification (P6.3-T01) deleted supportsInsert() /
+    // usesConnectorTransaction() from ConnectorWriteOps: INSERT admission is now
+    // Connector.supportedWriteOperations() (our write-plan-provider default {INSERT}),
+    // and PluginDrivenInsertExecutor unconditionally calls beginTransaction() — the
+    // single mandatory write entry (default throws; ours returns a real transaction).
+    // DuckLakeWritePlanProvider.planWrite emits a TIcebergTableSink and binds the
+    // target table onto the transaction; the BE writes Parquet and reports
     // TIcebergCommitData, which the transaction maps + commits. End-to-end validation
     // is the compose smoke (real BE), gated by fe-core's SPI_READY_TYPES + "ducklake".
-
-    override fun supportsInsert(): Boolean = true
-
-    override fun usesConnectorTransaction(): Boolean = true
 
     override fun beginTransaction(session: ConnectorSession?): ConnectorTransaction {
         val transactionId = requireNotNull(session) {

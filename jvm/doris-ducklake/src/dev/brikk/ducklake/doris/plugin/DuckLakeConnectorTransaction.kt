@@ -21,7 +21,8 @@ import org.apache.thrift.protocol.TBinaryProtocol
  * [addCommitData] by P4's `CommitDataSerializer`. Each fragment maps to a
  * `DucklakeWriteFragment` via [DuckLakeIcebergCommitMapper].
  *
- * **Live** — `DuckLakeConnectorMetadata.supportsInsert()` is `true`; unpartitioned
+ * **Live** — INSERT is admitted via `supportedWriteOperations()` (P6 write
+ * unification: the write-plan-provider's default `{INSERT}`); unpartitioned
  * INSERT is validated end-to-end on a real FE+BE (compose smoke, W2). The commit
  * path is also exercised directly by tests (synthetic fragments → real catalog
  * commit), which is the independent headless oracle for the mapping.

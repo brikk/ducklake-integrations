@@ -10,7 +10,7 @@ library API, partitioning model, etc. is owned by the SPI plan and the
 legacy main plan.
 
 Working order of operations + current state live in
-[`ducklake-doris-todo.md`](./ducklake-doris-todo.md). The "Roadmap to
+[`TODO-read.md`](./TODO-read.md). The "Roadmap to
 `SELECT *`" section at the top of the TODO is the ordered execution
 sequence; this document is the load-bearing review.
 

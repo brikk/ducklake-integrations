@@ -7,7 +7,7 @@
 > IGNORE FOR NOW — fallback only.
 >
 > Working order of operations + current state live in
-> [`ducklake-doris-todo.md`](./ducklake-doris-todo.md). Dependency-level
+> [`TODO-read.md`](./TODO-read.md). Dependency-level
 > review (including the BE workaround for position deletes and the JDK 17
 > ABI rules) lives in
 > [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md).

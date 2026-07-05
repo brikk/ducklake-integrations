@@ -9,11 +9,48 @@ hours of debugging.
 
 Sister docs: [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md)
 (canonical plan), [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md)
-(one-shot architectural review), [`ducklake-doris-todo.md`](./ducklake-doris-todo.md)
+(one-shot architectural review), [`TODO-read.md`](./TODO-read.md)
 (working state).
 
 Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 → **Fix** (small, pickable). Newest first.
+
+---
+
+## 2026-07-05 · P6-baseline FE plans `LOCAL_EXCHANGE_NODE` (38); 4.1.0 BE rejects the fragment
+
+**Symptom.** On the P6 iceberg-cutover FE baseline (`branch-catalog-spi` @
+`8b391c7`), the first aggregate query of the smoke —
+`SELECT COUNT(*) FROM dl.tpch.step7_orders` — dies with
+
+```
+(be)[INTERNAL_ERROR]Unsupported exec type in pipeline: Invalid plan node type
+```
+
+while plain `SELECT … LIMIT 5` scans work fine. `EXPLAIN` shows a perfectly
+ordinary plan (`VPluginDrivenScanNode` → partial agg → exchange → merge agg),
+because the offending node is inserted *after* explain rendering.
+
+**Root cause.** The rebased P-series line is based on a newer master whose
+planner does FE-side within-fragment local exchange:
+`NereidsPlanner.addLocalExchangeAfterDistribute()` → `AddLocalExchange` inserts
+`LocalExchangeNode` (`TPlanNodeType.LOCAL_EXCHANGE_NODE = 38`) into agg
+fragments (gated by session var `enable_local_shuffle_planner`, default
+**true**). The stock `apache/doris:be-4.1.0` image's thrift enum tops out at
+`REC_CTE_SCAN_NODE = 36`; `pipeline_fragment_context.cpp` hits its `default:`
+arm and `print_plan_node_type()` can't even name the value → "Invalid plan node
+type". Pure FE/BE version skew — nothing ducklake- or P6-specific (P6 itself
+touches zero thrift).
+
+**Workaround.** `SET GLOBAL enable_local_shuffle_planner = false;` — the BE
+then plans local exchange itself (`runtime_state.h::plan_local_shuffle()`),
+which is exactly the pre-38 behavior 4.1.0 implements. The FE and BE paths are
+mutually exclusive by design, so this is behaviorally safe. `compose/smoke.sh`
+now sets it right after FE health (§6b).
+
+**Fix.** Use a BE image built from the same line as the FE (once one exists),
+then drop the shim. Not upstream-pickable — it's an artifact of running a
+master-based FE against a release BE.
 
 ---
 
@@ -231,7 +268,7 @@ this one until it's been set.)
 
 After the option is set, subsequent DELETEs write to
 `ducklake_delete_file` and a position-delete parquet — the format
-[the FE plugin's Step 7 path expects](./ducklake-doris-todo.md#step-7--position-deletes-path-still-v1-scope).
+[the FE plugin's Step 7 path expects](./TODO-read.md#step-7--position-deletes-path-still-v1-scope).
 Existing inline-delete rows stay where they are; they're not migrated
 to files.
 

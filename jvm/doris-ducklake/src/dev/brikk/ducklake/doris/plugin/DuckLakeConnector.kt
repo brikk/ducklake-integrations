@@ -17,7 +17,7 @@ import org.apache.doris.connector.spi.ConnectorContext
 /**
  * Read-side DuckLake [Connector]. Owns a single [JdbcDucklakeCatalog]
  * lazily constructed from the catalog properties on first metadata call. Capability
- * set will grow as features land (see `ducklake-doris-todo.md`).
+ * set will grow as features land (see `dev-docs/TODO-read.md`).
  */
 class DuckLakeConnector internal constructor(
     private val properties: Map<String, String>,
@@ -81,36 +81,27 @@ class DuckLakeConnector internal constructor(
     }
 
     /**
-     * v1 capabilities (see `ducklake-doris-todo.md`): `SELECT *` with snapshot
-     * pinning (MVCC), time travel, partition pruning, and statistics. The
-     * P-series SPI dropped `SUPPORTS_POSITION_DELETE` — position deletes ride
-     * the scan range's delete-file list, not a capability flag. Projection +
-     * filter pushdown are on ([DuckLakeConnectorMetadata.applyProjection] /
-     * `applyFilter`); limit stays off (no `applyLimit`). Declaring a pushdown
-     * capability without the matching `apply*` method crashes the planner —
-     * keep them in lockstep.
+     * Capabilities after the P6 iceberg-cutover SPI (doris `branch-catalog-spi`
+     * @ 8b391c7, connector-capability-unification): the declarative capability
+     * enum was gutted — pushdown/insert/create-table/time-travel/statistics
+     * constants were **deleted** because fe-core never consumed them. Pushdown
+     * is now attempted unconditionally (`applyFilter`/`applyProjection` on the
+     * metadata), INSERT admission comes from
+     * `ConnectorWritePlanProvider.supportedOperations()` (default `{INSERT}`),
+     * and DDL routes through `ConnectorTableOps`/`ConnectorSchemaOps` directly.
      *
-     * `SUPPORTS_INSERT` pairs with [DuckLakeConnectorMetadata.supportsInsert] +
-     * [getWritePlanProvider]. The actual INSERT only routes here once fe-core's
-     * `CatalogFactory.SPI_READY_TYPES` includes "ducklake" — and is validated by
-     * the compose smoke. Sink-prep hints (`SINK_REQUIRE_FULL_SCHEMA_ORDER`,
-     * `SUPPORTS_PARALLEL_WRITE`) are left off until the smoke shows they're needed.
-     *
-     * `SUPPORTS_CREATE_TABLE` pairs with the DDL methods on
-     * [DuckLakeConnectorMetadata] (createDatabase/dropDatabase/createTable/dropTable,
-     * pure catalog metadata). The DDL is exercised headless against the real catalog;
-     * the live route is the same `SPI_READY_TYPES` gate as INSERT (W1b).
+     * `SUPPORTS_MVCC_SNAPSHOT` is the one surviving flag that matters to us —
+     * it gates MVCC table creation in `PluginDrivenExternalDatabase` (snapshot
+     * pinning + time travel). New opt-ins we deliberately do NOT declare yet:
+     * `SUPPORTS_SHOW_CREATE_DDL`, `SUPPORTS_TOPN_LAZY_MATERIALIZE`,
+     * `SUPPORTS_NESTED_COLUMN_PRUNE` (needs per-field ids),
+     * `SUPPORTS_VIEW`, `SUPPORTS_COLUMN_AUTO_ANALYZE`,
+     * `SUPPORTS_METADATA_PRELOAD` — each has behavioral prerequisites tracked
+     * in `dev-docs/TODO-read.md`.
      */
     override fun getCapabilities(): Set<ConnectorCapability> =
         EnumSet.of(
             ConnectorCapability.SUPPORTS_MVCC_SNAPSHOT,
-            ConnectorCapability.SUPPORTS_TIME_TRAVEL,
-            ConnectorCapability.SUPPORTS_PARTITION_PRUNING,
-            ConnectorCapability.SUPPORTS_STATISTICS,
-            ConnectorCapability.SUPPORTS_PROJECTION_PUSHDOWN,
-            ConnectorCapability.SUPPORTS_FILTER_PUSHDOWN,
-            ConnectorCapability.SUPPORTS_INSERT,
-            ConnectorCapability.SUPPORTS_CREATE_TABLE,
         )
 
     private fun catalog(): JdbcDucklakeCatalog {

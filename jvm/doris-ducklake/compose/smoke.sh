@@ -94,6 +94,13 @@ docker start -a "$helper"
 docker rm "$helper" >/dev/null
 
 # 3. Bring up FE + BE.
+# The compose file's BE platform default is linux/arm64 (Apple Silicon dev box);
+# auto-detect here so an x86_64 host doesn't pull the arm64 BE and die with
+# "exec format error". Explicit DORIS_BE_PLATFORM always wins.
+if [[ -z "${DORIS_BE_PLATFORM:-}" && "$(uname -m)" == "x86_64" ]]; then
+    export DORIS_BE_PLATFORM=linux/amd64
+    log "Host is x86_64 — defaulting DORIS_BE_PLATFORM=${DORIS_BE_PLATFORM}"
+fi
 log "Starting Doris FE + BE…"
 docker compose -f "${HERE}/docker-compose.yml" up -d
 
@@ -137,6 +144,21 @@ docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
     SHOW FRONTENDS\G
     SELECT 1 AS wire_compat_ok;
 " 2>&1 | tail -40
+
+# 6b. FE/BE version-skew shim: the P-series FE (branch-catalog-spi, master-based)
+# plans within-fragment local exchange on the FE (AddLocalExchange →
+# TPlanNodeType.LOCAL_EXCHANGE_NODE = 38), but the stock 4.1.0 BE's enum tops out
+# at REC_CTE_SCAN_NODE = 36 and rejects any fragment containing it with
+# "[INTERNAL_ERROR]Unsupported exec type in pipeline: Invalid plan node type"
+# (first hit: the step-7 COUNT(*) agg fragment, P6 baseline 8b391c7). Turning
+# enable_local_shuffle_planner off makes the BE fall back to planning local
+# exchange itself (runtime_state.h::plan_local_shuffle()) — the pre-38 behavior
+# the 4.1.0 BE implements. Drop this once the compose BE image catches up with
+# the FE's thrift. Tracked in dev-docs/ducklake-doris-friction.md.
+log "Disabling FE-side local-exchange planning (4.1.0 BE lacks TPlanNodeType 38)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SET GLOBAL enable_local_shuffle_planner = false;
+" 2>&1 | tail -5
 
 # 7. Drive the plugin.
 #
@@ -254,7 +276,7 @@ log "Attempting SELECT COUNT(*) via Doris on the table with the new delete file�
 # Capture output; either success (count == 100 - DELETE_COUNT) or the known
 # BE error. Don't propagate failure to smoke exit code — the FE wire-format
 # work is what this smoke verifies; downstream BE parquet-nullability fix
-# is tracked in ducklake-doris-friction.md (2026-05-19 entry).
+# is tracked in dev-docs/ducklake-doris-friction.md (2026-05-19 entry).
 set +e
 output=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
     SELECT COUNT(*) FROM dl.tpch.step7_orders;
@@ -271,7 +293,7 @@ if [[ $status -eq 0 ]]; then
 else
     if echo "$output" | grep -q "Not nullable column has null values"; then
         log "Step 7 FE-side OK; BE-side blocked on known parquet-nullability gap."
-        log "  See ducklake-doris-friction.md (2026-05-19) for the upstream fix."
+        log "  See dev-docs/ducklake-doris-friction.md (2026-05-19) for the upstream fix."
         log "  BE error: $(echo "$output" | grep -oE 'reason = \[[^]]+\][^[:cntrl:]]*' | head -1)"
     else
         log "Step 7 unexpected error from Doris:"
@@ -315,7 +337,7 @@ w2_helper() {  # $1 = MODE (create|verify), $2 = TABLE (default doris_w), $3 = P
 # W1 DDL (live): live FE→connector CREATE/DROP DATABASE + TABLE, end-to-end.
 # The headless DDL tests (DuckLakeDdlTest) prove the connector mapping; this step
 # proves the live FE route. VALIDATED GREEN 2026-06-10 (W1b(b)) once two gaps were
-# fixed (both tracked in ducklake-doris-friction.md, 2026-06-10):
+# fixed (both tracked in dev-docs/ducklake-doris-friction.md, 2026-06-10):
 #   1. FE engine-padding: CreateTableInfo.pluginCatalogTypeToEngine() only mapped
 #      the plugin type "max_compute" to an engine, so CREATE TABLE on a "ducklake"
 #      catalog threw "Current catalog does not support create table" BEFORE reaching
@@ -514,7 +536,7 @@ echo "$insert_out" | tail -8
 if [[ $insert_status -ne 0 ]]; then
     if echo "$insert_out" | grep -qiE "does not support|not ready|SPI_READY|no.*write"; then
         log "W2 BLOCKED: INSERT not routed — FE is missing \"ducklake\" in CatalogFactory.SPI_READY_TYPES."
-        log "  Add it to the FE build (see doris-fe-build-macos memory + ducklake-doris-todo-write.md), rebuild, rerun."
+        log "  Add it to the FE build (see doris-fe-build-macos memory + dev-docs/TODO-write.md), rebuild, rerun."
     else
         log "W2 ERROR: INSERT failed at the FE/BE. See the output above + fe.log/be.log for the sink/commit error."
     fi
@@ -613,7 +635,7 @@ fi
 # BE picks the serde by the source column type (TINYINT) and assert_casts the int32
 # arrow builder to Int8 → abort (be/.../viceberg_table_writer.cpp via
 # DataTypeNumberSerDe<TINYINT>::write_column_to_arrow). Tracked in
-# ducklake-doris-friction.md (2026-06-10, "narrow-int CTAS/INSERT crashes BE Iceberg
+# dev-docs/ducklake-doris-friction.md (2026-06-10, "narrow-int CTAS/INSERT crashes BE Iceberg
 # writer"). It's a BE bug, not CTAS-specific (a direct INSERT into a TINYINT column
 # crashes the same way), so the smoke avoids narrow ints rather than crashing the BE.
 log "W3 CTAS: CREATE TABLE dl.tpch.doris_ctas AS SELECT id, name FROM tpch.doris_w (DDL + INSERT composed)…"

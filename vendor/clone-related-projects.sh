@@ -52,6 +52,7 @@ REPOS=(
   "lance-trino	https://github.com/lance-format/lance-trino.git"
   "pg_ducklake	https://github.com/relytcloud/pg_ducklake.git"
   "docs.trino.io	https://github.com/trinodb/docs.trino.io.git"
+  "doris	https://github.com/apache/doris.git"
 )
 
 clone_or_fetch() {

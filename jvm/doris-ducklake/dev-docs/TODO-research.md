@@ -2,8 +2,8 @@
 
 Open questions, feasibility studies, and "remember this" ideas — **not scheduled
 work**. Implementation tracks live in the sibling todos:
-- 📖 [`ducklake-doris-todo.md`](./ducklake-doris-todo.md) — READ path
-- ✍️ [`ducklake-doris-todo-write.md`](./ducklake-doris-todo-write.md) — WRITE path
+- 📖 [`TODO-read.md`](./TODO-read.md) — READ path
+- ✍️ [`TODO-write.md`](./TODO-write.md) — WRITE path
 
 Production-blocker coordination with the Doris team (SPI_READY_TYPES removal,
 BE delete-file nullability, etc.) stays in the READ todo's *Upstream coordination*

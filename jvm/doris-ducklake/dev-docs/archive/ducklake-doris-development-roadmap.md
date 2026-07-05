@@ -1,5 +1,9 @@
 # DuckLake × Doris Connector — Development Roadmap
 
+> **ARCHIVED 2026-07-05 — superseded by [`../PLAN.md`](../PLAN.md)** (phases
+> R/W/F on the P6 baseline). Phases 0–2 here are done; the capability matrix
+> (§2) and execution-model comparison (§1) remain useful reference.
+
 > **Created 2026-06-08.** Companion to `ducklake-doris-integration-spi-plan.md`
 > (SPI mechanics + build) and `ducklake-doris-todo.md` (step-by-step state).
 > This doc is the **"get us moving" plan**: where we are, how far the Doris SPI
