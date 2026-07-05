@@ -20,7 +20,56 @@ Cross-references:
 - 🪤 [`ducklake-doris-friction.md`](./ducklake-doris-friction.md) — running log of SPI / FE / BE surprises and workarounds (Doris-team-monitorable)
 - 🚀 [`compose/smoke.sh`](../compose/smoke.sh) — one-command live-FE smoke loop
 
-## Where we are (2026-05-19)
+## Where we are (2026-07-05, P6 baseline)
+
+Phase-R sweep on the P6 baseline (`8b391c7`) landed four features + a parity
+audit (full module suite green: 140+ tests + detekt):
+
+- **COUNT(\*) pushdown** — 7-arg `planScan` collapses a clean scan to one range
+  carrying the summed `recordCount` (`getPushDownRowCount()` + thrift
+  `table_level_row_count`, iceberg emission shape). Refusal gates (any of
+  these → normal ranges, BE counts by reading): remaining filter, pushed
+  filter/pruned files on the handle, any delete file, inlined deletes,
+  inlined data rows, partial-compacted files (`partialMax > snapshotId`).
+- **Partition-bearing scan ranges** — `isPartitionBearing()`=true whenever the
+  table has an active spec (stops BE hive-path-parsing our layout);
+  identity-transform partition values surfaced lowercase-column-name-keyed
+  (iceberg keying); bucket/temporal transforms deliberately NOT surfaced as
+  raw values; partition-evolution guard (file spec ≠ active spec → empty map).
+- **`VERSION_REF` time travel** (P6 `FOR VERSION AS OF '<name>'`) — explicit
+  clean rejection (DuckLake has numeric snapshot ids only, no named refs).
+- **`timestamp_ns` clamp** — read surface now `DATETIMEV2(6)` (Doris max
+  scale; was invalid 9). Documented-lossy; no longer round-trips through the
+  create-table mapper (by design, like the other degraded mappings).
+- **Read-parity audit tests ported from trino-ducklake** (5 files, 20 tests):
+  temporal types (TIMESTAMPTZ stays zone-aware incl. nested; TIME/INTERVAL →
+  STRING pinned as deliberate), unicode identifiers (NFC/NFD-distinct, binary
+  exact), snapshot-pinned handle stability across DDL/inserts/drops,
+  nested-type reconstruction through the real catalog
+  (`resolveColumnType` path the pure-string tests never hit).
+
+**⏸️ PAUSE on new internally-written parity tests:** a shared **upstream
+DuckLake SQL test runner** (1000–2000+ upstream ducklake tests, one runner for
+trino + doris via per-engine adapters) is being built on the trino side. When
+it lands we integrate an adapter instead of hand-porting more coverage. For
+Doris the open adapter question is transport: mysql-protocol against a live
+compose FE+BE vs an in-process metadata-only hook — most upstream tests
+exercise full SQL, so expect the live-cluster route.
+
+Follow-ups from the sweep (not yet done):
+- [ ] `add_files`-registered hive-layout files may lack partition columns in
+  the parquet body; trino constant-fills from partition values. Doris path
+  would need `path_partition_keys` + `columns_from_path` (iceberg-style) —
+  coordinate with the pinned thrift shape before attempting.
+- [ ] Count pushdown never nets out deletes (conservative permanent fallback
+  to BE-side counting when any delete exists) — revisit only if COUNT(*) on
+  deleted-from tables shows up hot.
+- [ ] DuckDB 1.5.4 CHECKPOINT can consolidate multiple INSERTs into one data
+  file — don't write tests that assume "one INSERT = one parquet file" (the
+  shared bootstrap comment overpromises; audit fixtures assert
+  stability-at-pin instead).
+
+## Where we were (2026-05-19)
 
 🎉 **`SELECT * FROM dl.tpch.orders LIMIT 5` returns rows end-to-end through
 Doris.** Live FE+BE cluster stands up reproducibly via `compose/smoke.sh`.

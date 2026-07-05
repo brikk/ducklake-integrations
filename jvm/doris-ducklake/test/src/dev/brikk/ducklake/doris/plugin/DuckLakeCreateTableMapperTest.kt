@@ -49,12 +49,14 @@ internal class DuckLakeCreateTableMapperTest {
     @Test
     fun roundTripsTheNonDegradedCoreAgainstTheReadMapping() {
         // Excludes the read path's deliberately-degraded mappings (int128→DECIMALV3,
-        // unsigned promotions, uuid/json/time → other types) which by design don't
-        // round-trip — those are DuckLakeTypeMapping choices, not this mapper's.
+        // unsigned promotions, uuid/json/time → other types, and timestamp_ns whose
+        // read surface clamps to DATETIMEV2(6) — Doris's max datetime scale — and so
+        // write-maps back to "timestamp") which by design don't round-trip — those
+        // are DuckLakeTypeMapping choices, not this mapper's.
         val core = listOf(
             "boolean", "int8", "int16", "int32", "int64",
             "float32", "float64", "date",
-            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns", "timestamptz",
+            "timestamp", "timestamp_s", "timestamp_ms", "timestamptz",
             "varchar", "blob", "decimal(10,2)",
         )
         for (t in core) {

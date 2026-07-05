@@ -90,7 +90,11 @@ internal object DuckLakeTypeMapping {
             "timestamptz" -> ConnectorType.of("TIMESTAMPTZV2", MICROS_SCALE, 0)
             "timestamp_s" -> ConnectorType.of("DATETIMEV2", 0, 0)
             "timestamp_ms" -> ConnectorType.of("DATETIMEV2", 3, 0)
-            "timestamp_ns" -> ConnectorType.of("DATETIMEV2", 9, 0)
+            // DEGRADED (documented-lossy): Doris DATETIMEV2 caps scale at 6, so nanos
+            // clamp to micros — the same widen-to-micros trino applies to every DuckLake
+            // temporal (TestDucklakeTimestampTzPrecision). Scale 9 would be rejected (or
+            // mis-handled) by the FE's datetimev2 validation.
+            "timestamp_ns" -> ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
 
             // DEGRADED: Doris has no first-class TIME type — read as STRING. Iceberg's
             // type mapping returns UNSUPPORTED here; STRING is more usable for v1.

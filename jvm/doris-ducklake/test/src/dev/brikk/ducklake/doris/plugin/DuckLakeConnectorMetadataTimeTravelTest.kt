@@ -152,6 +152,12 @@ internal class DuckLakeConnectorMetadataTimeTravelTest {
             assertThat(
                 md.resolveTimeTravel(null, handle, ConnectorTimeTravelSpec.incremental(emptyMap())),
             ).isEmpty
+            // VERSION_REF (P6: FOR VERSION AS OF '<name>', non-numeric) — DuckLake
+            // snapshots are numeric-id only, so a named ref resolves to empty and the
+            // engine surfaces its "not found" user error.
+            assertThat(
+                md.resolveTimeTravel(null, handle, ConnectorTimeTravelSpec.versionRef("release-1")),
+            ).isEmpty
         }
     }
 

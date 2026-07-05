@@ -584,3 +584,332 @@ internal class DuckLakeScanPlanProviderTest {
         assertThat(DuckLakeScanPlanProvider.isStorageProperty("enable.mapping.varbinary")).isFalse()
     }
 }
+
+
+/**
+ * P6 read-side features on [DuckLakeScanPlanProvider], split from
+ * [DuckLakeScanPlanProviderTest] only to keep each class under the detekt
+ * LargeClass budget (same fixture, same SPI surface):
+ *
+ *  - COUNT(*) pushdown (7-arg `planScan` with `countPushdown=true`): a clean
+ *    table collapses to ONE range carrying the exact metadata count (the
+ *    emission shape copied from `IcebergScanPlanProvider.planCountPushdown`);
+ *    ANY doubt (delete files, filters, pruned file sets) must emit only
+ *    normal ranges so the -1 sentinel survives and BE counts by reading
+ *    (`PluginDrivenScanNode.resolvePushDownRowCount`).
+ *  - partition-bearing ranges: partitioned tables flag
+ *    `isPartitionBearing=true` (+ identity values keyed by lowercased column
+ *    name), unpartitioned tables keep the pre-P6 `false`/empty shape.
+ */
+internal class DuckLakeScanPlanCountAndPartitionTest {
+
+    companion object {
+        private lateinit var server: TestingDucklakePostgreSqlCatalogServer
+        private lateinit var isolated: DuckLakeTestCatalogBootstrap.IsolatedCatalog
+
+        @BeforeAll
+        @JvmStatic
+        @Throws(Exception::class)
+        fun setUp() {
+            server = TestingDucklakePostgreSqlCatalogServer()
+            isolated = DuckLakeTestCatalogBootstrap.bootstrap(server, "scanplanagg")
+        }
+
+        @AfterAll
+        @JvmStatic
+        fun tearDown() {
+            server.close()
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownCollapsesCleanTableToSingleCountRange() {
+        // COUNT(*) pushdown on a clean table (no deletes, no filter, no
+        // pruning): the scan collapses to ONE range carrying the exact total
+        // (2+1 = 3 rows seeded on sales.orders) — the emission shape copied
+        // from IcebergScanPlanProvider.planCountPushdown. The BE-side carrier
+        // is iceberg's table_level_row_count on the format descriptor.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.empty(), -1L, null, true,
+                )
+                assertThat(ranges).hasSize(1)
+                val range = ranges[0]
+                assertThat(range.pushDownRowCount).isEqualTo(3L)
+
+                // The count range must ALSO carry the total on the thrift
+                // descriptor — that is what BE's count reader actually serves.
+                val formatDesc = TTableFormatFileDesc()
+                val rangeDesc = TFileRangeDesc()
+                range.populateRangeParams(formatDesc, rangeDesc)
+                assertThat(formatDesc.isSetTableLevelRowCount).isTrue()
+                assertThat(formatDesc.tableLevelRowCount).isEqualTo(3L)
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownOnEmptyTableEmitsNoRanges() {
+        // Iceberg parity: an empty table under count pushdown yields ZERO
+        // ranges, so BE sums nothing and COUNT(*) returns 0.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "customers")
+                    .orFail("expected sales.customers handle")
+
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.empty(), -1L, null, true,
+                )
+                assertThat(ranges).isEmpty()
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownServedForPartitionedTableAndCarriesPartitionShape() {
+        // A partitioned but otherwise clean table still serves the metadata
+        // count — and the single collapsed range keeps the partition-bearing
+        // shape every normal range of the table carries (iceberg's count range
+        // goes through the same buildRange as data ranges).
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.empty(), -1L, null, true,
+                )
+                assertThat(ranges).hasSize(1)
+                val range = ranges[0]
+                assertThat(range.pushDownRowCount).isEqualTo(4L)
+                assertThat(range.isPartitionBearing).isTrue()
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownRefusedWhenTableHasDeleteFiles() {
+        // sales.returns_file carries a position-delete file, so the file
+        // metadata count (4 inserted rows) over-counts the 3 live rows. The
+        // provider must emit NO count range — every range keeps the -1
+        // sentinel so PluginDrivenScanNode.resolvePushDownRowCount stays -1
+        // and BE counts by reading (deletes applied).
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "returns_file")
+                    .orFail("expected sales.returns_file handle")
+
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.empty(), -1L, null, true,
+                )
+                // Normal scan shape survives: one range per data file, with the
+                // position delete still attached.
+                assertThat(ranges).hasSize(1)
+                for (range in ranges) {
+                    assertThat(range.pushDownRowCount).isEqualTo(-1L)
+                    val formatDesc = TTableFormatFileDesc()
+                    range.populateRangeParams(formatDesc, TFileRangeDesc())
+                    // The -1 sentinel must not leak into the thrift either
+                    // (unset == thrift default -1; keeps parity bytes stable).
+                    assertThat(formatDesc.isSetTableLevelRowCount).isFalse()
+                    assertThat(formatDesc.icebergParams.deleteFiles).hasSize(1)
+                }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownRefusedWhenRemainingFilterPresent() {
+        // A remaining (non-pushed) filter expression means the COUNT(*) is
+        // over a filtered row set — a whole-table metadata count would be
+        // wrong. Normal ranges only.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+
+                val id = metadata.getColumnHandles(null, handle)["id"] as DuckLakeColumnHandle
+                val remaining = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("id", id.columnType),
+                    ConnectorLiteral(id.columnType, 1),
+                )
+
+                val normalRanges = plan.planScan(null, handle, listOf(), Optional.empty())
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.of(remaining), -1L, null, true,
+                )
+                assertThat(ranges).hasSameSizeAs(normalRanges)
+                for (range in ranges) {
+                    assertThat(range.pushDownRowCount).isEqualTo(-1L)
+                }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countPushdownRefusedWhenHandleCarriesPrunedFileSet() {
+        // applyFilter leaves pushedFilter + prunedFileIds on the handle: the
+        // engine-visible remaining filter may be empty, but the scan is no
+        // longer whole-table — a metadata count would answer the wrong query.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                val region = metadata.getColumnHandles(null, handle)["region"] as DuckLakeColumnHandle
+                val filter = ConnectorComparison(
+                    ConnectorComparison.Operator.EQ,
+                    ConnectorColumnRef("region", region.columnType),
+                    ConnectorLiteral(region.columnType, "us"),
+                )
+                val applied = metadata.applyFilter(null, handle, ConnectorFilterConstraint(filter))
+                    .orFail("expected applyFilter to push region = 'us'")
+                val prunedHandle = applied.handle.asDuckLakeHandle<DuckLakeTableHandle>()
+                assertThat(prunedHandle.prunedFileIds).isNotNull()
+
+                val ranges = plan.planScan(
+                    null, prunedHandle, listOf(), Optional.empty(), -1L, null, true,
+                )
+                assertThat(ranges).isNotEmpty()
+                for (range in ranges) {
+                    assertThat(range.pushDownRowCount).isEqualTo(-1L)
+                }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun countSentinelNeverLeaksWhenCountPushdownIsOff() {
+        // countPushdown=false must behave exactly like the 4-arg planScan:
+        // same range count, every range on the -1 sentinel. A stray
+        // precomputed count here would let a non-COUNT query read a collapsed
+        // single-range plan.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+
+                val normalRanges = plan.planScan(null, handle, listOf(), Optional.empty())
+                val ranges = plan.planScan(
+                    null, handle, listOf(), Optional.empty(), -1L, null, false,
+                )
+                assertThat(ranges).hasSameSizeAs(normalRanges)
+                for (range in ranges) {
+                    assertThat(range.pushDownRowCount).isEqualTo(-1L)
+                }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun partitionedTableRangesArePartitionBearingWithIdentityValues() {
+        // Identity-partitioned table: every range flags partition-bearing (so
+        // PluginDrivenSplit emits an EMPTY partition-values list instead of
+        // null → no Hive key=value path parsing) and carries the file's
+        // identity values keyed by lowercased column name (iceberg's
+        // getIdentityPartitionInfoMap keying).
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_region")
+                    .orFail("expected sales.by_region handle")
+
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
+                assertThat(ranges.size).isGreaterThanOrEqualTo(2)
+
+                val seenRegions = HashSet<String>()
+                for (range in ranges) {
+                    assertThat(range.isPartitionBearing).isTrue()
+                    assertThat(range.partitionValues).containsOnlyKeys("region")
+                    seenRegions.add(range.partitionValues.getValue("region"))
+
+                    // FE-plan-level only: partition values must NOT surface as
+                    // columns_from_path on the wire (BE reads partition columns
+                    // from the parquet body; we emit no path_partition_keys).
+                    val rangeDesc = TFileRangeDesc()
+                    range.populateRangeParams(TTableFormatFileDesc(), rangeDesc)
+                    assertThat(rangeDesc.isSetColumnsFromPath).isFalse()
+                    assertThat(rangeDesc.isSetColumnsFromPathKeys).isFalse()
+                }
+                // Both partitions' files show their own value.
+                assertThat(seenRegions).containsExactlyInAnyOrder("us", "eu")
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun bucketPartitionedRangesArePartitionBearingWithoutRawValues() {
+        // BUCKET-transformed partitions: the stored value is the derived
+        // bucket number, NOT the column value, so it must never be presented
+        // as a raw column value (iceberg surfaces identity transforms only).
+        // The ranges still flag partition-bearing — the table HAS an active
+        // spec — with an empty values map.
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "by_name_bucket")
+                    .orFail("expected sales.by_name_bucket handle")
+
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
+                assertThat(ranges.size).isGreaterThanOrEqualTo(3)
+                for (range in ranges) {
+                    assertThat(range.isPartitionBearing).isTrue()
+                    assertThat(range.partitionValues).isEmpty()
+                }
+            }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun unpartitionedTableRangesStayNonPartitionBearing() {
+        // No active spec → the pre-P6 behaviour is preserved exactly:
+        // isPartitionBearing=false and empty values (PluginDrivenSplit keeps
+        // its legacy empty→null collapse for these).
+        val properties = DorisTestIdiomKit.isolatedProperties(isolated)
+        DuckLakeConnectorProvider()
+            .create(properties, FakeConnectorContext("dl", 1L)).use { connector ->
+                val metadata = connector.getMetadata(null)
+                val plan = connector.getScanPlanProvider()
+                val handle = metadata.getTableHandle(null, "sales", "orders")
+                    .orFail("expected sales.orders handle")
+
+                val ranges = plan.planScan(null, handle, listOf(), Optional.empty())
+                assertThat(ranges).isNotEmpty()
+                for (range in ranges) {
+                    assertThat(range.isPartitionBearing).isFalse()
+                    assertThat(range.partitionValues).isEmpty()
+                }
+            }
+    }
+}

@@ -41,7 +41,9 @@ internal class DuckLakeTypeMappingTest {
         assertThat(precision("timestamp")).isEqualTo(6)
         assertThat(precision("timestamp_s")).isEqualTo(0)
         assertThat(precision("timestamp_ms")).isEqualTo(3)
-        assertThat(precision("timestamp_ns")).isEqualTo(9)
+        // nanos clamp to Doris's max datetime scale (6) — documented-lossy, see the
+        // mapping's DEGRADED note and DuckLakeTemporalTypeAuditTest.
+        assertThat(precision("timestamp_ns")).isEqualTo(6)
         assertThat(name("timestamptz")).isEqualTo("TIMESTAMPTZV2")
     }
 

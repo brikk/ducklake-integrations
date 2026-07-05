@@ -334,9 +334,13 @@ internal class DuckLakeConnectorMetadata(
     // getSnapshotById(snapshotId) overrides into a single resolveTimeTravel that
     // receives a ConnectorTimeTravelSpec (FOR TIME AS OF / FOR VERSION AS OF, or
     // the @tag/@branch/@incr scan params). DuckLake supports only the linear-history
-    // kinds — SNAPSHOT_ID (== old getSnapshotById) and TIMESTAMP (== old getSnapshotAt);
-    // TAG/BRANCH/INCREMENTAL have no DuckLake equivalent and return empty so the engine
-    // surfaces a clear "unsupported" user error.
+    // kinds — SNAPSHOT_ID (== old getSnapshotById) and TIMESTAMP (== old getSnapshotAt).
+    // The unsupported kinds return empty so the engine surfaces a clear user error:
+    // - VERSION_REF (new at P6: FOR VERSION AS OF '<name>', non-numeric): DuckLake has
+    //   no named refs — snapshots are identified by numeric id only. If DuckLake ever
+    //   grows tags, resolve the name here.
+    // - TAG / BRANCH / INCREMENTAL (@tag/@branch/@incr scan params): no DuckLake
+    //   equivalent (single linear history).
     override fun resolveTimeTravel(
         session: ConnectorSession?,
         handle: ConnectorTableHandle,
@@ -347,6 +351,7 @@ internal class DuckLakeConnectorMetadata(
                 catalog.getSnapshot(spec.getStringValue().toLong())
             ConnectorTimeTravelSpec.Kind.TIMESTAMP ->
                 catalog.getSnapshotAtOrBefore(Instant.ofEpochMilli(timestampMillisOf(spec)))
+            ConnectorTimeTravelSpec.Kind.VERSION_REF -> null // no named refs in DuckLake
             else -> null // TAG / BRANCH / INCREMENTAL: unsupported by DuckLake
         }
         return if (snap == null) Optional.empty() else Optional.of(toMvccSnapshot(snap.snapshotId, snap))

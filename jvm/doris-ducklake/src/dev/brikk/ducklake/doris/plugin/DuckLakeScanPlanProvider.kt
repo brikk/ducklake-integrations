@@ -1,10 +1,14 @@
 package dev.brikk.ducklake.doris.plugin
 
+import java.util.Locale
 import java.util.Objects
 import java.util.Optional
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeDataFile
+import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
+import dev.brikk.ducklake.catalog.DucklakePartitionSpec
+import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 
 import org.apache.doris.connector.api.ConnectorSession
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
@@ -20,6 +24,17 @@ import org.apache.doris.thrift.TFileScanRangeParams
  * per [DucklakeDataFile] active at the snapshot pinned on the
  * [DuckLakeTableHandle]; deletes / pushdown / time-travel resolution
  * layer on top per the roadmap.
+ *
+ * P6 additions:
+ *  - COUNT(*) pushdown: the 7-arg [planScan] override receives the engine's
+ *    no-grouping COUNT(*) signal and — when the count is exactly servable
+ *    from `ducklake_data_file.record_count` metadata — collapses the scan to
+ *    a SINGLE range carrying the total (mirrors
+ *    `IcebergScanPlanProvider.planCountPushdown`'s collapse shape).
+ *  - partition-bearing ranges: every range of a partitioned table reports
+ *    `isPartitionBearing() == true` plus the file's IDENTITY partition
+ *    values, so the engine stops Hive-path-parsing DuckLake's
+ *    non-`key=value` file layout (P6 report §(d)).
  */
 internal class DuckLakeScanPlanProvider(
     catalog: DucklakeCatalog,
@@ -41,6 +56,31 @@ internal class DuckLakeScanPlanProvider(
         handle: ConnectorTableHandle,
         columns: List<ConnectorColumnHandle>,
         filter: Optional<ConnectorExpression>,
+    ): List<ConnectorScanRange> =
+        planScanInternal(handle, filter, countPushdown = false)
+
+    /**
+     * COUNT(*)-pushdown-aware scan entry, mirroring the iceberg connector's
+     * 7-arg override (`IcebergScanPlanProvider.planScan` → `planScanInternal`).
+     * `limit` / `requiredPartitions` are not consumed by the DuckLake read
+     * path — pruning is predicate-driven via the handle's [DuckLakeTableHandle.prunedFileIds],
+     * exactly like the 4-arg path (the default SPI overloads fold down to it).
+     */
+    override fun planScan(
+        session: ConnectorSession?,
+        handle: ConnectorTableHandle,
+        columns: List<ConnectorColumnHandle>,
+        filter: Optional<ConnectorExpression>,
+        limit: Long,
+        requiredPartitions: List<String>?,
+        countPushdown: Boolean,
+    ): List<ConnectorScanRange> =
+        planScanInternal(handle, filter, countPushdown)
+
+    private fun planScanInternal(
+        handle: ConnectorTableHandle,
+        filter: Optional<ConnectorExpression>,
+        countPushdown: Boolean,
     ): List<ConnectorScanRange> {
         // v1: full scan. Column projection and `filter` pushdown layer on top
         // later (READ todo Step 6); the snapshot is already pinned on the handle
@@ -59,8 +99,18 @@ internal class DuckLakeScanPlanProvider(
             )
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
-
         val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+        val partitions = resolvePartitionContext(dlHandle)
+
+        // COUNT(*) pushdown: when the count is exactly servable from file
+        // metadata, collapse the scan to a single range carrying the total
+        // (iceberg emission shape). Any doubt → fall through to the normal
+        // scan so BE counts by reading (the -1 sentinel is load-bearing —
+        // see PluginDrivenScanNode.resolvePushDownRowCount).
+        if (countPushdown && isCountServableFromMetadata(dlHandle, filter, dataFiles)) {
+            return planCountPushdown(dataFiles, tableDataPath, partitions)
+        }
+
         // Honour the file-level pruning applyFilter computed from column stats
         // (null = no filter pushed, scan all files).
         val prunedIds = dlHandle.prunedFileIds
@@ -72,23 +122,195 @@ internal class DuckLakeScanPlanProvider(
 
         val ranges = ArrayList<ConnectorScanRange>(scanFiles.size)
         for (file in scanFiles) {
-            val absolutePath = pathResolver.resolveFilePath(
-                file.path, file.pathIsRelative, tableDataPath,
-            )
-            // Full-file extent: start=0, length=fileSize. BE splits internally
-            // along parquet row groups; pre-splitting in the planner is a v2 concern.
-            ranges.add(
-                DuckLakeScanRange(
-                    absolutePath,
-                    0L,
-                    file.fileSizeBytes,
-                    file.fileSizeBytes,
-                    normalizeFileFormat(file.fileFormat),
-                    resolvePositionDeletes(file, tableDataPath),
-                ),
-            )
+            ranges.add(buildRange(file, tableDataPath, partitions, PUSH_DOWN_COUNT_NONE))
         }
         return ranges
+    }
+
+    /**
+     * Whether a no-grouping COUNT(*) can be answered EXACTLY from
+     * `ducklake_data_file.record_count` at the handle's pinned snapshot,
+     * the DuckLake analogue of `IcebergScanPlanProvider.getCountFromSummary`'s
+     * `>= 0` gate. Refuses (→ normal scan; BE counts by reading) when:
+     *  - any filter is in play (a remaining filter expression, a pushed filter
+     *    on the handle, or a pruned file set) — the count must be over ALL rows;
+     *  - any active data file has a position-delete file attached — deletes
+     *    reduce counts below the file metadata;
+     *  - a partial (cross-snapshot compacted) data file extends beyond the
+     *    pinned snapshot ([DucklakeDataFile.partialMax] > snapshot) — its
+     *    record_count includes rows a read at this snapshot must drop;
+     *  - the table has inlined deletes at the snapshot;
+     *  - the table has live inlined data rows at the snapshot — those rows are
+     *    in the catalog DB, not in any parquet file, so a file-metadata sum
+     *    undercounts. [DucklakeCatalog.getInlinedDataInfos] probes existence
+     *    AND per-snapshot liveness in one round-trip ([dev.brikk.ducklake.catalog.DucklakeInlinedDataInfo.hasLiveRows]),
+     *    the same descriptor the trino split manager keys inlined splits off.
+     *
+     * Cheap in-memory checks run first; the two catalog round-trips only fire
+     * for a clean, unfiltered scan (the case that actually serves a count).
+     */
+    private fun isCountServableFromMetadata(
+        dlHandle: DuckLakeTableHandle,
+        filter: Optional<ConnectorExpression>,
+        dataFiles: List<DucklakeDataFile>,
+    ): Boolean {
+        if (filter.isPresent || dlHandle.pushedFilter != null || dlHandle.prunedFileIds != null) {
+            return false
+        }
+        if (dataFiles.any { it.deleteFilePath != null }) {
+            return false
+        }
+        if (dataFiles.any { (it.partialMax ?: Long.MIN_VALUE) > dlHandle.snapshotId }) {
+            return false
+        }
+        if (catalog.hasInlinedDeletes(dlHandle.tableId, dlHandle.snapshotId)) {
+            return false
+        }
+        return catalog.getInlinedDataInfos(dlHandle.tableId, dlHandle.snapshotId)
+            .none { it.hasLiveRows }
+    }
+
+    /**
+     * Emit the single collapsed COUNT(*)-pushdown range: the FIRST data file's
+     * whole-file range carrying the full metadata count, exactly the shape
+     * `IcebergScanPlanProvider.planCountPushdown` emits (one range bearing the
+     * summed total; BE's count reader serves `table_level_row_count` without
+     * opening the file, so which file backs the range is irrelevant). An empty
+     * table yields NO range, so BE gets 0 ranges and COUNT returns 0 —
+     * iceberg parity again (its empty-snapshot count short-circuits the same
+     * way via empty planFiles()).
+     */
+    private fun planCountPushdown(
+        dataFiles: List<DucklakeDataFile>,
+        tableDataPath: String,
+        partitions: PartitionContext,
+    ): List<ConnectorScanRange> {
+        val first = dataFiles.firstOrNull() ?: return listOf()
+        val totalRecords = dataFiles.sumOf { it.recordCount }
+        return listOf(buildRange(first, tableDataPath, partitions, totalRecords))
+    }
+
+    /**
+     * Build the BE-ready range for one active data file. Shared by the normal
+     * scan loop and the count-pushdown collapse so both emit byte-identical
+     * ranges apart from the count carrier (mirrors iceberg's shared
+     * `buildRange`). Full-file extent: start=0, length=fileSize — BE splits
+     * internally along parquet row groups; pre-splitting in the planner is a
+     * v2 concern.
+     */
+    private fun buildRange(
+        file: DucklakeDataFile,
+        tableDataPath: String,
+        partitions: PartitionContext,
+        pushDownRowCount: Long,
+    ): DuckLakeScanRange {
+        val absolutePath = pathResolver.resolveFilePath(
+            file.path, file.pathIsRelative, tableDataPath,
+        )
+        return DuckLakeScanRange.Builder()
+            .path(absolutePath)
+            .start(0L)
+            .length(file.fileSizeBytes)
+            .fileSize(file.fileSizeBytes)
+            .fileFormat(normalizeFileFormat(file.fileFormat))
+            .positionDeletes(resolvePositionDeletes(file, tableDataPath))
+            .partitionBearing(partitions.partitionBearing)
+            .partitionValues(identityPartitionValues(file, partitions))
+            .pushDownRowCount(pushDownRowCount)
+            .build()
+    }
+
+    /**
+     * The partition inputs one `planScan` needs, resolved once per plan (not
+     * per file): the ACTIVE spec — the last of
+     * [DucklakeCatalog.getPartitionSpecs], matching the trino split manager's
+     * `specsForProjection.last()` — plus, only when that spec has IDENTITY
+     * fields worth surfacing, the per-file value rows and the
+     * columnId→name mapping. Bucket/temporal-only specs skip both extra
+     * round-trips: their derived values (e.g. `year(ts)` = 2024) must NOT be
+     * presented as raw column values (iceberg surfaces identity values only —
+     * `IcebergPartitionUtils.getIdentityPartitionInfoMap` skips non-identity
+     * transforms; we mirror that exactly), so there is nothing to fetch.
+     */
+    private fun resolvePartitionContext(dlHandle: DuckLakeTableHandle): PartitionContext {
+        val specs = catalog.getPartitionSpecs(dlHandle.tableId, dlHandle.snapshotId)
+        val activeSpec = specs.lastOrNull() ?: return PartitionContext.UNPARTITIONED
+        val hasIdentityField =
+            activeSpec.fields.any { it.transform == DucklakePartitionTransform.IDENTITY }
+        if (!hasIdentityField) {
+            return PartitionContext(activeSpec, mapOf(), mapOf())
+        }
+        val valuesByFileId =
+            catalog.getFilePartitionValues(dlHandle.tableId, dlHandle.snapshotId)
+        // Lowercased to match Doris's identifier convention (and iceberg's
+        // identity-map keying via getIdentityPartitionInfoMap).
+        val columnNamesById = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
+            .associate { it.columnId to it.columnName.lowercase(Locale.ROOT) }
+        return PartitionContext(activeSpec, valuesByFileId, columnNamesById)
+    }
+
+    /**
+     * The per-file `columnName -> partitionValue` map for IDENTITY-transform
+     * fields of the active spec, in spec-field order — the same value model as
+     * the trino side's `DucklakeSplitManager.buildIdentityPartitionValues`
+     * (columnId-keyed there; name-keyed here because the SPI map is what
+     * `PluginDrivenSplit` consumes) and the same identity-only rule as
+     * iceberg's `getIdentityPartitionInfoMap`.
+     *
+     * Partition-evolution guard (trino parity): a file's stored values are
+     * keyed by the `partition_key_index` of the spec it was WRITTEN under and
+     * every spec numbers keys from 0, so a file from a retired spec must yield
+     * an EMPTY map rather than values mapped through the wrong spec. NULL
+     * partition values are skipped (nothing to constant-fill; the BE reads the
+     * column from the parquet body anyway).
+     */
+    private fun identityPartitionValues(
+        file: DucklakeDataFile,
+        partitions: PartitionContext,
+    ): Map<String, String> {
+        val spec = partitions.activeSpec ?: return mapOf()
+        val filePartitionId = file.partitionId
+        if (filePartitionId != null && filePartitionId != spec.partitionId) {
+            return mapOf()
+        }
+        val values = partitions.valuesByFileId[file.dataFileId] ?: return mapOf()
+        if (values.isEmpty()) {
+            return mapOf()
+        }
+        val byKeyIndex = HashMap<Int, String?>(values.size)
+        for (v in values) {
+            byKeyIndex[v.partitionKeyIndex] = v.partitionValue
+        }
+        val out = LinkedHashMap<String, String>()
+        for (field in spec.fields) {
+            if (field.transform == DucklakePartitionTransform.IDENTITY) {
+                val value = byKeyIndex[field.partitionKeyIndex]
+                val columnName = partitions.columnNamesById[field.columnId]
+                if (value != null && columnName != null) {
+                    out[columnName] = value
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * Immutable per-plan partition inputs (see [resolvePartitionContext]).
+     * [partitionBearing] is a TABLE-level fact — the presence of an active
+     * spec — deliberately independent of whether a given file recorded values,
+     * per the `ConnectorScanRange.isPartitionBearing` contract.
+     */
+    private class PartitionContext(
+        val activeSpec: DucklakePartitionSpec?,
+        val valuesByFileId: Map<Long, List<DucklakeFilePartitionValue>>,
+        val columnNamesById: Map<Long, String>,
+    ) {
+        val partitionBearing: Boolean
+            get() = activeSpec != null
+
+        companion object {
+            val UNPARTITIONED = PartitionContext(null, mapOf(), mapOf())
+        }
     }
 
     /**
@@ -201,6 +423,10 @@ internal class DuckLakeScanPlanProvider(
         // plan validates it matches, but for the scan-node-level reader
         // dispatch one shared answer is sufficient.
         const val PARQUET_FORMAT: String = "parquet"
+
+        // The ConnectorScanRange "no precomputed count" sentinel every normal
+        // range carries; only the collapsed count-pushdown range differs.
+        private const val PUSH_DOWN_COUNT_NONE: Long = -1L
 
         /**
          * Maps an FE-form storage key to its BE-canonical `AWS_*` alias,

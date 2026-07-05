@@ -28,26 +28,60 @@ import org.apache.doris.thrift.TTableFormatFileDesc
  * position-delete file per data file per snapshot, so `positionDeletes`
  * has size 0 or 1 in v1; the wire list shape leaves headroom for that to
  * relax without a shape change.
+ *
+ * P6 additions (both FE-plan-level; the normal-range thrift bytes pinned by
+ * `DuckLakeScanRangeThriftParityTest` are unchanged):
+ *  - [pushDownRowCount]: the precomputed COUNT(*)-pushdown total the single
+ *    collapsed count range carries (`-1` sentinel on every normal range —
+ *    load-bearing, see `PluginDrivenScanNode.resolvePushDownRowCount`).
+ *  - [partitionBearing] / [partitionValues]: metadata-sourced partition info
+ *    so the engine never falls back to Hive-style `key=value` path parsing
+ *    for DuckLake's non-`key=value` file layout (see
+ *    `PluginDrivenSplit.buildPartitionValues` and the P6 report §(d)).
+ *
+ * Constructed via [Builder] (mirrors `IcebergScanRange.Builder`); the
+ * positional constructors below survive for the pre-P6 call sites and the
+ * thrift-parity goldens.
  */
-internal class DuckLakeScanRange(
-    private val path: String,
-    private val start: Long,
-    private val length: Long,
-    private val fileSize: Long,
-    private val fileFormat: String,
-    positionDeletes: List<DuckLakePositionDelete>,
-) : ConnectorScanRange, Serializable {
+internal class DuckLakeScanRange private constructor(builder: Builder) :
+    ConnectorScanRange, Serializable {
 
+    private val path: String =
+        Objects.requireNonNull(builder.path, "path") as String
+    private val start: Long = builder.start
+    private val length: Long = builder.length
+    private val fileSize: Long = builder.fileSize
+    private val fileFormat: String =
+        Objects.requireNonNull(builder.fileFormat, "fileFormat") as String
     private val positionDeletes: List<DuckLakePositionDelete> =
-        java.util.List.copyOf(Objects.requireNonNull(positionDeletes, "positionDeletes"))
+        java.util.List.copyOf(Objects.requireNonNull(builder.positionDeletes, "positionDeletes"))
+    // Metadata-sourced partition marker + identity values (see class KDoc).
+    // Copied defensively — the range is handed to the engine and serialized.
+    private val partitionBearing: Boolean = builder.partitionBearing
+    private val partitionValues: Map<String, String> =
+        java.util.Map.copyOf(Objects.requireNonNull(builder.partitionValues, "partitionValues"))
+    // -1 = "no precomputed count" sentinel (the ConnectorScanRange default).
+    private val pushDownRowCount: Long = builder.pushDownRowCount
 
     constructor(path: String, start: Long, length: Long, fileSize: Long, fileFormat: String) :
         this(path, start, length, fileSize, fileFormat, listOf())
 
-    init {
-        Objects.requireNonNull(path, "path")
-        Objects.requireNonNull(fileFormat, "fileFormat")
-    }
+    constructor(
+        path: String,
+        start: Long,
+        length: Long,
+        fileSize: Long,
+        fileFormat: String,
+        positionDeletes: List<DuckLakePositionDelete>,
+    ) : this(
+        Builder()
+            .path(path)
+            .start(start)
+            .length(length)
+            .fileSize(fileSize)
+            .fileFormat(fileFormat)
+            .positionDeletes(positionDeletes),
+    )
 
     @JvmName("positionDeletes")
     fun positionDeletes(): List<DuckLakePositionDelete> = positionDeletes
@@ -68,7 +102,40 @@ internal class DuckLakeScanRange(
 
     override fun getTableFormatType(): String = TABLE_FORMAT_TYPE
 
-    override fun getPartitionValues(): Map<String, String> = emptyMap()
+    /**
+     * The identity partition column values for this file, keyed by lowercased
+     * column name in active-spec field order (mirrors iceberg's
+     * `getIdentityPartitionInfoMap` keying). Consumed FE-side only:
+     * `PluginDrivenSplit.buildPartitionValues` copies `values()` onto the
+     * split. Never written to thrift here — DuckLake's writer stores partition
+     * columns in the parquet body, so the BE decodes them from the file
+     * (we deliberately emit no `path_partition_keys`, unlike iceberg).
+     */
+    override fun getPartitionValues(): Map<String, String> = partitionValues
+
+    /**
+     * `true` for every range of a table with an ACTIVE partition spec (even
+     * when this particular file recorded no values — e.g. bucket-only specs,
+     * or files written under a retired spec). DuckLake partition values come
+     * from `ducklake_file_partition_value` metadata, never from a Hive-style
+     * `key=value` directory layout, so the engine must map an empty values
+     * map to a non-null EMPTY list instead of `null` — `null` makes
+     * `FileQueryScanNode` path-parse, which breaks on our layout (see
+     * `PluginDrivenSplit.buildPartitionValues`). Unpartitioned tables keep
+     * `false`, preserving the pre-P6 behaviour byte-for-byte.
+     */
+    override fun isPartitionBearing(): Boolean = partitionBearing
+
+    /**
+     * The precomputed COUNT(*)-pushdown row count this range carries, or `-1`
+     * for every normal range. The generic `PluginDrivenScanNode` reads it
+     * (via `resolvePushDownRowCount`) for the EXPLAIN `pushdown agg=COUNT (n)`
+     * line; the same value drives the BE thrift `table_level_row_count` in
+     * [populateRangeParams]. The `-1` sentinel is load-bearing: a table whose
+     * count is not exactly servable from file metadata must emit NO count
+     * range so the BE counts by reading (mirrors `IcebergScanRange`).
+     */
+    override fun getPushDownRowCount(): Long = pushDownRowCount
 
     override fun getDeleteFiles(): List<ConnectorDeleteFile> = emptyList()
 
@@ -89,8 +156,71 @@ internal class DuckLakeScanRange(
         fileDesc.deleteFiles = deletes
 
         formatDesc.icebergParams = fileDesc
-        // Partition values / columns_from_path stay unset — partition pruning
-        // is a Step-6 / v1.5 concern.
+        // table_level_row_count: only the single collapsed COUNT(*)-pushdown
+        // range carries a real count (BE's count reader serves it without
+        // opening the file). Normal ranges leave the field UNSET: thrift
+        // declares `table_level_row_count = -1` as the default
+        // (PlanNodes.thrift), so unset is behaviourally identical to
+        // IcebergScanRange's explicit -1 while keeping the normal-range wire
+        // bytes byte-identical to the pre-count-pushdown shape pinned by
+        // DuckLakeScanRangeThriftParityTest.
+        if (pushDownRowCount >= 0) {
+            formatDesc.tableLevelRowCount = pushDownRowCount
+        }
+        // Partition values / columns_from_path stay unset — DuckLake data
+        // files carry partition columns in the parquet body, so the BE reads
+        // them from the file; [getPartitionValues] is FE-plan-level only.
+    }
+
+    /**
+     * Builder mirroring `IcebergScanRange.Builder`, introduced when the range
+     * grew past the positional-constructor sweet spot (partition bearing +
+     * values + count pushdown would push the primary constructor to nine
+     * parameters). Only [DuckLakeScanPlanProvider] constructs through it.
+     */
+    internal class Builder {
+        var path: String? = null
+            private set
+        var start: Long = 0L
+            private set
+        var length: Long = -1L
+            private set
+        var fileSize: Long = -1L
+            private set
+        var fileFormat: String? = null
+            private set
+        var positionDeletes: List<DuckLakePositionDelete> = listOf()
+            private set
+        var partitionBearing: Boolean = false
+            private set
+        var partitionValues: Map<String, String> = mapOf()
+            private set
+        var pushDownRowCount: Long = -1L
+            private set
+
+        fun path(path: String): Builder = apply { this.path = path }
+
+        fun start(start: Long): Builder = apply { this.start = start }
+
+        fun length(length: Long): Builder = apply { this.length = length }
+
+        fun fileSize(fileSize: Long): Builder = apply { this.fileSize = fileSize }
+
+        fun fileFormat(fileFormat: String): Builder = apply { this.fileFormat = fileFormat }
+
+        fun positionDeletes(positionDeletes: List<DuckLakePositionDelete>): Builder =
+            apply { this.positionDeletes = positionDeletes }
+
+        fun partitionBearing(partitionBearing: Boolean): Builder =
+            apply { this.partitionBearing = partitionBearing }
+
+        fun partitionValues(partitionValues: Map<String, String>): Builder =
+            apply { this.partitionValues = partitionValues }
+
+        fun pushDownRowCount(pushDownRowCount: Long): Builder =
+            apply { this.pushDownRowCount = pushDownRowCount }
+
+        fun build(): DuckLakeScanRange = DuckLakeScanRange(this)
     }
 
     companion object {
