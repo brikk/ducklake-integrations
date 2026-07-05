@@ -141,6 +141,47 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
+    fun renameNestedColumnsPreserveTheirValues() {
+        // NOW-3 / datafusion-ducklake #148 regression guard. After renaming a top-level nested
+        // (ARRAY / ROW / MAP) column, the existing parquet file keeps the OLD column name, so the
+        // read misses on name and falls back to field-id matching. A field-id matcher that keyed
+        // off the parquet *leaf* instead of the *top-level* (group) field — the datafusion bug —
+        // would read the whole nested column back as all-NULL. We index field-ids off the top-level
+        // field, so the nested contents must survive the rename. Value-assert them (not just count).
+        val table = "test_schema.alter_rename_nested"
+        try {
+            computeActual("CREATE TABLE $table (" +
+                    "id INTEGER, " +
+                    "tags ARRAY(INTEGER), " +
+                    "addr ROW(city VARCHAR, zip INTEGER), " +
+                    "props MAP(VARCHAR, INTEGER))")
+            computeActual("INSERT INTO $table VALUES (" +
+                    "1, ARRAY[10, 20, 30], " +
+                    "CAST(ROW('NYC', 10001) AS ROW(city VARCHAR, zip INTEGER)), " +
+                    "MAP(ARRAY['a', 'b'], ARRAY[1, 2]))")
+
+            computeActual("ALTER TABLE $table RENAME COLUMN tags TO labels")
+            computeActual("ALTER TABLE $table RENAME COLUMN addr TO location")
+            computeActual("ALTER TABLE $table RENAME COLUMN props TO attrs")
+
+            val row = computeActual(
+                    "SELECT labels, location.city, location.zip, attrs['a'], attrs['b'] FROM $table")
+                    .materializedRows.single()
+            @Suppress("UNCHECKED_CAST")
+            assertThat(row.getField(0) as List<Int>)
+                    .`as`("renamed ARRAY reads real values, not all-NULL")
+                    .containsExactly(10, 20, 30)
+            assertThat(row.getField(1) as String).`as`("renamed ROW subfield").isEqualTo("NYC")
+            assertThat(row.getField(2) as Int).`as`("renamed ROW subfield").isEqualTo(10001)
+            assertThat(row.getField(3) as Int).`as`("renamed MAP value").isEqualTo(1)
+            assertThat(row.getField(4) as Int).`as`("renamed MAP value").isEqualTo(2)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
     fun testAddColumnThenDelete() {
         try {
             computeActual("CREATE TABLE test_schema.alter_del (id INTEGER, name VARCHAR)")

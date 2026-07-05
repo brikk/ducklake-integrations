@@ -311,6 +311,35 @@ interface DucklakeCatalog {
     fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, Set<Long>>
 
     /**
+     * Inlined rows (in `ducklake_inlined_data_<tableId>_<schemaVersion>`) that CHANGED in the
+     * inclusive window — inserted (`begin_snapshot ∈ [start,end]`) or deleted
+     * (`end_snapshot ∈ [start,end]`) — for the change feed. [columnIds] are the feed's requested
+     * columns (by id) as of the end snapshot; each row's [DucklakeInlinedChangeRow.values] are
+     * projected to them in order (null-filled where a column didn't exist in the row's schema
+     * version). Empty when the inlined table doesn't exist.
+     */
+    fun getInlinedChangesBetween(
+        tableId: Long,
+        schemaVersion: Long,
+        startSnapshot: Long,
+        endSnapshot: Long,
+        columnIds: List<Long>,
+    ): List<DucklakeInlinedChangeRow>
+
+    /**
+     * Inlined DELETEs of data-file rows (`ducklake_inlined_delete_<tableId>`) with
+     * `begin_snapshot ∈ [start,end]` — the change-feed delete side for small DELETEs DuckDB records
+     * inline instead of as positional delete files. Empty when the inlined-delete table is absent.
+     */
+    fun getInlinedFileDeletesBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeInlinedFileDelete>
+
+    /**
+     * Data files by id (regardless of snapshot liveness) — used to read rows at inline-deleted
+     * positions ([getInlinedFileDeletesBetween]). Delete-file columns are left null.
+     */
+    fun getDataFilesByIds(tableId: Long, dataFileIds: Collection<Long>): List<DucklakeDataFile>
+
+    /**
      * Read inlined data rows for a table at a given snapshot.
      * Queries ducklake_inlined_data_{tableId}_{schemaVersion} with snapshot filtering.
      * Returns raw JDBC values for each row, one List per row, ordered by column.

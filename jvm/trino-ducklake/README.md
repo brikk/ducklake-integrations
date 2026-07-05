@@ -452,15 +452,18 @@ ORDER BY snapshot_id;
   A bound may not be given both ways; `start` is required, `end` defaults to the current snapshot.
 - Columns are read as of the **end**-snapshot schema (schema evolution applies — a column added in
   the window shows as its default/NULL for earlier changes; a dropped column is omitted).
-- `rowid` is the connector's `row_id_start + file position`. This does **not** carry DuckLake's
-  cross-file row lineage: an UPDATE (Trino or DuckDB) rewrites the moved row into a new file with a
-  fresh `row_id_start`, so it surfaces as a `delete` + `insert` rather than
-  `update_preimage`/`update_postimage`. The pre/post-image pairing fires only when a deleted
-  `rowid` is re-inserted with the same value within one snapshot.
-- The feed reads file-based data and delete files. Tables carrying **inlined** data/deletes (small
-  writes DuckDB keeps in `ducklake_inlined_*` tables) are rejected with a pointer to
-  `flush_inlined_data` rather than silently omitting those changes. Compaction that expires
-  snapshots can also limit what the feed can report (per the DuckLake spec).
+- `rowid` follows DuckLake row lineage: when a file carries the embedded lineage column (parquet
+  field-id `2147483540` / `_ducklake_internal_row_id`, written by lineage-preserving UPDATE /
+  compaction — e.g. DuckDB), that preserved rowid is used; otherwise it's `row_id_start + file
+  position`. So a lineage-preserving UPDATE's delete and re-insert land on the same `rowid` in one
+  snapshot and pair into `update_preimage` + `update_postimage`. This connector's OWN
+  UPDATE/MERGE writes do not emit the lineage column (the rewritten row gets a fresh `row_id_start`),
+  so a Trino-written UPDATE surfaces as a `delete` + `insert` — a faithful description of its
+  delete-then-insert implementation.
+- The feed reads file-based data/delete files **and** DuckLake's **inlined** data (small writes
+  DuckDB keeps in `ducklake_inlined_*` tables): inlined inserts, inlined-row deletes, and inline
+  file-position deletes all surface. Compaction that expires snapshots can still limit what the feed
+  can report (per the DuckLake spec).
 
 ## Table Properties
 
@@ -469,7 +472,7 @@ Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (.
 | Property | Type | Description |
 |----------|------|-------------|
 | `partitioned_by` | `ARRAY(VARCHAR)` | Partition columns with optional transform, e.g. `ARRAY['region', 'year(event_date)', 'bucket(4, customer_id)']`. See [Partitioning](#partitioning). |
-| `data_file_format` | `VARCHAR` | The table's DECLARED data file format: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Beats the session property at CREATE time and is persisted as a table-scoped setting in `ducklake_metadata`, so later plain INSERTs (including into a still-empty `CREATE TABLE`) keep writing the declared format. Undeclared tables instead inherit the format of their most recent data file. |
+| `data_file_format` | `VARCHAR` | The table's DECLARED data file format: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Beats the session property at CREATE time and is persisted as a table-scoped setting in `ducklake_metadata`, so later plain INSERTs (including into a still-empty `CREATE TABLE`) keep writing the declared format. Undeclared tables instead inherit the format of their most recent data file. The non-parquet formats are **namespaced in the catalog** as `trino/<format>` (e.g. `trino/vortex`) — you always write/read the bare name (`'vortex'`), but the persisted `file_format` carries the `trino/` prefix so a future upstream DuckLake format of the same bare name can't collide in a shared catalog. `parquet` is stored bare (the DuckLake spec's own format). |
 | `location` | `VARCHAR` | Per-table storage path landed in `ducklake_table.path`. Values with a URI scheme (`s3://`, `gs://`, `file://`, `abfss://`, ...) are stored absolute (`path_is_relative=false`); other values are stored relative to the schema's data path. Trailing slash is appended if missing; `..` segments are rejected. Defaults to `<tableName>/`. |
 
 Example:
@@ -495,11 +498,12 @@ operates on whichever DuckLake catalog you invoke through.
 
 | Procedure | Description |
 |-----------|-------------|
-| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map, unpartitioned tables only). |
+| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map). Partitioned lance/vortex datasets are registered with `hive_partitioning => true`, which learns identity-partition values from the `key=value/` path (the partition column must be present in the file). |
 | `flush_inlined_data(schema_name, table_name)` | Materialize a table's inlined rows (written cross-engine by DuckDB under `data_inlining_row_limit`) into a Parquet data file and clear the inlined rows, atomically. Unblocks DELETE/UPDATE/MERGE, which are gated while a table has inlined rows. No-op when nothing is inlined; not supported for partitioned tables yet. |
+| `rewrite_data_files(schema_name, table_name, [file_size_threshold], [target_file_size], [reclaim_sources_immediately])` | Compaction / `optimize`: merge a table's small data files into fewer larger files through the real read path (so delete files / partial files / schema evolution all apply). Per-partition groups for partitioned tables; size-bounded output (`target_file_size`, default 512MB). Registers the merged files + end-snapshots the sources atomically; `reclaim_sources_immediately => true` writes the partial-emitting (`merge_adjacent`) variant that deletes sources outright. |
 | `remove_orphan_files(schema_name, table_name, [retention_threshold], [dry_run])` | Delete files under the table's data path that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — that grace period protects files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` logs what would be deleted and removes nothing. Touches storage only (no catalog mutation). Mirrors upstream `ducklake_delete_orphaned_files`. |
 | `expire_snapshots([retention_threshold], [snapshot_ids], [dry_run])` | Catalog-wide. Remove old DuckLake snapshots and reclaim the data/delete files only they referenced. Select either by `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention`) or an explicit `snapshot_ids` ARRAY (not floored); the latest snapshot is never expirable. Plain catalog transaction (no new snapshot); only **schedules** dead files for deletion — run `cleanup_old_files` to reclaim the space. `dry_run => true` lists the snapshots that would be expired. Mirrors upstream `ducklake_expire_snapshots`. |
-| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
+| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). Single-file formats (parquet/duckdb/vortex) and lance dataset **directories** are both reclaimed (a lance data file is a directory, removed recursively). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
 
 ### `add_files`
 
@@ -635,31 +639,24 @@ Snapshot resolution precedence: query clause > session property > catalog config
 
 ### Maintenance Operations
 
-Partially available. `remove_orphan_files` (see [Procedures](#procedures)) and `ANALYZE`
-(stats recompute) ship today; the rest still require DuckDB's ducklake extension against the
-shared catalog. Design + roadmap in [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
-Still to come:
-
-- `ALTER TABLE ... EXECUTE optimize` (merge adjacent files) — read side is now unblocked (the
-  connector reads cross-snapshot "partial" files correctly); emitting them is the remaining work
-- `ALTER TABLE ... EXECUTE rewrite_data_files`
-- ✅ `expire_snapshots` (connector procedure) — **shipped**
-- ✅ `cleanup_old_files` (connector procedure — drains scheduled-for-deletion files) — **shipped**
-- ✅ `remove_orphan_files` (connector procedure) — **shipped**
-- ✅ `recalc stats` — **shipped as `ANALYZE`**
+All maintenance operations are shipped as `CALL system.*` procedures — see
+[Procedures](#procedures): `rewrite_data_files` (compaction / `optimize`, both non-partial and
+partial-emitting shapes), `expire_snapshots`, `cleanup_old_files`, `remove_orphan_files`,
+`flush_inlined_data`, plus stats recompute via `ANALYZE`. The connector exposes these as
+procedures rather than the `ALTER TABLE ... EXECUTE optimize` alias (which needs a separate SPI for
+no capability gain). Design notes: [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
 
 ### DDL
 
-- `ALTER TABLE SET TYPE` (type promotion)
+- `ALTER TABLE SET TYPE` (type promotion) — deferred (the read path assumes column types are
+  stable across snapshots).
 
 ### Commit Context
 
-Planned session properties for annotating write snapshots (DuckDB `set_commit_message`
-equivalent):
-
-- `commit_author`
-- `commit_message`
-- `commit_extra_info`
+Session properties for annotating write snapshots (DuckDB `set_commit_message` equivalent —
+`commit_author` / `commit_message` / `commit_extra_info`) are a deliberate **non-goal**: the
+required columns are not in the DuckLake spec's `ducklake_snapshot` table, so writing them would
+risk cross-engine divergence. Revisit only if DuckLake upstream defines them.
 
 ### Cross-Dialect View Transpilation
 
@@ -693,8 +690,8 @@ research item.
   are rejected at INSERT time with `NUMERIC_VALUE_OUT_OF_RANGE` — e.g. a SMALLINT 300
   or a negative value written to a `uint8` column fails cleanly instead of silently
   wrapping to 44.
-- Files written before a failed commit become orphans. DuckLake's
-  `ducklake_delete_orphaned_files()` maintenance procedure handles cleanup.
+- Files written before a failed commit become orphans. Reclaim them with
+  `CALL system.remove_orphan_files(schema_name, table_name)` (see [Procedures](#procedures)).
 - Puffin deletion vectors (DuckLake's Roaring-bitmap delete files) are both read AND written.
   By default Trino-side DELETE/UPDATE/MERGE emits DuckLake-spec parquet positional delete files
   (`(file_path, pos)` with file-local positions — readable by DuckDB); set the session property

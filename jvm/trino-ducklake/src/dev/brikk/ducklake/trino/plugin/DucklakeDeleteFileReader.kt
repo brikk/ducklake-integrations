@@ -147,6 +147,76 @@ object DucklakeDeleteFileReader {
     }
 
     /**
+     * Iceberg / DuckLake reserved parquet field-id for the row-lineage column. Files written by
+     * UPDATE / compaction embed a column tagged with this field-id (typically named
+     * `_ducklake_internal_row_id`) holding each row's ORIGINAL rowid, so lineage survives file
+     * rewrites. Matches DuckDB's `MultiFileReader::ROW_ID_FIELD_ID` and datafusion-ducklake's
+     * `ROW_ID_PARQUET_FIELD_ID`.
+     */
+    const val ROW_ID_PARQUET_FIELD_ID: Int = 2_147_483_540
+
+    /**
+     * Reads the embedded row-lineage column (parquet field-id [ROW_ID_PARQUET_FIELD_ID]) of a data
+     * file, returning each row's ORIGINAL rowid in file order (index = file-local position), or
+     * null when the file does not carry it (fresh-INSERT files — the caller then uses
+     * `row_id_start + position`). Used by the change feed so UPDATE/compaction-preserved rowids
+     * pair into update pre/post-image instead of surfacing as delete+insert. Parquet only (the
+     * non-parquet formats this connector writes never carry lineage).
+     */
+    @Throws(IOException::class)
+    fun readInternalRowIds(
+            fileSystem: TrinoFileSystem,
+            dataFilePath: String,
+            footerSizeHint: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats): LongArray? {
+        val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
+        val memoryContext = newSimpleAggregatedMemoryContext()
+        var dataSource: ParquetDataSource? = null
+        try {
+            dataSource = createDataSource(inputFile, OptionalLong.empty(), parquetReaderOptions, memoryContext, stats)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
+            val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            val schema: MessageType = parquetMetadata.fileMetaData.schema
+            // The lineage column is matched by its reserved FIELD-ID (its name is not guaranteed).
+            val lineageField = schema.fields.firstOrNull { it.id?.intValue() == ROW_ID_PARQUET_FIELD_ID }
+                    ?: return null
+            val messageColumnIO = getColumnIO(schema, schema)
+            val columnIO: ColumnIO = messageColumnIO.getChild(lineageField.name) ?: return null
+            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO).orElse(null) ?: return null
+            val parquetReader = createParquetReader(
+                    dataSource, inputFile.length(), parquetMetadata,
+                    Column(lineageField.name, field), memoryContext, parquetReaderOptions)
+            return collectRowIdsInOrder(ParquetPageSource(parquetReader))
+        }
+        catch (e: IOException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+        catch (e: RuntimeException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+    }
+
+    /** Collects every BIGINT value in file order; null if any value is null (untrusted → fall back). */
+    private fun collectRowIdsInOrder(pageSource: ConnectorPageSource): LongArray? {
+        val values = ArrayList<Long>()
+        pageSource.use { source ->
+            while (!source.isFinished) {
+                val page = source.nextSourcePage ?: continue
+                val block = page.getBlock(0)
+                for (i in 0 until block.positionCount) {
+                    if (block.isNull(i)) {
+                        return null
+                    }
+                    values.add(BIGINT.getLong(block, i))
+                }
+            }
+        }
+        return values.toLongArray()
+    }
+
+    /**
      * Reads the `_ducklake_internal_snapshot_id` column of a cross-snapshot compacted ("partial")
      * DATA file and returns the FILE-LOCAL row positions whose origin snapshot id exceeds
      * [snapshotFilterMax] — i.e. rows written by a snapshot NEWER than the read, which a

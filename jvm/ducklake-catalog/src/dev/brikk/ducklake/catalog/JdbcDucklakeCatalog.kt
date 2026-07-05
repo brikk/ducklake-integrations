@@ -383,7 +383,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 orZero(r.get(file.FILE_ORDER)),
                 r.get(dataFilePath),
                 r.get(dataFilePathIsRelative) == true,
-                r.get(file.FILE_FORMAT),
+                CatalogFileFormat.fromStored(r.get(file.FILE_FORMAT))!!,
                 orZero(r.get(file.RECORD_COUNT)),
                 orZero(r.get(file.FILE_SIZE_BYTES)),
                 orZero(r.get(dataFileFooterSize)),
@@ -484,7 +484,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             orZero(r.fileOrder),
             r.path!!,
             r.pathIsRelative == true,
-            r.fileFormat!!,
+            CatalogFileFormat.fromStored(r.fileFormat)!!,
             orZero(r.recordCount),
             orZero(r.fileSizeBytes),
             orZero(r.footerSize),
@@ -511,7 +511,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             orZero(dataFile.beginSnapshot),
             dataFile.path!!,
             dataFile.pathIsRelative == true,
-            dataFile.fileFormat!!,
+            CatalogFileFormat.fromStored(dataFile.fileFormat)!!,
             orZero(dataFile.footerSize),
             orZero(dataFile.fileSizeBytes),
             orZero(dataFile.rowIdStart),
@@ -913,13 +913,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         // data_file_id is allocated from a monotonic catalog sequence at insert time, so DESC
         // order on it picks the most recently committed file (cross-snapshot, cross-partition).
         val file = DUCKLAKE_DATA_FILE.`as`("file")
-        return dsl.select(file.FILE_FORMAT)
-            .from(file)
-            .where(file.TABLE_ID.eq(tableId))
-            .and(activeAt(file, snapshotId))
-            .orderBy(file.DATA_FILE_ID.desc())
-            .limit(1)
-            .fetchOne(file.FILE_FORMAT)
+        return CatalogFileFormat.fromStored(
+            dsl.select(file.FILE_FORMAT)
+                .from(file)
+                .where(file.TABLE_ID.eq(tableId))
+                .and(activeAt(file, snapshotId))
+                .orderBy(file.DATA_FILE_ID.desc())
+                .limit(1)
+                .fetchOne(file.FILE_FORMAT))
     }
 
     override fun findDataFileIdsInRange(tableId: Long, snapshotId: Long, predicate: ColumnRangePredicate): List<Long> {
@@ -1497,6 +1498,98 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             )
             emptyMap()
         }
+    }
+
+    override fun getInlinedChangesBetween(
+        tableId: Long,
+        schemaVersion: Long,
+        startSnapshot: Long,
+        endSnapshot: Long,
+        columnIds: List<Long>,
+    ): List<DucklakeInlinedChangeRow> {
+        val inlined = InlinedDataTable.of(tableId, schemaVersion)
+        val sourceSchemaSnapshot = getSnapshotIdForSchemaVersion(tableId, schemaVersion, endSnapshot)
+            ?: return emptyList()
+        val sourceColumnsById: Map<Long, DucklakeColumn> = getTableColumns(tableId, sourceSchemaSnapshot)
+            .associateBy { it.columnId }
+        val rowIdField: Field<Long> = DSL.field(DSL.name("row_id"), Long::class.java)
+
+        val projected: MutableList<Field<*>> = ArrayList(columnIds.size + 3)
+        projected.add(rowIdField)
+        projected.add(inlined.beginSnapshot)
+        projected.add(inlined.endSnapshot)
+        for (index in columnIds.indices) {
+            val sourceColumn = sourceColumnsById[columnIds[index]]
+            projected.add(
+                if (sourceColumn == null) {
+                    DSL.inline(null as Any?).`as`("c$index")
+                }
+                else {
+                    DSL.field(DSL.name(sourceColumn.columnName)).`as`("c$index")
+                },
+            )
+        }
+        return try {
+            dsl.select(projected)
+                .from(inlined.table)
+                .where(inlined.beginSnapshot.between(startSnapshot, endSnapshot)
+                    .or(inlined.endSnapshot.between(startSnapshot, endSnapshot)))
+                .orderBy(rowIdField)
+                .fetch()
+                .map { rec ->
+                    val values: MutableList<Any?> = ArrayList(columnIds.size)
+                    for (i in columnIds.indices) {
+                        values.add(rec.get(3 + i))
+                    }
+                    DucklakeInlinedChangeRow(
+                        orZero(rec.get(0, Long::class.java)),
+                        orZero(rec.get(1, Long::class.java)),
+                        rec.get(2, Long::class.java),
+                        values,
+                    )
+                }
+        }
+        catch (e: DataAccessException) {
+            log.log(System.Logger.Level.DEBUG,
+                "Could not read inlined changes from {0} (table may not exist): {1}", inlined.name, e.message)
+            emptyList()
+        }
+    }
+
+    override fun getInlinedFileDeletesBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeInlinedFileDelete> {
+        val inlinedDeleteName = "ducklake_inlined_delete_$tableId"
+        val tab: Table<*> = DSL.table(DSL.name(inlinedDeleteName))
+        val fileId: Field<Long> = DSL.field(DSL.name("file_id"), Long::class.java)
+        val rowId: Field<Long> = DSL.field(DSL.name("row_id"), Long::class.java)
+        val beginSnapshot: Field<Long> = DSL.field(DSL.name("begin_snapshot"), Long::class.java)
+        return try {
+            dsl.select(fileId, rowId, beginSnapshot)
+                .from(tab)
+                .where(beginSnapshot.between(startSnapshot, endSnapshot))
+                .fetch()
+                .mapNotNull { rec ->
+                    val fid = rec.get(fileId)
+                    val pos = rec.get(rowId)
+                    val snap = rec.get(beginSnapshot)
+                    if (fid == null || pos == null || snap == null) null else DucklakeInlinedFileDelete(fid, pos, snap)
+                }
+        }
+        catch (e: DataAccessException) {
+            log.log(System.Logger.Level.DEBUG,
+                "Could not read inlined file-deletes from {0} (table may not exist): {1}", inlinedDeleteName, e.message)
+            emptyList()
+        }
+    }
+
+    override fun getDataFilesByIds(tableId: Long, dataFileIds: Collection<Long>): List<DucklakeDataFile> {
+        if (dataFileIds.isEmpty()) {
+            return emptyList()
+        }
+        val file = DUCKLAKE_DATA_FILE.`as`("file")
+        return dsl.selectFrom(file)
+            .where(file.TABLE_ID.eq(tableId))
+            .and(file.DATA_FILE_ID.`in`(dataFileIds))
+            .fetch { r -> toDataFileNoDelete(r) }
     }
 
     override fun readInlinedData(
@@ -2191,7 +2284,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 val meta = DUCKLAKE_METADATA.`as`("meta")
                 ctx.insertInto(meta)
                     .set(meta.KEY, TABLE_DATA_FILE_FORMAT_KEY)
-                    .set(meta.VALUE, dataFileFormat)
+                    .set(meta.VALUE, CatalogFileFormat.toStored(dataFileFormat))
                     .set(meta.SCOPE, TABLE_SETTING_SCOPE)
                     .set(meta.SCOPE_ID, tableId)
                     .execute()
@@ -2204,12 +2297,13 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
     override fun getTableDataFileFormat(tableId: Long): String? {
         val meta = DUCKLAKE_METADATA.`as`("meta")
-        return dsl.select(meta.VALUE)
-            .from(meta)
-            .where(meta.KEY.eq(TABLE_DATA_FILE_FORMAT_KEY))
-            .and(meta.SCOPE.eq(TABLE_SETTING_SCOPE))
-            .and(meta.SCOPE_ID.eq(tableId))
-            .fetchOne(meta.VALUE)
+        return CatalogFileFormat.fromStored(
+            dsl.select(meta.VALUE)
+                .from(meta)
+                .where(meta.KEY.eq(TABLE_DATA_FILE_FORMAT_KEY))
+                .and(meta.SCOPE.eq(TABLE_SETTING_SCOPE))
+                .and(meta.SCOPE_ID.eq(tableId))
+                .fetchOne(meta.VALUE))
     }
 
     /**
@@ -2957,7 +3051,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             // file_order: NULL matches DuckDB convention
             dataFile.setPath(fragment.path)
             dataFile.setPathIsRelative(fragment.pathIsRelative)
-            dataFile.setFileFormat(fragment.fileFormat)
+            dataFile.setFileFormat(CatalogFileFormat.toStored(fragment.fileFormat))
             dataFile.setRecordCount(fragment.recordCount)
             dataFile.setFileSizeBytes(fragment.fileSizeBytes)
             // footer_size is a hint column: SQL NULL means "no hint" and the reader

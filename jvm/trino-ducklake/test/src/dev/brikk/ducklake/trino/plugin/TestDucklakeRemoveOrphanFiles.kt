@@ -153,6 +153,36 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
     }
 
     @Test
+    fun removesEmptiedOrphanDatasetDirectory() {
+        val table = "test_schema.orphan_dataset_dir"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
+            val dir = tableDataDir()
+            // An orphaned lance-style dataset directory (from a failed commit): member files only.
+            val dataset = dir.resolve("ghost-${java.util.UUID.randomUUID()}.lance")
+            val part = dataset.resolve("data").resolve("part-0.lance")
+            val manifest = dataset.resolve("_versions").resolve("1.manifest")
+            Files.createDirectories(part.parent)
+            Files.createDirectories(manifest.parent)
+            for (f in listOf(part, manifest)) {
+                Files.write(f, byteArrayOf(7, 7, 7))
+                Files.setLastModifiedTime(f, FileTime.from(Instant.now().minus(8, ChronoUnit.DAYS)))
+            }
+            assertThat(Files.exists(dataset)).isTrue()
+
+            computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
+                    + "table_name => 'orphan_dataset_dir', retention_threshold => '7d', dry_run => false)")
+
+            assertThat(Files.exists(dataset)).`as`("emptied orphan dataset directory removed").isFalse()
+            assertThat(computeActual("SELECT id FROM $table").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
     fun protectsRecentOrphanWithinGracePeriod() {
         val table = "test_schema.orphan_recent"
         try {

@@ -27,45 +27,44 @@ import java.io.IOException
 /**
  * One data file to read for the change feed. [baseSource] lazily opens the connector's normal
  * data-file read pipeline projecting exactly [ChangeFeedPageSource]'s requested data columns
- * followed by the positional `$row_id` virtual (`rowIdStart + file position` = the DuckLake
- * `rowid`), reading as of the feed's END-snapshot schema (so schema evolution / all file formats
- * are handled for free).
+ * followed by the positional `$row_id` virtual (`rowIdStart + file position`), reading as of the
+ * feed's END-snapshot schema (so schema evolution / all file formats are handled for free).
  *
  * - [snapshotId] is the snapshot to report for every row of this unit (the file's `begin_snapshot`
  *   for an insert unit; the deletion's snapshot for a delete unit).
- * - [keepRowids] = null keeps every row (insert unit); otherwise only rows whose `rowid` is in the
- *   set are emitted (delete unit — the positions newly deleted at [snapshotId]).
- * - [updatedRowids] are the `rowid`s at [snapshotId] that are BOTH inserted and deleted — i.e.
+ * - [keepPositions] = null keeps every row (insert unit); otherwise only rows at the given FILE
+ *   positions are emitted (delete unit — the positions newly deleted at [snapshotId]).
+ * - The emitted `rowid` is [lineageRowIds]`[position]` when the file carries DuckLake's embedded
+ *   row-lineage column (UPDATE/compaction output — see [DucklakeDeleteFileReader.readInternalRowIds]),
+ *   else `rowIdStart + position`. Using the preserved rowid is what lets an UPDATE's delete and
+ *   re-insert land on the SAME rowid in one snapshot and pair into update pre/post-image.
+ * - [updatedRowids] are the `rowid`s at [snapshotId] that are BOTH deleted and re-inserted — i.e.
  *   updates. Their `change_type` becomes [ChangeFeedColumns.CHANGE_UPDATE_POSTIMAGE] on the insert
- *   side and [ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE] on the delete side; all other rows get the
- *   plain [insert] / [delete] change type.
- *
- * NOTE on update pairing: this connector's `rowid` is `row_id_start + file position`, which does
- * NOT carry DuckLake's cross-file row lineage — an UPDATE (in Trino OR DuckDB) rewrites the moved
- * row into a new file with a FRESH `row_id_start`, so its `rowid` differs from the deleted row's.
- * Consequently [updatedRowids] is empty in practice and UPDATEs surface as a separate `delete` +
- * `insert` (which is a faithful description of DuckLake's delete-then-insert UPDATE). The pairing
- * remains correct and will fire whenever a deleted `rowid` is re-inserted with the same value in
- * one snapshot; [TestChangeFeedPageSource] exercises that path directly.
+ *   side and [ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE] on the delete side; all others get the
+ *   plain [insert] / [delete] change type. (Trino-written UPDATEs allocate a fresh rowid and write
+ *   no lineage column, so they still surface as delete+insert — a faithful description of Trino's
+ *   delete-then-insert UPDATE.)
  */
 class ChangeFeedUnit(
         val baseSource: () -> ConnectorPageSource,
         val snapshotId: Long,
-        val keepRowids: Set<Long>?,
+        val rowIdStart: Long,
+        val lineageRowIds: LongArray?,
+        val keepPositions: Set<Long>?,
         val updatedRowids: Set<Long>,
         val isDelete: Boolean)
 
 /**
- * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns
- * (F9). Reads each [ChangeFeedUnit]'s data file through the connector's ordinary read pipeline
- * (reused for schema evolution + every file format), then per page: filters to the deleted
- * positions (delete units), stamps `snapshot_id`, exposes `rowid`, and classifies `change_type`
- * (pairing insert+delete of the same `rowid` in one snapshot into update pre/post-image — see the
- * NOTE on [ChangeFeedUnit] for when that fires; in practice UPDATEs surface as a separate
- * `delete` + `insert` under this connector's `row_id_start + position` rowid vocabulary).
+ * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.
+ * Reads each [ChangeFeedUnit]'s data file through the connector's ordinary read pipeline (reused
+ * for schema evolution + every file format), then per page: derives each row's FILE position from
+ * the positional `$row_id`, filters to the deleted positions (delete units), computes the true
+ * `rowid` (embedded lineage column when present, else positional), stamps `snapshot_id`, and
+ * classifies `change_type` (pairing an UPDATE's delete + re-insert of the same rowid in one
+ * snapshot into update pre/post-image).
  *
- * Output blocks are projected in [requestedColumns] order; the data columns are read in
- * [dataColumns] order followed by `$row_id`, so `$row_id` sits at channel `dataColumns.size`.
+ * The data columns are read in [dataColumns] order followed by `$row_id`, so `$row_id` sits at
+ * channel `dataColumns.size`; output blocks are projected in [requestedColumns] order.
  */
 class ChangeFeedPageSource(
         units: List<ChangeFeedUnit>,
@@ -126,43 +125,37 @@ class ChangeFeedPageSource(
         val positionCount: Int = page.positionCount
         val rowIdBlock: Block = page.getBlock(rowIdChannel)
 
-        val keepRowids: Set<Long>? = unit.keepRowids
-        val keptPositions: IntArray
-        val keptCount: Int
-        if (keepRowids == null) {
-            keptPositions = IntArray(0)
-            keptCount = positionCount
-        }
-        else {
-            val positions = IntArray(positionCount)
-            var count = 0
-            for (i in 0 until positionCount) {
-                if (!rowIdBlock.isNull(i) && keepRowids.contains(BIGINT.getLong(rowIdBlock, i))) {
-                    positions[count] = i
-                    count++
-                }
+        val keptIdx = IntArray(positionCount)
+        val keptRowIds = LongArray(positionCount)
+        var keptCount = 0
+        for (i in 0 until positionCount) {
+            val positional: Long = BIGINT.getLong(rowIdBlock, i)
+            val filePosition: Long = positional - unit.rowIdStart
+            if (unit.keepPositions != null && !unit.keepPositions.contains(filePosition)) {
+                continue
             }
-            keptPositions = positions
-            keptCount = count
+            keptIdx[keptCount] = i
+            keptRowIds[keptCount] = rowIdFor(unit, filePosition, positional)
+            keptCount++
         }
         if (keptCount == 0) {
             return null
         }
-        val selectAll: Boolean = keepRowids == null
+        // keepPositions == null means the whole page is kept in order, so data blocks pass through.
+        val selectAll: Boolean = unit.keepPositions == null
 
         val blocks: Array<Block?> = arrayOfNulls(requestedColumns.size)
         for ((outIndex, column) in requestedColumns.withIndex()) {
             blocks[outIndex] = when (column.columnId) {
                 ChangeFeedColumns.SNAPSHOT_ID.columnId ->
                     RunLengthEncodedBlock.create(writeNativeValue(BIGINT, unit.snapshotId), keptCount)
-                ChangeFeedColumns.ROWID.columnId ->
-                    selectPositions(rowIdBlock, keptPositions, keptCount, selectAll)
-                ChangeFeedColumns.CHANGE_TYPE.columnId ->
-                    changeTypeBlock(unit, rowIdBlock, keptPositions, keptCount, selectAll, positionCount)
+                ChangeFeedColumns.ROWID.columnId -> rowIdBlock(keptRowIds, keptCount)
+                ChangeFeedColumns.CHANGE_TYPE.columnId -> changeTypeBlock(unit, keptRowIds, keptCount)
                 else -> {
                     val channel: Int = dataChannelByColumnId[column.columnId]
                             ?: throw IllegalStateException("Change-feed column not in read plan: ${column.columnName}")
-                    selectPositions(page.getBlock(channel), keptPositions, keptCount, selectAll)
+                    val block: Block = page.getBlock(channel)
+                    if (selectAll) block else block.getPositions(keptIdx, 0, keptCount)
                 }
             }
         }
@@ -170,16 +163,21 @@ class ChangeFeedPageSource(
         return SourcePage.create(Page(keptCount, *(blocks as Array<Block>)))
     }
 
-    private fun selectPositions(block: Block, keptPositions: IntArray, keptCount: Int, selectAll: Boolean): Block =
-        if (selectAll) block else block.getPositions(keptPositions, 0, keptCount)
+    /** The row's DuckLake rowid: preserved lineage value when the file embeds it, else positional. */
+    private fun rowIdFor(unit: ChangeFeedUnit, filePosition: Long, positional: Long): Long {
+        val lineage: LongArray = unit.lineageRowIds ?: return positional
+        return if (filePosition in 0 until lineage.size.toLong()) lineage[filePosition.toInt()] else positional
+    }
 
-    private fun changeTypeBlock(
-            unit: ChangeFeedUnit,
-            rowIdBlock: Block,
-            keptPositions: IntArray,
-            keptCount: Int,
-            selectAll: Boolean,
-            positionCount: Int): Block {
+    private fun rowIdBlock(keptRowIds: LongArray, keptCount: Int): Block {
+        val builder = BIGINT.createBlockBuilder(null, keptCount)
+        for (j in 0 until keptCount) {
+            BIGINT.writeLong(builder, keptRowIds[j])
+        }
+        return builder.build()
+    }
+
+    private fun changeTypeBlock(unit: ChangeFeedUnit, keptRowIds: LongArray, keptCount: Int): Block {
         val updatedLabel: String = if (unit.isDelete) {
             ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE
         }
@@ -188,11 +186,8 @@ class ChangeFeedPageSource(
         }
         val plainLabel: String = if (unit.isDelete) ChangeFeedColumns.CHANGE_DELETE else ChangeFeedColumns.CHANGE_INSERT
         val builder = VARCHAR.createBlockBuilder(null, keptCount)
-        val limit: Int = if (selectAll) positionCount else keptCount
-        for (i in 0 until limit) {
-            val position: Int = if (selectAll) i else keptPositions[i]
-            val rowId: Long = BIGINT.getLong(rowIdBlock, position)
-            val label: String = if (unit.updatedRowids.contains(rowId)) updatedLabel else plainLabel
+        for (j in 0 until keptCount) {
+            val label: String = if (unit.updatedRowids.contains(keptRowIds[j])) updatedLabel else plainLabel
             VARCHAR.writeSlice(builder, Slices.utf8Slice(label))
         }
         return builder.build()

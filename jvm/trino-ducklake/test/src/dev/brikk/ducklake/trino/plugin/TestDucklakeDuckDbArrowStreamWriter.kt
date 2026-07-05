@@ -276,7 +276,7 @@ open class TestDucklakeDuckDbArrowStreamWriter : AbstractDucklakeIntegrationTest
                                         .and(currentlyActive(col.END_SNAPSHOT)))
                         .join(file)
                                 .on(file.DATA_FILE_ID.eq(colstats.DATA_FILE_ID))
-                        .where(file.FILE_FORMAT.eq("duckdb")
+                        .where(file.FILE_FORMAT.eq("trino/duckdb")
                                 .and(col.TABLE_ID.eq(tableId)))
                         .forEach { r ->
                             rows[r.get(col.COLUMN_NAME)] = StatsRow(

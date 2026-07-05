@@ -284,6 +284,48 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         }
     }
 
+    /**
+     * cleanup_old_files must reclaim LANCE data files, which are dataset *directories* — `deleteFile`
+     * can't remove a directory (it errors on local FS, no-ops + leaks on object stores). We simulate
+     * a scheduled lance dataset by creating a directory with member files and a scheduled-file row
+     * pointing at the directory, then assert cleanup removes the whole tree and drains the row.
+     */
+    @Test
+    fun cleanupRemovesScheduledDatasetDirectories() {
+        val relative = "lance_dataset-${java.util.UUID.randomUUID()}.lance"
+        val datasetDir = dataDir.resolve(relative)
+        Files.createDirectories(datasetDir.resolve("data"))
+        Files.write(datasetDir.resolve("data").resolve("part-0.lance"), byteArrayOf(1, 2, 3))
+        Files.write(datasetDir.resolve("_versions").let { Files.createDirectories(it); it }.resolve("1.manifest"), byteArrayOf(4, 5))
+        val fakeId = 987654322L
+
+        DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+            conn.prepareStatement("INSERT INTO ducklake_files_scheduled_for_deletion "
+                    + "(data_file_id, path, path_is_relative, schedule_start) "
+                    + "VALUES (?, ?, true, (NOW() - INTERVAL '1 day'))").use { ps ->
+                ps.setLong(1, fakeId)
+                ps.setString(2, relative)
+                ps.executeUpdate()
+            }
+        }
+        assertThat(Files.exists(datasetDir)).isTrue()
+
+        computeActual("CALL system.cleanup_old_files(retention_threshold => '0s', dry_run => false)")
+
+        assertThat(Files.exists(datasetDir)).`as`("scheduled dataset directory removed recursively").isFalse()
+        DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),
+                pgServer!!.getUser(), pgServer!!.getPassword()).use { conn ->
+            conn.prepareStatement("SELECT count(*) FROM ducklake_files_scheduled_for_deletion WHERE data_file_id = ?").use { ps ->
+                ps.setLong(1, fakeId)
+                ps.executeQuery().use { rs ->
+                    rs.next()
+                    assertThat(rs.getLong(1)).`as`("schedule row removed after directory deletion").isEqualTo(0L)
+                }
+            }
+        }
+    }
+
     @Throws(Exception::class)
     private fun maxSnapshot(): Long =
             DriverManager.getConnection(pgServer!!.getJdbcUrl("ducklake_expire_snapshots_e2e"),

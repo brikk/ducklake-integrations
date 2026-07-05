@@ -448,18 +448,37 @@ pipeline per unit (`createDataFilePageSource`, extracted) requesting the table c
 read AS OF the END-snapshot schema — so schema evolution + every format (parquet/duckdb/vortex/lance)
 work for free; delete units keep only the newly-deleted positions and stamp the delete snapshot;
 `change_type` classifies pairing. **Bounds** inclusive both ends, snapshot-id OR timestamp
-(`getSnapshotAtOrBefore`), start required / end defaults to current. **Two honest edges** (both from
-the `row_id_start + position` rowid vocabulary Jayson chose): (1) UPDATEs surface as `delete`+`insert`
-— neither Trino nor DuckDB's rewritten row keeps a `rowIdStart+position`-equal rowid (verified live:
-DuckDB update allocated a fresh rowid too), so the pre/post-image pairing (implemented + correct) only
-fires when a deleted rowid is re-inserted with the same value in a snapshot; (2) inlined data/deletes
-are **gated** at analyze time (clear "flush_inlined_data first" error) rather than silently omitted.
+(`getSnapshotAtOrBefore`), start required / end defaults to current. One honest edge remains:
+Trino's OWN UPDATE/MERGE writes emit no lineage column (fresh `row_id_start`), so a Trino-written
+UPDATE surfaces as `delete`+`insert` (accurate for its delete-then-insert impl). Lineage-preserving
+writers (DuckDB) DO pair — see below.
+**REAL update pairing — DONE (2026-07).** DuckLake persists cross-file row lineage in the DATA file
+(not the catalog): an embedded column tagged with the reserved parquet field-id `2_147_483_540`
+(typically named `_ducklake_internal_row_id`) that lineage-preserving UPDATE/compaction writers
+(e.g. DuckDB) emit, holding each row's preserved rowid. The change feed now reads it
+(`DucklakeDeleteFileReader.readInternalRowIds`, matched by field-id): rowid = embedded value when
+present, else `row_id_start + position`. So a DuckDB-written UPDATE's delete + re-insert land on the
+SAME rowid in one snapshot and PAIR into `update_preimage`/`update_postimage` — verified full-Trino
+cross-engine (`TestDucklakeChangeFeedCrossEngine.duckdbUpdatePairsIntoPreAndPostImage`) + unit
+(`TestChangeFeedPageSource.embeddedLineagePairsUpdatePreAndPostImage`). This connector's own
+UPDATE/MERGE writes don't emit the lineage column, so Trino-written updates still surface as
+delete+insert (accurate for its delete-then-insert impl). Parquet only (the non-parquet formats this
+connector writes never carry lineage). The earlier "no readable lineage" conclusion was catalog-only.
+**INLINED DATA — DONE (2026-07).** The change feed now reads DuckLake's inlined data (was gated with
+a flush_inlined_data error). Three sources folded into the same rowid space: (1) inlined-row inserts
+(`ducklake_inlined_data_*` rows with begin ∈ window), (2) inlined-row deletes (end ∈ window), (3)
+inline file-position deletes (`ducklake_inlined_delete_*` — small DELETEs of file rows recorded inline
+instead of as delete files). Cases 1/2 are in-memory `ChangeFeedUnit`s (a `RecordPageSource` yielding
+data + the inlined `row_id` as `$row_id`, rowIdStart=0); case 3 reuses the file delete-unit path
+(reads the data file at the inline-recorded positions, lineage-aware). Update pairing spans file +
+inlined. New catalog methods: `getInlinedChangesBetween` / `getInlinedFileDeletesBetween` /
+`getDataFilesByIds`. Gate + `flush_inlined_data`-first error removed.
 Tests: `TestDucklakeChangeFeed` (11 e2e: insertions/deletions/changes, inclusive+scoped bounds,
 end-default, timestamp bounds, non-parquet duckdb, projection/COUNT(*), empty window, schema-evolution
-as-of-end), `TestDucklakeChangeFeedCrossEngine` (3: DuckDB-written update read as delete+insert,
-deletions side, inlined-data gate), `TestChangeFeedPageSource` (5 unit: insert/delete/**update
-pre-post pairing**/projection/empty-filter). Both `:module:detekt` gates green. README "Change Feed"
-section flipped from roadmap to shipped.
+as-of-end), `TestDucklakeChangeFeedCrossEngine` (4: DuckDB-update pairs pre/post-image, deletions side,
+inlined insert+delete read, inline-file-delete read), `TestChangeFeedPageSource` (5 unit: insert/delete/
+**update pre-post pairing**/projection/empty-filter). Both `:module:detekt` gates green. README "Change
+Feed" section flipped from roadmap to shipped.
 
 ### F10. Variant
 
