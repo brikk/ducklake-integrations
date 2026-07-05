@@ -904,3 +904,70 @@ promote it into a real task in the appropriate section above and prune the bulle
   spec text lands. Detailed previews in
   [`archive/archive/DUCKLAKE_1_0_IMPACT.md`](archive/archive/DUCKLAKE_1_0_IMPACT.md)
   "DuckLake v1.1 / v2.0 Preview" sections.
+
+<!-- Added by 2026-07-05 upstream refresh (survey window 2026-06-29 → 07-05). -->
+- **max-compacted-files-bound** — upstream `ducklake` main (`8b8e0491`) added a
+  `max_compacted_files` named param to `ducklake_rewrite_data_files`, capping how
+  many files a single rewrite/merge invocation touches (now applies to
+  REWRITE_DELETES too, not just MERGE_ADJACENT). Our F6 compaction has no such
+  cap — a large table rewrites everything in one commit. Add a bound. ~30-min.
+- **bucket-partition-name-collision** — upstream `ducklake` (`1add112e`,
+  `ducklake_partition_data.cpp`) fixed colliding partition-key *names* for
+  repeated bucket transforms on the same column (now disambiguates with a
+  `_2`, `_3`… counter suffix). We support `bucket(N, col)` — verify our
+  partition-key name generation disambiguates repeated/overlapping bucket
+  partitions the same way (else cross-engine name mismatch). ~30-min check.
+- **explicit-widening-type-promotion** — datafusion-ducklake now models a column
+  type change as an *explicit* widening `promote_column_type` (retires the live
+  `ducklake_column` row, inserts a new version with the **same** `column_id` /
+  Parquet field-id, no data rewrite, lossless set only) and now **rejects** a
+  silent type change on a data write (`Replace`/`Append`) pointing at the promote
+  API — mirroring upstream's ALTER-vs-INSERT split. Compare our write path: do we
+  reject vs silently drop/accept a widening type change on INSERT, and can we
+  version a column's type keeping the field-id stable? Research; ~1-2h.
+- **next-file-id-signals-change** — pg_ducklake #217 (`d538bf8`): DuckLake's
+  table-stats cache is keyed by `(next_file_id, schema_version, table_id)`, so
+  upstream bumps `next_file_id` by 1 even on commits that add **no** data file
+  (inlined-only) purely to bust that cache; not doing so let a concurrently-open
+  DuckDB backend serve a stale `next_row_id` and write **duplicate row ids**.
+  Verify every snapshot we commit that changes data — especially delete-only or
+  metadata-only commits that add no new file — advances `next_file_id` (or
+  otherwise invalidates a concurrent DuckDB reader's cached next_row_id). ~1h.
+- **quack-protocol-bump-2026-07** — duckdb-quack `main` (`ebf8841..b9f841c`)
+  moved `QUACK_VERSION` into the message header and added a client↔server
+  compatibility check, plus a large new async insert data-stream path
+  (`quack_send_data` / `quack_data_stream` / client-scan table function). Wire
+  protocol version bumped again; still experimental. Re-pin any Quack wire
+  assumptions before the next quack write spike (feeds `quack-hardening-watch`).
+
+<!-- LONGER-HORIZON scan of `ducklake` main (builds vs duckdb-main; the "Fall" -->
+<!-- release train). 176 commits ahead of v1.5-variegata as of 2026-07-05. -->
+- **ducklake-v1.1-format-horizon** — ⚠️ BIG. `ducklake` main is staging a new
+  catalog format version `V1_1_DEV_1` (`common/ducklake_version.hpp`,
+  `DUCKLAKE_LATEST_VERSION`), with a versioned metadata manager
+  (`ducklake_metadata_manager_v1_1.cpp`), a `ducklake_version` ATTACH option, and
+  **automatic migration** from v1.0 (`ducklake_initializer.cpp:220`,
+  `options.automatic_migration`). Concrete new surface we hand-write/read against:
+  (a) **row_group information** persisted in the catalog (per-file row-group
+  stats — `cd0581b9`); (b) an **`encryption_key VARCHAR`** column on
+  `ducklake_data_file` (per-file encryption at rest); (c) **footer-less puffin**
+  for single-file DVs (`4c4aebac`, changes our `DucklakePuffinDeleteReader`
+  assumptions); (d) **multiple deletion vectors per puffin** (`4d16f7a1` — the
+  item on our v1.1 spec watch, now landing). When this firms up, our hand-written
+  metadata layer needs: version detection on ATTACH, a read path for v1.1 tables
+  (row_group + mapping_id already present, encryption_key), footer-less/multi-DV
+  puffin read, and a decision on whether we ever *write* v1.1. Promote to a real
+  epic when `V1_1` (non-dev) tags. Deep-scan spike ~1 day when we act.
+- **duckdb-2x-cpp17-abi** — ⚠️ build risk. `ducklake` main moved to **C++17**
+  and adapted to DuckDB core API changes (`3f2a7b28`: new
+  `GetData`/`GetDataMutable`, reworked `Table`/`Projection` Index types;
+  `4ec16074`, `3f2a7b28`). main pins duckdb to an unreleased `duckdb-main` commit
+  (the Fall/2.x train), not `v1.5.x`. Our `trino_parity` DuckDB C++ extension
+  (`duckdb-trino-parity-extension/`) will need porting + rebuild against 2.x when
+  DuckLake follows DuckDB to the next release. No action now (we track v1.5.4);
+  flag so the extension rebuild isn't a surprise. Re-check the duckdb-version pin
+  each refresh.
+- **ducklake-going-GA** — `1622bd3b Update README to remove DuckLake experimental
+  notice` on main: DuckLake is dropping its "experimental" label in the next
+  release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
+  the full feature set — re-survey ducklake-web when v1.1 tags.

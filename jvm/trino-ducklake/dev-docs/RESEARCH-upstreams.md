@@ -202,14 +202,15 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `8abedc97` (post-v0.3.1) | 2026-06-29 |
-| `ducklake/` | `v1.5-variegata` | `c23aca43` | 2026-06-29 |
-| `ducklake/` | `main` | `96a4574d` | 2026-06-29 |
-| `ducklake-web/` | `main` | `82231c20` | 2026-06-29 |
-| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-06-29 |
-| `pg_ducklake/` | `main` | `e906c7ae` (v1.1.0; duckdb v1.5.4) | 2026-06-29 |
-| `duckdb-quack/` | `main` | `ebf88413` | 2026-06-29 |
-| `duckdb-quack/` | `v1.5-variegata` | `40de7bad` | 2026-06-29 |
+| `datafusion-ducklake/` | `main` | `7a15d31` | 2026-07-05 |
+| `ducklake/` | `v1.5-variegata` | `c23aca43` (unchanged; confirmed via ls-remote — real upstream tip, 2026-06-17) | 2026-07-05 |
+| `ducklake/` | `main` | `6e90e9d3` | 2026-07-05 |
+| `ducklake-web/` | `main` | `82231c20` (unchanged) | 2026-07-05 |
+| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-07-05 |
+| `pg_ducklake/` | `main` | `f1a3475` (PG19 support; mostly PG glue) | 2026-07-05 |
+| `pg_ducklake/` | `v1.0` | `d538bf8` (two portable commit-protocol fixes #216/#217) | 2026-07-05 |
+| `duckdb-quack/` | `main` | `b9f841c` (async insert stream; protocol bump) | 2026-07-05 |
+| `duckdb-quack/` | `v1.5-variegata` | `29fc039` (bump to v1.5.4) | 2026-07-05 |
 | `duckdb-web/` | `main` | (see archive entry 2026-05-22; not refreshed this run) | 2026-05-22 |
 
 Older baselines and the per-run substantive findings are preserved

@@ -353,6 +353,12 @@ Improvements, Inlined-Read Type Gaps).
   (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
   verify our nested field-id resolution reads ids off the top-level field, not the leaf,
   with a List/struct write→read roundtrip across schema evolution. ~1h spike.
+- **inlined-insert-change-vocab** — DuckLake 1.0 spells the inlined-insert change
+  marker `inlined_insert:<table_id>`; pg_ducklake #216 (`21095e9`) was a data-loss
+  bug from drift off the older `inlined_data_insert` spelling. Confirm our
+  change-feed / `$snapshot_changes` change-type parser round-trips
+  `inlined_insert:<id>` (and the current insert/delete vocabulary) written by
+  DuckDB without throwing on unknown tokens. ~20-min. (Survey 2026-07-05.)
 
 ### Cross-Dialect View Transpilation
 
