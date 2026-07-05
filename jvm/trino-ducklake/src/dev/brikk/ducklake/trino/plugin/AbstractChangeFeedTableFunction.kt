@@ -20,7 +20,6 @@ import dev.brikk.ducklake.catalog.DucklakeSnapshot
 import dev.brikk.ducklake.catalog.DucklakeTable
 import io.airlift.slice.Slice
 import io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorAccessControl
 import io.trino.spi.connector.ConnectorSession
@@ -91,19 +90,6 @@ abstract class AbstractChangeFeedTableFunction(
                 ?: invalidArgument("Schema not found at snapshot $endSnapshot: $schemaName")
         val table: DucklakeTable = catalog.getTable(schemaName, tableName, endSnapshot)
                 ?: invalidArgument("Table not found at snapshot $endSnapshot: $schemaName.$tableName")
-
-        // v1 boundary: the change feed reads file-based data + delete files, not DuckLake's
-        // inlined data / inlined deletes (small writes DuckDB keeps in ducklake_inlined_* tables,
-        // default row limit 10). Rather than silently omit inlined changes, reject with a clear
-        // pointer to flush_inlined_data. Trino-written tables never inline, so Trino CDC is
-        // unaffected; this only gates tables carrying live inlined rows/deletes at the end snapshot.
-        if (catalog.hasInlinedDeletes(table.tableId, endSnapshot)
-                || catalog.getInlinedDataInfos(table.tableId, endSnapshot).any { it.hasLiveRows }) {
-            throw TrinoException(NOT_SUPPORTED,
-                    "$name does not yet support $schemaName.$tableName: it has inlined data or deletes. " +
-                            "Run CALL system.flush_inlined_data('$schemaName', '$tableName') first (or read a " +
-                            "window before the inlined writes).")
-        }
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, endSnapshot)
         accessControl.checkCanSelectFromColumns(

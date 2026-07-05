@@ -460,10 +460,10 @@ ORDER BY snapshot_id;
   UPDATE/MERGE writes do not emit the lineage column (the rewritten row gets a fresh `row_id_start`),
   so a Trino-written UPDATE surfaces as a `delete` + `insert` — a faithful description of its
   delete-then-insert implementation.
-- The feed reads file-based data and delete files. Tables carrying **inlined** data/deletes (small
-  writes DuckDB keeps in `ducklake_inlined_*` tables) are rejected with a pointer to
-  `flush_inlined_data` rather than silently omitting those changes. Compaction that expires
-  snapshots can also limit what the feed can report (per the DuckLake spec).
+- The feed reads file-based data/delete files **and** DuckLake's **inlined** data (small writes
+  DuckDB keeps in `ducklake_inlined_*` tables): inlined inserts, inlined-row deletes, and inline
+  file-position deletes all surface. Compaction that expires snapshots can still limit what the feed
+  can report (per the DuckLake spec).
 
 ## Table Properties
 

@@ -228,10 +228,11 @@ data file's scan.
 
 - [x] **Change feed SHIPPED** — `system.table_insertions` / `table_deletions` / `table_changes`
   table functions (scan-rewrite PTFs, all file formats, inclusive snapshot-id/timestamp bounds).
-  Two documented behaviors: tables with **inlined** data/deletes are gated (`flush_inlined_data`
-  first), and **UPDATEs surface as `delete`+`insert`** because the connector's `rowid` is
-  `row_id_start + position` and doesn't carry DuckLake's cross-file lineage. See README § Change
-  Feed and TODO-jayson-special-list.md § F9.
+  Reads file data/delete files AND DuckLake **inlined** data (inlined inserts, inlined-row deletes,
+  inline file-position deletes). Update pairing (`update_preimage`/`update_postimage`) works via the
+  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers (DuckDB);
+  Trino's own writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete`+`insert`.
+  See README § Change Feed and TODO-jayson-special-list.md § F9.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
 
@@ -323,6 +324,12 @@ Full per-item rationale in [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md
 When promoted, move into the section above it belongs to (e.g. Type-Support
 Improvements, Inlined-Read Type Gaps).
 
+Expected-landing tag `[v: …]`: `CURRENT` = DuckLake v1.0 / DuckDB 1.5.x (what we
+run today); `NEXT` = DuckLake v1.1 (`V1_1_DEV_1`) / DuckDB 2.x, Fall. **[NOW-n]**
+marks the CURRENT-version actionable set — stable ids shared with
+`TODO-WRITE-MODE.md` for the parallel agent working this area now (NOW-1/4/5/6 are
+write-path; NOW-2/3 below are read-path).
+
 - **uint-type-promotion-audit** — upstream PR #1128 fixed type promotion for
   UINTEGER. Verify it's purely DuckDB-execution (not in `ducklake_column.column_type`
   catalog representation). ~10-min PR-and-test read.
@@ -347,18 +354,20 @@ Improvements, Inlined-Read Type Gaps).
   `ducklake-snapshot-id`) — `TestDucklakePuffinPartialDelete`. **All partial-file reads (data +
   parquet-delete + puffin-delete) are correct; no read gate remains.** See
   [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
-- **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
+- **[NOW-3] nested-field-id-top-level-match** `[v: CURRENT — DuckLake v1.0-era;
+  read correctness]` — datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
   Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
   (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
   verify our nested field-id resolution reads ids off the top-level field, not the leaf,
   with a List/struct write→read roundtrip across schema evolution. ~1h spike.
-- **inlined-insert-change-vocab** — DuckLake 1.0 spells the inlined-insert change
-  marker `inlined_insert:<table_id>`; pg_ducklake #216 (`21095e9`) was a data-loss
-  bug from drift off the older `inlined_data_insert` spelling. Confirm our
-  change-feed / `$snapshot_changes` change-type parser round-trips
-  `inlined_insert:<id>` (and the current insert/delete vocabulary) written by
-  DuckDB without throwing on unknown tokens. ~20-min. (Survey 2026-07-05.)
+- ✅ **[NOW-2] inlined-insert-change-vocab** — VERIFIED CLEAN (2026-07), not applicable. Our
+  `InterveningChanges.applyEntry` already uses the correct DuckLake-1.0 spelling `inlined_insert:<id>`
+  / `inlined_delete:<id>` (not the old `inlined_data_insert` that caused pg_ducklake #216's data
+  loss). And it doesn't gate the read path anyway: `$snapshot_changes` returns the raw `changes_made`
+  text (no parse) and the change feed queries files/inlined rows by `begin_snapshot` (never parses
+  tokens); the parser is used only in write-conflict detection, which round-trips the inlined tokens.
+  (Unknown *future* tokens `else -> throw`, i.e. fail-closed — deliberate, left as is.)
 
 ### Cross-Dialect View Transpilation
 

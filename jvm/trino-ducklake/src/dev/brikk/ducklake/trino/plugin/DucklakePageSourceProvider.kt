@@ -458,13 +458,22 @@ class DucklakePageSourceProvider @Inject constructor(
         // This is what lets an UPDATE's delete + re-insert land on the SAME rowid and pair.
         val insertLineage: Map<Long, LongArray?> = readInsertLineage(fileSystem, tableDataPath, insertFiles)
 
-        // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids;
-        // then pair (a rowid both deleted and re-inserted in the same snapshot is an update).
+        // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids.
         val deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
         val resolvedDeletions: List<ResolvedChangeFeedDeletion> =
                 resolveChangeFeedDeletions(fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
-        val updatedBySnapshot: Map<Long, Set<Long>> =
-                computeUpdatedRowids(deletedRowidsBySnapshot, insertFiles, insertLineage)
+
+        // Inlined data: small writes DuckDB keeps in ducklake_inlined_* tables. Inlined-row
+        // insert/delete events (case 1/2) + inline file-position deletes (case 3), all folded into
+        // the same rowid space so pairing spans file + inlined sources. See ChangeFeedPageSource.
+        val inlined = InlinedChangeCollector()
+        collectInlinedDataEvents(table, requestedDataColumns, inlined, deletedRowidsBySnapshot)
+        val inlineFileDeleteGroups: List<InlineFileDeleteGroup> =
+                collectInlineFileDeleteGroups(fileSystem, tableDataPath, table, deletedRowidsBySnapshot)
+
+        // Update pairing across ALL sources (file inserts + inlined inserts vs. every delete).
+        val updatedBySnapshot: Map<Long, Set<Long>> = computeUpdatedRowids(
+                deletedRowidsBySnapshot, insertFiles, insertLineage, inlined.insertedRowidsBySnapshot)
 
         val units: MutableList<ChangeFeedUnit> = mutableListOf()
         for (file in insertFiles) {
@@ -474,8 +483,144 @@ class DucklakePageSourceProvider @Inject constructor(
         for (resolved in resolvedDeletions) {
             units.add(deleteUnit(session, table, requestedDataColumns, resolved, updatedBySnapshot))
         }
+        for (group in inlineFileDeleteGroups) {
+            units.add(inlineFileDeleteUnit(session, table, tableDataPath, requestedDataColumns, group, updatedBySnapshot))
+        }
+        for ((snapshotId, events) in inlined.insertEventsBySnapshot) {
+            units.add(inlinedDataUnit(snapshotId, events, requestedDataColumns, isDelete = false, updatedBySnapshot))
+        }
+        for ((snapshotId, events) in inlined.deleteEventsBySnapshot) {
+            units.add(inlinedDataUnit(snapshotId, events, requestedDataColumns, isDelete = true, updatedBySnapshot))
+        }
 
         return ChangeFeedPageSource(units, requestedColumns, requestedDataColumns, table.feedType.hasChangeType)
+    }
+
+    /** One inlined change row for the in-memory base source: its rowid + projected data values. */
+    private class InlinedEvent(val rowId: Long, val values: List<Any?>)
+
+    /** Accumulates inlined-data change events by snapshot + the inlined inserted rowids (pairing). */
+    private class InlinedChangeCollector {
+        val insertEventsBySnapshot: MutableMap<Long, MutableList<InlinedEvent>> = mutableMapOf()
+        val deleteEventsBySnapshot: MutableMap<Long, MutableList<InlinedEvent>> = mutableMapOf()
+        val insertedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+    }
+
+    /** One data file's inline-deleted positions retired at one snapshot (case 3). */
+    private class InlineFileDeleteGroup(
+            val dataFile: DucklakeDataFile,
+            val snapshotId: Long,
+            val positions: Set<Long>,
+            val lineage: LongArray?)
+
+    /** Inlined-data insert/delete events (cases 1 & 2) per snapshot, folding rowids into pairing. */
+    private fun collectInlinedDataEvents(
+            table: ChangeFeedTableHandle,
+            dataColumns: List<DucklakeColumnHandle>,
+            collector: InlinedChangeCollector,
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>) {
+        val wantInserts = table.feedType != ChangeFeedType.DELETIONS
+        val wantDeletes = table.feedType != ChangeFeedType.INSERTIONS
+        val window: LongRange = table.startSnapshot..table.endSnapshot
+        val columnIds: List<Long> = dataColumns.map { it.columnId }
+        for (info in catalog.getInlinedDataInfos(table.tableId, table.endSnapshot)) {
+            val rows = catalog.getInlinedChangesBetween(
+                    table.tableId, info.schemaVersion, table.startSnapshot, table.endSnapshot, columnIds)
+            for (row in rows) {
+                if (wantInserts && row.beginSnapshot in window) {
+                    collector.insertEventsBySnapshot.getOrPut(row.beginSnapshot) { mutableListOf() }
+                            .add(InlinedEvent(row.rowId, row.values))
+                    collector.insertedRowidsBySnapshot.getOrPut(row.beginSnapshot) { mutableSetOf() }.add(row.rowId)
+                }
+                val end: Long? = row.endSnapshot
+                if (wantDeletes && end != null && end in window) {
+                    collector.deleteEventsBySnapshot.getOrPut(end) { mutableListOf() }
+                            .add(InlinedEvent(row.rowId, row.values))
+                    deletedRowidsBySnapshot.getOrPut(end) { mutableSetOf() }.add(row.rowId)
+                }
+            }
+        }
+    }
+
+    /** Inline file-position deletes (case 3): group by (data file, snapshot), read lineage, fold rowids. */
+    private fun collectInlineFileDeleteGroups(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            table: ChangeFeedTableHandle,
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<InlineFileDeleteGroup> {
+        if (table.feedType == ChangeFeedType.INSERTIONS) {
+            return emptyList()
+        }
+        val fileDeletes = catalog.getInlinedFileDeletesBetween(table.tableId, table.startSnapshot, table.endSnapshot)
+        if (fileDeletes.isEmpty()) {
+            return emptyList()
+        }
+        val dataFilesById: Map<Long, DucklakeDataFile> = catalog.getDataFilesByIds(
+                table.tableId, fileDeletes.map { it.dataFileId }.toSet()).associateBy { it.dataFileId }
+        val groups: MutableList<InlineFileDeleteGroup> = mutableListOf()
+        for ((key, dels) in fileDeletes.groupBy { it.dataFileId to it.snapshotId }) {
+            val dataFile = dataFilesById[key.first] ?: continue
+            val positions: Set<Long> = dels.mapTo(mutableSetOf()) { it.position }
+            val resolvedPath = pathResolver.resolveFilePath(dataFile.path, dataFile.pathIsRelative, tableDataPath)
+            val lineage = readLineage(fileSystem, resolvedPath, dataFile.fileFormat, dataFile.footerSize)
+            positions.forEach { deletedRowidsBySnapshot.getOrPut(key.second) { mutableSetOf() }
+                    .add(rowIdForPosition(lineage, dataFile.rowIdStart, it)) }
+            groups.add(InlineFileDeleteGroup(dataFile, key.second, positions, lineage))
+        }
+        return groups
+    }
+
+    private fun inlineFileDeleteUnit(
+            session: ConnectorSession,
+            table: ChangeFeedTableHandle,
+            tableDataPath: String,
+            dataColumns: List<DucklakeColumnHandle>,
+            group: InlineFileDeleteGroup,
+            updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
+        val df = group.dataFile
+        val resolvedPath = pathResolver.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)
+        return ChangeFeedUnit(
+                baseSource = {
+                    openChangeFeedFile(session, resolvedPath, df.fileFormat, df.footerSize,
+                            df.fileSizeBytes, df.rowIdStart, df.recordCount, df.beginSnapshot, table, dataColumns)
+                },
+                snapshotId = group.snapshotId,
+                rowIdStart = df.rowIdStart,
+                lineageRowIds = group.lineage,
+                keepPositions = group.positions,
+                updatedRowids = updatedBySnapshot[group.snapshotId] ?: emptySet(),
+                isDelete = true)
+    }
+
+    /** A change-feed unit backed by IN-MEMORY inlined rows (no data file): the base source yields
+     * the group's data values + a `$row_id` column = the inlined `row_id` (so rowid = row_id). */
+    private fun inlinedDataUnit(
+            snapshotId: Long,
+            events: List<InlinedEvent>,
+            dataColumns: List<DucklakeColumnHandle>,
+            isDelete: Boolean,
+            updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit =
+        ChangeFeedUnit(
+                baseSource = { inlinedRecordPageSource(events, dataColumns) },
+                snapshotId = snapshotId,
+                rowIdStart = 0L,
+                lineageRowIds = null,
+                keepPositions = null,
+                updatedRowids = updatedBySnapshot[snapshotId] ?: emptySet(),
+                isDelete = isDelete)
+
+    private fun inlinedRecordPageSource(events: List<InlinedEvent>, dataColumns: List<DucklakeColumnHandle>): ConnectorPageSource {
+        val dataTypes: List<Type> = dataColumns.map { it.columnType }
+        val types: List<Type> = dataTypes + BIGINT
+        val rows: List<List<Any?>> = events.map { event ->
+            val row: MutableList<Any?> = ArrayList(dataTypes.size + 1)
+            for (i in dataTypes.indices) {
+                row.add(DucklakeInlinedValueConverter.convertJdbcValue(event.values[i], dataTypes[i]))
+            }
+            row.add(event.rowId)
+            row
+        }
+        return RecordPageSource(InMemoryRecordSet(types, rows))
     }
 
     private class ResolvedChangeFeedDeletion(
@@ -543,11 +688,13 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). Inserted
-     * rowids come from lineage values (update/compaction files) or the `[rowIdStart, +count)` range. */
+     * rowids come from file lineage values / the `[rowIdStart, +count)` range, plus inlined-insert
+     * rowids. */
     private fun computeUpdatedRowids(
             deletedRowidsBySnapshot: Map<Long, Set<Long>>,
             insertFiles: List<DucklakeDataFile>,
-            insertLineage: Map<Long, LongArray?>): Map<Long, Set<Long>> {
+            insertLineage: Map<Long, LongArray?>,
+            inlinedInsertedRowidsBySnapshot: Map<Long, Set<Long>>): Map<Long, Set<Long>> {
         val rangesBySnapshot: MutableMap<Long, MutableList<LongRange>> = mutableMapOf()
         val lineageSetBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
         for (file in insertFiles) {
@@ -563,8 +710,9 @@ class DucklakePageSourceProvider @Inject constructor(
         return deletedRowidsBySnapshot.mapNotNull { (snapshot, deletedRowids) ->
             val ranges: List<LongRange> = rangesBySnapshot[snapshot] ?: emptyList()
             val lineageSet: Set<Long> = lineageSetBySnapshot[snapshot] ?: emptySet()
+            val inlinedSet: Set<Long> = inlinedInsertedRowidsBySnapshot[snapshot] ?: emptySet()
             val updated: Set<Long> = deletedRowids.filterTo(mutableSetOf()) { rowId ->
-                lineageSet.contains(rowId) || ranges.any { rowId in it }
+                lineageSet.contains(rowId) || inlinedSet.contains(rowId) || ranges.any { rowId in it }
             }
             if (updated.isEmpty()) null else snapshot to updated
         }.toMap()

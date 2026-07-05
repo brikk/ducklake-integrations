@@ -77,7 +77,7 @@ distinct commit referencing the bug ID.
 
 | Feature | Upstream | Our JVM | Notes |
 |---|---|---|---|
-| **Data change feed** (`table_changes`, `table_insertions`, `table_deletions`) | Yes | **Yes** (shipped) | `system.*` table functions over data/delete files per snapshot range. Reads the embedded row-lineage column so lineage-preserving UPDATEs pair into update pre/post-image; Trino-written UPDATEs surface as `delete`+`insert`. Inlined-data tables are gated. |
+| **Data change feed** (`table_changes`, `table_insertions`, `table_deletions`) | Yes | **Yes** (shipped) | `system.*` table functions over data/delete files per snapshot range. Reads the embedded row-lineage column so lineage-preserving UPDATEs pair into update pre/post-image; Trino-written UPDATEs surface as `delete`+`insert`. Also reads DuckLake inlined data (inlined inserts/deletes + inline file-position deletes). |
 | **Virtual columns** (`rowid`, `snapshot_id`, `filename`, `file_row_number`, `file_index`) | Yes | No | These are reserved column expressions exposed in scan. Trino could expose them via synthetic column handles. Likely useful for our MERGE story too. |
 | **Sorted tables** (write path applies sort) | Yes | No (readable, sort ignored) | pg_ducklake exposes `ducklake_sorted` index AM + `set_sort()`. Our README acknowledges we don't sort on write. |
 | **`variant` with `->`/`->>` extraction** | Yes (pg_ducklake wraps it) | No (degrades to VARCHAR) | Real structural type. Requires Trino-side support to be useful; VARCHAR degradation is honest. |

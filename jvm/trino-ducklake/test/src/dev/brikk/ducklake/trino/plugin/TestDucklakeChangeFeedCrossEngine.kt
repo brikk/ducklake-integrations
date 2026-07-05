@@ -87,10 +87,9 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
 
     @Test
     @Throws(Exception::class)
-    fun feedRejectsTablesWithInlinedData() {
+    fun feedReadsInlinedInsertsAndDeletes() {
         // DuckDB writes small rows that land in the inlined-data table (default row limit 10). The
-        // file-based change feed does not surface inlined changes, so it rejects with a clear
-        // pointer to flush_inlined_data rather than silently returning incomplete results.
+        // change feed reads them directly (no gate) — inlined inserts and the later inlined delete.
         val trino = "test_schema.cf_xengine_inlined"
         val duckdb = "ducklake_db.test_schema.cf_xengine_inlined"
         try {
@@ -100,11 +99,70 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
                     stmt.execute("INSERT INTO $duckdb VALUES (1, 'a'), (2, 'b')")
                 }
             }
-            val end = currentSnapshot()
-            org.assertj.core.api.Assertions.assertThatThrownBy {
-                computeActual("SELECT * FROM TABLE(ducklake.system.table_insertions(" +
-                        "'test_schema', 'cf_xengine_inlined', 1, $end))")
-            }.hasMessageContaining("flush_inlined_data")
+            val afterInsert = currentSnapshot()
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute("DELETE FROM $duckdb WHERE id = 1")
+                }
+            }
+            val afterDelete = currentSnapshot()
+
+            val insertions = rows("SELECT id, val FROM TABLE(ducklake.system.table_insertions(" +
+                    "'test_schema', 'cf_xengine_inlined', 1, $afterInsert)) ORDER BY id")
+            assertThat(insertions.map { it.getField(1) as String }).containsExactly("a", "b")
+
+            val deletions = rows("SELECT id, val FROM TABLE(ducklake.system.table_deletions(" +
+                    "'test_schema', 'cf_xengine_inlined', ${afterInsert + 1}, $afterDelete))")
+            assertThat(deletions).hasSize(1)
+            assertThat(deletions[0].getField(1) as String).isEqualTo("a")
+
+            // Full changes over the window: 2 inlined inserts + 1 inlined delete.
+            val changes = rows("SELECT change_type, id, val FROM TABLE(ducklake.system.table_changes(" +
+                    "'test_schema', 'cf_xengine_inlined', 1, $afterDelete)) ORDER BY change_type, id")
+            assertThat(changes.map { it.getField(0) as String }).containsExactly("delete", "insert", "insert")
+        }
+        finally {
+            tryDropTable(trino)
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
+    fun feedReadsInlineDeleteOfFileRow() {
+        // Case 3: FILE-resident data (inlining off for the insert) + a small DELETE that DuckDB
+        // records INLINE (ducklake_inlined_delete) rather than as a positional delete file. The
+        // change feed reads the deleted row from the data file at the inline-recorded position.
+        val trino = "test_schema.cf_xengine_inline_del"
+        val duckdb = "ducklake_db.test_schema.cf_xengine_inline_del"
+        try {
+            computeActual("CREATE TABLE $trino (id INTEGER, val VARCHAR)")
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    // Inserts land in a data file...
+                    stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 0, " +
+                            "schema => 'test_schema', table_name => 'cf_xengine_inline_del')")
+                    stmt.execute("INSERT INTO $duckdb VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+                }
+            }
+            val afterInsert = currentSnapshot()
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    // ...but the small delete is recorded inline.
+                    stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, " +
+                            "schema => 'test_schema', table_name => 'cf_xengine_inline_del')")
+                    stmt.execute("DELETE FROM $duckdb WHERE id = 2")
+                }
+            }
+            val afterDelete = currentSnapshot()
+
+            val deletions = rows("SELECT id, val FROM TABLE(ducklake.system.table_deletions(" +
+                    "'test_schema', 'cf_xengine_inline_del', ${afterInsert + 1}, $afterDelete))")
+            assertThat(deletions).hasSize(1)
+            assertThat(deletions[0].getField(0) as Int).isEqualTo(2)
+            assertThat(deletions[0].getField(1) as String).isEqualTo("b")
+            // Survivors still read correctly through both engines.
+            assertThat(computeActual("SELECT id FROM $trino ORDER BY id").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1, 3)
         }
         finally {
             tryDropTable(trino)
