@@ -317,6 +317,37 @@ record what blows up. That tells us what the first PR scope is.
 
 - [ ] **Evaluate adopting the DuckLake `.slt` corpus** as a portable regression
   suite for the catalog library. Source: `COMPARE-datafusion-ducklake.md`.
+  Scoped 2026-07-05: corpus is now **492 `.test` files** (was 248 at the 05-29
+  COMPARE snapshot — doubling fast; adoption value rising). datafusion's runner =
+  `sqllogictest` crate + ~100-line preprocessor (strip directives, skip
+  ATTACH/DETACH + DuckDB-only queries), running a curated snapshot.
+  **Recommended shape for us: cross-engine oracle REPLAY, not translation** —
+  execute each `.test` verbatim through embedded DuckDB (harness already
+  attaches it) to build catalog state with zero dialect work, then for each
+  plain-SELECT `query` directive run the equivalent read through Trino on the
+  same catalog and diff **live result sets** (DuckDB-as-oracle vs Trino, not
+  golden text). Turns the corpus into a read-parity fuzzer over our
+  hand-written-metadata risk surface; each upstream refresh delivers new cases
+  for free. Effort: slt parser ~1d (line-oriented, no Java lib — write our own),
+  replay driver 1-2d, skip-list curation a few days → green subset in under a
+  week. Statement-translation layer (Trino executes writes) is a possible later
+  bolt-on, not v1.
+  **Multi-engine/multi-backend scope (decided 2026-07-05):** target Trino AND
+  Doris, across all catalog backends. (a) Runner core (parser, replay driver,
+  DuckDB oracle) lives in **`ducklake-catalog/testFixtures`** — engine-agnostic;
+  thin `ReplayReadEngine` adapters per engine: DuckDB (identity control), Trino
+  (QueryRunner), Doris (JDBC→FE, compose infra exists). (b) Backend axis via the
+  ATTACH-rewrite step (duckdb-local / Postgres / Quack / SQLite-when-shipped) —
+  **seed skip lists from upstream's own `test/configs/{postgres,sqlite,quack}.json`**
+  (structured skips with reasons; the corpus is already designed for
+  backend parameterization — we inherit their curation). (c) Compare
+  canonicalized typed values + `rowsort` (upstream's `sort_style`), never text —
+  three engines format differently. (d) Tier the matrix: PR = trino ×
+  duckdb-local fast subset; nightly = full engines × backends (upstream does the
+  same for quack CI). (e) Later: mirror upstream *mode* configs
+  (`deletion_vectors.json`, `no_inline.json`, `ducklake_version.json`) to run
+  the corpus under our write-mode session properties. Doris agent should
+  co-review the `ReplayReadEngine` interface before it's built.
 
 ### Open research items (read-path)
 
@@ -355,7 +386,15 @@ write-path; NOW-2/3 below are read-path).
   parquet-delete + puffin-delete) are correct; no read gate remains.** See
   [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
 - **[NOW-3] nested-field-id-top-level-match** `[v: CURRENT — DuckLake v1.0-era;
-  read correctness]` — datafusion-ducklake #148 (2026-06) fixed
+  read correctness]` — PARTIALLY VERIFIED 2026-07-05: the change-feed lineage
+  reader matches field-id 2147483540 on the top-level field — but that column is
+  a **scalar** BIGINT where top-level == leaf, so it *cannot* exhibit this bug;
+  it only proves the change feed adds no new exposure. **Remaining scope: the
+  general parquet read path for nested (List/struct/map) columns.** Cheapest
+  close: check whether the step2-m3 nested ADD/DROP FIELD e2e tests
+  value-assert a `List` column after evolution (all-NULL would have failed
+  them) — if yes, tick this with a pointer; if no, add the List roundtrip.
+  ~15-min check before writing anything. Original: datafusion-ducklake #148 (2026-06) fixed
   List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
   Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
   (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);

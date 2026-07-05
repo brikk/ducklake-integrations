@@ -965,8 +965,18 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   API — mirroring upstream's ALTER-vs-INSERT split. Compare our write path: do we
   reject vs silently drop/accept a widening type change on INSERT, and can we
   version a column's type keeping the field-id stable? Research; ~1-2h.
-- **[NOW-1] next-file-id-signals-change** `[v: CURRENT — DuckLake v1.0 / DuckDB
-  1.5.x; correctness]` — pg_ducklake #217 (`d538bf8`): DuckLake's
+- **[NOW-1] next-file-id-signals-change** `[v: CURRENT]` — ✅ **VERIFIED NOT A
+  LIVE BUG 2026-07-05** (parallel agent). Both directions clean: (poisoner)
+  `next_row_id` only advances on INSERT, which always writes a data file →
+  shared `allocateFileId()` (delete files use it too, line 3443 / data 2951) →
+  `next_file_id` moves → concurrent DuckDB's `(next_file_id, schema_version,
+  table_id)` stats-cache key changes; (victim) we read `next_row_id` fresh from
+  `ducklake_table_stats` per transaction, no cache on our side. Residual
+  (benign): TRUNCATE changes `record_count` without bumping `next_file_id` —
+  stale stats describe a *superset* post-truncate, so concurrent DuckDB filter
+  folding stays correct; healed by the next INSERT. Optional ~10-min follow-up:
+  confirm upstream's TRUNCATE doesn't bump `next_file_id` either
+  (behavior-match). Original concern — pg_ducklake #217 (`d538bf8`): DuckLake's
   table-stats cache is keyed by `(next_file_id, schema_version, table_id)`, so
   upstream bumps `next_file_id` by 1 even on commits that add **no** data file
   (inlined-only) purely to bust that cache; not doing so let a concurrently-open
