@@ -69,9 +69,29 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   options — FE-side synthesis of a temp parquet from `readInlinedData` into a
   scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.
   Same work unlocks inline DELETE application (Step 7.5).
-- [ ] Corpus full-run triage to zero failures (`corpusReplayTest
-  -Dducklake.corpus.dirs=all`) — grow `DorisCorpusDialect` accepts()
-  deliberately as read features land (each widening = more mirrored records).
+**Per-dir corpus sweep (2026-07-06, verified GREEN — run one dir at a time,
+~1 min each; NEVER the full corpus unless explicitly asked):**
+
+| dir | records | notes |
+|---|---|---|
+| catalog | 180 / 0 | multi-schema reads; REFRESH-CATALOG freshness fixed earlier divergences |
+| time_travel | 34 / 0 | inline `AT (VERSION => n)` rewrite landed |
+| types | 83 / 0 | infinity-literal denial fixed 3 divergences |
+| insert | 35 / 0 | |
+| delete | 107 / 0 | BE nullability → uniform skip; FILTER(WHERE) denied |
+| update | 64 / 0 | |
+| merge | 57 / 0 | |
+| partitioning | 422 / 0 | partition-bearing + bucket-prune hold across 17 files |
+| schema_evolution | 11 / 0 | |
+
+Dialect/adapter learnings folded in: literal inline time-travel rewrite,
+WITH-CTE acceptance, infinity-temporal-literal denial (silent-wrong-answer
+landmine), `FILTER (WHERE)` denial (Doris parse gap), BE delete-nullability
+classified as engine-skip.
+
+- [ ] Grow `DorisCorpusDialect` accepts() deliberately as read features land
+  (each widening = more mirrored records). Full-corpus run is a
+  later/CI concern, not an interactive gate.
 
 Follow-ups from the sweep (not yet done):
 - [ ] `add_files`-registered hive-layout files may lack partition columns in
