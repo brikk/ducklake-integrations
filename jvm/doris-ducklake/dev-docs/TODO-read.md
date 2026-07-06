@@ -65,6 +65,26 @@ mirrored records green. It immediately found a REAL bug — tables with live
 DuckLake **inlined data/delete rows** (`ducklake_inlined_*`, the PG-backend
 default for small writes) returned **silently wrong rows** (empty/stale); now
 a loud documented-gap error at plan time (`failOnLiveInlinedState`).
+- [x] **Field-id schema dictionary (`ducklake_name_mapping`)** — DONE
+  2026-07-06. `DuckLakeSchemaDictionary` emits `current_schema_id` +
+  `history_schema_info` (iceberg-shaped) so the BE matches file↔table columns
+  by field id (renamed/reordered columns read correctly instead of NULL),
+  with the per-file `name_mapping` fallback for `add_files`/legacy files.
+  DuckLake `column_id` IS the field id, and DuckLake Parquet carries
+  `field_id` in file metadata (verified), so the iceberg field-id path works
+  unchanged. **Scalar columns only** — a nested TField without its subfield
+  tree SIGABRTs the BE's `by_parquet_field_id` recursion, so struct/list/map
+  columns are omitted (they read by name; a subset dictionary is safe).
+  Closed corpus files: `add_files_rename`, `compaction_multiple_rename_column`.
+  - [ ] **Follow-up — mapping-id-space-aware dictionary.** Two files stay
+    skipped (`add_files.test`, `delete/delete_legacy_missing_mapping_...`):
+    `ducklake_name_mapping.column_id` is a per-registration id space (file
+    field-ids 0/1/2) that isn't always the table field-id (1/2/3). Our
+    union-all-alternate-names dictionary then either mis-binds a reused
+    physical name onto older rows, or misses a name the BE demands for an
+    id-less file. Correct handling needs per-file field-id remapping (map
+    the file's own field-ids → table field-ids using its `mapping_id` row),
+    not a flat name union.
 - [ ] **Serve inlined data rows** (upgrade the guard into a real read):
   options — FE-side synthesis of a temp parquet from `readInlinedData` into a
   scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.

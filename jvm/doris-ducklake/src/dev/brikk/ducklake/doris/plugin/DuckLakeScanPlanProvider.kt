@@ -449,7 +449,35 @@ internal class DuckLakeScanPlanProvider(
                 out[PROP_LOCATION_PREFIX + key] = value
             }
         }
+        // Schema dictionary: make the BE match file↔table columns by field id
+        // (renamed/reordered columns read correctly instead of NULL), plus the
+        // per-file name_mapping fallback for add_files/legacy files. Built from
+        // the requested column handles + the active files' name maps; decoded
+        // back onto the params in populateScanLevelParams. See
+        // DuckLakeSchemaDictionary.
+        schemaDictionaryProp(handle, columns)?.let { out[PROP_SCHEMA_DICTIONARY] = it }
         return out
+    }
+
+    /**
+     * Base64 schema dictionary for the requested columns, carrying the union of
+     * the active data files' `ducklake_name_mapping` alternate names. Returns
+     * null when there are no DuckLake column handles to describe.
+     */
+    private fun schemaDictionaryProp(
+        handle: ConnectorTableHandle,
+        columns: List<ConnectorColumnHandle>,
+    ): String? {
+        val dlColumns = columns.mapNotNull { it as? DuckLakeColumnHandle }
+        if (dlColumns.isEmpty()) {
+            return null
+        }
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        val mappingIds = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+            .mapNotNull { it.mappingId }
+            .toSet()
+        val nameMaps = if (mappingIds.isEmpty()) emptyList() else catalog.getNameMaps(mappingIds).values
+        return DuckLakeSchemaDictionary.encode(dlColumns, nameMaps)
     }
 
     override fun populateScanLevelParams(
@@ -460,6 +488,9 @@ internal class DuckLakeScanPlanProvider(
         if (nodeProperties == null || nodeProperties.isEmpty()) {
             return
         }
+        // Decode the field-id schema dictionary onto the real scan params
+        // (current_schema_id + history_schema_info) — see DuckLakeSchemaDictionary.
+        DuckLakeSchemaDictionary.apply(params, nodeProperties[PROP_SCHEMA_DICTIONARY])
         if (params.properties == null) {
             params.properties = mutableMapOf()
         }
@@ -490,6 +521,11 @@ internal class DuckLakeScanPlanProvider(
         // stripped before the keys land in TFileScanRangeParams so the BE sees
         // the canonical "s3.*" form it normalises in S3ObjStorage.
         const val PROP_LOCATION_PREFIX: String = "ducklake.location."
+
+        // Ferries the base64 field-id schema dictionary from getScanNodeProperties
+        // to populateScanLevelParams (the two SPI methods share no instance
+        // state), mirroring iceberg's "iceberg.schema_evolution" prop.
+        const val PROP_SCHEMA_DICTIONARY: String = "ducklake.schema_dictionary"
 
         // PluginDrivenScanNode reads this key out of getScanNodeProperties() to
         // decide which BE reader to dispatch to (PluginDrivenScanNode.java
