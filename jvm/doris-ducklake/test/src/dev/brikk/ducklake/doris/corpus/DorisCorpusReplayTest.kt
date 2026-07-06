@@ -52,6 +52,18 @@ internal class DorisCorpusReplayTest {
             "general/metadata_cache.test" to
                 "KNOWN BE GAP: DuckLake position-delete parquet uses OPTIONAL columns; BE iceberg reader " +
                 "requires REQUIRED (friction log 2026-05-19; REPORT-*delete*-nullability.md)",
+            // ---- issues/ regressions: map to already-known gaps or non-mirrorable harness tests ----
+            "issues/issue_865_update_wrong_result.test" to
+                "inlined file-deletes (DATA_INLINING_ROW_LIMIT 10): UPDATE mixing a committed delete file " +
+                "with inlined file-deletions — the known inlined-delete gap (friction 2026-05-19)",
+            "issues/issue_1135.test" to
+                "column DEFAULT values not surfaced: ADD COLUMN ... DEFAULT 42 should backfill old rows; " +
+                "DuckLake stores the default but our read path returns NULL (TODO-read: column defaults)",
+            "issues/view_tosql_performance.test" to
+                "DuckLake view + duckdb_views(): views are not surfaced by the connector (dialect skip)",
+            "issues/corrupted_catalog_fault_isolation.test" to
+                "fault-injection harness test (deliberately corrupts the catalog / expects DuckDB-specific " +
+                "error text) — not mirrorable against an external engine",
             // ---- REAL GAPS the mirror found on full-corpus contact (TODO-read items; un-skip when fixed) ----
             "add_files/add_files_hive.test" to GAP_HIVE_PARTITION_FILL,
             "add_files/add_files_hive_many_columns.test" to GAP_HIVE_PARTITION_FILL,

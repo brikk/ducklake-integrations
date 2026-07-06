@@ -89,6 +89,16 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
     can't express per-file maps. Needs per-range schema info in the SPI (or a
     BE per-file name→field-id hook) — see the friction log entry
     "Schema dictionary is scan-node-level; can't express per-FILE column mapping".
+- [ ] **Column DEFAULT values** (corpus `issues/issue_1135`). `ALTER TABLE
+  ADD COLUMN b INT DEFAULT 42` must backfill rows written before the column
+  existed with the default (`WHERE b = 42` should match old rows). DuckLake
+  stores the default in `ducklake_column`, but our `DuckLakeColumn` doesn't
+  carry it and `getTableSchema` passes `defaultValue = null`, so old rows read
+  NULL. Two parts: (a) catalog surfaces the default (shared module change), and
+  (b) the read path applies it for rows in files predating the column — likely
+  the iceberg "generated/default column" BE seam (check whether the BE backfills
+  a not-in-file column from a default, or if it always NULL-fills). May be
+  partly BE-gated; investigate the iceberg default-column path first.
 - [ ] **Serve inlined data rows** (upgrade the guard into a real read):
   options — FE-side synthesis of a temp parquet from `readInlinedData` into a
   scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.
@@ -114,6 +124,8 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
 | general | 0 fail | |
 | table_changes | (with metadata) 0 fail | |
 | metadata | 0 fail | |
+| constraints/default/reserved_names/comments/snapshot_info/list_files/initialize | 0 fail | |
+| issues | 0 fail (4 skips) | found: column DEFAULT-values gap (issue_1135); rest = known inlined-delete / view / fault-injection |
 
 **Read-relevant corpus surface swept — no remaining read gaps.** The
 remaining unswept dirs are write/maintenance (compaction, rewrite_data_files,
