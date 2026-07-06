@@ -95,6 +95,17 @@ internal class DorisCorpusDialectTest {
     }
 
     @Test
+    fun rejectsInfinityTemporalLiterals() {
+        // Doris folds `ts = 'infinity'` to constant-false and prunes the scan
+        // to 0 rows, bypassing the connector — a silent wrong answer, so deny.
+        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts='infinity'")).isFalse()
+        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts>'-infinity'")).isFalse()
+        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts=\"infinity\"")).isFalse()
+        // "infinity" as a plain identifier/column is fine.
+        assertThat(DorisCorpusDialect.accepts("SELECT infinity FROM lake.t")).isTrue()
+    }
+
+    @Test
     fun rejectsNonLiteralInlineTimeTravel() {
         // TIMESTAMP / non-literal version expressions have no mechanical
         // rewrite → still denied after the literal rewrite pass.

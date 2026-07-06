@@ -121,6 +121,12 @@ object DorisCorpusDialect {
      */
     private val DENIED_REGEXES = listOf(
         Regex("\\bAT\\s*\\("),
+        // DuckDB (in)finite temporal literals: `'infinity'` / `'-infinity'` as
+        // timestamp/date values. Doris has no infinite temporal concept and
+        // folds such a comparison to constant-false, silently pruning the scan
+        // to 0 rows — WORSE than an error because it looks like a valid answer
+        // and bypasses the connector entirely. Deny so it's an engine-skip.
+        Regex("['\"]-?INFINITY['\"]"),
     )
 
     /**
