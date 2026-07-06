@@ -1,12 +1,28 @@
 # DESIGN: Doris adapter for the DuckLake corpus replay runner
 
-> Created 2026-07-05. Status: **prep — blocked on the runner's backend axis**
-> (Postgres metadata catalog + shared/MinIO data path), which is the runner
-> side's next milestone after Trino-adapter contact. Runner: module
-> `jvm/ducklake-corpus-replay`, branch `ducklake-corpus-test` @ `5be8131`
-> (full upstream corpus green through the DuckDB oracle: 466 files, 426
-> executing, 7,681/7,681 records; corpus = duckdb/ducklake pinned at
-> `c23aca43`, v1.5-variegata ↔ DuckDB 1.5.4).
+> Created 2026-07-05. Status: **LIVE** (2026-07-06) — `DorisReplayEngine` +
+> `DorisCorpusReplayTest` mirror the corpus against a compose FE+BE via
+> `./gradlew :doris-ducklake:corpusReplayTest` (starter dirs; add
+> `-Dducklake.corpus.dirs=all` for the full corpus). Starter-dirs result:
+> **477 passed, 0 failed** (skips = documented gaps). Backend axis landed in
+> runner commit `8c0ed16` (`OracleAttachment` + `ReplayEngineSkip` +
+> `metadataRewriter`); corpus = duckdb/ducklake pinned at `c23aca43`
+> (v1.5-variegata ↔ DuckDB 1.5.4).
+>
+> **First-contact findings (2026-07-06):**
+> 1. **REAL BUG: silent wrong rows on inlined state.** DuckLake inlines small
+>    INSERTs/DELETEs into `ducklake_inlined_*` metadata rows by default on PG
+>    backends; our read path served file rows only → empty/stale results with
+>    no error. Fixed: `DuckLakeScanPlanProvider.failOnLiveInlinedState` throws
+>    a documented-gap `DorisConnectorException` at plan time ("never silently
+>    wrong"). Serving inlined rows is now a TODO-read item.
+> 2. FE **catalog-cache staleness** vs an external writer: the adapter issues
+>    `REFRESH CATALOG` before every mirrored query (the documented Doris
+>    freshness contract for externally-written catalogs).
+> 3. DuckDB inline time travel (`AT (VERSION => …)`) reaches the FE parser as
+>    an empty-detail error — denied in `DorisCorpusDialect` (`\bAT\s*\(`).
+> 4. `general/metadata_cache.test` file-skipped: the known BE
+>    parquet-nullability delete gap (friction 2026-05-19).
 
 ## The contract (what we implement)
 
@@ -95,12 +111,18 @@ Trino contact as planned.
   `{`, lambdas), catalog/file table-functions, degraded type families
   (INTERVAL/UNNEST/sampling), word-boundary precise. WITH-CTEs rejected in
   v1 (Doris supports them — first widening candidate).
-- [ ] **Module wiring** (GATED): the adapter class needs
-  `ducklake-corpus-replay` on the classpath — add the gradle dependency +
-  `DorisReplayReadEngine` (JDBC + the two classes above) once the runner
-  branch merges and the backend axis lands.
-- [ ] **Skip-list seed** for Doris: start empty at the file level; rely on
-  `accepts()` until real runs show file-level pathologies.
+- [x] **Module wiring** (2026-07-06): `testImplementation(project(":ducklake-corpus-replay"))`
+  + mysql-connector-j; test code compiles at JVM 25 (main stays 17 — the FE
+  ABI) via classpath-attribute overrides in build.gradle.kts. Adapter =
+  `test/src/.../corpus/DorisReplayEngine.kt`; harness =
+  `DorisCorpusReplayTest` driven by the dedicated `corpusReplayTest` task
+  (pins `java.io.tmpdir` into the compose bind mount; excluded from plain
+  `test`).
+- [x] **Skip-list seed** (2026-07-06): metadata_parameters (props not
+  threaded), ducklake_settings (backend-type assert), metadata_cache (known
+  BE nullability gap).
+- [ ] **Full-corpus green**: run `-Dducklake.corpus.dirs=all`, triage the
+  remaining failure classes into fixes vs documented skips (in progress).
 
 ## What this replaces
 

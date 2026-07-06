@@ -40,6 +40,12 @@ services:
       # Persist FE metadata across restarts. Wipe to reset cluster state.
       - fe-meta:/opt/apache-doris/fe/doris-meta
       - fe-log:/opt/apache-doris/fe/log
+      # Corpus replay data axis: the host-side DuckDB oracle writes lake data
+      # files under this dir (the corpusReplayTest gradle task pins
+      # java.io.tmpdir here); mounting it at the SAME absolute path lets
+      # FE/BE resolve identical file paths from the shared PG metadata.
+      # See dev-docs/DESIGN-corpus-replay-adapter.md. smoke.sh mkdir -p's it.
+      - ${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}:${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}
     networks:
       doris-net:
         ipv4_address: 172.30.80.10
@@ -76,6 +82,8 @@ services:
     volumes:
       - be-storage:/opt/apache-doris/be/storage
       - be-log:/opt/apache-doris/be/log
+      # Corpus replay data axis — same-path bind mount, see the FE note above.
+      - ${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}:${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}
     networks:
       doris-net:
         ipv4_address: 172.30.80.20

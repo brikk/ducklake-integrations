@@ -75,6 +75,16 @@ internal class DorisCorpusDialectTest {
         assertThat(DorisCorpusDialect.accepts("SELECT t.* FROM t USING SAMPLE 10%")).isFalse()
     }
 
+    @Test
+    fun rejectsDuckDbInlineTimeTravel() {
+        // DuckDB `AT (VERSION => n)` / `AT (TIMESTAMP => …)` has no mechanical
+        // rewrite to Doris FOR VERSION/TIME AS OF (first-contact finding).
+        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => 2)")).isFalse()
+        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT(TIMESTAMP => NOW())")).isFalse()
+        // ... but the bare word AT stays admissible (aliases, column names).
+        assertThat(DorisCorpusDialect.accepts("SELECT at FROM lake.tbl")).isTrue()
+    }
+
     // ---- deny-list precision: word boundaries, not substrings ----
 
     @Test

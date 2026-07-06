@@ -60,6 +60,19 @@ Trino contact). Design + prep checklist:
 normalizer, `accepts()` v1, and the headless compose profile are all
 build-able before the gate lifts.
 
+**Corpus first contact (2026-07-06, adapter LIVE):** starter dirs 477/477
+mirrored records green. It immediately found a REAL bug — tables with live
+DuckLake **inlined data/delete rows** (`ducklake_inlined_*`, the PG-backend
+default for small writes) returned **silently wrong rows** (empty/stale); now
+a loud documented-gap error at plan time (`failOnLiveInlinedState`).
+- [ ] **Serve inlined data rows** (upgrade the guard into a real read):
+  options — FE-side synthesis of a temp parquet from `readInlinedData` into a
+  scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.
+  Same work unlocks inline DELETE application (Step 7.5).
+- [ ] Corpus full-run triage to zero failures (`corpusReplayTest
+  -Dducklake.corpus.dirs=all`) — grow `DorisCorpusDialect` accepts()
+  deliberately as read features land (each widening = more mirrored records).
+
 Follow-ups from the sweep (not yet done):
 - [ ] `add_files`-registered hive-layout files may lack partition columns in
   the parquet body; trino constant-fills from partition values. Doris path

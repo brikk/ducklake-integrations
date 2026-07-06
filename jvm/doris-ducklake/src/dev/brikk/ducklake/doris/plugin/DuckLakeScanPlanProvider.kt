@@ -11,6 +11,7 @@ import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 
 import org.apache.doris.connector.api.ConnectorSession
+import org.apache.doris.connector.api.DorisConnectorException
 import org.apache.doris.connector.api.handle.ConnectorColumnHandle
 import org.apache.doris.connector.api.handle.ConnectorTableHandle
 import org.apache.doris.connector.api.pushdown.ConnectorExpression
@@ -98,6 +99,16 @@ internal class DuckLakeScanPlanProvider(
                     " at snapshot " + dlHandle.snapshotId,
             )
 
+        // Correctness gate (corpus first-contact finding, 2026-07-06): DuckLake
+        // inlines small INSERTs/DELETEs into metadata-catalog rows
+        // (ducklake_inlined_data_* / ducklake_inlined_delete_*) by default on
+        // PG backends. The Doris read path serves rows from data FILES only,
+        // so a table with live inlined state would SILENTLY return wrong rows
+        // (empty for inlined data, over-counted for inlined deletes). Fail
+        // loudly instead — two cheap metadata probes per plan buy "never
+        // silently wrong". Serving inlined rows is a TODO-read item.
+        failOnLiveInlinedState(dlHandle)
+
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
         val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
         val partitions = resolvePartitionContext(dlHandle)
@@ -125,6 +136,27 @@ internal class DuckLakeScanPlanProvider(
             ranges.add(buildRange(file, tableDataPath, partitions, PUSH_DOWN_COUNT_NONE))
         }
         return ranges
+    }
+
+    /**
+     * Throws [DorisConnectorException] when the table has live inlined state
+     * at the pinned snapshot — the "not supported" wording is deliberate: it
+     * is the connector's documented-gap convention (and what the corpus
+     * mirror's error classifier recognizes as an engine-skip).
+     */
+    private fun failOnLiveInlinedState(handle: DuckLakeTableHandle) {
+        val liveInlinedData =
+            catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId).any { it.hasLiveRows }
+        if (liveInlinedData || catalog.hasInlinedDeletes(handle.tableId, handle.snapshotId)) {
+            throw DorisConnectorException(
+                "DuckLake table has live inlined " +
+                    (if (liveInlinedData) "data" else "delete") +
+                    " rows in the metadata catalog; reading them is not supported by the Doris " +
+                    "connector yet (rows live in ducklake_inlined_* tables, not parquet). " +
+                    "Flush them (DuckDB: CALL <lake>.flush_inlined_data()) or disable inlining " +
+                    "(CALL <lake>.set_option('data_inlining_row_limit', '0')) and rewrite.",
+            )
+        }
     }
 
     /**

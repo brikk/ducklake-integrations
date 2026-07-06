@@ -106,6 +106,9 @@ if [[ -z "${DORIS_BE_PLATFORM:-}" && "$(uname -m)" == "x86_64" ]]; then
     export DORIS_BE_PLATFORM=linux/amd64
     log "Host is x86_64 — defaulting DORIS_BE_PLATFORM=${DORIS_BE_PLATFORM}"
 fi
+# Corpus replay data-axis mount source (see docker-compose.yml + the design
+# doc): must exist before `up` or docker creates it root-owned.
+mkdir -p "${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}"
 log "Starting Doris FE + BE…"
 docker compose -f "${HERE}/docker-compose.yml" up -d
 

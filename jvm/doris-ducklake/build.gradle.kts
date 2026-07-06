@@ -30,6 +30,24 @@ kotlin {
     }
 }
 
+// TESTS compile at the toolchain's 25 (they already RUN on 25): the corpus
+// replay module (:ducklake-corpus-replay) is a JVM-25 library, and only test
+// code touches it. Main stays strictly 17 — that's the FE ABI. The classpath
+// attributes must agree or Gradle refuses to resolve the corpus project.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_25)
+}
+tasks.named<JavaCompile>("compileTestJava") {
+    sourceCompatibility = JavaVersion.VERSION_25.toString()
+    targetCompatibility = JavaVersion.VERSION_25.toString()
+}
+configurations.testCompileClasspath {
+    attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
+}
+configurations.testRuntimeClasspath {
+    attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
+}
+
 // mavenLocal is required ONLY for this module: the Doris fe-connector-api / spi
 // artifacts come from a custom branch (PR #62767) installed into ~/.m2. We
 // scope mavenLocal to org.apache.doris coordinates via exclusiveContent so it
@@ -82,6 +100,12 @@ dependencies {
     // Used by tests to bootstrap the DuckLake metadata schema in Postgres via DuckDB's
     // postgres + ducklake extensions — same pattern as :ducklake-catalog and :trino-ducklake.
     testImplementation(libs.duckdb.jdbc)
+
+    // Corpus replay adapter (DorisReplayEngine): the runner seam + the mysql-protocol
+    // driver the adapter uses to reach the live compose FE. Test-only; the corpus
+    // test itself runs via the dedicated :doris-ducklake:corpusReplayTest task.
+    testImplementation(project(":ducklake-corpus-replay"))
+    testRuntimeOnly("com.mysql:mysql-connector-j:9.5.0")
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -116,4 +140,36 @@ val pluginZip by tasks.registering(Zip::class) {
 
 tasks.assemble {
     dependsOn(pluginZip)
+}
+
+// ---- Corpus replay (dev-docs/DESIGN-corpus-replay-adapter.md) ----
+// The corpus mirror needs a LIVE compose cluster (`compose/smoke.sh --up-only`)
+// and writes oracle data files under a host dir bind-mounted into the BE at
+// the SAME absolute path (compose mounts ${DORIS_CORPUS_DIR:-/tmp/ducklake-corpus}).
+// java.io.tmpdir is pinned there so DuckDbOracle's per-file temp dirs land
+// inside the mount — that's how a host-side oracle and a containerized BE read
+// the same lake. Kept OUT of the normal `test` task (no cluster in CI).
+val corpusTmpDir = providers.gradleProperty("dorisCorpusDir").orElse("/tmp/ducklake-corpus")
+
+tasks.test {
+    exclude("**/DorisCorpusReplayTest*")
+}
+
+val corpusReplayTest by tasks.registering(Test::class) {
+    description = "Mirrors upstream DuckLake corpus reads through a live compose Doris FE+BE."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    include("**/DorisCorpusReplayTest*")
+    maxHeapSize = "2g"
+    systemProperty("java.io.tmpdir", corpusTmpDir.get())
+    systemProperty(
+        "ducklake.corpus.root",
+        rootProject.projectDir.resolve("ducklake-corpus-replay/ducklake/test/sql").absolutePath,
+    )
+    // Directory selection mirrors the runner module: starter dirs by default,
+    // "-Dducklake.corpus.dirs=all" for the full corpus.
+    System.getProperty("ducklake.corpus.dirs")?.let { systemProperty("ducklake.corpus.dirs", it) }
+    outputs.upToDateWhen { false } // always re-run against the live cluster
 }

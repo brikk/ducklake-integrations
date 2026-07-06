@@ -32,6 +32,9 @@ object DorisCorpusDialect {
         if (DENIED_SUBSTRINGS.any { it in body }) {
             return false
         }
+        if (DENIED_REGEXES.any { it.containsMatchIn(upper) }) {
+            return false
+        }
         if (DENIED_WORDS.any { containsWord(upper, it) }) {
             return false
         }
@@ -82,6 +85,17 @@ object DorisCorpusDialect {
         "->", // lambda / json arrows
         "[", // LIST/ARRAY literals + indexing (also blocks list slicing)
         "{", // STRUCT literals
+    )
+
+    /**
+     * Pattern denials over the uppercased body. DuckDB's inline time travel
+     * (`FROM t AT (VERSION => 3)` / `AT (TIMESTAMP => …)`) has no mechanical
+     * rewrite to Doris's `FOR VERSION/TIME AS OF`; first contact showed it
+     * reaching the FE parser as an empty-detail error. Bare-word `AT` is far
+     * too common to deny — the paren form is the actual syntax.
+     */
+    private val DENIED_REGEXES = listOf(
+        Regex("\\bAT\\s*\\("),
     )
 
     /**
