@@ -422,6 +422,28 @@ generate new parquet files and need a similar metadata-insert path.
   PageSorter, parquet + unpartitioned + sort-spec-present only (existing writes unchanged), per-file
   sorted output. See [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
 
+## Lineage-preserving writes — ✅ DONE 2026-07-06 (F7 capstone)
+
+`write_row_lineage` session property (default off, parquet-only): the connector's
+own UPDATE/MERGE rewrites embed each row's ORIGINAL rowid as
+`_ducklake_internal_row_id` (parquet field-id 2147483540, DuckDB's
+`MultiFileReader::ROW_ID_FIELD_ID`), closing the change-feed arc — Trino-written
+updates pair into `update_preimage`/`update_postimage` and **rowids stay stable
+across engines** (DuckDB resolves the embedded column ahead of `row_id_start`).
+Mechanics: the merge sink pairs Trino's raw-page op-5/op-4 adjacent rows to
+recover old rowids, routes update-rewrites to a second lineage-aware
+`DucklakePageSink` (the column must be non-null for every row of a carrying
+file, so MERGE plain-inserts stay in the ordinary sink/file); the schema builder
+annotates the synthetic column; catalog registration unchanged (upstream also
+allocates `row_id_start` normally and keeps lineage out of column stats). Tests:
+`TestDucklakeChangeFeed.updatePairsIntoPreAndPostImageWithWriteRowLineage`,
+`.mergeMixesLineagePairedUpdatesWithPlainInserts`,
+`TestDucklakeChangeFeedCrossEngine.trinoLineageUpdatePreservesRowidsForDuckdb`.
+Follow-ups (small): compaction writer does not yet PRESERVE existing lineage
+values when rewriting carrying files; `$row_id` virtual is still positional on
+reads (lineage is consumed by the change feed only); default-on decision once
+production-soaked.
+
 ## Puffin deletion-vector writes — ✅ DONE 2026-06-29
 
 - [x] `write_deletion_vectors` session property (default off) → `DucklakeMergeSink` writes tombstones

@@ -86,6 +86,18 @@ class DucklakePageSinkProvider @Inject constructor(
 
         val insertSink = createPageSink(ducklakeMergeHandle.insertHandle, session)
 
+        // Lineage-preserving rewrites (session write_row_lineage): a SECOND insert
+        // sink embeds the original rowid column into UPDATE-rewritten rows.
+        // Parquet-only — other data-file formats keep today's delete+insert shape.
+        val lineageSink: DucklakePageSink? =
+                if (DucklakeSessionProperties.isWriteRowLineage(session) &&
+                        DucklakeSessionProperties.FORMAT_PARQUET.equals(
+                                ducklakeMergeHandle.insertHandle.fileFormat, ignoreCase = true)) {
+                    createPageSink(ducklakeMergeHandle.insertHandle, session, writeRowLineage = true)
+                } else {
+                    null
+                }
+
         return DucklakeMergeSink(
                 ducklakeMergeHandle,
                 fileSystemFactory.create(session),
@@ -95,10 +107,14 @@ class DucklakePageSinkProvider @Inject constructor(
                 fileFormatDataSourceStats,
                 trinoVersion,
                 DucklakeSessionProperties.isWriteDeletionVectors(session),
-                insertSink)
+                insertSink,
+                lineageSink)
     }
 
-    private fun createPageSink(handle: DucklakeWritableTableHandle, session: ConnectorSession): DucklakePageSink =
+    private fun createPageSink(
+            handle: DucklakeWritableTableHandle,
+            session: ConnectorSession,
+            writeRowLineage: Boolean = false): DucklakePageSink =
             DucklakePageSink(
                     handle,
                     fileSystemFactory.create(session),
@@ -106,5 +122,6 @@ class DucklakePageSinkProvider @Inject constructor(
                     parquetWriterConfig,
                     duckdbTargetWriteBytes,
                     trinoVersion,
-                    pageIndexerFactory)
+                    pageIndexerFactory,
+                    writeRowLineage)
 }

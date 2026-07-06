@@ -41,9 +41,10 @@ import java.io.IOException
  * - [updatedRowids] are the `rowid`s at [snapshotId] that are BOTH deleted and re-inserted — i.e.
  *   updates. Their `change_type` becomes [ChangeFeedColumns.CHANGE_UPDATE_POSTIMAGE] on the insert
  *   side and [ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE] on the delete side; all others get the
- *   plain [insert] / [delete] change type. (Trino-written UPDATEs allocate a fresh rowid and write
- *   no lineage column, so they still surface as delete+insert — a faithful description of Trino's
- *   delete-then-insert UPDATE.)
+ *   plain [insert] / [delete] change type. (Trino-written UPDATEs pair too when the write ran with
+ *   the `write_row_lineage` session property — the merge sink then embeds the original rowid; see
+ *   DucklakeMergeSink. Without it they surface as delete+insert, a faithful description of Trino's
+ *   delete-then-insert UPDATE under fresh rowids.)
  */
 class ChangeFeedUnit(
         val baseSource: () -> ConnectorPageSource,

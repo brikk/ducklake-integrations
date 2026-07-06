@@ -55,6 +55,17 @@ class DucklakePageSink(
         duckdbTargetWriteBytes: Long,
         private val trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
+        /**
+         * Lineage-preserving mode (UPDATE/MERGE rewrites): every page appended to
+         * this sink carries ONE extra trailing BIGINT channel holding each row's
+         * ORIGINAL DuckLake rowid, written as the embedded
+         * `_ducklake_internal_row_id` column (parquet field-id 2147483540 —
+         * DuckDB's MultiFileReader::ROW_ID_FIELD_ID). The column is annotated in
+         * the parquet schema but is NOT a catalog column: it stays out of stats
+         * (leaf targets come from the catalog tree) and out of the fragment's
+         * columnStats, matching upstream. Parquet format only.
+         */
+        private val writeRowLineage: Boolean = false,
 ) : ConnectorPageSink {
     private val writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder()
             .setMaxBlockSize(parquetWriterConfig.blockSize)
@@ -97,18 +108,33 @@ class DucklakePageSink(
         this.unsignedRangeChecker = DucklakeUnsignedRangeChecker.build(
                 handle.columns, handle.allCatalogColumns)
 
+        require(!writeRowLineage || FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
+            "writeRowLineage is parquet-only (fileFormat=$fileFormat)"
+        }
+
         // Build the Parquet schema only when we're actually writing Parquet.
         // The DuckDB-format path doesn't use these fields, and ParquetSchemaConverter
         // rejects column types it doesn't recognize (UUID, future types) — building it
         // unconditionally would block those types from ever reaching the duckdb writer.
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
+            // Lineage mode appends the synthetic rowid column LAST so all
+            // catalog-derived leaf stats indexes stay valid.
+            val converterTypes =
+                    if (writeRowLineage) columnTypes + io.trino.spi.type.BigintType.BIGINT else columnTypes
+            val converterNames =
+                    if (writeRowLineage) columnNames + LINEAGE_COLUMN_NAME else columnNames
             val schemaConverter = ParquetSchemaConverter(
-                    columnTypes, columnNames, false, false)
+                    converterTypes, converterNames, false, false)
             this.primitiveTypes = schemaConverter.primitiveTypes
             this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                     handle.columns,
                     handle.allCatalogColumns,
-                    schemaConverter.messageType
+                    schemaConverter.messageType,
+                    if (writeRowLineage) {
+                        mapOf(LINEAGE_COLUMN_NAME to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong())
+                    } else {
+                        emptyMap()
+                    }
             )
         }
         else {
@@ -452,6 +478,9 @@ class DucklakePageSink(
 
     companion object {
         private val log: Logger = Logger.get(DucklakePageSink::class.java)
+
+        /** Embedded row-lineage column name (readers match by field-id; the name is convention). */
+        const val LINEAGE_COLUMN_NAME: String = "_ducklake_internal_row_id"
 
         private fun duckDbLocalTempDir(): Path {
             return Paths.get(System.getProperty("java.io.tmpdir"), "ducklake-write")

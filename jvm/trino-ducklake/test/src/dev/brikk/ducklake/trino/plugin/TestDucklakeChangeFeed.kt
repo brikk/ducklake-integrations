@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.trino.Session
 import io.trino.testing.MaterializedRow
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -24,9 +25,10 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  * exposed as `TABLE(ducklake.system.*)`. Each returns `snapshot_id`, `rowid` (+ `change_type`
  * for `table_changes`) followed by the table's columns as of the END snapshot, for the inclusive
  * snapshot window. Covers snapshot-id and timestamp bounds, non-parquet (duckdb) data, projection
- * pushdown, empty windows, and the Trino-written-UPDATE shape (which surfaces as separate
- * `delete` + `insert` because the connector's writes allocate fresh row ids rather than preserving
- * lineage — see the cross-engine suite for update pre/post-image pairing).
+ * pushdown, empty windows, and both Trino-written-UPDATE shapes: the default (separate
+ * `delete` + `insert` under fresh row ids) and the lineage-preserving one (`write_row_lineage`
+ * session property — F7 — pairs into `update_preimage`/`update_postimage`; the cross-engine
+ * suite proves DuckDB reads the preserved rowids too).
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
  */
@@ -105,6 +107,83 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             assertThat(inserts).containsExactlyInAnyOrder("Hello", "DuckLake", "DuckLakeDuckLakeDuckLake")
             val deletes = result.filter { it.getField(0) == "delete" }.map { it.getField(2) as String }
             assertThat(deletes).containsExactlyInAnyOrder("Hello", "DuckLake")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    private fun lineageSession(): Session = Session.builder(session)
+            .setCatalogSessionProperty("ducklake", DucklakeSessionProperties.WRITE_ROW_LINEAGE, "true")
+            .build()
+
+    @Test
+    fun updatePairsIntoPreAndPostImageWithWriteRowLineage() {
+        // F7 lineage-preserving writes: with write_row_lineage the connector's own
+        // UPDATE embeds the original rowid (_ducklake_internal_row_id, field-id
+        // 2147483540) into the rewritten file, so the change feed pairs the rewrite
+        // into update_preimage/update_postimage — same shape as DuckDB-written updates.
+        val table = "test_schema.cf_lineage_update"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, val VARCHAR)")
+            computeActual("INSERT INTO $table VALUES (1, 'Hello'), (2, 'DuckLake')")
+            computeActual(lineageSession(), "UPDATE $table SET val = 'Updated' WHERE id = 2")
+            val s3 = snapshot()
+
+            val result = rows(
+                    "SELECT change_type, rowid, id, val FROM " +
+                            "TABLE(ducklake.system.table_changes('test_schema', 'cf_lineage_update', $s3, $s3)) " +
+                            "ORDER BY change_type")
+            assertThat(result.map { it.getField(0) as String })
+                    .containsExactly("update_postimage", "update_preimage")
+            val postImage = result.first { it.getField(0) == "update_postimage" }
+            val preImage = result.first { it.getField(0) == "update_preimage" }
+            assertThat(preImage.getField(1) as Long).isEqualTo(postImage.getField(1) as Long)
+            assertThat(preImage.getField(3) as String).isEqualTo("DuckLake")
+            assertThat(postImage.getField(3) as String).isEqualTo("Updated")
+
+            // Table contents unaffected by the lineage column (it is schema-invisible).
+            assertThat(rows("SELECT id, val FROM $table ORDER BY id").map { it.getField(1) as String })
+                    .containsExactly("Hello", "Updated")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun mergeMixesLineagePairedUpdatesWithPlainInserts() {
+        // MERGE with both WHEN MATCHED UPDATE and WHEN NOT MATCHED INSERT: updated
+        // rows pair (lineage file), inserted rows stay plain inserts (separate
+        // non-lineage file — the lineage column must be non-null for every row of
+        // a carrying file).
+        val table = "test_schema.cf_lineage_merge"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, val VARCHAR)")
+            computeActual("INSERT INTO $table VALUES (1, 'keep'), (2, 'old')")
+            computeActual(lineageSession(),
+                    "MERGE INTO $table t USING (VALUES (2, 'new'), (3, 'added')) AS s(id, val) " +
+                            "ON t.id = s.id " +
+                            "WHEN MATCHED THEN UPDATE SET val = s.val " +
+                            "WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)")
+            val s3 = snapshot()
+
+            val result = rows(
+                    "SELECT change_type, rowid, id, val FROM " +
+                            "TABLE(ducklake.system.table_changes('test_schema', 'cf_lineage_merge', $s3, $s3)) " +
+                            "ORDER BY change_type, id")
+            assertThat(result.map { it.getField(0) as String })
+                    .containsExactly("insert", "update_postimage", "update_preimage")
+            val postImage = result.first { it.getField(0) == "update_postimage" }
+            val preImage = result.first { it.getField(0) == "update_preimage" }
+            assertThat(preImage.getField(1) as Long).isEqualTo(postImage.getField(1) as Long)
+            assertThat(preImage.getField(3) as String).isEqualTo("old")
+            assertThat(postImage.getField(3) as String).isEqualTo("new")
+            val insert = result.first { it.getField(0) == "insert" }
+            assertThat(insert.getField(3) as String).isEqualTo("added")
+
+            assertThat(rows("SELECT val FROM $table ORDER BY id").map { it.getField(0) as String })
+                    .containsExactly("keep", "new", "added")
         }
         finally {
             tryDropTable(table)

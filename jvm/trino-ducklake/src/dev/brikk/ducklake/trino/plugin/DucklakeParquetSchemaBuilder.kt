@@ -36,12 +36,16 @@ class DucklakeParquetSchemaBuilder private constructor() {
          * @param topLevelColumns top-level column handles with columnId (in schema field order)
          * @param allColumns all catalog columns including nested (flat list with parentColumn references)
          * @param sourceMessageType the MessageType from ParquetSchemaConverter (without field IDs)
+         * @param extraTopLevelFieldIds synthetic non-catalog columns to annotate (name -> field_id),
+         *        e.g. the embedded row-lineage column `_ducklake_internal_row_id` -> 2147483540
          * @return a new MessageType with field_id set on each field
          */
+        @JvmOverloads
         fun buildMessageType(
                 topLevelColumns: List<DucklakeColumnHandle>,
                 allColumns: List<DucklakeColumn>,
-                sourceMessageType: MessageType): MessageType {
+                sourceMessageType: MessageType,
+                extraTopLevelFieldIds: Map<String, Long> = emptyMap()): MessageType {
             // Build lookup: parentColumnId -> childName -> DucklakeColumn
             val childrenByParent: Map<Long, Map<String, DucklakeColumn>> =
                     allColumns
@@ -51,7 +55,7 @@ class DucklakeParquetSchemaBuilder private constructor() {
 
             // Build top-level name -> columnId map
             val topLevelColumnIds: Map<String, Long> =
-                    topLevelColumns.associate { it.columnName to it.columnId }
+                    topLevelColumns.associate { it.columnName to it.columnId } + extraTopLevelFieldIds
 
             // Rebuild each field with field_id
             val annotatedFields = sourceMessageType.fields.map { field ->
