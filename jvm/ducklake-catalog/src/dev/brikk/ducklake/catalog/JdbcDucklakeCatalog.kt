@@ -313,6 +313,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         return fetchTableColumns(tableId, snapshotId)
     }
 
+    override fun resolveSchemaVersionSnapshot(tableId: Long, schemaVersion: Long, snapshotId: Long): Long? {
+        return getSnapshotIdForSchemaVersion(tableId, schemaVersion, snapshotId)
+    }
+
     private fun fetchTableColumns(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         val col = DUCKLAKE_COLUMN.`as`("col")
         return dsl.selectFrom(col)

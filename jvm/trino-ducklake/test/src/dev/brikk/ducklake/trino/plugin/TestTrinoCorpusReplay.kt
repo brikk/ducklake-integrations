@@ -54,24 +54,13 @@ class TestTrinoCorpusReplay {
                 "VARIANT-typed parquet not readable by the Trino parquet reader (F10 territory)",
             "metadata/ducklake_settings.test" to
                 "asserts metadata backend type 'duckdb'; the PG backend-axis rewrite makes it 'postgres' by design",
-            // ---- REAL BUGS the mirror found (tracked in TODO-READ-MODE; un-skip when fixed) ----
-            "alter/struct_evolution.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_evolution_alter.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_evolution_nested.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_evolution_nested_alter.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_evolution_reuse.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_evolution_map_alter.test" to BUG_STRUCT_EVOLUTION,
-            "alter/struct_in_map_evolution.test" to BUG_STRUCT_EVOLUTION,
-            "alter/add_column_nested.test" to BUG_STRUCT_EVOLUTION,
-            "alter/drop_column_nested.test" to BUG_STRUCT_EVOLUTION,
-            "types/struct.test" to BUG_STRUCT_EVOLUTION,
+            // (2026-07-06: the inlined struct/map crash family was FIXED — nested
+            // text parsing in DucklakeInlinedValueConverter — and its 10 repro
+            // files un-skipped.)
             "types/json.test" to
                 "JSON degraded-type rendering differs between engines (F8 territory)",
             "types/floats.test" to
                 "float golden text relies on DuckDB inf/nan casts + implicit varchar comparisons (dialect)",
-            "delete/delete_legacy_missing_mapping_after_rename_add_files.test" to
-                "BUG(?): mirror divergence — legacy delete mapping after RENAME + add_files; investigate " +
-                "(tracked in TODO-READ-MODE)",
         )
 
     @BeforeAll
@@ -134,8 +123,5 @@ class TestTrinoCorpusReplay {
 
     companion object {
         private const val CHUNK_SIZE = 30
-        private const val BUG_STRUCT_EVOLUTION =
-            "BUG: ClassCastException (Slice -> SqlRow) reading struct columns after nested schema " +
-                "evolution (tracked in TODO-READ-MODE)"
     }
 }

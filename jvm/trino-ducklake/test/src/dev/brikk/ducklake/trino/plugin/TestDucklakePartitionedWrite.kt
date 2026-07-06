@@ -184,6 +184,39 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
+    fun testPartitionPathKeyNamingMatchesUpstreamConvention() {
+        // Upstream hive-path key names (DuckLakePartitionUtils::GetPartitionKeyName):
+        // bucket → `bucket=`, temporal → `year=`, identity → column name; repeated
+        // transforms cascade to `<prefix>_<column>` (then `_2`, `_3`…). Without the
+        // cascade, bucket(4, id) + bucket(8, id) both emitted `id=` — ambiguous paths.
+        computeActual("CREATE TABLE test_schema.part_naming (id INTEGER, ts DATE, region VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['region', 'bucket(4, id)', 'bucket(8, id)', 'year(ts)'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_naming VALUES " +
+                    "(1, DATE '2023-05-01', 'us'), (2, DATE '2024-06-01', 'eu')")
+
+            val paths = computeActual("SELECT DISTINCT \"\$path\" FROM test_schema.part_naming")
+                    .materializedRows.map { it.getField(0) as String }
+            assertThat(paths).isNotEmpty()
+            for (path in paths) {
+                assertThat(path).`as`("identity keeps the column name").contains("region=")
+                assertThat(path).`as`("first bucket transform uses the bare prefix").contains("/bucket=")
+                assertThat(path).`as`("second bucket on the same column disambiguates").contains("/bucket_id=")
+                assertThat(path).`as`("temporal transform uses the transform-name prefix").contains("/year=")
+                assertThat(path).`as`("no duplicate bare-column key for bucket transforms")
+                        .doesNotContain("/id=")
+            }
+
+            // Values still round-trip through the catalog regardless of path names.
+            val total = computeActual("SELECT count(*) FROM test_schema.part_naming")
+            assertThat(total.materializedRows[0].getField(0)).isEqualTo(2L)
+        }
+        finally {
+            tryDropTable("test_schema.part_naming")
+        }
+    }
+
+    @Test
     fun testBucketPartitionedInsertAndRead() {
         // Round-trip: create bucket-partitioned table, insert, read all rows back.
         computeActual("CREATE TABLE test_schema.part_bucket (id INTEGER, name VARCHAR, amount DOUBLE) " +

@@ -33,6 +33,7 @@ import io.trino.spi.connector.ConnectorMergeSink
 import io.trino.spi.connector.ConnectorPageSink
 import io.trino.spi.connector.MergePage
 import io.trino.spi.type.BigintType.BIGINT
+import io.trino.spi.type.TinyintType.TINYINT
 import io.trino.spi.type.Type
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
@@ -64,7 +65,18 @@ open class DucklakeMergeSink(
         // instead of parquet (file_path, pos) delete files (session write_deletion_vectors).
         private val writeDeletionVectors: Boolean,
         // Insert sink for handling UPDATE inserts
-        private val insertSink: ConnectorPageSink)
+        private val insertSink: ConnectorPageSink,
+        /**
+         * Lineage-preserving mode (session `write_row_lineage`, parquet-only):
+         * UPDATE-rewritten rows are routed to this second sink with one extra
+         * trailing BIGINT channel carrying each row's ORIGINAL rowid, which the
+         * sink embeds as `_ducklake_internal_row_id` (field-id 2147483540).
+         * MERGE-inserted (not-matched) rows keep going to [insertSink] — the
+         * lineage column must be non-null for EVERY row of a carrying file
+         * (readers discard the whole array otherwise), so the two row kinds
+         * cannot share a file. Null = lineage disabled (default behavior).
+         */
+        private val lineageInsertSink: ConnectorPageSink? = null)
     : ConnectorMergeSink
 {
     private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
@@ -87,7 +99,107 @@ open class DucklakeMergeSink(
         val mergePage: MergePage = MergePage.createDeleteAndInsertPages(page, dataColumnCount)
 
         mergePage.deletionsPage.ifPresent { p -> this.processDeletes(p) }
-        mergePage.insertionsPage.ifPresent { insertPage -> insertSink.appendPage(insertPage) }
+        if (lineageInsertSink == null) {
+            mergePage.insertionsPage.ifPresent { insertPage -> insertSink.appendPage(insertPage) }
+            return
+        }
+        routeInsertsWithLineage(page, lineageInsertSink)
+    }
+
+    /**
+     * Splits insert rows by kind on the RAW merge page (data channels…, TINYINT
+     * operation, INT case number, rowId last): Trino's merge processor emits an
+     * UPDATE as an update-delete row (op 5, carries the old rowId) immediately
+     * followed by its update-insert row (op 4, new values) — pair them to
+     * attach lineage. Plain not-matched inserts (op 1) carry no old rowid and
+     * go to the ordinary insert sink.
+     */
+    private fun routeInsertsWithLineage(page: Page, lineageSink: ConnectorPageSink) {
+        val opBlock: Block = page.getBlock(dataColumnCount)
+        val rowIdBlock: Block = page.getBlock(page.channelCount - 1)
+        val plainPositions = mutableListOf<Int>()
+        val updatePositions = mutableListOf<Int>()
+        val lineage = mutableListOf<Long>()
+        var pendingUpdateRowId: Long? = null
+        for (position in 0 until page.positionCount) {
+            when (TINYINT.getByte(opBlock, position).toInt()) {
+                ConnectorMergeSink.INSERT_OPERATION_NUMBER -> plainPositions.add(position)
+                ConnectorMergeSink.UPDATE_DELETE_OPERATION_NUMBER ->
+                    pendingUpdateRowId = BIGINT.getLong(rowIdBlock, position)
+                ConnectorMergeSink.UPDATE_INSERT_OPERATION_NUMBER -> {
+                    val oldRowId = pendingUpdateRowId
+                            ?: throw IllegalStateException("update-insert row without a preceding update-delete row")
+                    updatePositions.add(position)
+                    // The MERGE channel is POSITIONAL (rowIdStart + file position). If the
+                    // source file itself carries embedded lineage (a prior lineage UPDATE or
+                    // compaction wrote it), the row's TRUE id is the lineage value at that
+                    // position — chaining updates must preserve the ORIGINAL id forever,
+                    // matching DuckDB.
+                    lineage.add(resolveTrueRowId(oldRowId))
+                    pendingUpdateRowId = null
+                }
+                else -> Unit // plain DELETE rows: tombstones only, handled via processDeletes
+            }
+        }
+        if (plainPositions.isNotEmpty()) {
+            insertSink.appendPage(dataOnlyPage(page, plainPositions))
+        }
+        if (updatePositions.isNotEmpty()) {
+            lineageSink.appendPage(withLineageChannel(dataOnlyPage(page, updatePositions), lineage))
+        }
+    }
+
+    /** Per-source-file embedded lineage (null = none), loaded lazily for chained-update resolution. */
+    private val lineageBySourceFile = mutableMapOf<Long, LongArray?>()
+
+    /**
+     * Translates a POSITIONAL merge-channel rowid into the row's TRUE DuckLake id:
+     * when the source data file carries the embedded lineage column (written by a
+     * prior lineage UPDATE or compaction), the value at that file position wins —
+     * so chained updates keep the ORIGINAL id forever, matching DuckDB.
+     */
+    private fun resolveTrueRowId(positionalRowId: Long): Long {
+        val entry = rangeByRowIdStart.floorEntry(positionalRowId) ?: return positionalRowId
+        val range = entry.value
+        if (!range.containsRowId(positionalRowId)) {
+            return positionalRowId
+        }
+        val lineage: LongArray? = lineageBySourceFile.getOrPut(range.dataFileId) {
+            if (!range.dataFilePath.endsWith(".parquet", ignoreCase = true)) {
+                null // non-parquet sources never carry the embedded column
+            } else {
+                try {
+                    DucklakeDeleteFileReader.readInternalRowIds(
+                            fileSystem, range.dataFilePath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
+                }
+                catch (e: IOException) {
+                    throw UncheckedIOException("Failed to read row lineage from ${range.dataFilePath}", e)
+                }
+            }
+        }
+        if (lineage == null) {
+            return positionalRowId
+        }
+        val position = positionalRowId - range.rowIdStart
+        return if (position < lineage.size) lineage[position.toInt()] else positionalRowId
+    }
+
+    private fun dataOnlyPage(page: Page, positions: List<Int>): Page {
+        val positionArray = positions.toIntArray()
+        val blocks = Array(dataColumnCount) { channel ->
+            page.getBlock(channel).getPositions(positionArray, 0, positionArray.size)
+        }
+        return Page(positionArray.size, *blocks)
+    }
+
+    private fun withLineageChannel(dataPage: Page, lineage: List<Long>): Page {
+        val builder = BIGINT.createBlockBuilder(null, lineage.size)
+        lineage.forEach { BIGINT.writeLong(builder, it) }
+        val lineageBlock = builder.build()
+        val blocks = Array(dataPage.channelCount + 1) { channel ->
+            if (channel < dataPage.channelCount) dataPage.getBlock(channel) else lineageBlock
+        }
+        return Page(dataPage.positionCount, *blocks)
     }
 
     private fun processDeletes(deletePage: Page) {
@@ -145,6 +257,9 @@ open class DucklakeMergeSink(
         try {
             val insertFragments: Collection<Slice> = insertSink.finish().get()
             fragments.addAll(insertFragments)
+            if (lineageInsertSink != null) {
+                fragments.addAll(lineageInsertSink.finish().get())
+            }
         }
         catch (e: Exception) {
             throw RuntimeException("Failed to finish insert sink", e)
@@ -313,6 +428,7 @@ open class DucklakeMergeSink(
             mergeHandle.dataFileRanges.firstOrNull { it.dataFileId == dataFileId }
 
     override fun abort() {
+        lineageInsertSink?.abort()
         insertSink.abort()
         // Delete files written during this operation will become orphans —
         // cleaned up by DuckLake's maintenance procedures

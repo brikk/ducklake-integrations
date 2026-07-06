@@ -84,6 +84,17 @@ open class DucklakeSessionProperties @Inject constructor() {
                             "(file_path, pos) delete files. Off by default. Both shapes are read by Trino " +
                             "AND DuckDB; this mirrors DuckDB's write_deletion_vectors table option.",
                     false,
+                    false),
+            booleanProperty(
+                    WRITE_ROW_LINEAGE,
+                    "Preserve row lineage on UPDATE/MERGE: rewritten rows carry their ORIGINAL DuckLake " +
+                            "rowid in an embedded _ducklake_internal_row_id parquet column (field-id " +
+                            "2147483540), so change feeds (Trino AND DuckDB) pair the rewrite into " +
+                            "update_preimage/update_postimage instead of delete+insert, and rowids stay " +
+                            "stable across updates. Parquet data files only. ON by default — DuckDB " +
+                            "preserves lineage unconditionally, so this is the cross-engine-faithful " +
+                            "behavior; set false for the legacy fresh-rowid delete+insert shape.",
+                    true,
                     false))
 
     open fun getSessionProperties(): List<PropertyMetadata<*>> = sessionProperties
@@ -143,6 +154,14 @@ open class DucklakeSessionProperties @Inject constructor() {
         /** @return true iff this session writes tombstones as puffin deletion-vector files. Default false. */
         fun isWriteDeletionVectors(session: ConnectorSession): Boolean {
             val v = session.getProperty(WRITE_DELETION_VECTORS, Boolean::class.javaObjectType)
+            return v != null && v
+        }
+
+        const val WRITE_ROW_LINEAGE: String = "write_row_lineage"
+
+        /** @return true iff UPDATE/MERGE rewrites embed the original rowid (lineage). Default false. */
+        fun isWriteRowLineage(session: ConnectorSession): Boolean {
+            val v = session.getProperty(WRITE_ROW_LINEAGE, Boolean::class.javaObjectType)
             return v != null && v
         }
 

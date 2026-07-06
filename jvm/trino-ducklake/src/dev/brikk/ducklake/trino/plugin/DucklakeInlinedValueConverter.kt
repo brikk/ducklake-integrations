@@ -59,18 +59,34 @@ object DucklakeInlinedValueConverter {
      * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
      * Returns null for null input.
      */
-    fun convertJdbcValue(jdbcValue: Any?, trinoType: Type): Any? {
+    @JvmOverloads
+    fun convertJdbcValue(jdbcValue: Any?, trinoType: Type, mapping: InlinedTextFieldMapping? = null): Any? {
         if (jdbcValue == null) {
             return null
         }
 
         if (trinoType is ArrayType) {
-            return convertArray(jdbcValue, trinoType)
+            return convertArray(jdbcValue, trinoType, mapping)
         }
+        if (trinoType is RowType || trinoType is MapType) {
+            // Upstream serializes nested types into VARCHAR on non-native
+            // catalog backends (PG/SQLite): structs in SQL form `{'k': v}`
+            // (ducklake_util.cpp::ToSQLString), maps in DuckDB text form
+            // `{k=v}` (Value::ToString). Parse recursively into real
+            // SqlRow/SqlMap — InMemoryRecordSet writes them via
+            // RowType/MapType.writeObject, which reject anything else.
+            // [mapping] carries identity-based field translation for rows
+            // inlined under an older schema version (rename/reuse safety).
+            return NestedTextParser(toStringValue(jdbcValue)).parseTopLevel(trinoType, mapping)
+        }
+        return convertScalar(jdbcValue, trinoType)
+    }
+
+    private fun convertScalar(jdbcValue: Any, trinoType: Type): Any {
         if (trinoType == BOOLEAN) {
             return toBoolean(jdbcValue)
         }
-        if (trinoType == TINYINT || trinoType == SMALLINT || trinoType == INTEGER || trinoType == BIGINT) {
+        if (isIntegerType(trinoType)) {
             return toLong(jdbcValue)
         }
         if (trinoType is RealType) {
@@ -95,12 +111,7 @@ object DucklakeInlinedValueConverter {
             return Slices.utf8Slice(toStringValue(jdbcValue))
         }
         if (trinoType is VarbinaryType) {
-            if (jdbcValue is ByteArray) {
-                return Slices.wrappedBuffer(*jdbcValue)
-            }
-            // Text form (typical for list<blob> elements): DuckDB's Blob::ToString emits printable
-            // ASCII (except '\\', '\'', '"') as-is and everything else as `\xNN`. Decode back to bytes.
-            return Slices.wrappedBuffer(*decodeBlobText(toStringValue(jdbcValue)))
+            return toVarbinarySlice(jdbcValue)
         }
         if (trinoType is DecimalType) {
             return toDecimal(jdbcValue, trinoType)
@@ -110,12 +121,29 @@ object DucklakeInlinedValueConverter {
         return Slices.utf8Slice(toStringValue(jdbcValue))
     }
 
-    private fun convertArray(jdbcValue: Any, arrayType: ArrayType): Block {
+    private fun isIntegerType(type: Type): Boolean =
+        type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT
+
+    private fun toVarbinarySlice(jdbcValue: Any): io.airlift.slice.Slice {
+        if (jdbcValue is ByteArray) {
+            return Slices.wrappedBuffer(*jdbcValue)
+        }
+        // Text form (typical for list<blob> elements): DuckDB's Blob::ToString emits printable
+        // ASCII (except '\\', '\'', '"') as-is and everything else as `\xNN`. Decode back to bytes.
+        return Slices.wrappedBuffer(*decodeBlobText(toStringValue(jdbcValue)))
+    }
+
+    private fun convertArray(jdbcValue: Any, arrayType: ArrayType, mapping: InlinedTextFieldMapping? = null): Block {
         val elementType = arrayType.elementType
         if (elementType is ArrayType || elementType is MapType || elementType is RowType) {
+            // Nested element types only ever arrive as DuckDB text (non-native
+            // backends store the whole list as VARCHAR) — parse recursively.
+            if (jdbcValue is String || jdbcValue is ByteArray) {
+                return NestedTextParser(toStringValue(jdbcValue)).parseTopLevel(arrayType, mapping) as Block
+            }
             throw UnsupportedOperationException(
-                    "Inlined data reads for nested list/struct/map element types are not yet supported " +
-                            "(see dev-docs/archive/COMPARE-pg_ducklake.md B2); element type: " + elementType.displayName
+                    "Inlined list with nested element type ${elementType.displayName} arrived as " +
+                            jdbcValue.javaClass.name + " — only DuckDB text serialization is supported"
             )
         }
 
@@ -466,10 +494,269 @@ object DucklakeInlinedValueConverter {
         return Int128.valueOf(decimal.unscaledValue())
     }
 
-    private fun toStringValue(value: Any): String {
+    internal fun toStringValue(value: Any): String {
         if (value is ByteArray) {
             return String(value, StandardCharsets.UTF_8)
         }
         return value.toString()
+    }
+}
+
+/**
+ * Recursive-descent parser for DuckDB's nested-value text serialization, as
+ * stored in inlined-data VARCHAR columns on non-native catalog backends
+ * (PostgreSQL/SQLite). Grammar (target Trino type drives interpretation):
+ *
+ *  - struct  → `{'field': value, ...}` (ducklake_util.cpp::ToSQLString: keys
+ *    single-quoted, varchar children single-quoted with `''` doubling)
+ *  - map     → `{key=value, ...}` (Value::ToString map form; strings appear
+ *    bare unless they need quoting)
+ *  - list    → `[value, ...]`
+ *  - scalars → bare tokens (`42`, `inf`, `NULL`) or single-quoted strings;
+ *    leaf conversion delegates to [DucklakeInlinedValueConverter.convertJdbcValue],
+ *    so decimals/timestamps/blob `\xNN`/non-finite floats reuse the same
+ *    handling as top-level scalar columns.
+ *
+ * Produces Trino-native values: `SqlRow` for ROW, `SqlMap` for MAP, `Block`
+ * for ARRAY — the representations `InMemoryRecordSet`/`Type.writeObject`
+ * require. Unnamed-struct `(...)` text and nested map KEYS are not supported
+ * and throw with a clear message.
+ */
+internal class NestedTextParser(private val text: String) {
+
+    private var pos = 0
+
+    fun parseTopLevel(type: Type, mapping: InlinedTextFieldMapping? = null): Any? {
+        skipWs()
+        val value = parseValue(type, mapping)
+        skipWs()
+        require(pos >= text.length) { "Trailing content at $pos in inlined nested text: $text" }
+        return value
+    }
+
+    private fun parseValue(type: Type, mapping: InlinedTextFieldMapping? = null): Any? {
+        skipWs()
+        if (peekNullKeyword()) {
+            pos += NULL_TOKEN.length
+            return null
+        }
+        return when (type) {
+            is RowType -> parseStruct(type, mapping as? InlinedTextFieldMapping.Struct)
+            is MapType -> parseMap(type, (mapping as? InlinedTextFieldMapping.Container)?.child)
+            is ArrayType -> parseList(type, (mapping as? InlinedTextFieldMapping.Container)?.child)
+            else -> parseScalar(type)
+        }
+    }
+
+    private fun parseStruct(type: RowType, mapping: InlinedTextFieldMapping.Struct? = null): Any {
+        skipWs()
+        if (peek() == '(') {
+            throw UnsupportedOperationException(
+                    "Inlined unnamed-struct text is not supported: $text")
+        }
+        expect('{')
+        val fields = type.fields
+        val indexByName = HashMap<String, Int>()
+        fields.forEachIndexed { i, f -> f.name.ifPresent { indexByName[it.lowercase()] = i } }
+        val values = arrayOfNulls<Any?>(fields.size)
+        skipWs()
+        if (peek() != '}') {
+            while (true) {
+                skipWs()
+                val key = if (peek() == '\'') parseQuoted() else readBareToken(stopAtColon = true)
+                skipWs()
+                expect(':')
+                // Identity mapping (era-name → current index) when the row was
+                // inlined under an older schema version; otherwise names match
+                // directly. A key that resolves nowhere is a DROPPED field —
+                // parse-and-discard (the value may itself be nested, so it
+                // must be consumed structurally). Current fields never bound
+                // (added after the era, or renamed away) stay NULL.
+                val index =
+                        if (mapping != null) mapping.indexByEraName[key.lowercase()]
+                        else indexByName[key.lowercase()]
+                if (index == null) {
+                    skipValue()
+                } else {
+                    values[index] = parseValue(fields[index].type, mapping?.children?.get(index))
+                }
+                skipWs()
+                if (peek() != ',') {
+                    break
+                }
+                pos++
+            }
+        }
+        expect('}')
+        val builder = type.createBlockBuilder(null, 1) as io.trino.spi.block.RowBlockBuilder
+        builder.buildEntry<RuntimeException> { fieldBuilders ->
+            fields.forEachIndexed { i, f ->
+                TypeUtils.writeNativeValue(f.type, fieldBuilders[i], values[i])
+            }
+        }
+        return type.getObject(builder.build(), 0)
+    }
+
+    private fun parseMap(type: MapType, valueMapping: InlinedTextFieldMapping? = null): Any {
+        if (type.keyType is RowType || type.keyType is MapType || type.keyType is ArrayType) {
+            throw UnsupportedOperationException(
+                    "Inlined map with nested KEY type ${type.keyType.displayName} is not supported: $text")
+        }
+        expect('{')
+        val keys = mutableListOf<Any?>()
+        val vals = mutableListOf<Any?>()
+        skipWs()
+        if (peek() != '}') {
+            while (true) {
+                skipWs()
+                keys +=
+                        if (peek() == '\'') {
+                            DucklakeInlinedValueConverter.convertJdbcValue(parseQuoted(), type.keyType)
+                        } else {
+                            DucklakeInlinedValueConverter.convertJdbcValue(
+                                    readBareToken(stopAtEquals = true), type.keyType)
+                        }
+                skipWs()
+                expect('=')
+                vals += parseValue(type.valueType, valueMapping)
+                skipWs()
+                if (peek() != ',') {
+                    break
+                }
+                pos++
+            }
+        }
+        expect('}')
+        val builder = type.createBlockBuilder(null, 1) as io.trino.spi.block.MapBlockBuilder
+        builder.buildEntry<RuntimeException> { keyBuilder, valueBuilder ->
+            keys.indices.forEach { i ->
+                TypeUtils.writeNativeValue(type.keyType, keyBuilder, keys[i])
+                TypeUtils.writeNativeValue(type.valueType, valueBuilder, vals[i])
+            }
+        }
+        return type.getObject(builder.build(), 0)
+    }
+
+    private fun parseList(type: ArrayType, elementMapping: InlinedTextFieldMapping? = null): Block {
+        expect('[')
+        val elementType = type.elementType
+        val values = mutableListOf<Any?>()
+        skipWs()
+        if (peek() != ']') {
+            while (true) {
+                values += parseValue(elementType, elementMapping)
+                skipWs()
+                if (peek() != ',') {
+                    break
+                }
+                pos++
+            }
+        }
+        expect(']')
+        val builder = elementType.createBlockBuilder(null, values.size)
+        values.forEach { TypeUtils.writeNativeValue(elementType, builder, it) }
+        return builder.build()
+    }
+
+    private fun parseScalar(type: Type): Any? {
+        skipWs()
+        if (peek() == '\'') {
+            return DucklakeInlinedValueConverter.convertJdbcValue(parseQuoted(), type)
+        }
+        val token = readBareToken()
+        // Same NULL-vs-blob-spelling-NULL resolution as the flat-list parser.
+        return if (token == NULL_TOKEN) null else DucklakeInlinedValueConverter.convertJdbcValue(token, type)
+    }
+
+    /**
+     * Consumes one value of ANY shape without a target type — used to discard
+     * dropped-field values during schema-evolution projection. Tracks bracket
+     * depth and quote state.
+     */
+    private fun skipValue() {
+        skipWs()
+        var depth = 0
+        while (pos < text.length) {
+            val c = text[pos]
+            when {
+                c == '\'' -> {
+                    parseQuoted()
+                    continue
+                }
+                c == '{' || c == '[' -> depth++
+                c == '}' || c == ']' -> {
+                    if (depth == 0) return // closing delimiter of the PARENT container
+                    depth--
+                }
+                c == ',' && depth == 0 -> return
+            }
+            pos++
+        }
+    }
+
+    /** Single-quoted literal; `''` unescapes to `'`; backslash is literal content (blob text). */
+    private fun parseQuoted(): String {
+        expect('\'')
+        val sb = StringBuilder()
+        while (pos < text.length) {
+            val c = text[pos]
+            if (c == '\'') {
+                if (pos + 1 < text.length && text[pos + 1] == '\'') {
+                    sb.append('\'')
+                    pos += 2
+                    continue
+                }
+                pos++
+                return sb.toString()
+            }
+            sb.append(c)
+            pos++
+        }
+        throw IllegalArgumentException("Unterminated quoted literal in inlined nested text: $text")
+    }
+
+    /** Bare token: up to a top-level delimiter (`,`, `}`, `]`, optionally `:`/`=`). */
+    private fun readBareToken(stopAtColon: Boolean = false, stopAtEquals: Boolean = false): String {
+        val start = pos
+        while (pos < text.length && !isTokenDelimiter(text[pos], stopAtColon, stopAtEquals)) {
+            pos++
+        }
+        return text.substring(start, pos).trim()
+    }
+
+    private fun isTokenDelimiter(c: Char, stopAtColon: Boolean, stopAtEquals: Boolean): Boolean =
+        when (c) {
+            ',', '}', ']' -> true
+            ':' -> stopAtColon
+            '=' -> stopAtEquals
+            else -> false
+        }
+
+    private fun peekNullKeyword(): Boolean {
+        if (!text.startsWith(NULL_TOKEN, pos)) {
+            return false
+        }
+        val after = pos + NULL_TOKEN.length
+        return after >= text.length || text[after] == ',' || text[after] == '}' || text[after] == ']' ||
+                text[after].isWhitespace()
+    }
+
+    private fun peek(): Char = if (pos < text.length) text[pos] else '\u0000'
+
+    private fun expect(c: Char) {
+        require(pos < text.length && text[pos] == c) {
+            "Expected '$c' at $pos in inlined nested text: $text"
+        }
+        pos++
+    }
+
+    private fun skipWs() {
+        while (pos < text.length && text[pos].isWhitespace()) {
+            pos++
+        }
+    }
+
+    companion object {
+        private const val NULL_TOKEN = "NULL"
     }
 }

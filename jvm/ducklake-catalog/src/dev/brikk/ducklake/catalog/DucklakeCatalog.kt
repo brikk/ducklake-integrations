@@ -82,6 +82,14 @@ interface DucklakeCatalog {
     fun getAllColumnsWithParentage(tableId: Long, snapshotId: Long): List<DucklakeColumn>
 
     /**
+     * Resolves the snapshot at which the given table schema version was introduced (bounded by
+     * [snapshotId]), or null when it cannot be determined. Lets readers of schema-versioned
+     * artifacts (e.g. `ducklake_inlined_data_<t>_<sv>` tables) load the column tree AS OF that
+     * version for identity-based field mapping across nested schema evolution.
+     */
+    fun resolveSchemaVersionSnapshot(tableId: Long, schemaVersion: Long, snapshotId: Long): Long?
+
+    /**
      * Get data files for a table at the given snapshot
      */
     fun getDataFiles(tableId: Long, snapshotId: Long): List<DucklakeDataFile>

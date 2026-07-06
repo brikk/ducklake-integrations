@@ -422,6 +422,41 @@ generate new parquet files and need a similar metadata-insert path.
   PageSorter, parquet + unpartitioned + sort-spec-present only (existing writes unchanged), per-file
   sorted output. See [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
 
+## Lineage-preserving writes — ✅ DONE 2026-07-06 (F7 capstone)
+
+`write_row_lineage` session property (default off, parquet-only): the connector's
+own UPDATE/MERGE rewrites embed each row's ORIGINAL rowid as
+`_ducklake_internal_row_id` (parquet field-id 2147483540, DuckDB's
+`MultiFileReader::ROW_ID_FIELD_ID`), closing the change-feed arc — Trino-written
+updates pair into `update_preimage`/`update_postimage` and **rowids stay stable
+across engines** (DuckDB resolves the embedded column ahead of `row_id_start`).
+Mechanics: the merge sink pairs Trino's raw-page op-5/op-4 adjacent rows to
+recover old rowids, routes update-rewrites to a second lineage-aware
+`DucklakePageSink` (the column must be non-null for every row of a carrying
+file, so MERGE plain-inserts stay in the ordinary sink/file); the schema builder
+annotates the synthetic column; catalog registration unchanged (upstream also
+allocates `row_id_start` normally and keeps lineage out of column stats). Tests:
+`TestDucklakeChangeFeed.updatePairsIntoPreAndPostImageWithWriteRowLineage`,
+`.mergeMixesLineagePairedUpdatesWithPlainInserts`,
+`TestDucklakeChangeFeedCrossEngine.trinoLineageUpdatePreservesRowidsForDuckdb`.
+All three follow-ups CLOSED same day (2026-07-06, second pass):
+(1) **Compaction preserves lineage** — `rewrite_data_files` reads the
+lineage-first `$row_id` alongside data columns (delete-aware: injected before
+delete filtering) and embeds every surviving row's ORIGINAL rowid in the merged
+output — recompaction of carrying files preserves the original ids, matching
+upstream compaction which always writes the column.
+(2) **`$row_id` virtual is lineage-first** — the positional injector resolves
+the file's embedded lineage for the queryable `-104` virtual (one footer pass,
+only when requested); the MERGE `-100` channel stays positional (the sink's
+file-range resolution needs it) and the sink translates positional→true id via
+the source file's lineage so CHAINED updates keep the original id forever. The
+change feed's internal readers switched to `$file_row_number` (raw positions)
+since `$row_id` is no longer positionally rebasable.
+(3) **Default ON** — DuckDB preserves lineage unconditionally, so on-by-default
+is the cross-engine-faithful behavior; `write_row_lineage = false` opts into
+the legacy fresh-rowid delete+insert shape (pinned by test). Full suite green
+under the new default.
+
 ## Puffin deletion-vector writes — ✅ DONE 2026-06-29
 
 - [x] `write_deletion_vectors` session property (default off) → `DucklakeMergeSink` writes tombstones
@@ -989,14 +1024,28 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
    mapping (#133). Promote alongside M8.
 
 <!-- Added by 2026-07-05 upstream refresh (survey window 2026-06-29 → 07-05). -->
-- **[NOW-5] max-compacted-files-bound** `[v: NEXT upstream (main-only), but
-  v1.0-format-compatible → do NOW our-side]` — upstream `ducklake` main (`8b8e0491`) added a
+- **[NOW-5] max-compacted-files-bound** — ✅ DONE 2026-07-06.
+  `rewrite_data_files` gained `max_compacted_files => N` (0 = unlimited):
+  caps total SOURCE files consumed per invocation, deterministic group order,
+  last group trimmed to budget when >= 2 remain. Test:
+  `TestDucklakeRewriteDataFiles.maxCompactedFilesCapsSourcesPerInvocation`.
+  Original: upstream `ducklake` main (`8b8e0491`) added a
   `max_compacted_files` named param to `ducklake_rewrite_data_files`, capping how
   many files a single rewrite/merge invocation touches (now applies to
   REWRITE_DELETES too, not just MERGE_ADJACENT). Our F6 compaction has no such
   cap — a large table rewrites everything in one commit. Add a bound. ~30-min.
-- **[NOW-6] bucket-partition-name-collision** `[v: fix on main → NEXT upstream;
-  the bug is present in DuckDB 1.5.x today → do NOW our-side]` — upstream `ducklake` (`1add112e`,
+- **[NOW-6] bucket-partition-name-collision** — ✅ DONE 2026-07-06, and the
+  check found a REAL bug: we emitted bare column names for ALL transforms, so
+  `bucket(4, id)` + `bucket(8, id)` produced duplicate `id=` hive keys
+  (ambiguous layout; add_files hive parsing would silently overwrite), and our
+  bucket/temporal key names diverged from upstream convention entirely
+  (`bucket=`/`year=` vs our `id=`/`ts=`). `DucklakePagePartitioner` now mirrors
+  upstream's `GetPartitionKeyName` incl. the main-branch counter fix: identity →
+  column name, temporal → `year`/`month`/`day`/`hour`, bucket → `bucket`,
+  collisions → `<prefix>_<column>` → `_2`/`_3`… Path names are cosmetic
+  (catalog rows carry partition truth), so no read-path impact. Test:
+  `TestDucklakePartitionedWrite.testPartitionPathKeyNamingMatchesUpstreamConvention`.
+  Original: upstream `ducklake` (`1add112e`,
   `ducklake_partition_data.cpp`) fixed colliding partition-key *names* for
   repeated bucket transforms on the same column (now disambiguates with a
   `_2`, `_3`… counter suffix). We support `bucket(N, col)` — verify our

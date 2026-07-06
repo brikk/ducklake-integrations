@@ -107,9 +107,10 @@ class TestChangeFeedPageSource {
     @Test
     fun deleteUnitKeepsOnlyDeletedPositionsWithDeleteType() {
         val columns = changeColumns()
-        // rowIdStart=10, positions 0..2 -> positional rowids 10,11,12. Delete file position 1.
+        // The trailing read channel carries raw FILE POSITIONS ($file_row_number).
+        // rowIdStart=10 -> positional rowids 10,11,12. Delete file position 1.
         val unit = ChangeFeedUnit(
-                baseSource = basePage(arrayOf("a", "b", "c"), longArrayOf(10L, 11L, 12L)),
+                baseSource = basePage(arrayOf("a", "b", "c"), longArrayOf(0L, 1L, 2L)),
                 snapshotId = 9L,
                 rowIdStart = 10L,
                 lineageRowIds = null,
@@ -127,7 +128,7 @@ class TestChangeFeedPageSource {
         //  - old file (rowIdStart=0, no lineage): delete file position 1 -> deleted rowid 1.
         //  - new file (rowIdStart=100, lineage=[1]): its one row carries preserved rowid 1.
         val postImage = ChangeFeedUnit(
-                baseSource = basePage(arrayOf("new"), longArrayOf(100L)),
+                baseSource = basePage(arrayOf("new"), longArrayOf(0L)),
                 snapshotId = 3L,
                 rowIdStart = 100L,
                 lineageRowIds = longArrayOf(1L),

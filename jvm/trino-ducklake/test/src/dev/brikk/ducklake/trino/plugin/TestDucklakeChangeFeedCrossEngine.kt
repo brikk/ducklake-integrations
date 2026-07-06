@@ -87,6 +87,62 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
 
     @Test
     @Throws(Exception::class)
+    fun trinoLineageUpdatePreservesRowidsForDuckdb() {
+        // The inverse of duckdbUpdatePairsIntoPreAndPostImage: TRINO performs the
+        // UPDATE with write_row_lineage, and DUCKDB must observe the SAME rowid on
+        // the rewritten row (its reader resolves the embedded field-id 2147483540
+        // column ahead of row_id_start), while Trino's own table_changes pairs the
+        // rewrite into update_preimage/update_postimage.
+        val trino = "test_schema.cf_xengine_lineage"
+        val duckdb = "ducklake_db.test_schema.cf_xengine_lineage"
+        try {
+            computeActual("CREATE TABLE $trino (id INTEGER, val VARCHAR)")
+            computeActual("INSERT INTO $trino VALUES (1, 'Hello'), (2, 'DuckLake')")
+
+            val rowIdBefore: Long = createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery("SELECT rowid FROM $duckdb WHERE id = 2").use { rs ->
+                        rs.next()
+                        rs.getLong(1)
+                    }
+                }
+            }
+
+            val lineageSession = io.trino.Session.builder(session)
+                    .setCatalogSessionProperty(
+                            "ducklake", DucklakeSessionProperties.WRITE_ROW_LINEAGE, "true")
+                    .build()
+            computeActual(lineageSession, "UPDATE $trino SET val = 'Updated' WHERE id = 2")
+            val afterUpdate = currentSnapshot()
+
+            // DuckDB sees the ORIGINAL rowid on the rewritten row + the new value.
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery("SELECT rowid, val FROM $duckdb WHERE id = 2").use { rs ->
+                        rs.next()
+                        assertThat(rs.getLong(1)).isEqualTo(rowIdBefore)
+                        assertThat(rs.getString(2)).isEqualTo("Updated")
+                    }
+                }
+            }
+
+            // Trino's change feed pairs the Trino-written rewrite.
+            val result = rows(
+                    "SELECT change_type, rowid, val FROM " +
+                            "TABLE(ducklake.system.table_changes('test_schema', 'cf_xengine_lineage', " +
+                            "$afterUpdate, $afterUpdate)) ORDER BY change_type")
+            assertThat(result.map { it.getField(0) as String })
+                    .containsExactly("update_postimage", "update_preimage")
+            assertThat(result[0].getField(1) as Long).isEqualTo(result[1].getField(1) as Long)
+            assertThat(result[0].getField(1) as Long).isEqualTo(rowIdBefore)
+        }
+        finally {
+            tryDropTable(trino)
+        }
+    }
+
+    @Test
+    @Throws(Exception::class)
     fun feedReadsInlinedInsertsAndDeletes() {
         // DuckDB writes small rows that land in the inlined-data table (default row limit 10). The
         // change feed reads them directly (no gate) — inlined inserts and the later inlined delete.

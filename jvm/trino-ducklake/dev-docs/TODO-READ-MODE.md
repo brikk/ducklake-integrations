@@ -230,9 +230,9 @@ data file's scan.
   table functions (scan-rewrite PTFs, all file formats, inclusive snapshot-id/timestamp bounds).
   Reads file data/delete files AND DuckLake **inlined** data (inlined inserts, inlined-row deletes,
   inline file-position deletes). Update pairing (`update_preimage`/`update_postimage`) works via the
-  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers (DuckDB);
-  Trino's own writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete`+`insert`.
-  See README § Change Feed and TODO-jayson-special-list.md § F9.
+  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers — DuckDB
+  AND, since 2026-07-06 (F7), Trino's own UPDATE/MERGE under `write_row_lineage = true` (default off
+  keeps the delete+insert shape). See README § Change Feed and TODO-jayson-special-list.md § F9.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
 
@@ -357,29 +357,36 @@ record what blows up. That tells us what the first PR scope is.
   the corpus under our write-mode session properties. Doris agent should
   co-review the `ReplayReadEngine` interface before it's built.
 
-### Corpus-mirror findings (2026-07-06 — REAL BUGS, high priority)
+### Corpus-mirror findings (2026-07-06 — REAL BUGS — both ✅ FIXED same day)
 
 Found by `TestTrinoCorpusReplay` (upstream corpus replayed through the DuckDB
 oracle on the PG backend axis, lake reads mirrored through Trino live-vs-live).
-Skip-listed there with `BUG:` prefixes — un-skip when fixed.
 
-- [ ] **INLINED struct/map reads crash instead of hitting the documented gate**
-  — refined diagnosis: `types/struct.test` crashes with NO schema evolution.
-  Small inserts inline (< `data_inlining_row_limit`); the inlined-read path for
-  nested element types has a documented NOT_SUPPORTED gate that fires cleanly
-  for LISTs, but **struct-typed inlined reads crash with
-  `io.airlift.slice.Slice cannot be cast to io.trino.spi.block.SqlRow`, and
-  maps with `Maps must be represented with SqlMap`, before reaching the gate**
-  (the inlined-value converter likely emits the JSON/varchar Slice where the
-  page needs a ROW/MAP block). All the `alter/struct_evolution*` corpus repros
-  are this same bug (their inserts are small → inlined), not an evolution
-  defect. Fix = either extend the gate to cover struct/map cleanly, or better,
-  implement the inlined nested read (retires B2). Repro files skip-listed in
-  `TestTrinoCorpusReplay` with `BUG:` prefix — un-skip when fixed.
-- [ ] **legacy-delete-mapping-after-rename+add_files divergence** — corpus
-  `delete/delete_legacy_missing_mapping_after_rename_add_files.test` rows
-  diverge between DuckDB and Trino (silent wrong results if real). Investigate
-  before assuming harness artifact.
+- [x] **INLINED struct/map reads crash** — ✅ FIXED 2026-07-06 by IMPLEMENTING
+  inlined nested reads (retires B2 entirely, not just the crash).
+  `NestedTextParser` in `DucklakeInlinedValueConverter` parses DuckDB's
+  value-text serialization (struct `{'k': v}` SQL form, map `{k=v}`, list
+  `[…]`, quote/escape/NULL rules, arbitrary nesting) into real
+  SqlRow/SqlMap/Block. Schema evolution is handled by IDENTITY, not name:
+  `InlinedNestedFieldMapper` builds per-schema-version field translations from
+  the `ducklake_column` tree (new catalog API `resolveSchemaVersionSnapshot`),
+  so RENAMEd fields carry values and REUSEd names (drop `i`, re-add `i`) stay
+  NULL — the two cases where name-matching is silently wrong. All 10 corpus
+  repro files un-skipped and green (`alter/struct_evolution*`,
+  `add/drop_column_nested`, `types/struct`, `struct_in_{list,map}_evolution`).
+  Unit coverage in `TestDucklakeInlinedValueConverter`. Note: the change-feed
+  inlined path and `flush_inlined_data` share the converter and no longer
+  crash, but pass no era mapping yet (name-fallback) — rename/reuse evolution
+  through THOSE two paths is a small follow-up.
+- [x] **legacy-delete-mapping-after-rename+add_files divergence** — ✅ FIXED
+  2026-07-06. Real silent-wrong-results: an add_files parquet with no
+  `mapping_id` and no parquet field_ids (legacy v0.3 shape), read after a
+  column RENAME, NULL-filled the renamed column (DuckDB still reads it).
+  `createParquetPageSource` gained matching step (4): era-name fallback — on a
+  miss, resolve the column's name at the file's `begin_snapshot` (reusing the
+  cached `resolveFileColumnNames`, same mechanism the DuckDB-executor path
+  already used) and match the parquet column by that name. Corpus repro
+  un-skipped and green.
 
 ### Open research items (read-path)
 

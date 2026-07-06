@@ -268,7 +268,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val format = ducklakeSplit.fileFormat
         if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
             val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
-            return createParquetPageSource(inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+            return createParquetPageSource(
+                    inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+            { resolveFileColumnNames(table, ducklakeSplit) }
         }
         // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
         // (vortex + lance). createDuckDbPageSource picks the source shape per
@@ -299,6 +301,29 @@ class DucklakePageSourceProvider @Inject constructor(
                     structReshapePlans)
         }
         throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
+    }
+
+    /**
+     * Identity-based nested-field mapping for inlined reads: rows in this split
+     * were inlined under schemaVersion's era; struct text carries era field
+     * NAMES. Map era names onto current fields by column_id (rename/reuse
+     * safety) — see [InlinedNestedFieldMapper]. Empty (name-fallback) when no
+     * nested rows are projected or the era cannot be resolved.
+     */
+    private fun resolveInlinedNestedMappings(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>): Map<Long, InlinedTextFieldMapping>
+    {
+        if (realColumns.none { InlinedNestedFieldMapper.containsRow(it.columnType) }) {
+            return emptyMap()
+        }
+        val eraSnapshot: Long = catalog.resolveSchemaVersionSnapshot(
+                inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+                ?: return emptyMap()
+        return InlinedNestedFieldMapper.build(
+                realColumns.map { it.columnId to it.columnType },
+                columnTree(inlinedSplit.tableId, inlinedSplit.snapshotId),
+                columnTree(inlinedSplit.tableId, eraSnapshot))
     }
 
     private fun createInlinedPageSource(
@@ -336,10 +361,13 @@ class DucklakePageSourceProvider @Inject constructor(
             val rawRows: List<List<Any?>> = catalog.readInlinedData(
                     inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
+            val nestedMappings: Map<Long, InlinedTextFieldMapping> =
+                    resolveInlinedNestedMappings(inlinedSplit, realColumns)
             convertedRealRows = rawRows.map { row ->
                 val converted: MutableList<Any?> = ArrayList(row.size)
                 for (i in row.indices) {
-                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], realTypes[i]))
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
+                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
                 }
                 converted
             }
@@ -762,7 +790,8 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** Opens one change-feed data file through the ordinary read pipeline, projecting the data
-     * columns followed by `$row_id`, reading as of [table]'s END-snapshot schema. */
+     * columns followed by `$file_row_number` (raw file positions — lineage/rowid resolution
+     * happens in ChangeFeedPageSource), reading as of [table]'s END-snapshot schema. */
     private fun openChangeFeedFile(
             session: ConnectorSession,
             resolvedPath: String,
@@ -793,7 +822,10 @@ class DucklakePageSourceProvider @Inject constructor(
                 null,
                 emptyMap())
         val syntheticHandle = DucklakeTableHandle(table.schemaName, table.tableName, table.tableId, table.endSnapshot)
-        val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.ROW_ID.columnHandle()
+        // $file_row_number, NOT $row_id: the feed needs the raw FILE POSITION to
+        // match keepPositions and index lineage arrays. ($row_id is lineage-first
+        // since F7 — its value is no longer positionally rebasable.)
+        val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.FILE_ROW_NUMBER.columnHandle()
         return try {
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
             createDataFilePageSource(session, split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
@@ -939,8 +971,11 @@ class DucklakePageSourceProvider @Inject constructor(
             columns: List<DucklakeColumnHandle>,
             split: DucklakeSplit,
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
-            fileSystem: TrinoFileSystem): ConnectorPageSource
+            fileSystem: TrinoFileSystem,
+            eraColumnNamesSupplier: () -> Map<Long, String> = { emptyMap() }): ConnectorPageSource
     {
+        // Lazily resolved on first miss (see era-name fallback below).
+        val eraColumnNames: Map<Long, String> by lazy(eraColumnNamesSupplier)
         // Create memory context for reading
         val memoryContext: AggregatedMemoryContext = newSimpleAggregatedMemoryContext()
 
@@ -1027,7 +1062,9 @@ class DucklakePageSourceProvider @Inject constructor(
             for (i in columns.indices) {
                 val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
                 if (addRowIdStart != null) {
-                    positionalInjections.add(PositionalInjection(i, addRowIdStart))
+                    positionalInjections.add(PositionalInjection(
+                            i, addRowIdStart,
+                            resolveLineage = columns[i].virtualKind() == VirtualKind.ROW_ID))
                 }
                 else {
                     fileColumns.add(columns[i])
@@ -1067,6 +1104,19 @@ class DucklakePageSourceProvider @Inject constructor(
                     val parquetSourceName: String? = split.fieldIdToParquetSourceName[column.columnId]
                     if (parquetSourceName != null && parquetSourceName != columnName) {
                         columnIO = messageColumnIO.getChild(parquetSourceName)
+                    }
+                }
+                // (4) Era-name fallback for legacy files with NO mapping_id and NO
+                // parquet field_ids (pre-v0.4 add_files registrations whose name map
+                // was never persisted): the file's physical column carries the name
+                // this column had at the file's begin_snapshot. Upstream still reads
+                // such files after a column rename by resolving the era name; without
+                // this we silently NULL-fill (corpus repro:
+                // delete/delete_legacy_missing_mapping_after_rename_add_files.test).
+                if (columnIO == null && column.columnId > 0) {
+                    val eraName: String? = eraColumnNames[column.columnId]
+                    if (eraName != null && !eraName.equals(columnName, ignoreCase = true)) {
+                        columnIO = messageColumnIO.getChild(eraName)
                     }
                 }
 
@@ -1116,10 +1166,19 @@ class DucklakePageSourceProvider @Inject constructor(
             var pageSource: ConnectorPageSource = ParquetPageSource(parquetReader)
             pageSource = transforms.build(pageSource)
 
-            // Inject positional virtuals before delete filtering so they reflect original file positions
+            // Inject positional virtuals before delete filtering so they reflect original file
+            // positions. The queryable $row_id resolves the file's embedded lineage column when
+            // present (UPDATE/compaction-preserved rowids) — one footer pass, only when requested.
             if (positionalInjections.isNotEmpty()) {
+                val lineage: LongArray? =
+                        if (positionalInjections.any { it.resolveLineage }) {
+                            readLineage(fileSystem, inputFile.location().toString(), split.fileFormat, split.footerSize)
+                        } else {
+                            null
+                        }
                 pageSource = PositionalVirtualInjectingPageSource(
-                        pageSource, fileColumns.size + positionalInjections.size, positionalInjections, split.rowIdStart)
+                        pageSource, fileColumns.size + positionalInjections.size, positionalInjections,
+                        split.rowIdStart, lineage)
             }
 
             pageSource = applyDeleteFile(fileSystem, split, pageSource)
@@ -1695,20 +1754,34 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** One positional column to inject: its output channel index and whether to add rowIdStart. */
-    private class PositionalInjection(val outputPosition: Int, val addRowIdStart: Boolean)
+    private class PositionalInjection(
+        val outputPosition: Int,
+        val addRowIdStart: Boolean,
+        /**
+         * True only for the queryable `$row_id` virtual (-104): when the file
+         * carries the embedded lineage column, the injected value is the row's
+         * PRESERVED rowid instead of `rowIdStart + position`. The MERGE channel
+         * (-100) must stay positional — DucklakeMergeSink resolves data files by
+         * contiguous `[rowIdStart, +count)` ranges (lineage translation for
+         * chained updates happens in the sink itself).
+         */
+        val resolveLineage: Boolean = false)
 
     /**
      * Wraps a ConnectorPageSource and injects one or more synthetic positional BIGINT columns
      * derived from the cumulative file position: the MERGE $row_id and the queryable $row_id
-     * (value = rowIdStart + position) and $file_row_number (value = position, 0-based). All
-     * share the same per-page running offset. Must be applied BEFORE delete-file filtering so
-     * the values match original file positions.
+     * (value = rowIdStart + position, or the file's embedded lineage value when present and
+     * [PositionalInjection.resolveLineage]) and $file_row_number (value = position, 0-based).
+     * All share the same per-page running offset. Must be applied BEFORE delete-file filtering
+     * so the values match original file positions.
      */
     private class PositionalVirtualInjectingPageSource(
         private val delegate: ConnectorPageSource,
         private val totalChannels: Int,
         injections: List<PositionalInjection>,
-        private val rowIdStart: Long) : ConnectorPageSource
+        private val rowIdStart: Long,
+        /** Embedded lineage values by file position (null = file carries none). */
+        private val lineage: LongArray? = null) : ConnectorPageSource
     {
         private val injections: List<PositionalInjection> = injections.toList()
         private var nextRowOffset: Long = 0
@@ -1731,7 +1804,16 @@ class DucklakePageSourceProvider @Inject constructor(
             val injectedBlocks: HashMap<Int, Block> = HashMap(injections.size * 2)
             for (injection in injections) {
                 val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
-                if (injection.addRowIdStart) {
+                if (injection.resolveLineage && lineage != null) {
+                    for (i in 0 until positionCount) {
+                        val filePosition = nextRowOffset + i
+                        val value =
+                                if (filePosition < lineage.size) lineage[filePosition.toInt()]
+                                else rowIdStart + filePosition
+                        BIGINT.writeLong(blockBuilder, value)
+                    }
+                }
+                else if (injection.addRowIdStart) {
                     for (i in 0 until positionCount) {
                         BIGINT.writeLong(blockBuilder, rowIdStart + nextRowOffset + i)
                     }

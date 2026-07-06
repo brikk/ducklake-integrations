@@ -22,6 +22,16 @@ metadata tables, and bidirectional DuckDB compatibility.
 See the [trino-ducklake README](jvm/trino-ducklake/README.md) for features, build
 instructions, and configuration.
 
+### [ducklake-corpus-replay](jvm/ducklake-corpus-replay/)
+
+Conformance harness that replays **DuckLake's upstream sqllogictest corpus** (the reference
+C++ implementation's own `test/sql/` suite, pinned as a git submodule) through an embedded
+DuckDB oracle, validating results against the upstream golden text — then mirrors every lake
+read through an engine adapter (Trino today; Doris planned) live-vs-live against the oracle
+on a shared PostgreSQL catalog. Engine-agnostic core (`ReplayReadEngine` seam); adapters live
+in the engine modules. The corpus grows with every upstream release, so spec-conformance
+coverage compounds automatically.
+
 ### [duckdb-trino-parity-extension](duckdb-trino-parity-extension/) (git submodule)
 
 Native DuckDB extension that provides `trino_<name>(...)` functions with semantics matching
@@ -31,12 +41,15 @@ bundled into the plugin jar as platform-specific resources.
 
 ## Getting Started
 
-This repo carries two git submodules:
+This repo carries three git submodules:
 
 - `duckdb-trino-parity-extension` — the native DuckDB extension consumed by trino-ducklake at
   attach time. Itself carries the `duckdb` and `extension-ci-tools` submodules from the
   upstream DuckDB extension template.
 - `jvm/trino-ducklake/ducklake-web` — the DuckLake specification, used as reference docs.
+- `jvm/ducklake-corpus-replay/ducklake` — the upstream `duckdb/ducklake` reference
+  implementation, pinned to the release matching our DuckDB version; its `test/sql/` corpus is
+  replayed by the conformance harness above.
 
 Clone with all submodules in one shot:
 

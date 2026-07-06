@@ -113,6 +113,66 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
     }
 
     @Test
+    fun maxCompactedFilesCapsSourcesPerInvocation() {
+        // Mirrors upstream's max_compacted_files: a cap of 2 merges only two of the
+        // four small files in one invocation; a follow-up uncapped call finishes.
+        val table = "test_schema.rewrite_capped"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)")
+            computeActual("INSERT INTO $table VALUES (3, 'c')")
+            computeActual("INSERT INTO $table VALUES (4, 'd')")
+            computeActual("INSERT INTO $table VALUES (5, 'e')")
+            assertThat(fileCount(table)).isEqualTo(4L)
+            val rowsBefore = computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String }
+
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', " +
+                    "table_name => 'rewrite_capped', max_compacted_files => 2)")
+
+            // 2 sources merged into 1 output + 2 untouched = 3 files.
+            assertThat(fileCount(table)).`as`("cap limits sources consumed").isEqualTo(3L)
+            val rowsAfterCapped = computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String }
+            assertThat(rowsAfterCapped).isEqualTo(rowsBefore)
+
+            computeActual(call(table))
+            assertThat(fileCount(table)).`as`("uncapped follow-up finishes the job").isEqualTo(1L)
+            val rowsAfterFull = computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String }
+            assertThat(rowsAfterFull).isEqualTo(rowsBefore)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
+    fun compactionPreservesRowids() {
+        // Merged files embed _ducklake_internal_row_id (each surviving row's ORIGINAL
+        // rowid) — the same column upstream compaction always writes. The queryable
+        // $row_id virtual resolves it, so rowids are stable across compaction.
+        val table = "test_schema.rewrite_rowids"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)")
+            computeActual("INSERT INTO $table VALUES (3, 'c')")
+            computeActual("INSERT INTO $table VALUES (4, 'd')")
+            computeActual("DELETE FROM $table WHERE id = 2")
+            val before: Map<Int, Long> = computeActual("SELECT id, \"\$row_id\" FROM $table").materializedRows
+                    .associate { it.getField(0) as Int to it.getField(1) as Long }
+
+            computeActual(call(table))
+
+            assertThat(fileCount(table)).isEqualTo(1L)
+            val after: Map<Int, Long> = computeActual("SELECT id, \"\$row_id\" FROM $table").materializedRows
+                    .associate { it.getField(0) as Int to it.getField(1) as Long }
+            assertThat(after).`as`("rowids survive compaction (incl. across a delete)").isEqualTo(before)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
     fun compactsSmallFilesPreservingRowsAndTimeTravel() {
         val table = "test_schema.rewrite_basic"
         try {

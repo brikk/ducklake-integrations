@@ -36,6 +36,7 @@ open class DucklakePagePartitioner(
     private val allColumns: List<DucklakeColumnHandle> = allColumns.toList()
     private val pageIndexer: PageIndexer
     private val partitionColumnMappings: List<PartitionColumnMapping>
+    private val partitionKeyNames: Map<Int, String>
 
     init {
         // Build mappings: for each partition field, find the source column index and type
@@ -62,6 +63,41 @@ open class DucklakePagePartitioner(
             mappings.add(PartitionColumnMapping(field, sourceColumnIndex, sourceColumn!!, indexerType))
         }
         this.partitionColumnMappings = mappings
+
+        // Hive-path key names, mirroring upstream DuckLakePartitionUtils::
+        // GetPartitionKeyName (ducklake_partition_data.cpp incl. the main-branch
+        // counter fix, 1add112e): identity → column name; temporal → year/month/
+        // day/hour; bucket → "bucket"; collisions cascade to `<prefix>_<column>`
+        // then `<prefix>_<column>_2`, `_3`… (case-insensitive). Without this,
+        // repeated transforms on one column (e.g. bucket(4, id) + bucket(8, id))
+        // emit duplicate `id=` path keys — ambiguous layout, and hive-parsing
+        // consumers (add_files) would silently overwrite.
+        val usedNames = mutableSetOf<String>()
+        val names = mutableMapOf<Int, String>()
+        for (mapping in mappings.sortedBy { it.field.partitionKeyIndex }) {
+            val columnName = mapping.sourceColumn.columnName
+            val prefix = when (mapping.field.transform) {
+                DucklakePartitionTransform.IDENTITY -> columnName
+                DucklakePartitionTransform.YEAR -> "year"
+                DucklakePartitionTransform.MONTH -> "month"
+                DucklakePartitionTransform.DAY -> "day"
+                DucklakePartitionTransform.HOUR -> "hour"
+                DucklakePartitionTransform.BUCKET -> "bucket"
+            }
+            var name = prefix
+            if (!usedNames.add(name.lowercase())) {
+                name = "${prefix}_$columnName"
+                if (!usedNames.add(name.lowercase())) {
+                    var counter = 2
+                    while (!usedNames.add("${prefix}_${columnName}_$counter".lowercase())) {
+                        counter++
+                    }
+                    name = "${prefix}_${columnName}_$counter"
+                }
+            }
+            names[mapping.field.partitionKeyIndex] = name
+        }
+        this.partitionKeyNames = names
 
         // Create page indexer for the partition column types
         val partitionTypes: List<Type> = partitionColumnMappings.map { it.indexerType }
@@ -101,15 +137,12 @@ open class DucklakePagePartitioner(
     }
 
     /**
-     * Get the column name for a partition field (used for directory naming).
+     * Hive-path key name for a partition field (upstream naming convention with
+     * collision cascade — see the init block).
      */
     open fun getPartitionColumnName(partitionKeyIndex: Int): String {
-        for (mapping in partitionColumnMappings) {
-            if (mapping.field.partitionKeyIndex == partitionKeyIndex) {
-                return mapping.sourceColumn.columnName
-            }
-        }
-        throw IllegalArgumentException("Unknown partition key index: $partitionKeyIndex")
+        return partitionKeyNames[partitionKeyIndex]
+                ?: throw IllegalArgumentException("Unknown partition key index: $partitionKeyIndex")
     }
 
     open fun getPartitionId(): Long {

@@ -278,7 +278,7 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 | INSERT INTO | Yes | Writes Parquet files (ZSTD compression) by default; inherits the table's declared or latest data file format |
 | CREATE TABLE AS SELECT | Yes | |
 | DELETE | Yes | Writes Parquet positional delete files; verified against parquet, duckdb, vortex, and lance data files |
-| UPDATE | Yes | Atomic delete + insert in one snapshot; rewritten rows inherit the table's data file format (all four formats verified) |
+| UPDATE | Yes | Atomic delete + insert in one snapshot; rewritten rows inherit the table's data file format (all four formats verified). On parquet, rewritten rows keep their original `rowid` (embedded lineage column, `write_row_lineage` on by default) so change feeds pair them as updates and rowids stay stable across engines |
 | MERGE INTO | Yes | WHEN MATCHED THEN UPDATE/DELETE + WHEN NOT MATCHED THEN INSERT; verified against all four data file formats |
 | CREATE SCHEMA | Yes | |
 | DROP SCHEMA | Yes | Non-empty schema drop rejected |
@@ -457,9 +457,15 @@ ORDER BY snapshot_id;
   compaction — e.g. DuckDB), that preserved rowid is used; otherwise it's `row_id_start + file
   position`. So a lineage-preserving UPDATE's delete and re-insert land on the same `rowid` in one
   snapshot and pair into `update_preimage` + `update_postimage`. This connector's OWN
-  UPDATE/MERGE writes do not emit the lineage column (the rewritten row gets a fresh `row_id_start`),
-  so a Trino-written UPDATE surfaces as a `delete` + `insert` — a faithful description of its
-  delete-then-insert implementation.
+  UPDATE/MERGE writes emit the lineage column too (session property `write_row_lineage`,
+  **on by default** — DuckDB preserves lineage unconditionally, so this is the
+  cross-engine-faithful behavior; parquet data files): rewritten rows keep their original
+  `rowid` — stable across engines and across CHAINED updates — and Trino-written updates
+  pair in the change feed exactly like DuckDB-written ones. Compaction
+  (`rewrite_data_files`) preserves rowids the same way, and the queryable `$row_id`
+  virtual resolves the embedded lineage on plain reads. Set `write_row_lineage = false`
+  for the legacy shape: a fresh `row_id_start` per rewrite, updates surfacing as
+  `delete` + `insert`.
 - The feed reads file-based data/delete files **and** DuckLake's **inlined** data (small writes
   DuckDB keeps in `ducklake_inlined_*` tables): inlined inserts, inlined-row deletes, and inline
   file-position deletes all surface. Compaction that expires snapshots can still limit what the feed
@@ -604,6 +610,28 @@ The connector is tested for bidirectional compatibility with DuckDB:
 | Inlined data created by DuckDB | Yes | Trino reads inlined rows from catalog tables |
 | Schema evolution across engines | Yes | ADD COLUMN by one engine, read by the other |
 
+### Upstream corpus replay
+
+Beyond the hand-written cross-engine suites, the connector is verified against
+**DuckLake's own upstream test corpus** — the 466 sqllogictest files (7,600+ test
+cases) that the reference C++ implementation ships in `duckdb/ducklake` `test/sql/`,
+pinned as a git submodule in the sibling [`ducklake-corpus-replay`](../ducklake-corpus-replay/)
+module. Each corpus file is executed **verbatim** through an embedded DuckDB
+oracle (no dialect translation), building real catalog state on an isolated
+PostgreSQL metadata database; every lake read the corpus performs is then
+re-executed through a live Trino query runner against the *same* catalog and
+compared row-for-row against the oracle's result — including intermediate
+states mid-file. A divergence means Trino read the same DuckLake state
+differently than DuckDB: exactly the class of spec-conformance bug that is
+hardest to catch by hand (on first contact the harness found two real bugs that
+138 hand-written test classes had missed). The corpus grows with every upstream
+release, so conformance coverage compounds for free:
+
+```shell
+./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay"                            # starter set
+./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay" -Dducklake.corpus.dirs=all # full corpus
+```
+
 ## Configuration
 
 | Property | Required | Default | Description |
@@ -699,6 +727,13 @@ research item.
   `write_deletion_vectors` option). Both shapes are read by Trino and DuckDB. Position-delete
   filtering is verified against parquet, duckdb, vortex, and lance data files, and both directions
   (Trino-writes/DuckDB-reads and DuckDB-writes/Trino-reads) are cross-engine tested for each format.
+- Row lineage is both read AND written (session property `write_row_lineage`, on by default).
+  Trino's UPDATE/MERGE rewrites AND `rewrite_data_files` compaction embed each row's original
+  rowid (`_ducklake_internal_row_id`, parquet field-id `2147483540` — DuckDB's own encoding), so
+  rowids stay stable across engines, across chained updates, and across compaction; change feeds
+  (Trino's `table_changes` AND DuckDB's) pair rewrites into `update_preimage`/`update_postimage`,
+  and the `$row_id` virtual resolves the preserved ids on plain reads. Parquet data files only;
+  cross-engine tested (DuckDB observes the same rowid after a Trino lineage UPDATE).
 - The duckdb-format data file path (`data_file_format = 'duckdb'`) is **EXPERIMENTAL**.
   Read modes (`materialize` / `httpfs` / `auto`), writer modes (`arrow_stream` / `appender`),
   function pushdown, and Tier C TIMESTAMP-WITH-TIME-ZONE semantics are all wired and

@@ -11,6 +11,8 @@ object SltParser {
     private val KNOWN_UNSUPPORTED =
         setOf("concurrentloop", "restart", "sleep", "mode", "load", "hash-threshold", "set", "reconnect", "unzip")
 
+    private val CONNECTION_TOKEN = Regex("con\\d+")
+
     fun parse(path: String, content: String): SltFile {
         val lines = content.lines()
         val records = mutableListOf<SltRecord>()
@@ -105,30 +107,15 @@ object SltParser {
             return start + 1
         }
         val connection = tokens.getOrNull(2)
-        var i = start + 1
-        val sql = StringBuilder()
-        while (i < until && lines[i].trim().let { it.isNotEmpty() && it != "----" }) {
-            if (sql.isNotEmpty()) sql.append('\n')
-            sql.append(lines[i])
-            i++
-        }
-        var expectedError: String? = null
-        if (i < until && lines[i].trim() == "----") {
-            i++
-            val msg = StringBuilder()
-            while (i < until && lines[i].trim().isNotEmpty()) {
-                if (msg.isNotEmpty()) msg.append('\n')
-                msg.append(lines[i].trim())
-                i++
-            }
-            expectedError = msg.toString().ifEmpty { null }
-        }
-        // `statement maybe` = may or may not error; model as ok-with-tolerance via expectError+null? v1: treat
-        // as unsupported only if it has no error expectation semantics we can honor. maybe == "error allowed".
+        val (sql, afterSql) = readSqlBlock(lines, start + 1, until)
+        val (block, i) = readResultBlock(lines, afterSql, until, trimLines = true)
+        val expectedError: String? = block.joinToString("\n").ifEmpty { null }
+        // `statement maybe` = may or may not error: expectError with a null
+        // expectation means "an error, if any, is acceptable".
         if (kind == "maybe") {
-            out += SltStatement(lineNo, sql.toString(), expectError = true, expectedError = null, connection = connection)
+            out += SltStatement(lineNo, sql, expectError = true, expectedError = null, connection = connection)
         } else {
-            out += SltStatement(lineNo, sql.toString(), kind == "error", expectedError, connection)
+            out += SltStatement(lineNo, sql, kind == "error", expectedError, connection)
         }
         return i
     }
@@ -142,35 +129,61 @@ object SltParser {
     ): Int {
         val lineNo = start + 1
         val types = tokens.getOrNull(1) ?: ""
+        val modifiers = parseQueryModifiers(tokens.drop(2))
+        val (sql, afterSql) = readSqlBlock(lines, start + 1, until)
+        val (expected, i) = readResultBlock(lines, afterSql, until, trimLines = false)
+        out += SltQuery(lineNo, sql, types, modifiers.sortMode, modifiers.connection, modifiers.label, expected)
+        return i
+    }
+
+    private data class QueryModifiers(val sortMode: SortMode, val connection: String?, val label: String?)
+
+    private fun parseQueryModifiers(tokens: List<String>): QueryModifiers {
         var sortMode = SortMode.NOSORT
         var connection: String? = null
         var label: String? = null
-        for (t in tokens.drop(2)) {
+        for (t in tokens) {
             when {
                 t == "rowsort" -> sortMode = SortMode.ROWSORT
                 t == "valuesort" -> sortMode = SortMode.VALUESORT
                 t == "nosort" -> sortMode = SortMode.NOSORT
-                t.matches(Regex("con\\d+")) -> connection = t
+                t.matches(CONNECTION_TOKEN) -> connection = t
                 else -> label = t // result-sharing label
             }
         }
-        var i = start + 1
+        return QueryModifiers(sortMode, connection, label)
+    }
+
+    /** Multi-line SQL body, ending at a blank line or the `----` separator. */
+    private fun readSqlBlock(lines: List<String>, from: Int, until: Int): Pair<String, Int> {
+        var i = from
         val sql = StringBuilder()
         while (i < until && lines[i].trim().let { it.isNotEmpty() && it != "----" }) {
             if (sql.isNotEmpty()) sql.append('\n')
             sql.append(lines[i])
             i++
         }
-        val expected = mutableListOf<String>()
-        if (i < until && lines[i].trim() == "----") {
-            i++
-            while (i < until && lines[i].isNotBlank()) {
-                expected += lines[i]
-                i++
-            }
+        return sql.toString() to i
+    }
+
+    /** Optional `----`-introduced block, consumed until the blank terminator. */
+    private fun readResultBlock(
+        lines: List<String>,
+        from: Int,
+        until: Int,
+        trimLines: Boolean,
+    ): Pair<List<String>, Int> {
+        var i = from
+        if (i >= until || lines[i].trim() != "----") {
+            return emptyList<String>() to i
         }
-        out += SltQuery(lineNo, sql.toString(), types, sortMode, connection, label, expected)
-        return i
+        i++
+        val block = mutableListOf<String>()
+        while (i < until && lines[i].isNotBlank()) {
+            block += if (trimLines) lines[i].trim() else lines[i]
+            i++
+        }
+        return block to i
     }
 
     private fun parseLoop(
