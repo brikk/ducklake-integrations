@@ -25,6 +25,18 @@ Seeded 2026-07-05 from the upstream-risk conversation.
 
 ## Ideas we can't commit to yet
 
+- [ ] **corpus content against non-parquet data formats (T3 synergy)** — the
+  corpus replay currently tests OUR read path against DuckDB-written parquet.
+  Idea (Jayson, 2026-07-07): reuse the corpus's rich table/data shapes to
+  exercise the duckdb-format (and vortex/lance) write+read paths too. The
+  oracle can't write those formats (upstream is parquet-only), so this needs
+  the deferred "statement-translation" runner mode: TRINO executes the
+  corpus's translated writes under `data_file_format='duckdb'`, oracle-less,
+  comparing against parquet-mode results (self-oracle across formats). Would
+  subsume much of the T3 matrix (time travel / system tables / pruning on
+  `.db`) with upstream-authored data shapes. Non-trivial (write-side dialect
+  translation); consider after the read-mirror axes are done.
+
 - [ ] **union / separated catalog for experimental formats** — keep non-parquet
   tables (and possibly extension tables, e.g. lance-index bookkeeping) in a
   dedicated catalog so a "real" catalog is never polluted with rows a stock
