@@ -357,6 +357,45 @@ record what blows up. That tells us what the first PR scope is.
   the corpus under our write-mode session properties. Doris agent should
   co-review the `ReplayReadEngine` interface before it's built.
 
+### Corpus-mirror findings round 2 (2026-07-07, add_files dir — 2 REAL BUGS, diagnosed + tracked)
+
+Both are silent-wrong-results on DuckDB-registered external (add_files) parquet.
+Repro files skip-listed in `TestTrinoCorpusReplay` with `BUG:` prefixes.
+
+- [ ] **hive-partition columns from DuckDB add_files read as NULL** — DuckDB's
+  `ducklake_add_data_files(..., hive_partitioning => true)` records NO
+  `ducklake_file_partition_value` rows and NO partition spec; instead the
+  partition columns are `ducklake_name_mapping` entries with
+  **`is_partition = true`** (probed 2026-07-07: `mapping_id=0`,
+  `source_name=part_key`, `target_field_id=<column_id>`, `is_partition=true`),
+  and the VALUE lives in the file PATH (`part_key=1/part_key2=10/data.parquet`)
+  — parsed at read time. Our reader ignores `is_partition`, tries to match a
+  parquet column named `part_key`, misses → NULL. Fix: surface `is_partition`
+  through `getNameMaps`, carry `hivePartitionKeysByColumnId` on the split, and
+  project path-parsed constants (URL-decode `%20`;
+  `__HIVE_DEFAULT_PARTITION__` → NULL) via the existing missing-column
+  machinery. Repro: `add_files/add_files_hive{,_mismatch,_partition_cast}.test`.
+- [ ] **nested struct-FIELD initial defaults not projected** — corpus
+  `default/struct_field_default.test`: a FIELD added to a struct with a default
+  (`ALTER ... ADD COLUMN s.k ... DEFAULT 42` shape) must project 42 for old
+  rows; we project NULL. The default lives on the catalog CHILD row's
+  `initial_default` — the 4th path of the issue-1135 family: the reshape
+  planner (`StructFieldPlan.fileName == null` → typed NULL) and the inlined
+  nested-text parser (unbound field → NULL) both need to consult the child
+  row's default. Top-level defaults were fixed 2026-07-07 (parquet
+  missing-column, duckdb-executor CAST, inlined era-defaults).
+- [ ] **name-map must be AUTHORITATIVE for mapped files (matching order)** —
+  corpus `add_files/add_files.test:170`: col2 dropped, then RE-ADDED (new
+  column_id); an old add_files parquet physically contains a `col2` column
+  belonging to the DEAD identity — upstream reads NULL, we NAME-match it and
+  resurrect dead data. For files WITH a `mapping_id`, upstream resolves columns
+  through the map ONLY (map miss = NULL/default); name matching applies only to
+  unmapped files. Our parquet matcher tries name FIRST for everything. Fix:
+  when `split.fieldIdToParquetSourceName` (or the hive-keys map) is non-empty,
+  match map-only; keep name → field-id → era-name for unmapped files (the
+  era-name legacy fallback stays correct — that path only fires when
+  mapping_id is NULL).
+
 ### Corpus-mirror findings (2026-07-06 — REAL BUGS — both ✅ FIXED same day)
 
 Found by `TestTrinoCorpusReplay` (upstream corpus replayed through the DuckDB

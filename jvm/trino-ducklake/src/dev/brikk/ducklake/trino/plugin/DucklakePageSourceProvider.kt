@@ -326,6 +326,71 @@ class DucklakePageSourceProvider @Inject constructor(
                 columnTree(inlinedSplit.tableId, eraSnapshot))
     }
 
+    /**
+     * Converts raw inlined rows to Trino-native values: identity-mapped nested
+     * text parsing, and era-default substitution — rows inlined under an era
+     * that PREDATES a column must project the column's `initial_default`
+     * (upstream issue 1135 semantics, same rule as the parquet missing-column
+     * path). readInlinedData returns NULL for era-absent columns.
+     */
+    private fun convertInlinedRows(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>,
+            realTypes: List<Type>,
+            rawRows: List<List<Any?>>): List<List<Any?>>
+    {
+        val nestedMappings: Map<Long, InlinedTextFieldMapping> =
+                resolveInlinedNestedMappings(inlinedSplit, realColumns)
+        val eraDefaults: Map<Int, Any?> = resolveInlinedEraDefaults(inlinedSplit, realColumns)
+        return rawRows.map { row ->
+            val converted: MutableList<Any?> = ArrayList(row.size)
+            for (i in row.indices) {
+                if (eraDefaults.containsKey(i)) {
+                    converted.add(eraDefaults[i])
+                } else {
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
+                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
+                }
+            }
+            converted
+        }
+    }
+
+    /**
+     * For columns ABSENT at the inlined split's schema-version era (added later
+     * via ALTER TABLE ADD COLUMN), the projected value for every row: the parsed
+     * `initial_default` when the column declares one, else null. Columns present
+     * at the era are not in the map (their stored values are used).
+     */
+    private fun resolveInlinedEraDefaults(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>): Map<Int, Any?>
+    {
+        if (realColumns.none { it.initialDefault != null }) {
+            return emptyMap()
+        }
+        val eraSnapshot: Long = catalog.resolveSchemaVersionSnapshot(
+                inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+                ?: return emptyMap()
+        val eraColumnIds: Set<Long> = columnTree(inlinedSplit.tableId, eraSnapshot)
+                .filter { it.parentColumn == null }
+                .mapTo(mutableSetOf()) { it.columnId }
+        val defaults = mutableMapOf<Int, Any?>()
+        realColumns.forEachIndexed { index, handle ->
+            val initialDefault = handle.initialDefault
+            if (initialDefault != null && handle.columnId !in eraColumnIds) {
+                defaults[index] =
+                        try {
+                            DucklakePartitionValueParser.parseIdentity(handle.columnType, initialDefault)
+                        }
+                        catch (_: RuntimeException) {
+                            null
+                        }
+            }
+        }
+        return defaults
+    }
+
     private fun createInlinedPageSource(
             inlinedSplit: DucklakeInlinedSplit,
             columns: List<ColumnHandle>): ConnectorPageSource
@@ -361,16 +426,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val rawRows: List<List<Any?>> = catalog.readInlinedData(
                     inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
-            val nestedMappings: Map<Long, InlinedTextFieldMapping> =
-                    resolveInlinedNestedMappings(inlinedSplit, realColumns)
-            convertedRealRows = rawRows.map { row ->
-                val converted: MutableList<Any?> = ArrayList(row.size)
-                for (i in row.indices) {
-                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
-                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
-                }
-                converted
-            }
+            convertedRealRows = convertInlinedRows(inlinedSplit, realColumns, realTypes, rawRows)
             rowCount = convertedRealRows.size
         }
         else if (beginSnapshots != null) {
@@ -1638,12 +1694,18 @@ class DucklakePageSourceProvider @Inject constructor(
          */
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
-            val partitionValue: String? = split.partitionValuesByColumnId[column.columnId]
-            if (partitionValue == null) {
+            // Precedence: hive partition value (external add_files) > the column's
+            // initial_default (rows predating ADD COLUMN ... DEFAULT — upstream issue
+            // 1135: `WHERE b = 42` must match old rows after ADD COLUMN b DEFAULT 42)
+            // > NULL. initial_default is plain value text, same shape the partition
+            // parser consumes.
+            val storedValue: String? = split.partitionValuesByColumnId[column.columnId]
+                    ?: column.initialDefault
+            if (storedValue == null) {
                 return column.columnType.createNullBlock()
             }
             try {
-                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, partitionValue)
+                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, storedValue)
                 return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType, nativeValue)
             }
             catch (_: RuntimeException) {

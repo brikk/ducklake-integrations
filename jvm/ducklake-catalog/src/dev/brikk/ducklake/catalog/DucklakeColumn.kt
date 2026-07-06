@@ -31,4 +31,10 @@ data class DucklakeColumn(
     val columnType: String,
     val nullsAllowed: Boolean,
     val parentColumn: Long?,
+    /**
+     * `ducklake_column.initial_default`: the value rows written BEFORE this
+     * column existed must project (plain value text, not SQL-quoted — e.g.
+     * `42` or `hi 'there'`). Null = no default (project SQL NULL).
+     */
+    val initialDefault: String? = null,
 )

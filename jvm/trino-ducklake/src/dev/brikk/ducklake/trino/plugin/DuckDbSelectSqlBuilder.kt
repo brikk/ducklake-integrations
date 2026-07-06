@@ -102,9 +102,18 @@ object DuckDbSelectSqlBuilder {
         }
         val physicalName: String? = fileNames[column.columnId]
         if (physicalName == null) {
-            // Added after this file was written — no physical column to read.
-            sql.append("CAST(NULL AS ")
-                    .append(DuckDbWriterSupport.toDuckDbSqlType(column.columnType, "schema-evolution NULL projection"))
+            // Added after this file was written — no physical column to read. Rows
+            // predating an ADD COLUMN ... DEFAULT project the initial default
+            // (upstream issue 1135 semantics); otherwise NULL. The default is plain
+            // value text — render as an escaped string literal and CAST (DuckDB
+            // coerces '42' -> INTEGER etc.).
+            val initialDefault = column.initialDefault
+            if (initialDefault == null) {
+                sql.append("CAST(NULL AS ")
+            } else {
+                sql.append("CAST('").append(initialDefault.replace("'", "''")).append("' AS ")
+            }
+            sql.append(DuckDbWriterSupport.toDuckDbSqlType(column.columnType, "schema-evolution default projection"))
                     .append(") AS ")
             appendQuoted(sql, currentName)
             return

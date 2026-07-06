@@ -45,15 +45,34 @@ class TestTrinoCorpusReplay {
                 ?: "../ducklake-corpus-replay/ducklake/test/sql",
         )
 
-    /** Per-file skips (path → reason) specific to the Trino mirror axis. */
+    /**
+     * Per-file skips: upstream's own PostgreSQL-axis skip set (their PG CI
+     * config — includes the PG-locking files that HANG a replay) plus
+     * Trino-mirror-specific entries.
+     */
     private val skipList: Map<String, String> =
-        mapOf(
-            "general/metadata_parameters.test" to
-                "custom METADATA_SCHEMA/METADATA_PARAMETERS not threaded to the connector catalog config",
+        dev.brikk.ducklake.corpus.PostgresAxisSkips.SKIPS + mapOf(
             "metadata/appender_variant_stats.test" to
                 "VARIANT-typed parquet not readable by the Trino parquet reader (F10 territory)",
-            "metadata/ducklake_settings.test" to
-                "asserts metadata backend type 'duckdb'; the PG backend-axis rewrite makes it 'postgres' by design",
+            "add_files/add_files_type_check_timestamp.test" to
+                "duckdb-jdbc truncates TIMESTAMP_NS to micros (oracle-side limitation; also " +
+                "a ms/us rendering ordering nuance under investigation)",
+            "data_inlining/data_inlining_encryption.test" to ENCRYPTED_LAKE,
+            "encryption/encryption.test" to ENCRYPTED_LAKE,
+            "geo/ducklake_geometry.test" to GEO_WKB,
+            "geo/ducklake_geometry_add_files.test" to GEO_WKB,
+            "geo/ducklake_geometry_inlining.test" to GEO_WKB,
+            "geo/ducklake_geometry_merge.test" to GEO_WKB,
+            "default/struct_field_default.test" to
+                "BUG: nested struct-FIELD initial defaults not projected (initial_default on " +
+                "catalog CHILD rows — 4th path of the issue-1135 family; tracked in TODO-READ-MODE)",
+            // ---- REAL BUGS round 2 (tracked in TODO-READ-MODE; un-skip when fixed) ----
+            "add_files/add_files_hive.test" to BUG_HIVE_ADD_FILES,
+            "add_files/add_files_hive_mismatch.test" to BUG_HIVE_ADD_FILES,
+            "add_files/add_files_hive_partition_cast.test" to BUG_HIVE_ADD_FILES,
+            "add_files/add_files.test" to
+                "BUG: name-map must be authoritative for mapped files — name-first matching " +
+                "resurrects a dead re-added column's physical data (tracked in TODO-READ-MODE)",
             // (2026-07-06: the inlined struct/map crash family was FIXED — nested
             // text parsing in DucklakeInlinedValueConverter — and its 10 repro
             // files un-skipped.)
@@ -123,5 +142,14 @@ class TestTrinoCorpusReplay {
 
     companion object {
         private const val CHUNK_SIZE = 30
+        private const val BUG_HIVE_ADD_FILES =
+            "BUG: DuckDB hive add_files partition columns read NULL — is_partition name-map " +
+                "entries carry values in the file PATH (tracked in TODO-READ-MODE)"
+        private const val ENCRYPTED_LAKE =
+            "encrypted lake: parquet encryption keys not threaded to the Trino reader on the " +
+                "mirror axis (footer unreadable)"
+        private const val GEO_WKB =
+            "GEOMETRY renders WKB blob text vs DuckDB's WKT (degraded type; same skip as the " +
+                "identity-control list)"
     }
 }

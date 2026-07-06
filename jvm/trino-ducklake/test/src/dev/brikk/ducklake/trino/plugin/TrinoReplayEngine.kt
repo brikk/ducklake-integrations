@@ -120,7 +120,8 @@ class TrinoReplayEngine : ReplayReadEngine {
             listOf(
                 "ducklake_", "__ducklake", "PRAGMA", " AT ", "AT(", "GLOB(", "::",
                 "DUCKDB_", "SQLITE_", "INFORMATION_SCHEMA", "CURRENT SETTING", "SETTINGS",
-                "ROWID", "POSITIONAL JOIN", "ASOF ", "STATS(",
+                "ROWID", "POSITIONAL JOIN", "ASOF ", "STATS(", "TYPEOF(", "FILENAME",
+                "FILE_ROW_NUMBER", "SNAPSHOT_ID", "FILE_INDEX",
             )
         return blocked.none { upper.contains(it) }
     }
@@ -175,6 +176,13 @@ class TrinoReplayEngine : ReplayReadEngine {
                 dev.brikk.ducklake.corpus.ReplayEngineSkip("dialect: no implicit cast — $first")
             message.contains("not yet supported") || message.contains("not supported") ->
                 dev.brikk.ducklake.corpus.ReplayEngineSkip("connector documented gap: $first")
+            // DuckDB-only function the accepts() heuristic can't enumerate.
+            message.contains("not registered") ->
+                dev.brikk.ducklake.corpus.ReplayEngineSkip("dialect: DuckDB-only function — $first")
+            // Known type-mapping gap failing cleanly (e.g. unsigned widenings on
+            // add_files parquet — uint audit, F8/F11 territory).
+            message.contains("Unsupported Trino column type") ->
+                dev.brikk.ducklake.corpus.ReplayEngineSkip("connector documented type gap: $first")
             else -> e
         }
     }

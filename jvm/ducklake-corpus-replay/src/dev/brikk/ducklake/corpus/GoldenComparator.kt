@@ -82,6 +82,7 @@ object GoldenComparator {
                     "${renderNested(k)}=${renderNested(v)}"
                 }
             is java.sql.Blob -> renderBlob(value.getBytes(1, value.length().toInt()))
+            is ByteArray -> renderBlob(value)
             else -> value.toString()
         }
 

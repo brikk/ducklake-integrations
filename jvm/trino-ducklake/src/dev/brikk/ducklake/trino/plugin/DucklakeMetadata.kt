@@ -381,7 +381,10 @@ class DucklakeMetadata(
                             column.columnId,
                             column.columnName,
                             typeConverter.toTrinoType(column.columnType),
-                            column.nullsAllowed))
+                            column.nullsAllowed,
+                            // Rows predating an ADD COLUMN ... DEFAULT must project the
+                            // initial default, not NULL (upstream issue 1135 semantics).
+                            column.initialDefault))
         }
         // Append the hidden virtual columns ($path, $snapshot_id, $file_row_number, $row_id,
         // $file_size_bytes). They DO appear in getTableMetadata too (each setHidden(true)) — the
