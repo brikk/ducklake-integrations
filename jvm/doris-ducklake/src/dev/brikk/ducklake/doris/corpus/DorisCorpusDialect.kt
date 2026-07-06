@@ -23,9 +23,24 @@ package dev.brikk.ducklake.doris.corpus
  */
 object DorisCorpusDialect {
 
+    /**
+     * Rewrites DuckDB inline time travel with a LITERAL version —
+     * `t AT (VERSION => 3)` — into Doris's `t FOR VERSION AS OF 3` (DuckLake
+     * version == snapshot id, so semantics are identical; our
+     * `resolveTimeTravel` receives it as SNAPSHOT_ID). Non-literal forms
+     * (`TIMESTAMP => getvariable(...)`) are left untouched and then denied by
+     * [accepts]'s `AT (` gate. Idempotent; safe to apply before both the gate
+     * and execution.
+     */
+    fun rewriteInlineTimeTravel(sql: String): String =
+        AT_VERSION_LITERAL.replace(sql) { m -> "FOR VERSION AS OF ${m.groupValues[1]}" }
+
+    private val AT_VERSION_LITERAL =
+        Regex("\\bAT\\s*\\(\\s*VERSION\\s*=>\\s*(\\d+)\\s*\\)", RegexOption.IGNORE_CASE)
+
     fun accepts(sql: String): Boolean {
-        val body = stripLeadingCommentsAndWhitespace(sql)
-        if (!startsWithSelectOrParenSelect(body)) {
+        val body = stripLeadingCommentsAndWhitespace(rewriteInlineTimeTravel(sql))
+        if (!startsWithSelectOrParenSelect(body) && !startsWithWithCte(body)) {
             return false
         }
         val upper = body.uppercase()
@@ -59,6 +74,15 @@ object DorisCorpusDialect {
         return b.regionMatches(0, "SELECT", 0, "SELECT".length, ignoreCase = true)
     }
 
+    /**
+     * `WITH … SELECT` CTEs — Doris supports them, and the deny-tiers below
+     * still catch any DuckDB-ism inside the CTE body. Admitting these is the
+     * first deliberate widening past the SELECT-only v1 gate.
+     */
+    private fun startsWithWithCte(body: String): Boolean =
+        body.regionMatches(0, "WITH", 0, "WITH".length, ignoreCase = true) &&
+            !body.getOrElse(4) { ' ' }.isJavaIdentifierPart() // "WITH" as a keyword, not "WITHIN…"
+
     /** Word-boundary match so e.g. denied `RANGE` doesn't reject `ORANGES`. */
     private fun containsWord(upperSql: String, upperWord: String): Boolean {
         var from = 0
@@ -88,11 +112,12 @@ object DorisCorpusDialect {
     )
 
     /**
-     * Pattern denials over the uppercased body. DuckDB's inline time travel
-     * (`FROM t AT (VERSION => 3)` / `AT (TIMESTAMP => …)`) has no mechanical
-     * rewrite to Doris's `FOR VERSION/TIME AS OF`; first contact showed it
-     * reaching the FE parser as an empty-detail error. Bare-word `AT` is far
-     * too common to deny — the paren form is the actual syntax.
+     * Pattern denials over the uppercased body, applied AFTER
+     * [rewriteInlineTimeTravel]. Literal `AT (VERSION => n)` is rewritten to
+     * `FOR VERSION AS OF n` and never reaches here; what remains matching
+     * `AT (` is the non-literal time travel (`AT (TIMESTAMP => getvariable(…))`,
+     * `AT (VERSION => <expr>)`) that has no mechanical rewrite — deny it.
+     * Bare-word `AT` is too common to deny; the paren form is the syntax.
      */
     private val DENIED_REGEXES = listOf(
         Regex("\\bAT\\s*\\("),
@@ -120,6 +145,8 @@ object DorisCorpusDialect {
         "INTERVAL", "MAKE_TIME", "MAKE_INTERVAL",
         // sampling / non-deterministic
         "TABLESAMPLE", "USING SAMPLE", "RANDOM", "UUID",
+        // DuckDB virtual columns (ours would be $-prefixed if ever exposed)
+        "ROWID",
         // DuckLake metadata functions (oracle-side concern)
         "DUCKLAKE_SNAPSHOTS", "DUCKLAKE_TABLE_INFO", "DUCKLAKE_TABLE_CHANGES",
     )

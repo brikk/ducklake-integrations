@@ -40,9 +40,17 @@ internal class DorisCorpusDialectTest {
         assertThat(DorisCorpusDialect.accepts("CREATE TABLE t (a INT)")).isFalse()
         assertThat(DorisCorpusDialect.accepts("DROP TABLE t")).isFalse()
         assertThat(DorisCorpusDialect.accepts("PRAGMA version")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("WITH x AS (SELECT 1) SELECT * FROM x")).isFalse()
         assertThat(DorisCorpusDialect.accepts("")).isFalse()
         assertThat(DorisCorpusDialect.accepts("-- only a comment")).isFalse()
+    }
+
+    @Test
+    fun acceptsWithCtes() {
+        // WITH…SELECT: Doris supports CTEs; deny-tiers still guard the body.
+        assertThat(DorisCorpusDialect.accepts("WITH x AS (SELECT 1) SELECT * FROM x")).isTrue()
+        assertThat(DorisCorpusDialect.accepts("with cte as (select a from t) select * from cte")).isTrue()
+        // "WITHIN" is not the WITH keyword.
+        assertThat(DorisCorpusDialect.accepts("WITHIN GROUP stuff")).isFalse()
     }
 
     // ---- tier 2: DuckDB-only syntax Doris's parser refuses ----
@@ -76,11 +84,22 @@ internal class DorisCorpusDialectTest {
     }
 
     @Test
-    fun rejectsDuckDbInlineTimeTravel() {
-        // DuckDB `AT (VERSION => n)` / `AT (TIMESTAMP => …)` has no mechanical
-        // rewrite to Doris FOR VERSION/TIME AS OF (first-contact finding).
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => 2)")).isFalse()
+    fun rewritesLiteralInlineTimeTravelToForVersionAsOf() {
+        // Literal `AT (VERSION => n)` → `FOR VERSION AS OF n` (DuckLake
+        // version == snapshot id). Accepted, and the rewrite is exact.
+        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => 2)")).isTrue()
+        assertThat(DorisCorpusDialect.rewriteInlineTimeTravel("SELECT * FROM lake.tbl AT (VERSION => 2)"))
+            .isEqualTo("SELECT * FROM lake.tbl FOR VERSION AS OF 2")
+        assertThat(DorisCorpusDialect.rewriteInlineTimeTravel("select * from lake.t at(version=>10)"))
+            .isEqualTo("select * from lake.t FOR VERSION AS OF 10")
+    }
+
+    @Test
+    fun rejectsNonLiteralInlineTimeTravel() {
+        // TIMESTAMP / non-literal version expressions have no mechanical
+        // rewrite → still denied after the literal rewrite pass.
         assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT(TIMESTAMP => NOW())")).isFalse()
+        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => v+1)")).isFalse()
         // ... but the bare word AT stays admissible (aliases, column names).
         assertThat(DorisCorpusDialect.accepts("SELECT at FROM lake.tbl")).isTrue()
     }

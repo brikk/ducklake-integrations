@@ -51,6 +51,14 @@ internal class DorisReplayEngine(
     override val name: String = "doris"
 
     private val counter = AtomicInteger()
+
+    /**
+     * Globally-unique naming: the corpus test chunks files across engine
+     * instances, and a failed (best-effort) drop in a previous instance must
+     * never collide with this one — first full-corpus contact lost 112 files
+     * to exactly that ("database corpus_doris_1 already exists").
+     */
+    private val runId: String = java.lang.Long.toHexString(System.nanoTime())
     private val createdDatabases = mutableListOf<String>()
     private val createdCatalogs = mutableListOf<String>()
 
@@ -66,7 +74,7 @@ internal class DorisReplayEngine(
      * original metadata path; the oracle re-attaches on the host-mapped port.
      */
     val metadataRewriter: (String) -> String = { _ ->
-        val db = "corpus_doris_" + counter.incrementAndGet()
+        val db = "corpus_doris_${runId}_" + counter.incrementAndGet()
         pg.createStatement().use { it.execute("CREATE DATABASE $db") }
         createdDatabases += db
         lastDatabase = db
@@ -83,7 +91,7 @@ internal class DorisReplayEngine(
             // disconnected — accepts() rejects everything for this file.
             return
         }
-        val catalog = "corpus_" + counter.get()
+        val catalog = "corpus_${runId}_" + counter.get()
         fe.createStatement().use { st ->
             st.execute("DROP CATALOG IF EXISTS $catalog")
             st.execute(
@@ -123,6 +131,11 @@ internal class DorisReplayEngine(
         val catalog = currentCatalog ?: error("connect() was not called")
         val alias = currentAlias ?: error("connect() was not called")
         var s = sql.trim().removeSuffix(";").trim()
+        // DuckDB inline time travel `t AT (VERSION => n)` → Doris
+        // `t FOR VERSION AS OF n` (accepts() already gated to the literal
+        // form). Done BEFORE the alias rewrite so the clause stays attached to
+        // its (still-alias-qualified) table reference.
+        s = DorisCorpusDialect.rewriteInlineTimeTravel(s)
         // The mirror compares sorted rows, so DuckDB's ORDER BY ALL is
         // droppable rather than untranslatable.
         s = s.replace(Regex("\\bORDER\\s+BY\\s+ALL\\s*$", RegexOption.IGNORE_CASE), "")
@@ -160,9 +173,14 @@ internal class DorisReplayEngine(
                 message.contains("does not exist") ->
                 ReplayEngineSkip("relation does not resolve (views/unsupported surface): " + firstLine(message))
             // The connector's own deliberate rejection gates (type mapper,
-            // nested v1 limits, …) fail cleanly by design.
+            // nested v1 limits, inlined-state guard, …) fail cleanly by design.
             message.contains("not supported") || message.contains("Unsupported") ->
                 ReplayEngineSkip("connector documented gap: " + firstLine(message))
+            // DuckDB functions with no Doris equivalent (typeof,
+            // uuid_extract_version, …): dialect gap, not a correctness signal —
+            // the generic classification beats an ever-growing deny-list.
+            message.contains("Can not found function") ->
+                ReplayEngineSkip("dialect: function missing in doris — " + firstLine(message))
             else -> e
         }
     }
@@ -190,11 +208,15 @@ internal class DorisReplayEngine(
     override fun close() {
         for (catalog in createdCatalogs) {
             runCatching { fe.createStatement().use { it.execute("DROP CATALOG IF EXISTS $catalog") } }
+                .onFailure { System.err.println("corpus cleanup: DROP CATALOG $catalog failed: ${it.message}") }
         }
         runCatching { fe.close() }
         // FORCE: the FE plugin may hold pooled connections to the corpus DBs.
+        // Failures are non-fatal (names are run-unique) but must be VISIBLE —
+        // silent drop failures cost 112 files on first full-corpus contact.
         for (db in createdDatabases) {
             runCatching { pg.createStatement().use { it.execute("DROP DATABASE IF EXISTS $db WITH (FORCE)") } }
+                .onFailure { System.err.println("corpus cleanup: DROP DATABASE $db failed: ${it.message}") }
         }
         runCatching { pg.close() }
     }
