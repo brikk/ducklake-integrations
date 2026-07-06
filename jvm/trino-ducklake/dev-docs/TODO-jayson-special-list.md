@@ -448,10 +448,10 @@ pipeline per unit (`createDataFilePageSource`, extracted) requesting the table c
 read AS OF the END-snapshot schema — so schema evolution + every format (parquet/duckdb/vortex/lance)
 work for free; delete units keep only the newly-deleted positions and stamp the delete snapshot;
 `change_type` classifies pairing. **Bounds** inclusive both ends, snapshot-id OR timestamp
-(`getSnapshotAtOrBefore`), start required / end defaults to current. One honest edge remains:
-Trino's OWN UPDATE/MERGE writes emit no lineage column (fresh `row_id_start`), so a Trino-written
-UPDATE surfaces as `delete`+`insert` (accurate for its delete-then-insert impl). Lineage-preserving
-writers (DuckDB) DO pair — see below.
+(`getSnapshotAtOrBefore`), start required / end defaults to current. The last honest edge was
+CLOSED 2026-07-06 (F7): with `write_row_lineage = true`, Trino's OWN UPDATE/MERGE writes emit the
+lineage column too and pair like DuckDB's. Default (off) keeps the delete+insert shape (accurate
+for the delete-then-insert impl under fresh rowids).
 **REAL update pairing — DONE (2026-07).** DuckLake persists cross-file row lineage in the DATA file
 (not the catalog): an embedded column tagged with the reserved parquet field-id `2_147_483_540`
 (typically named `_ducklake_internal_row_id`) that lineage-preserving UPDATE/compaction writers
@@ -460,10 +460,14 @@ writers (DuckDB) DO pair — see below.
 present, else `row_id_start + position`. So a DuckDB-written UPDATE's delete + re-insert land on the
 SAME rowid in one snapshot and PAIR into `update_preimage`/`update_postimage` — verified full-Trino
 cross-engine (`TestDucklakeChangeFeedCrossEngine.duckdbUpdatePairsIntoPreAndPostImage`) + unit
-(`TestChangeFeedPageSource.embeddedLineagePairsUpdatePreAndPostImage`). This connector's own
-UPDATE/MERGE writes don't emit the lineage column, so Trino-written updates still surface as
-delete+insert (accurate for its delete-then-insert impl). Parquet only (the non-parquet formats this
-connector writes never carry lineage). The earlier "no readable lineage" conclusion was catalog-only.
+(`TestChangeFeedPageSource.embeddedLineagePairsUpdatePreAndPostImage`). **WRITE side DONE
+2026-07-06 (F7)**: with `write_row_lineage = true` this connector's own UPDATE/MERGE writes emit
+the lineage column (merge sink pairs Trino's raw op-5/op-4 rows to recover old rowids; rewrites go
+to a dedicated lineage sink since the column must be non-null per carrying file) — Trino-written
+updates pair, and DuckDB observes the SAME rowid after a Trino lineage UPDATE
+(`TestDucklakeChangeFeedCrossEngine.trinoLineageUpdatePreservesRowidsForDuckdb`). Parquet only
+(the non-parquet formats this connector writes never carry lineage). The earlier "no readable
+lineage" conclusion was catalog-only.
 **INLINED DATA — DONE (2026-07).** The change feed now reads DuckLake's inlined data (was gated with
 a flush_inlined_data error). Three sources folded into the same rowid space: (1) inlined-row inserts
 (`ducklake_inlined_data_*` rows with begin ∈ window), (2) inlined-row deletes (end ∈ window), (3)

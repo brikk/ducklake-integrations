@@ -230,9 +230,9 @@ data file's scan.
   table functions (scan-rewrite PTFs, all file formats, inclusive snapshot-id/timestamp bounds).
   Reads file data/delete files AND DuckLake **inlined** data (inlined inserts, inlined-row deletes,
   inline file-position deletes). Update pairing (`update_preimage`/`update_postimage`) works via the
-  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers (DuckDB);
-  Trino's own writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete`+`insert`.
-  See README § Change Feed and TODO-jayson-special-list.md § F9.
+  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers — DuckDB
+  AND, since 2026-07-06 (F7), Trino's own UPDATE/MERGE under `write_row_lineage = true` (default off
+  keeps the delete+insert shape). See README § Change Feed and TODO-jayson-special-list.md § F9.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
 
