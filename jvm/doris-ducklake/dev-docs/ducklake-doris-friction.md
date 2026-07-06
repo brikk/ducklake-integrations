@@ -17,6 +17,85 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-07-06 · No SPI path for a connector to hand FE-computed rows to the BE (inlined DATA reads)
+
+**Symptom.** DuckLake keeps small tables' rows *inline in the catalog DB*
+(per-table `ducklake_inlined_data_<tableId>_<schemaVersion>` tables), not in
+any data file. A read of such a table has rows the FE can fetch but no data
+file for the BE to scan. Today the Doris plugin refuses at plan time:
+
+```
+errCode = 2, detailMessage = DuckLake table has live inlined data rows in the
+metadata catalog; reading them is not supported by the Doris connector yet
+(rows live in ducklake_inlined_* tables, not parquet).
+```
+
+(This is the DATA analogue of the 2026-05-19 inline-DELETE entry below. The
+default `DATA_INLINING_ROW_LIMIT` is non-zero, so *any* small INSERT lands
+here — it is the common case, not an edge case.)
+
+**Root cause.** The `fe-connector` SPI has no mechanism for a connector to
+emit rows it computed FE-side; every scan path assumes the rows live in a
+file (or a format the BE has a hardcoded reader for). Surveyed at P6 baseline
+`8b391c7` (paths + refs):
+
+1. `ConnectorScanRangeType` (`fe/fe-connector/fe-connector-api/.../scan/ConnectorScanRangeType.java:34`)
+   has only `FILE_SCAN` / `JDBC_SCAN` / `REMOTE_OLAP_SCAN` / `CUSTOM` — no
+   in-memory / values / metadata variant. `ConnectorScanRange.populateRangeParams`
+   (`.../scan/ConnectorScanRange.java:190`) only ever fills a
+   `TTableFormatFileDesc` / `TFileRangeDesc`.
+2. The BE `META_SCAN_NODE` path (the literal "FE holds rows, BE emits them"
+   mechanism used by `information_schema` / `backends` / `partitions`) is
+   closed: `TMetadataType` (`gensrc/thrift/Types.thrift:751`) is a fixed enum,
+   the BE `MetaScanner::_fetch_metadata` switch (`be/src/exec/scan/meta_scanner.cpp:234`)
+   has no generic case, and the master-FE callback `fetchSchemaTableData`
+   (`FrontendServiceImpl.java:3190` → `MetadataGenerator`) is keyed on that
+   enum. Its `TCell`/`TRow` fill (`meta_scanner.cpp:164-223`) also handles only
+   BOOL/INT family/FLOAT/DOUBLE/DATEV2/DATETIMEV2/STRING — **no DECIMAL, no
+   nested** — so it would be lossy for DuckLake columns even if it were open.
+3. `DATA_GEN_SCAN_NODE` is **not** a VALUES node — `TDataGenFunctionName` has
+   the single member `NUMBERS` (`gensrc/thrift/PlanNodes.thrift:616`).
+4. The iceberg/paimon *system-table* path DOES make the BE materialize
+   FE-supplied rows, but via `FORMAT_JNI` + a `serialized_split` +
+   a **hardcoded** `table_format_type` dispatch
+   (`be/src/exec/scan/file_scanner.cpp:1067-1156`, only
+   `max_compute`/`paimon`/`hudi`/`trino_connector`/`jdbc`/`iceberg`) reading
+   through a per-format be-java-extension JNI scanner
+   (`be-java-extensions/iceberg-metadata-scanner/.../IcebergSysTableJniScanner.java`).
+   No generic `plugin_driven` case exists, so an SPI connector can't reach it
+   without a BE patch + its own scanner extension.
+
+**Workaround (FE plugin side, the only path reachable at P6).** Synthesize a
+temp **Parquet** file from the inlined rows at plan time and emit a normal
+`FILE_SCAN` / `FORMAT_PARQUET` `ConnectorScanRange` pointing at it (shared
+scratch dir both FE and BE resolve). The BE's native Parquet branch
+(`file_scanner.cpp:1165`, `_init_parquet_reader`) is `table_format_type`-
+agnostic, so this needs no BE change. Two costs we absorb: (a) a per-query
+Parquet write, and (b) **temp-file GC is on us** — the SPI has no
+end-of-scan/close hook (`ConnectorScanPlanProvider` / `ConnectorScanRange`
+expose none; `ConnectorSplitSource.close()` fires at end of split
+*generation*, not end of *read*), so the file must outlive `planScan` and be
+reaped out-of-band.
+
+**Fix (pickable upstream changes, in rising order of scope).**
+- **Smallest:** a generic `FORMAT_JNI` `table_format_type == "plugin_driven"`
+  dispatch in `file_scanner.cpp` that routes to a connector-provided JNI
+  scanner (mirrors the iceberg sys-table path) — lets a connector return
+  arbitrary FE-computed rows without a temp file.
+- **Alternatively:** an SPI in-memory/values `ConnectorScanRangeType` that
+  carries literal rows to the BE (needs a real values scan node + full type
+  coverage incl. DECIMAL/nested in the `TCell` fill).
+- **Ergonomic add either way:** an end-of-scan / temp-resource cleanup
+  callback on `ConnectorScanPlanProvider` (or a scan-scoped `Closeable`) so a
+  connector materializing temp files can delete them deterministically
+  instead of running a reaper.
+
+Until one of those lands, the temp-Parquet workaround is the plan; tracked in
+[`TODO-read.md`](./TODO-read.md) (serve inlined data rows) and
+[`PLAN.md`](./PLAN.md).
+
+---
+
 ## 2026-07-05 · P6-baseline FE plans `LOCAL_EXCHANGE_NODE` (38); 4.1.0 BE rejects the fragment
 
 **Symptom.** On the P6 iceberg-cutover FE baseline (`branch-catalog-spi` @
@@ -255,6 +334,8 @@ rather than as `ducklake_delete_file` + position-delete parquet.
 
 The Doris BE iceberg reader has no way to consume Postgres-side delete
 rows; only file-based deletes route through `iceberg_params.delete_files`.
+(Same root SPI gap as the 2026-07-06 inlined-DATA entry above: no path for a
+connector to hand FE-computed rows/positions to the BE.)
 
 **Workaround.** Disable inlining for the test/dev catalog:
 
