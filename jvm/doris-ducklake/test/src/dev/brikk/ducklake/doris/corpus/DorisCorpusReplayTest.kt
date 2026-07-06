@@ -59,6 +59,10 @@ internal class DorisCorpusReplayTest {
             "add_files/add_files_rename.test" to GAP_NAME_MAPPING,
             "compaction/compaction_multiple_rename_column.test" to GAP_NAME_MAPPING,
             "delete/delete_legacy_missing_mapping_after_rename_add_files.test" to GAP_NAME_MAPPING,
+            "stats/filter_stress.test" to
+                "oracle-local cross-check: compares the lake against a non-lake DuckDB reference table " +
+                "(events_ref) via EXCEPT ALL; the reference table only exists oracle-side, so it can't be " +
+                "mirrored (not a Doris read gap)",
             // ---- runner-side (not ours) ----
             "add_files/add_files_type_check_timestamp.test" to
                 "ORACLE golden gap: GoldenComparator renders micros only, golden expects timestamp_ns nanos " +

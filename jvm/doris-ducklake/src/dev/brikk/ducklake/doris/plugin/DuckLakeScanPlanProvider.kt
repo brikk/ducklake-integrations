@@ -111,6 +111,18 @@ internal class DuckLakeScanPlanProvider(
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
         val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+
+        // Correctness gate (corpus stats/count_star_optimization_time_travel):
+        // a partial (cross-snapshot compacted) data file physically holds rows
+        // from snapshots NEWER than the one pinned here, tagged by a hidden
+        // `_ducklake_internal_snapshot_id` column that a read AS OF an older
+        // snapshot must drop (`partial_max > snapshot`). Trino filters those
+        // rows in its page source; the Doris BE reader has no hook to apply a
+        // hidden-column snapshot predicate, so scanning the file wholesale
+        // would SILENTLY over-return (300 rows where 100 were live). Fail
+        // loudly until the BE can snapshot-filter partial files.
+        failOnUnfilterablePartialFile(dlHandle, dataFiles)
+
         val partitions = resolvePartitionContext(dlHandle)
 
         // COUNT(*) pushdown: when the count is exactly servable from file
@@ -160,6 +172,27 @@ internal class DuckLakeScanPlanProvider(
     }
 
     /**
+     * Throws when a partial (cross-snapshot compacted) data file needs
+     * hidden-column snapshot filtering the Doris BE can't apply — i.e. a time
+     * travel read AS OF a snapshot OLDER than the file's `partial_max`. At the
+     * latest snapshot every partial file's rows are all live, so this never
+     * fires for a normal (non-time-travel) read.
+     */
+    private fun failOnUnfilterablePartialFile(
+        handle: DuckLakeTableHandle,
+        dataFiles: List<DucklakeDataFile>,
+    ) {
+        if (dataFiles.any { (it.partialMax ?: Long.MIN_VALUE) > handle.snapshotId }) {
+            throw DorisConnectorException(
+                "Time travel to snapshot ${handle.snapshotId} reads a compacted (partial) data file " +
+                    "that also contains rows from newer snapshots; the Doris connector cannot yet apply " +
+                    "the per-row snapshot filter (hidden _ducklake_internal_snapshot_id column) the BE " +
+                    "would need, so this read is not supported. Reads at the latest snapshot are unaffected.",
+            )
+        }
+    }
+
+    /**
      * Whether a no-grouping COUNT(*) can be answered EXACTLY from
      * `ducklake_data_file.record_count` at the handle's pinned snapshot,
      * the DuckLake analogue of `IcebergScanPlanProvider.getCountFromSummary`'s
@@ -168,6 +201,15 @@ internal class DuckLakeScanPlanProvider(
      *    on the handle, or a pruned file set) — the count must be over ALL rows;
      *  - any active data file has a position-delete file attached — deletes
      *    reduce counts below the file metadata;
+     *  - the handle is pinned to a NON-LATEST snapshot (time travel): a
+     *    compaction merges several snapshots' rows into one file whose
+     *    `record_count` is the MERGED total (e.g. 300) while only a subset was
+     *    live at the older pinned snapshot (e.g. 100). DuckLake tracks that
+     *    per-snapshot visibility in ways a raw record_count sum cannot express
+     *    — even for a fully-merged file where `partial_max` is null — so a
+     *    metadata count is only exact AT LATEST. Older snapshots fall back to
+     *    a normal read (BE applies snapshot visibility). This subsumes the
+     *    partial-file guard below for the time-travel case.
      *  - a partial (cross-snapshot compacted) data file extends beyond the
      *    pinned snapshot ([DucklakeDataFile.partialMax] > snapshot) — its
      *    record_count includes rows a read at this snapshot must drop;
@@ -187,6 +229,12 @@ internal class DuckLakeScanPlanProvider(
         dataFiles: List<DucklakeDataFile>,
     ): Boolean {
         if (filter.isPresent || dlHandle.pushedFilter != null || dlHandle.prunedFileIds != null) {
+            return false
+        }
+        // Time travel: metadata record_count is exact only at the latest
+        // snapshot (compaction merges cross-snapshot rows into one file whose
+        // count overcounts an older pin). Older snapshots read normally.
+        if (dlHandle.snapshotId != catalog.currentSnapshotId) {
             return false
         }
         if (dataFiles.any { it.deleteFilePath != null }) {

@@ -83,6 +83,20 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
 | merge | 57 / 0 | |
 | partitioning | 422 / 0 | partition-bearing + bucket-prune hold across 17 files |
 | schema_evolution | 11 / 0 | |
+| stats | 416 / 0 | found+fixed time-travel-over-compaction over-read (see below) |
+| comments | (in stats+comments run) 0 fail | |
+
+**REAL BUG found by corpus (stats/count_star_optimization_time_travel):** time
+travel AS OF a snapshot OLDER than a compaction that merged newer rows
+returned the MERGED row count (300) instead of the live-at-snapshot count
+(100) — and the plain read over-returned rows too, not just COUNT(*). Root
+cause: a compacted "partial" data file (`partial_max > snapshot`) physically
+holds rows from newer snapshots tagged by a hidden
+`_ducklake_internal_snapshot_id` column; trino filters them in its page
+source, but the Doris BE reader has no hook to apply that per-row snapshot
+predicate. Fixed: `failOnUnfilterablePartialFile` fails loudly at plan time
+(latest-snapshot reads unaffected). Count-pushdown also now refuses any
+non-latest snapshot. Un-gate when the BE can snapshot-filter partial files.
 
 Dialect/adapter learnings folded in: literal inline time-travel rewrite,
 WITH-CTE acceptance, infinity-temporal-literal denial (silent-wrong-answer
