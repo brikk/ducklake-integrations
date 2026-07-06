@@ -1,8 +1,15 @@
 plugins {
     id("buildlogic.kotlin.library")
+    alias(libs.plugins.detekt)
 }
 
 version = "0.0.1"
+
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    source.setFrom("src", "test")
+}
 
 // Replays the upstream DuckLake sqllogictest corpus (git submodule at ./ducklake,
 // pinned to the release branch matching our DuckDB version) through an embedded

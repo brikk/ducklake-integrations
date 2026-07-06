@@ -79,10 +79,14 @@ object DucklakeInlinedValueConverter {
             // inlined under an older schema version (rename/reuse safety).
             return NestedTextParser(toStringValue(jdbcValue)).parseTopLevel(trinoType, mapping)
         }
+        return convertScalar(jdbcValue, trinoType)
+    }
+
+    private fun convertScalar(jdbcValue: Any, trinoType: Type): Any {
         if (trinoType == BOOLEAN) {
             return toBoolean(jdbcValue)
         }
-        if (trinoType == TINYINT || trinoType == SMALLINT || trinoType == INTEGER || trinoType == BIGINT) {
+        if (isIntegerType(trinoType)) {
             return toLong(jdbcValue)
         }
         if (trinoType is RealType) {
@@ -107,12 +111,7 @@ object DucklakeInlinedValueConverter {
             return Slices.utf8Slice(toStringValue(jdbcValue))
         }
         if (trinoType is VarbinaryType) {
-            if (jdbcValue is ByteArray) {
-                return Slices.wrappedBuffer(*jdbcValue)
-            }
-            // Text form (typical for list<blob> elements): DuckDB's Blob::ToString emits printable
-            // ASCII (except '\\', '\'', '"') as-is and everything else as `\xNN`. Decode back to bytes.
-            return Slices.wrappedBuffer(*decodeBlobText(toStringValue(jdbcValue)))
+            return toVarbinarySlice(jdbcValue)
         }
         if (trinoType is DecimalType) {
             return toDecimal(jdbcValue, trinoType)
@@ -120,6 +119,18 @@ object DucklakeInlinedValueConverter {
 
         // Fallback: try as string for any remaining types
         return Slices.utf8Slice(toStringValue(jdbcValue))
+    }
+
+    private fun isIntegerType(type: Type): Boolean =
+        type == TINYINT || type == SMALLINT || type == INTEGER || type == BIGINT
+
+    private fun toVarbinarySlice(jdbcValue: Any): io.airlift.slice.Slice {
+        if (jdbcValue is ByteArray) {
+            return Slices.wrappedBuffer(*jdbcValue)
+        }
+        // Text form (typical for list<blob> elements): DuckDB's Blob::ToString emits printable
+        // ASCII (except '\\', '\'', '"') as-is and everything else as `\xNN`. Decode back to bytes.
+        return Slices.wrappedBuffer(*decodeBlobText(toStringValue(jdbcValue)))
     }
 
     private fun convertArray(jdbcValue: Any, arrayType: ArrayType, mapping: InlinedTextFieldMapping? = null): Block {
@@ -570,11 +581,10 @@ internal class NestedTextParser(private val text: String) {
                     values[index] = parseValue(fields[index].type, mapping?.children?.get(index))
                 }
                 skipWs()
-                if (peek() == ',') {
-                    pos++
-                    continue
+                if (peek() != ',') {
+                    break
                 }
-                break
+                pos++
             }
         }
         expect('}')
@@ -610,11 +620,10 @@ internal class NestedTextParser(private val text: String) {
                 expect('=')
                 vals += parseValue(type.valueType, valueMapping)
                 skipWs()
-                if (peek() == ',') {
-                    pos++
-                    continue
+                if (peek() != ',') {
+                    break
                 }
-                break
+                pos++
             }
         }
         expect('}')
@@ -637,11 +646,10 @@ internal class NestedTextParser(private val text: String) {
             while (true) {
                 values += parseValue(elementType, elementMapping)
                 skipWs()
-                if (peek() == ',') {
-                    pos++
-                    continue
+                if (peek() != ',') {
+                    break
                 }
-                break
+                pos++
             }
         }
         expect(']')
@@ -710,17 +718,19 @@ internal class NestedTextParser(private val text: String) {
     /** Bare token: up to a top-level delimiter (`,`, `}`, `]`, optionally `:`/`=`). */
     private fun readBareToken(stopAtColon: Boolean = false, stopAtEquals: Boolean = false): String {
         val start = pos
-        while (pos < text.length) {
-            val c = text[pos]
-            if (c == ',' || c == '}' || c == ']' ||
-                (stopAtColon && c == ':') || (stopAtEquals && c == '=')
-            ) {
-                break
-            }
+        while (pos < text.length && !isTokenDelimiter(text[pos], stopAtColon, stopAtEquals)) {
             pos++
         }
         return text.substring(start, pos).trim()
     }
+
+    private fun isTokenDelimiter(c: Char, stopAtColon: Boolean, stopAtEquals: Boolean): Boolean =
+        when (c) {
+            ',', '}', ']' -> true
+            ':' -> stopAtColon
+            '=' -> stopAtEquals
+            else -> false
+        }
 
     private fun peekNullKeyword(): Boolean {
         if (!text.startsWith(NULL_TOKEN, pos)) {

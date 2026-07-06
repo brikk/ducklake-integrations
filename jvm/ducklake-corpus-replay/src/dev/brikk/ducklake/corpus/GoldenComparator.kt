@@ -67,14 +67,8 @@ object GoldenComparator {
             null -> null
             // DuckDB golden text escapes embedded NUL bytes.
             is String -> value.replace("\u0000", "\\0")
-            is Timestamp -> renderDateTime(value.toLocalDateTime())
-            is LocalDateTime -> renderDateTime(value)
-            is OffsetDateTime ->
-                renderDateTime(value.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
-            is java.time.ZonedDateTime ->
-                renderDateTime(value.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
-            is LocalTime -> renderTime(value)
-            is LocalDate -> value.toString()
+            is Timestamp, is LocalDateTime, is OffsetDateTime, is java.time.ZonedDateTime,
+            is LocalTime, is LocalDate -> renderTemporal(value)
             is Double -> renderFloating(value)
             is Float -> renderFloating(value.toDouble())
             is List<*> -> value.joinToString(", ", prefix = "[", postfix = "]") { renderNested(it) }
@@ -89,6 +83,18 @@ object GoldenComparator {
                 }
             is java.sql.Blob -> renderBlob(value.getBytes(1, value.length().toInt()))
             else -> value.toString()
+        }
+
+    private fun renderTemporal(value: Any): String =
+        when (value) {
+            is Timestamp -> renderDateTime(value.toLocalDateTime())
+            is LocalDateTime -> renderDateTime(value)
+            is OffsetDateTime ->
+                renderDateTime(value.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
+            is java.time.ZonedDateTime ->
+                renderDateTime(value.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
+            is LocalTime -> renderTime(value)
+            else -> value.toString() // LocalDate
         }
 
     /** DuckDB blob rendering: printable ASCII as-is, backslash escaped, else \xHH. */
@@ -226,17 +232,20 @@ object GoldenComparator {
             if (expected.equals(actual, ignoreCase = true)) return true
             if (type == 'I') return expected == (if (actual == "true") "1" else "0")
         }
-        // Numeric tolerance: golden files write integers where engines may emit
-        // decimal forms (and vice versa); R columns compare as doubles.
-        if (type == 'R' || type == 'I') {
-            val de = expected.toDoubleOrNull()
-            val da = actual.toDoubleOrNull()
-            if (de != null && da != null) {
-                return de == da || (de != 0.0 && Math.abs(de - da) / Math.abs(de) < 1e-9)
-            }
-        }
-        return false
+        return (type == 'R' || type == 'I') && numericEqual(expected, actual)
     }
+
+    /**
+     * Numeric tolerance: golden files write integers where engines may emit
+     * decimal forms (and vice versa); R columns compare as doubles.
+     */
+    private fun numericEqual(expected: String, actual: String): Boolean {
+        val de = expected.toDoubleOrNull() ?: return false
+        val da = actual.toDoubleOrNull() ?: return false
+        return de == da || (de != 0.0 && Math.abs(de - da) / Math.abs(de) < RELATIVE_TOLERANCE)
+    }
+
+    private const val RELATIVE_TOLERANCE = 1e-9
 
     private fun diffPreview(expected: List<List<String>>, actual: List<List<String>>): String {
         val e = expected.take(5).joinToString("\n") { it.joinToString("\t") }

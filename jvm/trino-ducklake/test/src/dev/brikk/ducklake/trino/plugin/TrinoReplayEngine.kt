@@ -144,37 +144,38 @@ class TrinoReplayEngine : ReplayReadEngine {
             try {
                 runner.execute(session, s)
             } catch (e: RuntimeException) {
-                val message = e.message ?: throw e
-                if (message.contains("does not exist")) {
-                    // Documented parity gap: the connector exposes Trino-dialect
-                    // views only; corpus views are DuckDB-dialect and skipped by
-                    // design, so their names don't resolve on the Trino side.
-                    throw dev.brikk.ducklake.corpus.ReplayEngineSkip(
-                        "relation does not resolve (duckdb-dialect view is a documented skip): " +
-                            message.lineSequence().first(),
-                    )
-                }
-                if (message.contains("Cannot apply operator")) {
-                    // Implicit-cast dialect gap: DuckDB coerces varchar
-                    // literals ('inf', dates, …) in comparisons; Trino is
-                    // strictly typed by design.
-                    throw dev.brikk.ducklake.corpus.ReplayEngineSkip(
-                        "dialect: no implicit cast — " + message.lineSequence().first(),
-                    )
-                }
-                if (message.contains("not yet supported") || message.contains("not supported")) {
-                    // The connector's own deliberate NOT_SUPPORTED gates (e.g.
-                    // inlined reads of nested element types) — documented gaps
-                    // that fail cleanly by design.
-                    throw dev.brikk.ducklake.corpus.ReplayEngineSkip(
-                        "connector documented gap: " + message.lineSequence().first(),
-                    )
-                }
-                throw e
+                throw classifyEngineError(e)
             }
         val types = result.types
         return result.materializedRows.map { row ->
             (0 until row.fieldCount).map { i -> renderTyped(row.getField(i), types[i]) }
+        }
+    }
+
+    /**
+     * Classifies engine errors: KNOWN, documented gaps become
+     * [dev.brikk.ducklake.corpus.ReplayEngineSkip] (recorded as engine-skips,
+     * never failures); everything else propagates as a real failure.
+     *  - "does not exist": corpus views are DuckDB-dialect and skipped by the
+     *    connector by design, so their names don't resolve on the Trino side.
+     *  - "Cannot apply operator": implicit-cast dialect gap — DuckDB coerces
+     *    varchar literals ('inf', dates, …) in comparisons; Trino is strictly
+     *    typed by design.
+     *  - "not (yet) supported": the connector's own deliberate NOT_SUPPORTED
+     *    gates — documented gaps that fail cleanly.
+     */
+    private fun classifyEngineError(e: RuntimeException): RuntimeException {
+        val message = e.message ?: return e
+        val first = message.lineSequence().first()
+        return when {
+            message.contains("does not exist") ->
+                dev.brikk.ducklake.corpus.ReplayEngineSkip(
+                    "relation does not resolve (duckdb-dialect view is a documented skip): $first")
+            message.contains("Cannot apply operator") ->
+                dev.brikk.ducklake.corpus.ReplayEngineSkip("dialect: no implicit cast — $first")
+            message.contains("not yet supported") || message.contains("not supported") ->
+                dev.brikk.ducklake.corpus.ReplayEngineSkip("connector documented gap: $first")
+            else -> e
         }
     }
 

@@ -303,6 +303,29 @@ class DucklakePageSourceProvider @Inject constructor(
         throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
     }
 
+    /**
+     * Identity-based nested-field mapping for inlined reads: rows in this split
+     * were inlined under schemaVersion's era; struct text carries era field
+     * NAMES. Map era names onto current fields by column_id (rename/reuse
+     * safety) — see [InlinedNestedFieldMapper]. Empty (name-fallback) when no
+     * nested rows are projected or the era cannot be resolved.
+     */
+    private fun resolveInlinedNestedMappings(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>): Map<Long, InlinedTextFieldMapping>
+    {
+        if (realColumns.none { InlinedNestedFieldMapper.containsRow(it.columnType) }) {
+            return emptyMap()
+        }
+        val eraSnapshot: Long = catalog.resolveSchemaVersionSnapshot(
+                inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+                ?: return emptyMap()
+        return InlinedNestedFieldMapper.build(
+                realColumns.map { it.columnId to it.columnType },
+                columnTree(inlinedSplit.tableId, inlinedSplit.snapshotId),
+                columnTree(inlinedSplit.tableId, eraSnapshot))
+    }
+
     private fun createInlinedPageSource(
             inlinedSplit: DucklakeInlinedSplit,
             columns: List<ColumnHandle>): ConnectorPageSource
@@ -338,25 +361,8 @@ class DucklakePageSourceProvider @Inject constructor(
             val rawRows: List<List<Any?>> = catalog.readInlinedData(
                     inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
-            // Identity-based nested-field mapping: rows in this split were inlined
-            // under schemaVersion's era; struct text carries era field NAMES. Map
-            // era names onto current fields by column_id (rename/reuse safety) —
-            // see InlinedNestedFieldMapper. Name-fallback when unavailable.
             val nestedMappings: Map<Long, InlinedTextFieldMapping> =
-                if (realColumns.none { InlinedNestedFieldMapper.containsRow(it.columnType) }) {
-                    emptyMap()
-                } else {
-                    val eraSnapshot: Long? = catalog.resolveSchemaVersionSnapshot(
-                            inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
-                    if (eraSnapshot == null) {
-                        emptyMap()
-                    } else {
-                        InlinedNestedFieldMapper.build(
-                                realColumns.map { it.columnId to it.columnType },
-                                columnTree(inlinedSplit.tableId, inlinedSplit.snapshotId),
-                                columnTree(inlinedSplit.tableId, eraSnapshot))
-                    }
-                }
+                    resolveInlinedNestedMappings(inlinedSplit, realColumns)
             convertedRealRows = rawRows.map { row ->
                 val converted: MutableList<Any?> = ArrayList(row.size)
                 for (i in row.indices) {
