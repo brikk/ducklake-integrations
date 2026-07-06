@@ -156,7 +156,7 @@ metadata, and comments dirs.
 
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
-| SELECT / table scans | Yes | Planned FE-side; BE reads Parquet natively |
+| SELECT / table scans | Yes | Query planning happens FE-side; the BE reads Parquet natively |
 | Projection pushdown | Yes | Column pruning via `applyProjection` |
 | Predicate pushdown (WHERE) | Yes | `applyFilter` hands the BE a filter + prunes whole files via `ducklake_file_column_stats` |
 | Partition pruning | Yes | Identity and temporal partitions |
