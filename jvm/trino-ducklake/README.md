@@ -610,6 +610,28 @@ The connector is tested for bidirectional compatibility with DuckDB:
 | Inlined data created by DuckDB | Yes | Trino reads inlined rows from catalog tables |
 | Schema evolution across engines | Yes | ADD COLUMN by one engine, read by the other |
 
+### Upstream corpus replay
+
+Beyond the hand-written cross-engine suites, the connector is verified against
+**DuckLake's own upstream test corpus** — the 466 sqllogictest files (7,600+ test
+cases) that the reference C++ implementation ships in `duckdb/ducklake` `test/sql/`,
+pinned as a git submodule in the sibling [`ducklake-corpus-replay`](../ducklake-corpus-replay/)
+module. Each corpus file is executed **verbatim** through an embedded DuckDB
+oracle (no dialect translation), building real catalog state on an isolated
+PostgreSQL metadata database; every lake read the corpus performs is then
+re-executed through a live Trino query runner against the *same* catalog and
+compared row-for-row against the oracle's result — including intermediate
+states mid-file. A divergence means Trino read the same DuckLake state
+differently than DuckDB: exactly the class of spec-conformance bug that is
+hardest to catch by hand (on first contact the harness found two real bugs that
+138 hand-written test classes had missed). The corpus grows with every upstream
+release, so conformance coverage compounds for free:
+
+```shell
+./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay"                            # starter set
+./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay" -Dducklake.corpus.dirs=all # full corpus
+```
+
 ## Configuration
 
 | Property | Required | Default | Description |
