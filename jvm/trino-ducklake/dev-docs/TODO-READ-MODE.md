@@ -357,6 +357,30 @@ record what blows up. That tells us what the first PR scope is.
   the corpus under our write-mode session properties. Doris agent should
   co-review the `ReplayReadEngine` interface before it's built.
 
+### Corpus-mirror findings (2026-07-06 — REAL BUGS, high priority)
+
+Found by `TestTrinoCorpusReplay` (upstream corpus replayed through the DuckDB
+oracle on the PG backend axis, lake reads mirrored through Trino live-vs-live).
+Skip-listed there with `BUG:` prefixes — un-skip when fixed.
+
+- [ ] **INLINED struct/map reads crash instead of hitting the documented gate**
+  — refined diagnosis: `types/struct.test` crashes with NO schema evolution.
+  Small inserts inline (< `data_inlining_row_limit`); the inlined-read path for
+  nested element types has a documented NOT_SUPPORTED gate that fires cleanly
+  for LISTs, but **struct-typed inlined reads crash with
+  `io.airlift.slice.Slice cannot be cast to io.trino.spi.block.SqlRow`, and
+  maps with `Maps must be represented with SqlMap`, before reaching the gate**
+  (the inlined-value converter likely emits the JSON/varchar Slice where the
+  page needs a ROW/MAP block). All the `alter/struct_evolution*` corpus repros
+  are this same bug (their inserts are small → inlined), not an evolution
+  defect. Fix = either extend the gate to cover struct/map cleanly, or better,
+  implement the inlined nested read (retires B2). Repro files skip-listed in
+  `TestTrinoCorpusReplay` with `BUG:` prefix — un-skip when fixed.
+- [ ] **legacy-delete-mapping-after-rename+add_files divergence** — corpus
+  `delete/delete_legacy_missing_mapping_after_rename_add_files.test` rows
+  diverge between DuckDB and Trino (silent wrong results if real). Investigate
+  before assuming harness artifact.
+
 ### Open research items (read-path)
 
 Full per-item rationale in [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md).

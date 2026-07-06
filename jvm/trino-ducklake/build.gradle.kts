@@ -94,6 +94,10 @@ dependencies {
     // ducklake-catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
 
+    // Upstream DuckLake sqllogictest corpus replay (oracle + driver + engine seam);
+    // TrinoReplayEngine implements its ReplayReadEngine, TestTrinoCorpusReplay runs it.
+    testImplementation(project(":ducklake-corpus-replay"))
+
     // compileOnly deps also needed at test time
     testCompileOnly("com.fasterxml.jackson.core:jackson-annotations")
     testImplementation("io.airlift:slice")
@@ -233,6 +237,18 @@ tasks.test {
     System.getProperty("ducklake.test.parityExtensionPath")?.let {
         systemProperty("ducklake.test.parityExtensionPath", it)
         inputs.property("ducklake.test.parityExtensionPath", it)
+    }
+
+    // Upstream DuckLake sqllogictest corpus (TestTrinoCorpusReplay): corpus location
+    // in the sibling module's pinned submodule + optional dir selection
+    // (-Dducklake.corpus.dirs=all for the full corpus).
+    systemProperty(
+        "ducklake.corpus.root",
+        rootProject.projectDir.resolve("ducklake-corpus-replay/ducklake/test/sql").absolutePath,
+    )
+    System.getProperty("ducklake.corpus.dirs")?.let {
+        systemProperty("ducklake.corpus.dirs", it)
+        inputs.property("ducklake.corpus.dirs", it)
     }
 
     jvmArgs(

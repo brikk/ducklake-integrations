@@ -25,11 +25,14 @@ interface ReplayReadEngine : AutoCloseable {
     val name: String
 
     /**
-     * Called once per corpus file before any query is mirrored, with the
-     * DuckLake catalog location the oracle attached (e.g. the metadata `.db`
-     * path or a Postgres JDBC URL) and the data path.
+     * Called when the oracle attaches a DuckLake catalog (first attach per
+     * corpus file). Carries everything an adapter needs to point its engine
+     * at the same lake: the metadata location (post-rewrite — see
+     * [ReplayDriver]'s `metadataRewriter`), the data path, and the alias the
+     * corpus SQL references the catalog by (adapters rewrite
+     * `<alias>.<table>` into their own qualified form).
      */
-    fun connect(catalogUri: String, dataPath: String)
+    fun connect(attachment: OracleAttachment)
 
     /** Dialect gate — see contract above. */
     fun accepts(sql: String): Boolean = true
@@ -37,3 +40,24 @@ interface ReplayReadEngine : AutoCloseable {
     /** Execute a read; rows of cells, null cell = SQL NULL. */
     fun executeQuery(sql: String): List<List<String?>>
 }
+
+/**
+ * What the oracle attached. [metadataUri] is the DuckLake connection remainder
+ * (the part after `ducklake:` — e.g. `/tmp/x/meta.db` or
+ * `postgres:dbname=corpus_1 host=localhost port=5433 user=u password=p`).
+ * Extensible without breaking adapter signatures.
+ */
+data class OracleAttachment(
+    val metadataUri: String,
+    val dataPath: String,
+    val catalogAlias: String,
+)
+
+/**
+ * Thrown by [ReplayReadEngine.executeQuery] when the engine recognizes a KNOWN,
+ * documented gap mid-execution (e.g. Trino skips DuckDB-dialect views, so the
+ * relation doesn't exist on its side). The driver records an engine-skip with
+ * [reason] instead of a failure. Use sparingly — anything not a documented gap
+ * should fail loudly.
+ */
+class ReplayEngineSkip(val reason: String) : RuntimeException(reason)

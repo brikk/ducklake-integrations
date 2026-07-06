@@ -18,6 +18,8 @@ class CorpusRunner(
     private val corpusRoot: Path,
     private val skipList: Map<String, String> = emptyMap(),
     private val engine: ReplayReadEngine? = null,
+    /** See [ReplayDriver]'s `metadataRewriter` — the backend axis. */
+    private val metadataRewriter: ((String) -> String)? = null,
 ) {
 
     fun discover(subdir: String? = null): List<Path> {
@@ -33,7 +35,7 @@ class CorpusRunner(
 
     fun run(files: List<Path>): CorpusReport {
         // corpusRoot = <repo>/test/sql → repo root two levels up (for `data/` refs).
-        val driver = ReplayDriver(engine, repoRoot = corpusRoot.parent?.parent)
+        val driver = ReplayDriver(engine, repoRoot = corpusRoot.parent?.parent, metadataRewriter = metadataRewriter)
         val results = mutableListOf<FileResult>()
         for (file in files) {
             val rel = file.relativeTo(corpusRoot).toString()

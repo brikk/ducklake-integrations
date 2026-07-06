@@ -103,13 +103,6 @@ class DuckDbOracle(
         return s
     }
 
-    /**
-     * Best-effort discovery of the DuckLake catalog URI + data path from the
-     * session (for wiring a [ReplayReadEngine]). Returns nulls when nothing is
-     * attached; refined when the engine axis lands.
-     */
-    fun attachedDucklake(): Pair<String?, String?> = null to null
-
     override fun close() {
         connections.values.forEach { runCatching { it.close() } }
         runCatching { root.close() }

@@ -18,7 +18,23 @@ import java.sql.SQLException
 class ReplayDriver(
     private val engine: ReplayReadEngine? = null,
     private val repoRoot: java.nio.file.Path? = null,
+    /**
+     * Metadata-backend axis: maps the DuckLake connection remainder of an
+     * ATTACH (the part after `ducklake:`, post template-substitution) to a
+     * replacement remainder — e.g. a local `.db` path to
+     * `postgres:dbname=corpus_1 host=...` so an external engine can reach the
+     * same catalog. Called once per distinct original within a file
+     * (memoized: DETACH/re-ATTACH cycles hit the same backend). Null = attach
+     * as written (duckdb-local).
+     */
+    private val metadataRewriter: ((original: String) -> String)? = null,
+    /** Max engine mirrors per file (loop-heavy files repeat queries; see [mirrorsThisFile]). */
+    private val mirrorCapPerFile: Int = DEFAULT_MIRROR_CAP,
 ) {
+
+    companion object {
+        const val DEFAULT_MIRROR_CAP: Int = 40
+    }
 
     fun replay(file: SltFile): FileResult {
         val unsupported = findUnsupported(file.records)
@@ -32,6 +48,11 @@ class ReplayDriver(
         return DuckDbOracle(repoRoot = repoRoot).use { oracle ->
             val outcomes = mutableListOf<RecordOutcome>()
             labelResults.clear()
+            rewrittenAttachments.clear()
+            attachDataPaths.clear()
+            openTransactions.clear()
+            mirrorsThisFile = 0
+            engineConnected = false
             val halted = executeAll(file.records, oracle, emptyMap(), outcomes)
             FileResult(file.path, fileSkipReason = halted, outcomes = outcomes)
         }
@@ -39,6 +60,80 @@ class ReplayDriver(
 
     /** Result-sharing store for labeled queries, per replayed file. */
     private val labelResults = mutableMapOf<String, List<List<String>>>()
+
+    /** Per-file memo of original → rewritten DuckLake connection remainders. */
+    private val rewrittenAttachments = mutableMapOf<String, String>()
+
+    /** Per-file memo of original → DATA_PATH (re-attaches often omit options). */
+    private val attachDataPaths = mutableMapOf<String, String>()
+    private var engineConnected = false
+
+    /**
+     * Connections (by label, null = root) with an open oracle transaction.
+     * Queries inside one see the oracle's UNCOMMITTED state; the engine reads
+     * committed state — divergence there is correct isolation, so the mirror
+     * is gated off until COMMIT/ROLLBACK.
+     */
+    private val openTransactions = mutableSetOf<String?>()
+
+    /**
+     * Engine mirrors executed for the current file. Loop-heavy corpus files
+     * repeat the same query hundreds of times; the oracle validates every
+     * iteration against golden text, but mirroring each one through an
+     * external engine multiplies runtime for no additional signal. The cap
+     * samples the first N mirrors per file.
+     */
+    private var mirrorsThisFile = 0
+
+    private val ATTACH_PATTERN =
+        Regex(
+            "ATTACH\\s+(?:OR\\s+REPLACE\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?'ducklake:([^']+)'(?:\\s+AS\\s+(\\w+))?" +
+                "(?:\\s*\\(([^)]*)\\))?",
+            RegexOption.IGNORE_CASE,
+        )
+    private val DATA_PATH_OPTION = Regex("DATA_PATH\\s+'([^']*)'", RegexOption.IGNORE_CASE)
+
+    /**
+     * Detects a DuckLake ATTACH, applies the metadata rewrite, and returns the
+     * SQL to execute plus the attachment to announce on success (null when the
+     * statement is not a ducklake ATTACH or the engine is already connected).
+     */
+    private val SNAPSHOT_PIN = Regex("SNAPSHOT_(VERSION|TIME)", RegexOption.IGNORE_CASE)
+
+    private fun interceptAttach(sql: String): Pair<String, OracleAttachment?> {
+        val m = ATTACH_PATTERN.find(sql) ?: return sql to null
+        val options = m.groupValues[3]
+        val dataPath = DATA_PATH_OPTION.find(options)?.groupValues?.get(1)
+        val original = m.groupValues[1]
+        val known = rewrittenAttachments[original]
+        if (known == null && dataPath == null) {
+            // FIRST attach of a lake without DATA_PATH: DuckLake derives a
+            // default from a LOCAL metadata path — a rewritten backend has no
+            // equivalent. Attach as written; the file replays oracle-only.
+            // (RE-attaches without options must keep hitting the rewritten
+            // backend — the memo check above handles them.)
+            return sql to null
+        }
+        val rewritten =
+            known ?: rewrittenAttachments.getOrPut(original) { metadataRewriter?.invoke(original) ?: original }
+        if (dataPath != null) attachDataPaths[original] = dataPath
+        val effectiveSql =
+            if (rewritten == original) sql else sql.replace("'ducklake:$original'", "'ducklake:$rewritten'")
+        if (SNAPSHOT_PIN.containsMatchIn(options)) {
+            // Pinned (time-travel) attach: the oracle now reads an old
+            // snapshot; the engine would read latest. Stop mirroring for the
+            // rest of the file — divergence is expected, not a bug.
+            engineConnected = false
+            return effectiveSql to null
+        }
+        if (engine == null || engineConnected) return effectiveSql to null
+        val alias =
+            m.groupValues[2].ifEmpty {
+                original.substringAfterLast('/').substringBefore('.') // duckdb derives from filename
+            }
+        val effectiveDataPath = dataPath ?: attachDataPaths[original] ?: ""
+        return effectiveSql to OracleAttachment(rewritten, effectiveDataPath, alias)
+    }
 
     private fun findUnsupported(records: List<SltRecord>): SltUnsupported? {
         for (r in records) {
@@ -121,10 +216,16 @@ class ReplayDriver(
         oracle: DuckDbOracle,
         bindings: Map<String, String>,
     ): RecordOutcome {
-        val sql = oracle.substitute(bind(record.sql, bindings))
+        val substituted = oracle.substitute(bind(record.sql, bindings))
+        val (sql, pendingAttachment) = interceptAttach(substituted)
         val conn = oracle.connection(record.connection)
         return try {
             conn.createStatement().use { it.execute(sql) }
+            if (pendingAttachment != null && !engineConnected) {
+                engine?.connect(pendingAttachment)
+                engineConnected = true
+            }
+            trackTransaction(sql, record.connection)
             if (record.expectError && record.expectedError != null) {
                 RecordOutcome.Fail(record, "expected error containing '${record.expectedError}' but statement succeeded")
             } else if (record.expectError) {
@@ -217,9 +318,20 @@ class ReplayDriver(
                 is GoldenComparator.Comparison.Mismatch -> RecordOutcome.Fail(record, cmp.detail)
                 is GoldenComparator.Comparison.Unsupported -> RecordOutcome.Skip(record, cmp.reason)
             }
-        if (goldenOutcome !is RecordOutcome.Pass || engine == null || !engine.accepts(sql)) {
+        // Mirror gate: engineConnected is per-file — never mirror against a
+        // previous file's catalog, a pinned attach, an un-rewritten lake, or
+        // inside an open oracle transaction (uncommitted state is invisible to
+        // the engine by design).
+        if (goldenOutcome !is RecordOutcome.Pass ||
+            engine == null ||
+            !engineConnected ||
+            record.connection in openTransactions ||
+            mirrorsThisFile >= mirrorCapPerFile ||
+            !engine.accepts(sql)
+        ) {
             return goldenOutcome
         }
+        mirrorsThisFile++
         // Live-vs-live mirror through the engine.
         return try {
             val engineRows = engine.executeQuery(sql).map { row -> row.map(GoldenComparator::toGoldenCell) }
@@ -227,8 +339,15 @@ class ReplayDriver(
             if (engineRows.toSortedComparable() == oracleRows.toSortedComparable()) {
                 RecordOutcome.Pass(record)
             } else {
-                RecordOutcome.Fail(record, "engine '${engine.name}' diverged from oracle")
+                RecordOutcome.Fail(
+                    record,
+                    "engine '${engine.name}' diverged from oracle\n" +
+                        "  oracle (head): ${oracleRows.take(3)}\n" +
+                        "  engine (head): ${engineRows.take(3)}",
+                )
             }
+        } catch (e: ReplayEngineSkip) {
+            RecordOutcome.Skip(record, "engine '${engine.name}': ${e.reason}")
         } catch (e: Exception) {
             RecordOutcome.Fail(record, "engine '${engine.name}' errored: ${e.message?.lineSequence()?.firstOrNull()}")
         }
@@ -236,6 +355,16 @@ class ReplayDriver(
 
     private fun List<List<String>>.toSortedComparable(): List<String> =
         map { it.joinToString("\u0001") }.sorted()
+
+    private val TXN_BEGIN = Regex("^\\s*BEGIN\\b", RegexOption.IGNORE_CASE)
+    private val TXN_END = Regex("^\\s*(COMMIT|ROLLBACK|ABORT)\\b", RegexOption.IGNORE_CASE)
+
+    private fun trackTransaction(sql: String, connection: String?) {
+        when {
+            TXN_BEGIN.containsMatchIn(sql) -> openTransactions.add(connection)
+            TXN_END.containsMatchIn(sql) -> openTransactions.remove(connection)
+        }
+    }
 
     private val DML = Regex("^\\s*(insert|update|delete|merge|truncate)\\b", RegexOption.IGNORE_CASE)
 

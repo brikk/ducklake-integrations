@@ -57,10 +57,12 @@ object GoldenComparator {
     }
 
     /**
-     * Renders a JDBC value the way DuckDB's own test runner renders it (the
-     * golden-text dialect), instead of Java's default toString forms.
+     * Renders a JDBC/engine value the way DuckDB's own test runner renders it
+     * (the golden-text dialect), instead of Java's default toString forms.
+     * Public so [ReplayReadEngine] adapters produce comparable cells without
+     * re-deriving the rules.
      */
-    private fun renderCell(value: Any?): String? =
+    fun renderCell(value: Any?): String? =
         when (value) {
             null -> null
             // DuckDB golden text escapes embedded NUL bytes.
@@ -69,8 +71,13 @@ object GoldenComparator {
             is LocalDateTime -> renderDateTime(value)
             is OffsetDateTime ->
                 renderDateTime(value.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
+            is java.time.ZonedDateTime ->
+                renderDateTime(value.withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime()) + "+00"
             is LocalTime -> renderTime(value)
             is LocalDate -> value.toString()
+            is Double -> renderFloating(value)
+            is Float -> renderFloating(value.toDouble())
+            is List<*> -> value.joinToString(", ", prefix = "[", postfix = "]") { renderNested(it) }
             is DuckDBStruct ->
                 value.map.entries.joinToString(", ", prefix = "{", postfix = "}") { (k, v) ->
                     "'$k': ${renderNested(v)}"
@@ -126,6 +133,15 @@ object GoldenComparator {
 
     private fun renderTime(t: LocalTime): String =
         "%02d:%02d:%02d".format(t.hour, t.minute, t.second) + fraction(t.nano)
+
+    /** DuckDB renders special floats as inf/-inf/nan, not Java's Infinity/NaN. */
+    private fun renderFloating(d: Double): String =
+        when {
+            d.isNaN() -> "nan"
+            d == Double.POSITIVE_INFINITY -> "inf"
+            d == Double.NEGATIVE_INFINITY -> "-inf"
+            else -> d.toString()
+        }
 
     /** Microsecond fraction, trailing zeros trimmed, omitted when zero (DuckDB style). */
     private fun fraction(nano: Int): String {
