@@ -73,16 +73,7 @@ internal object DuckLakeSchemaDictionary {
         if (scalarColumns.isEmpty()) {
             return null
         }
-        // Union the per-mapping alternate names by field id. Distinct-preserving
-        // so the BE tries each alternate name for an id-less file column.
-        val alternateNamesByFieldId = LinkedHashMap<Long, MutableList<String>>()
-        for (map in nameMaps) {
-            for ((fieldId, sourceName) in map) {
-                alternateNamesByFieldId.getOrPut(fieldId) { ArrayList() }.let {
-                    if (sourceName !in it) it.add(sourceName)
-                }
-            }
-        }
+        val alternateNamesByFieldId = safeAlternateNames(nameMaps)
 
         val root = TStructField()
         for (col in scalarColumns) {
@@ -119,6 +110,44 @@ internal object DuckLakeSchemaDictionary {
         if (carrier.isSetHistorySchemaInfo) {
             params.historySchemaInfo = carrier.historySchemaInfo
         }
+    }
+
+    /**
+     * Per-field-id `name_mapping` alternate source-names for the id-less-file
+     * fallback, **conflict-filtered**. Each [nameMaps] entry is one file's
+     * `mapping_id` row: `target_field_id → source_name`. Because the dictionary
+     * is table-level (one for all files in the scan) while each file carries
+     * its own mapping, a physical name that maps to DIFFERENT field ids across
+     * files (e.g. `col2` → field-id 2 in old files, → field-id 4 in a re-added
+     * column) is AMBIGUOUS: attaching it to the newer field id would make the
+     * BE bind an old file's physical `col2` onto the new column (silent wrong
+     * rows — the `add_files.test` DROP+re-ADD case). Such a name is dropped
+     * from the alternates entirely; the field then binds only by embedded
+     * field id or by its exact table name, which is correct (old rows read
+     * NULL for the new column). A name that maps to exactly ONE field id
+     * across all files is safe and kept.
+     */
+    private fun safeAlternateNames(nameMaps: Collection<Map<Long, String>>): Map<Long, List<String>> {
+        // source-name (lowercased) -> the set of distinct field ids it maps to.
+        val fieldIdsByName = HashMap<String, MutableSet<Long>>()
+        for (map in nameMaps) {
+            for ((fieldId, sourceName) in map) {
+                fieldIdsByName.getOrPut(sourceName.lowercase(Locale.ROOT)) { HashSet() }.add(fieldId)
+            }
+        }
+        val result = LinkedHashMap<Long, MutableList<String>>()
+        for (map in nameMaps) {
+            for ((fieldId, sourceName) in map) {
+                val ambiguous = (fieldIdsByName[sourceName.lowercase(Locale.ROOT)]?.size ?: 0) > 1
+                if (ambiguous) {
+                    continue
+                }
+                result.getOrPut(fieldId) { ArrayList() }.let {
+                    if (sourceName !in it) it.add(sourceName)
+                }
+            }
+        }
+        return result
     }
 
     private fun fieldPtr(field: TField): TFieldPtr = TFieldPtr().setFieldPtr(field)

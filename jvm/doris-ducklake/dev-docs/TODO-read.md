@@ -76,15 +76,19 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   tree SIGABRTs the BE's `by_parquet_field_id` recursion, so struct/list/map
   columns are omitted (they read by name; a subset dictionary is safe).
   Closed corpus files: `add_files_rename`, `compaction_multiple_rename_column`.
-  - [ ] **Follow-up — mapping-id-space-aware dictionary.** Two files stay
-    skipped (`add_files.test`, `delete/delete_legacy_missing_mapping_...`):
-    `ducklake_name_mapping.column_id` is a per-registration id space (file
-    field-ids 0/1/2) that isn't always the table field-id (1/2/3). Our
-    union-all-alternate-names dictionary then either mis-binds a reused
-    physical name onto older rows, or misses a name the BE demands for an
-    id-less file. Correct handling needs per-file field-id remapping (map
-    the file's own field-ids → table field-ids using its `mapping_id` row),
-    not a flat name union.
+  - [x] **Conflict-aware `name_mapping` union** — DONE 2026-07-06.
+    `getNameMaps` already keys by `target_field_id` (the table field id), so
+    rename + simple add_files are correct. Added
+    `DuckLakeSchemaDictionary.safeAlternateNames`: a source-name that maps to
+    more than one field id across files (the DROP+re-ADD reuse case) is
+    dropped from the alternates, so we never silently mis-bind.
+  - [ ] **BLOCKED (needs upstream) — per-file column mapping.** Two corpus
+    files (`add_files.test`, `delete/delete_legacy_missing_mapping_...`)
+    remain unsolvable table-level: id-less files reuse a physical name across
+    a DROP+re-ADD field-id boundary, and the scan-node-level schema dictionary
+    can't express per-file maps. Needs per-range schema info in the SPI (or a
+    BE per-file name→field-id hook) — see the friction log entry
+    "Schema dictionary is scan-node-level; can't express per-FILE column mapping".
 - [ ] **Serve inlined data rows** (upgrade the guard into a real read):
   options — FE-side synthesis of a temp parquet from `readInlinedData` into a
   scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.

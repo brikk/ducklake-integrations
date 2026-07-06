@@ -17,6 +17,58 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-07-06 · Schema dictionary is scan-node-level; can't express per-FILE column mapping
+
+**Symptom.** A DuckLake table with a DROP-then-re-ADD of a column, over
+externally-registered (`add_files`) **id-less** parquet files whose physical
+column names are reused, reads wrong or errors. Concretely (corpus
+`add_files/add_files.test`): `col2` (field-id 2) is dropped, then a new `col2`
+(field-id 4) is added; older files physically named `col2` mean the DROPPED
+field-id 2, so a read of the new `col2` must return NULL for old rows. Doris
+either mis-binds the old file's physical `col2` onto the new column (silent
+wrong rows), or — once we conflict-filter the ambiguous name — errors:
+
+```
+[DATA_QUALITY_ERROR]name_mapping must be set when read missing field id data
+file.. cur path: .../my_file3.parquet
+```
+
+**Root cause.** The native-reader schema dictionary (`current_schema_id` +
+`history_schema_info`, `TFileScanRangeParams` fields 25/26) is emitted **once
+per scan node** by the connector's `getScanNodeProperties`, describing the
+TABLE. But each DuckLake data file carries its OWN
+`ducklake_data_file.mapping_id` → `ducklake_name_mapping` row (a per-file
+`target_field_id → source_name`), and for an id-less file the BE binds columns
+by those names (`be/src/format/table/table_schema_change_helper.cpp:551`
+`by_parquet_field_id_with_name_mapping` → `find_file_field_idx_by_name_mapping`
+`:58`, which tries the field's `name_mapping` names then its table `name`).
+A single table-level dictionary can't say "file A's `col2` → field-id 2, file
+B's `col2` → field-id 4": the `name_mapping` list and the table-name fallback
+are applied uniformly to every file. Rename and simple `add_files` cases work
+(one unambiguous name per field id); only the reuse-across-a-field-id-boundary
+case is unsolvable table-level.
+
+**Workaround.** Conflict-aware `name_mapping` union
+(`DuckLakeSchemaDictionary.safeAlternateNames`): a source-name that maps to
+more than one field id across files is dropped from the alternates, so we
+never silently mis-bind — the BE then errors loudly instead. The two affected
+corpus files stay skip-listed. Rename / simple-add_files reads are correct.
+
+**Fix (pickable upstream changes).**
+- **Per-range schema info:** let `ConnectorScanRange.populateRangeParams`
+  attach a per-file schema/field-id mapping (the file's own `mapping_id`
+  resolution), so each split carries its correct file↔table column map instead
+  of relying on one scan-node dictionary. This is the general fix and also
+  helps any connector with heterogeneous per-file schemas.
+- **Or:** a BE hook to consult a per-file name→field-id map supplied on the
+  `TFileRangeDesc` (parallel to how `iceberg_params` rides per-range), instead
+  of only the scan-node `history_schema_info`.
+
+Until then the two DROP+re-ADD-over-id-less-files corpus cases are documented
+skips; tracked in [`TODO-read.md`](./TODO-read.md).
+
+---
+
 ## 2026-07-06 · No SPI path for a connector to hand FE-computed rows to the BE (inlined DATA reads)
 
 **Symptom.** DuckLake keeps small tables' rows *inline in the catalog DB*

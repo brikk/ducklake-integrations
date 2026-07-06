@@ -59,12 +59,36 @@ internal class DuckLakeSchemaDictionaryTest {
 
     @Test
     fun unionsAlternateNamesAcrossMultipleFileMappingsDistinctly() {
-        // Two files with different historical names for the same field id 1.
+        // Two files with different historical names for the same field id 1
+        // (both unambiguous — each name maps to only field id 1).
         val nameMaps = listOf(mapOf(1L to "name_a"), mapOf(1L to "name_b"), mapOf(1L to "name_a"))
         val encoded = DuckLakeSchemaDictionary.encode(listOf(handle(1, "id")), nameMaps)
         val field = decode(encoded).historySchemaInfo[0].rootField.fields[0]
 
         assertThat(field.fieldPtr.nameMapping).containsExactly("name_a", "name_b")
+    }
+
+    @Test
+    fun dropsAmbiguousSourceNamesThatMapToDifferentFieldIdsAcrossFiles() {
+        // The add_files DROP+re-ADD collision: physical name "col2" maps to
+        // field id 2 in old files and field id 4 in the re-added column. It's
+        // ambiguous, so it must NOT be attached to either — else the BE binds
+        // an old file's physical col2 onto the new column (silent wrong rows).
+        // "col1" maps only to field id 1, so it stays.
+        val nameMaps = listOf(
+            mapOf(1L to "col1", 2L to "col2"), // old file mapping
+            mapOf(1L to "col1", 4L to "col2"), // re-added-column file mapping
+        )
+        val encoded = DuckLakeSchemaDictionary.encode(
+            listOf(handle(1, "col1"), handle(4, "col2", "STRING")),
+            nameMaps,
+        )
+        val fields = decode(encoded).historySchemaInfo[0].rootField.fields
+        val byId = fields.associateBy { it.fieldPtr.id }
+
+        assertThat(byId.getValue(1).fieldPtr.nameMapping).containsExactly("col1")
+        // field id 4 (re-added col2): ambiguous "col2" dropped → no name_mapping.
+        assertThat(byId.getValue(4).fieldPtr.isSetNameMapping).isFalse()
     }
 
     @Test

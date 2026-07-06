@@ -56,21 +56,25 @@ internal class DorisCorpusReplayTest {
             "add_files/add_files_hive.test" to GAP_HIVE_PARTITION_FILL,
             "add_files/add_files_hive_many_columns.test" to GAP_HIVE_PARTITION_FILL,
             "add_files/add_files_hive_partition_cast.test" to GAP_HIVE_PARTITION_FILL,
-            // add_files_rename + compaction_multiple_rename_column + the legacy-delete
-            // mapping file now read correctly via the field-id schema dictionary
-            // (DuckLakeSchemaDictionary) — un-skipped. This one stays skipped: it
-            // registers a file whose PHYSICAL column names collide with later-added
-            // table columns across a field-id boundary (file field-ids 0/1/2 vs table
-            // 1/2/3), and our name_mapping union then mis-binds the file's `col2`/`col3`
-            // onto older rows. Correctly handling the add_files mapping id-space vs the
-            // schema field-id space is a follow-up (TODO-read GAP_NAME_MAPPING).
+            // Renamed columns + simple add_files legacy files read correctly via the
+            // field-id schema dictionary (DuckLakeSchemaDictionary). These two remain
+            // UNSOLVABLE with a table-level dictionary: they register id-less parquet
+            // files whose physical column names collide across a DROP+re-ADD field-id
+            // boundary (a file's `col2` means the DROPPED field-id 2; the live table's
+            // `col2` is a NEW field-id 4). Disambiguating requires PER-FILE schema info
+            // (which mapping_id applies to which file) — but the SPI schema dictionary
+            // is scan-node-level (one for all files) and the BE applies the table
+            // name-fallback uniformly. Conflict-aware union already prevents the SILENT
+            // wrong-rows mis-bind; the BE then errors loudly ("name_mapping must be
+            // set") rather than returning garbage. Real fix needs per-range schema info
+            // in the SPI or the BE consulting DuckLake's per-file mapping_id — tracked
+            // in the friction log + TODO-read.
             "add_files/add_files.test" to
-                "add_files field-id id-space collision: file physical names reused for later table " +
-                "columns mis-bind via name_mapping; needs mapping-id-space-aware dictionary (TODO-read)",
+                "per-file mapping unsolvable table-level: DROP+re-ADD reuses physical name `col2` across " +
+                "field-id boundary over id-less files; needs per-range schema info (see friction log)",
             "delete/delete_legacy_missing_mapping_after_rename_add_files.test" to
-                "BE 'name_mapping must be set when read missing field id data file': a legacy id-less " +
-                "file after rename+add_files needs the name_mapping emitted for that specific field; our " +
-                "dictionary doesn't cover it yet (same mapping-id-space follow-up as add_files.test)",
+                "per-file mapping unsolvable table-level: legacy id-less file after rename+add_files (same " +
+                "root cause as add_files.test)",
             "stats/filter_stress.test" to
                 "oracle-local cross-check: compares the lake against a non-lake DuckDB reference table " +
                 "(events_ref) via EXCEPT ALL; the reference table only exists oracle-side, so it can't be " +
