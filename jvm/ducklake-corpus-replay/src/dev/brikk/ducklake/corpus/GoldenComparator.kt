@@ -111,8 +111,10 @@ object GoldenComparator {
      * Values nested in LIST/STRUCT/MAP: DuckDB single-quotes a string only
      * when it needs it (empty, NULL-lookalike, or special characters);
      * simple strings render bare (e.g. `[main, hello]`, `{'k': FIX}`).
+     * Public so engine adapters can render THEIR nested values into the same
+     * dialect (see TrinoReplayEngine's typed renderer).
      */
-    private fun renderNested(value: Any?): String =
+    fun renderNested(value: Any?): String =
         when (value) {
             is String -> {
                 val s = value.replace("\u0000", "\\0")

@@ -268,7 +268,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val format = ducklakeSplit.fileFormat
         if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
             val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
-            return createParquetPageSource(inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+            return createParquetPageSource(
+                    inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+            { resolveFileColumnNames(table, ducklakeSplit) }
         }
         // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
         // (vortex + lance). createDuckDbPageSource picks the source shape per
@@ -336,10 +338,30 @@ class DucklakePageSourceProvider @Inject constructor(
             val rawRows: List<List<Any?>> = catalog.readInlinedData(
                     inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
+            // Identity-based nested-field mapping: rows in this split were inlined
+            // under schemaVersion's era; struct text carries era field NAMES. Map
+            // era names onto current fields by column_id (rename/reuse safety) —
+            // see InlinedNestedFieldMapper. Name-fallback when unavailable.
+            val nestedMappings: Map<Long, InlinedTextFieldMapping> =
+                if (realColumns.none { InlinedNestedFieldMapper.containsRow(it.columnType) }) {
+                    emptyMap()
+                } else {
+                    val eraSnapshot: Long? = catalog.resolveSchemaVersionSnapshot(
+                            inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+                    if (eraSnapshot == null) {
+                        emptyMap()
+                    } else {
+                        InlinedNestedFieldMapper.build(
+                                realColumns.map { it.columnId to it.columnType },
+                                columnTree(inlinedSplit.tableId, inlinedSplit.snapshotId),
+                                columnTree(inlinedSplit.tableId, eraSnapshot))
+                    }
+                }
             convertedRealRows = rawRows.map { row ->
                 val converted: MutableList<Any?> = ArrayList(row.size)
                 for (i in row.indices) {
-                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(row[i], realTypes[i]))
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
+                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
                 }
                 converted
             }
@@ -939,8 +961,11 @@ class DucklakePageSourceProvider @Inject constructor(
             columns: List<DucklakeColumnHandle>,
             split: DucklakeSplit,
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
-            fileSystem: TrinoFileSystem): ConnectorPageSource
+            fileSystem: TrinoFileSystem,
+            eraColumnNamesSupplier: () -> Map<Long, String> = { emptyMap() }): ConnectorPageSource
     {
+        // Lazily resolved on first miss (see era-name fallback below).
+        val eraColumnNames: Map<Long, String> by lazy(eraColumnNamesSupplier)
         // Create memory context for reading
         val memoryContext: AggregatedMemoryContext = newSimpleAggregatedMemoryContext()
 
@@ -1067,6 +1092,19 @@ class DucklakePageSourceProvider @Inject constructor(
                     val parquetSourceName: String? = split.fieldIdToParquetSourceName[column.columnId]
                     if (parquetSourceName != null && parquetSourceName != columnName) {
                         columnIO = messageColumnIO.getChild(parquetSourceName)
+                    }
+                }
+                // (4) Era-name fallback for legacy files with NO mapping_id and NO
+                // parquet field_ids (pre-v0.4 add_files registrations whose name map
+                // was never persisted): the file's physical column carries the name
+                // this column had at the file's begin_snapshot. Upstream still reads
+                // such files after a column rename by resolving the era name; without
+                // this we silently NULL-fill (corpus repro:
+                // delete/delete_legacy_missing_mapping_after_rename_add_files.test).
+                if (columnIO == null && column.columnId > 0) {
+                    val eraName: String? = eraColumnNames[column.columnId]
+                    if (eraName != null && !eraName.equals(columnName, ignoreCase = true)) {
+                        columnIO = messageColumnIO.getChild(eraName)
                     }
                 }
 

@@ -84,7 +84,9 @@ class CorpusReport(val files: List<FileResult>) {
             sb.appendLine("  failures (first $maxFailures):")
             failures.take(maxFailures).forEach { (f, fail) ->
                 val line = fail.record?.line ?: 0
-                sb.appendLine("    ${f.path}:$line  ${fail.reason.lineSequence().first()}")
+                val reasonLines = fail.reason.lines()
+                sb.appendLine("    ${f.path}:$line  ${reasonLines.first()}")
+                reasonLines.drop(1).forEach { sb.appendLine("      $it") }
             }
         }
         return sb.toString()

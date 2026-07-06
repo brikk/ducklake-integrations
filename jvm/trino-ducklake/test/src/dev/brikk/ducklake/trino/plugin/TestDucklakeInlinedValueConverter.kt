@@ -151,4 +151,110 @@ class TestDucklakeInlinedValueConverter {
             DucklakeInlinedValueConverter.convertJdbcValue(BigDecimal("1.234"), DecimalType.createDecimalType(10, 2))
         }.isInstanceOf(ArithmeticException::class.java)
     }
+
+    // ==================== nested struct/map/list text parsing ====================
+    // DuckDB serializes nested inlined values as VARCHAR text on non-native
+    // catalog backends: struct `{'k': v}` (ToSQLString — strings quoted with ''
+    // doubling), map `{k=v}` (Value::ToString), list `[a, b]`.
+
+    private val rowIJ = io.trino.spi.type.RowType.rowType(
+            io.trino.spi.type.RowType.field("i", io.trino.spi.type.IntegerType.INTEGER),
+            io.trino.spi.type.RowType.field("j", io.trino.spi.type.VarcharType.VARCHAR))
+
+    @Test
+    fun testTopLevelStruct() {
+        val row = DucklakeInlinedValueConverter.convertJdbcValue("{'i': 42, 'j': 'hello'}", rowIJ)
+                as io.trino.spi.block.SqlRow
+        assertThat(io.trino.spi.type.IntegerType.INTEGER.getLong(row.getRawFieldBlock(0), row.rawIndex)).isEqualTo(42L)
+        assertThat(io.trino.spi.type.VarcharType.VARCHAR.getSlice(row.getRawFieldBlock(1), row.rawIndex).toStringUtf8())
+                .isEqualTo("hello")
+    }
+
+    @Test
+    fun testStructWithNullFieldAndQuoteEscape() {
+        val row = DucklakeInlinedValueConverter.convertJdbcValue("{'i': NULL, 'j': 'it''s'}", rowIJ)
+                as io.trino.spi.block.SqlRow
+        assertThat(row.getRawFieldBlock(0).isNull(row.rawIndex)).isTrue()
+        assertThat(io.trino.spi.type.VarcharType.VARCHAR.getSlice(row.getRawFieldBlock(1), row.rawIndex).toStringUtf8())
+                .isEqualTo("it's")
+    }
+
+    @Test
+    fun testTopLevelStructNull() {
+        assertThat(DucklakeInlinedValueConverter.convertJdbcValue(null, rowIJ)).isNull()
+    }
+
+    @Test
+    fun testStructInStruct() {
+        val outer = io.trino.spi.type.RowType.rowType(
+                io.trino.spi.type.RowType.field("a", BIGINT),
+                io.trino.spi.type.RowType.field("inner", rowIJ))
+        val row = DucklakeInlinedValueConverter.convertJdbcValue(
+                "{'a': 7, 'inner': {'i': 1, 'j': 'x, y'}}", outer) as io.trino.spi.block.SqlRow
+        assertThat(BIGINT.getLong(row.getRawFieldBlock(0), row.rawIndex)).isEqualTo(7L)
+        val inner = rowIJ.getObject(row.getRawFieldBlock(1), row.rawIndex) as io.trino.spi.block.SqlRow
+        assertThat(io.trino.spi.type.VarcharType.VARCHAR.getSlice(inner.getRawFieldBlock(1), inner.rawIndex).toStringUtf8())
+                .isEqualTo("x, y")
+    }
+
+    @Test
+    fun testListOfStruct() {
+        val listType = ArrayType(rowIJ)
+        val block = DucklakeInlinedValueConverter.convertJdbcValue(
+                "[{'i': 1, 'j': 'a'}, NULL, {'i': 2, 'j': 'b'}]", listType) as Block
+        assertThat(block.positionCount).isEqualTo(3)
+        assertThat(block.isNull(1)).isTrue()
+        val second = rowIJ.getObject(block, 2) as io.trino.spi.block.SqlRow
+        assertThat(io.trino.spi.type.IntegerType.INTEGER.getLong(second.getRawFieldBlock(0), second.rawIndex))
+                .isEqualTo(2L)
+    }
+
+    @Test
+    fun testMapIntToStruct() {
+        val mapType = io.trino.spi.type.TypeOperators().let {
+            io.trino.spi.type.MapType(io.trino.spi.type.IntegerType.INTEGER, rowIJ, it)
+        }
+        val map = DucklakeInlinedValueConverter.convertJdbcValue(
+                "{1={'i': 1, 'j': 2}, 2={'i': NULL, 'j': NULL}}",
+                io.trino.spi.type.MapType(io.trino.spi.type.IntegerType.INTEGER,
+                        io.trino.spi.type.RowType.rowType(
+                                io.trino.spi.type.RowType.field("i", io.trino.spi.type.IntegerType.INTEGER),
+                                io.trino.spi.type.RowType.field("j", io.trino.spi.type.IntegerType.INTEGER)),
+                        io.trino.spi.type.TypeOperators())) as io.trino.spi.block.SqlMap
+        assertThat(map.size).isEqualTo(2)
+        // suppress unused variable warning for the first construction
+        assertThat(mapType).isNotNull()
+    }
+
+    @Test
+    fun testMapVarcharKeys() {
+        val mapType = io.trino.spi.type.MapType(
+                io.trino.spi.type.VarcharType.VARCHAR, BIGINT, io.trino.spi.type.TypeOperators())
+        val map = DucklakeInlinedValueConverter.convertJdbcValue("{a=1, b=2}", mapType)
+                as io.trino.spi.block.SqlMap
+        assertThat(map.size).isEqualTo(2)
+    }
+
+    @Test
+    fun testStructWithListField() {
+        val structType = io.trino.spi.type.RowType.rowType(
+                io.trino.spi.type.RowType.field("xs", ArrayType(DOUBLE)))
+        val row = DucklakeInlinedValueConverter.convertJdbcValue(
+                "{'xs': [1.5, inf, NULL]}", structType) as io.trino.spi.block.SqlRow
+        val xs = ArrayType(DOUBLE).getObject(row.getRawFieldBlock(0), row.rawIndex) as Block
+        assertThat(xs.positionCount).isEqualTo(3)
+        assertThat(DOUBLE.getDouble(xs, 1)).isEqualTo(Double.POSITIVE_INFINITY)
+        assertThat(xs.isNull(2)).isTrue()
+    }
+
+    @Test
+    fun testEvolutionProjection() {
+        // Row inlined under an older schema version: field 'dropped' no longer
+        // exists in the current type (skipped, even when nested), field 'j' was
+        // added after the row was written (missing → NULL).
+        val row = DucklakeInlinedValueConverter.convertJdbcValue(
+                "{'dropped': {'x': [1, 2]}, 'i': 5}", rowIJ) as io.trino.spi.block.SqlRow
+        assertThat(io.trino.spi.type.IntegerType.INTEGER.getLong(row.getRawFieldBlock(0), row.rawIndex)).isEqualTo(5L)
+        assertThat(row.getRawFieldBlock(1).isNull(row.rawIndex)).isTrue()
+    }
 }

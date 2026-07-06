@@ -172,10 +172,57 @@ class TrinoReplayEngine : ReplayReadEngine {
                 }
                 throw e
             }
+        val types = result.types
         return result.materializedRows.map { row ->
-            (0 until row.fieldCount).map { i -> GoldenComparator.renderCell(row.getField(i)) }
+            (0 until row.fieldCount).map { i -> renderTyped(row.getField(i), types[i]) }
         }
     }
+
+    /**
+     * Renders a materialized Trino value into DuckDB's text dialect so it
+     * compares against the oracle's rendering: ROW → `{'name': v}`, MAP →
+     * `{k=v}`, ARRAY → `[v, ...]`, scalars via [GoldenComparator.renderCell].
+     * Trino materializes ROWs as [io.trino.testing.MaterializedRow] or List,
+     * MAPs as java Map, ARRAYs as List.
+     */
+    private fun renderTyped(value: Any?, type: io.trino.spi.type.Type): String? {
+        if (value == null) return null
+        return when (type) {
+            is io.trino.spi.type.RowType -> {
+                val fields = type.fields
+                val children = rowChildren(value)
+                fields.indices.joinToString(", ", prefix = "{", postfix = "}") { i ->
+                    val name = fields[i].name.orElse("f$i")
+                    "'$name': ${renderTypedNested(children[i], fields[i].type)}"
+                }
+            }
+            is io.trino.spi.type.MapType ->
+                (value as Map<*, *>).entries.joinToString(", ", prefix = "{", postfix = "}") { (k, v) ->
+                    "${renderTypedNested(k, type.keyType)}=${renderTypedNested(v, type.valueType)}"
+                }
+            is io.trino.spi.type.ArrayType ->
+                (value as List<*>).joinToString(", ", prefix = "[", postfix = "]") {
+                    renderTypedNested(it, type.elementType)
+                }
+            else -> GoldenComparator.renderCell(value)
+        }
+    }
+
+    private fun renderTypedNested(value: Any?, type: io.trino.spi.type.Type): String =
+        when {
+            value == null -> "NULL"
+            type is io.trino.spi.type.RowType ||
+                type is io.trino.spi.type.MapType ||
+                type is io.trino.spi.type.ArrayType -> renderTyped(value, type)!!
+            else -> GoldenComparator.renderNested(value)
+        }
+
+    private fun rowChildren(value: Any): List<Any?> =
+        when (value) {
+            is io.trino.testing.MaterializedRow -> value.fields
+            is List<*> -> value
+            else -> throw IllegalStateException("Unexpected materialized ROW shape: ${value.javaClass.name}")
+        }
 
     override fun close() {
         runCatching { runner.close() }
