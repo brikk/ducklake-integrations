@@ -107,7 +107,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         Procedure.Argument("TABLE_NAME", VARCHAR),
                         Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, "100MB"),
                         Procedure.Argument("TARGET_FILE_SIZE", VARCHAR, false, "512MB"),
-                        Procedure.Argument("RECLAIM_SOURCES_IMMEDIATELY", BOOLEAN, false, false)),
+                        Procedure.Argument("RECLAIM_SOURCES_IMMEDIATELY", BOOLEAN, false, false),
+                        // Caps SOURCE FILES consumed per invocation (0 = unlimited) so a
+                        // large table doesn't rewrite everything in one commit — mirrors
+                        // upstream's max_compacted_files (ducklake main 8b8e0491).
+                        Procedure.Argument("MAX_COMPACTED_FILES", BIGINT, false, 0L)),
                 REWRITE_DATA_FILES.bindTo(this),
                 true)
 
@@ -118,7 +122,8 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             tableName: String?,
             fileSizeThreshold: String?,
             targetFileSize: String?,
-            reclaimSourcesImmediately: Boolean) {
+            reclaimSourcesImmediately: Boolean,
+            maxCompactedFiles: Long) {
         val schemaArg = requireArg(schemaName, "schema_name")
         val tableArg = requireArg(tableName, "table_name")
         val threshold: Long = parseDataSize(fileSizeThreshold, "file_size_threshold", "100MB")
@@ -152,9 +157,10 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         val matchedSplits: List<DucklakeSplit> = collectCandidateSplits(session, tableHandle, candidatesByBasename.keys)
         // Group splits by partition; only compact groups with >= 2 files (a lone file per partition
         // is nothing to merge). Cross-partition files are never merged.
-        val groups: Map<PartitionGroup, List<DucklakeSplit>> = matchedSplits
+        val uncappedGroups: Map<PartitionGroup, List<DucklakeSplit>> = matchedSplits
                 .groupBy { partitionGroupOf(candidatesByBasename[basename(it.dataFilePath)], partitionValuesByFile) }
                 .filterValues { it.size >= 2 }
+        val groups: Map<PartitionGroup, List<DucklakeSplit>> = capSourceFiles(uncappedGroups, maxCompactedFiles)
         if (groups.isEmpty()) {
             log.info("rewrite_data_files: %s.%s — no partition has >= 2 compactable files; nothing to compact",
                     schemaArg, tableArg)
@@ -180,6 +186,33 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
     }
 
     /** Parquet data files below [threshold]; partial mode also requires NON-partial sources. */
+    /**
+     * Caps the total SOURCE FILES consumed this invocation at [maxFiles] (0 or
+     * negative = unlimited). Groups are taken in deterministic order (smallest
+     * member path first); the last group is trimmed to the remaining budget when
+     * that still leaves >= 2 files to merge, otherwise dropped. Mirrors
+     * upstream's `max_compacted_files` on `ducklake_rewrite_data_files`.
+     */
+    private fun capSourceFiles(
+            groups: Map<PartitionGroup, List<DucklakeSplit>>,
+            maxFiles: Long): Map<PartitionGroup, List<DucklakeSplit>> {
+        if (maxFiles <= 0L) {
+            return groups
+        }
+        val ordered = groups.entries.sortedBy { entry -> entry.value.minOf { it.dataFilePath } }
+        val capped = LinkedHashMap<PartitionGroup, List<DucklakeSplit>>()
+        var budget = maxFiles
+        for ((group, splits) in ordered) {
+            if (budget < 2) {
+                break
+            }
+            val take = minOf(budget, splits.size.toLong()).toInt()
+            capped[group] = if (take == splits.size) splits else splits.sortedBy { it.dataFilePath }.take(take)
+            budget -= take
+        }
+        return capped
+    }
+
     private fun selectCandidates(dataFiles: List<DucklakeDataFile>, threshold: Long, partial: Boolean): List<DucklakeDataFile> =
         dataFiles.filter { f ->
             FORMAT_PARQUET.equals(f.fileFormat, ignoreCase = true) &&
@@ -397,6 +430,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         String::class.java,
                         String::class.java,
                         String::class.java,
-                        java.lang.Boolean.TYPE))
+                        java.lang.Boolean.TYPE,
+                        java.lang.Long.TYPE))
     }
 }

@@ -989,14 +989,28 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
    mapping (#133). Promote alongside M8.
 
 <!-- Added by 2026-07-05 upstream refresh (survey window 2026-06-29 → 07-05). -->
-- **[NOW-5] max-compacted-files-bound** `[v: NEXT upstream (main-only), but
-  v1.0-format-compatible → do NOW our-side]` — upstream `ducklake` main (`8b8e0491`) added a
+- **[NOW-5] max-compacted-files-bound** — ✅ DONE 2026-07-06.
+  `rewrite_data_files` gained `max_compacted_files => N` (0 = unlimited):
+  caps total SOURCE files consumed per invocation, deterministic group order,
+  last group trimmed to budget when >= 2 remain. Test:
+  `TestDucklakeRewriteDataFiles.maxCompactedFilesCapsSourcesPerInvocation`.
+  Original: upstream `ducklake` main (`8b8e0491`) added a
   `max_compacted_files` named param to `ducklake_rewrite_data_files`, capping how
   many files a single rewrite/merge invocation touches (now applies to
   REWRITE_DELETES too, not just MERGE_ADJACENT). Our F6 compaction has no such
   cap — a large table rewrites everything in one commit. Add a bound. ~30-min.
-- **[NOW-6] bucket-partition-name-collision** `[v: fix on main → NEXT upstream;
-  the bug is present in DuckDB 1.5.x today → do NOW our-side]` — upstream `ducklake` (`1add112e`,
+- **[NOW-6] bucket-partition-name-collision** — ✅ DONE 2026-07-06, and the
+  check found a REAL bug: we emitted bare column names for ALL transforms, so
+  `bucket(4, id)` + `bucket(8, id)` produced duplicate `id=` hive keys
+  (ambiguous layout; add_files hive parsing would silently overwrite), and our
+  bucket/temporal key names diverged from upstream convention entirely
+  (`bucket=`/`year=` vs our `id=`/`ts=`). `DucklakePagePartitioner` now mirrors
+  upstream's `GetPartitionKeyName` incl. the main-branch counter fix: identity →
+  column name, temporal → `year`/`month`/`day`/`hour`, bucket → `bucket`,
+  collisions → `<prefix>_<column>` → `_2`/`_3`… Path names are cosmetic
+  (catalog rows carry partition truth), so no read-path impact. Test:
+  `TestDucklakePartitionedWrite.testPartitionPathKeyNamingMatchesUpstreamConvention`.
+  Original: upstream `ducklake` (`1add112e`,
   `ducklake_partition_data.cpp`) fixed colliding partition-key *names* for
   repeated bucket transforms on the same column (now disambiguates with a
   `_2`, `_3`… counter suffix). We support `bucket(N, col)` — verify our
