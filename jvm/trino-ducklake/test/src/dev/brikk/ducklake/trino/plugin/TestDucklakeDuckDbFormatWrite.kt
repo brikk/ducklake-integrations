@@ -252,7 +252,9 @@ open class TestDucklakeDuckDbFormatWrite : AbstractDucklakeIntegrationTest() {
                                         .and(currentlyActive(col.END_SNAPSHOT)))
                         .join(file)
                                 .on(file.DATA_FILE_ID.eq(colstats.DATA_FILE_ID))
-                        .where(file.FILE_FORMAT.eq("duckdb")
+                        // Raw catalog stores our non-parquet formats namespaced (trino/<fmt>) so a
+                        // future upstream format of the same bare name can't collide.
+                        .where(file.FILE_FORMAT.eq("trino/duckdb")
                                 .and(col.TABLE_ID.eq(tableId)))
                         .forEach { r ->
                             rows[r.get(col.COLUMN_NAME)] = StatsRow(

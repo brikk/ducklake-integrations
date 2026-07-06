@@ -23,10 +23,10 @@ deletion-vector reader (Roaring bitmaps inside DuckLake's `.puffin`
 delete files). See § Inlined Deletion Vector Reads, § Inlined-Read Type
 Gaps, and § Puffin Deletion Vector Reads below.
 
-Next bite-sized read items: virtual columns (rowid/file_row_number) and
-the `R7` cross-backend view tests. None are correctness blockers — pick
-whichever fits the current session. (Sorted-table read awareness landed
-2026-05-21; see § Sorted-Table Awareness (Read) below.)
+Next bite-sized read items: the `R7` cross-backend view tests (SQLite backend still planned).
+None are correctness blockers. (Virtual columns `$snapshot_id`/`$path`/`$row_id`/`$file_row_number`/
+`$file_size_bytes` shipped; only the DuckDB `rowid` name-alias is deferred to v2. Sorted-table read
+awareness landed 2026-05-21; see § Sorted-Table Awareness (Read) below.)
 
 ## Inlined Deletion Vector Reads
 
@@ -226,11 +226,15 @@ data file's scan.
 
 ## R6: Change Feed and Extended Metadata Parity
 
-- [ ] Evaluate Trino equivalents for:
-  - DuckDB `table_changes`, `table_insertions`, `table_deletions`
-  - DuckLake-specific metadata surfaces beyond `$files` / `$snapshots`
-- [ ] Implement only when there's a clear Trino use-case and a maintainable API
-  shape.
+- [x] **Change feed SHIPPED** — `system.table_insertions` / `table_deletions` / `table_changes`
+  table functions (scan-rewrite PTFs, all file formats, inclusive snapshot-id/timestamp bounds).
+  Reads file data/delete files AND DuckLake **inlined** data (inlined inserts, inlined-row deletes,
+  inline file-position deletes). Update pairing (`update_preimage`/`update_postimage`) works via the
+  embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers (DuckDB);
+  Trino's own writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete`+`insert`.
+  See README § Change Feed and TODO-jayson-special-list.md § F9.
+- [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
+  `$snapshot_changes` — evaluate as use-cases surface.
 
 ## R7: Cross-Backend View Tests
 
@@ -245,7 +249,10 @@ is format-agnostic; adding a new format is a connector-side concern
 (reader plumbing + executor-side ATTACH, where applicable) plus a writer
 follow-up.
 
-Two epics tracked here at high level. Neither is scheduled; both are
+Two epics tracked here at high level. **UPDATE: both have SHIPPED** — Lance (read + write +
+add_files + vector/FTS/hybrid search) and Vortex (read + write + add_files) are in the connector;
+see TODO-lance.md / TODO-vortex.md. The section below is kept as the original design rationale. The
+epics were originally framed as unscheduled "when a workload pushes" items:
 "when a real workload pushes for them" items.
 
 **DuckDB extension availability (probed 2026-06-06, pinned DuckDB `1.5.3.0`):**
@@ -301,7 +308,7 @@ file-scan machinery with Lance. Scope summary:
   upstream DuckLake spec has reserved the string (it should be opaque
   to the spec; the connector decides what it can read).
 
-Open at the epic level — when a workload surfaces, start with a probe:
+SHIPPED (read + write + add_files). Original probe-first plan, kept for the record —
 write one Vortex file outside DuckLake, register it as `add_files` against
 a DuckLake table with `file_format='vortex'`, attempt to read via Trino,
 record what blows up. That tells us what the first PR scope is.
@@ -310,12 +317,81 @@ record what blows up. That tells us what the first PR scope is.
 
 - [ ] **Evaluate adopting the DuckLake `.slt` corpus** as a portable regression
   suite for the catalog library. Source: `COMPARE-datafusion-ducklake.md`.
+  Scoped 2026-07-05: corpus is now **492 `.test` files** (was 248 at the 05-29
+  COMPARE snapshot — doubling fast; adoption value rising). datafusion's runner =
+  `sqllogictest` crate + ~100-line preprocessor (strip directives, skip
+  ATTACH/DETACH + DuckDB-only queries), running a curated snapshot.
+  **Recommended shape for us: cross-engine oracle REPLAY, not translation** —
+  execute each `.test` verbatim through embedded DuckDB (harness already
+  attaches it) to build catalog state with zero dialect work, then for each
+  plain-SELECT `query` directive run the equivalent read through Trino on the
+  same catalog and diff **live result sets** (DuckDB-as-oracle vs Trino, not
+  golden text). Turns the corpus into a read-parity fuzzer over our
+  hand-written-metadata risk surface; each upstream refresh delivers new cases
+  for free. Effort: slt parser ~1d (line-oriented, no Java lib — write our own),
+  replay driver 1-2d, skip-list curation a few days → green subset in under a
+  week. Statement-translation layer (Trino executes writes) is a possible later
+  bolt-on, not v1.
+  **Multi-engine/multi-backend scope (decided 2026-07-05):** target Trino AND
+  Doris, across all catalog backends. (a) Runner core (parser, replay driver,
+  `ReplayReadEngine` interface, DuckDB oracle) lives in
+  **`ducklake-catalog/testFixtures`** as a library export — it runs nowhere
+  itself. Suite entrypoints run ENGINE-SIDE: Trino adapter
+  (`DucklakeQueryRunner`-backed) + its corpus suite in `trino-ducklake/test`;
+  Doris adapter (JDBC→FE) + suite in `doris-ducklake` tests; the
+  DuckDB-identity control suite in `ducklake-catalog/test` (validates the
+  runner, zero engine deps). Engine testing stacks never enter the shared lib.
+  (Alternative if testFixtures feels overloaded: standalone
+  `jvm/ducklake-corpus-replay` module.) Corpus distribution: **pinned git
+  submodule of `duckdb/ducklake`** (vendor/ is git-ignored, unavailable in CI);
+  bump the pin during biweekly upstream refreshes. (b) Backend axis via the
+  ATTACH-rewrite step (duckdb-local / Postgres / Quack / SQLite-when-shipped) —
+  **seed skip lists from upstream's own `test/configs/{postgres,sqlite,quack}.json`**
+  (structured skips with reasons; the corpus is already designed for
+  backend parameterization — we inherit their curation). (c) Compare
+  canonicalized typed values + `rowsort` (upstream's `sort_style`), never text —
+  three engines format differently. (d) Tier the matrix: PR = trino ×
+  duckdb-local fast subset; nightly = full engines × backends (upstream does the
+  same for quack CI). (e) Later: mirror upstream *mode* configs
+  (`deletion_vectors.json`, `no_inline.json`, `ducklake_version.json`) to run
+  the corpus under our write-mode session properties. Doris agent should
+  co-review the `ReplayReadEngine` interface before it's built.
+
+### Corpus-mirror findings (2026-07-06 — REAL BUGS, high priority)
+
+Found by `TestTrinoCorpusReplay` (upstream corpus replayed through the DuckDB
+oracle on the PG backend axis, lake reads mirrored through Trino live-vs-live).
+Skip-listed there with `BUG:` prefixes — un-skip when fixed.
+
+- [ ] **INLINED struct/map reads crash instead of hitting the documented gate**
+  — refined diagnosis: `types/struct.test` crashes with NO schema evolution.
+  Small inserts inline (< `data_inlining_row_limit`); the inlined-read path for
+  nested element types has a documented NOT_SUPPORTED gate that fires cleanly
+  for LISTs, but **struct-typed inlined reads crash with
+  `io.airlift.slice.Slice cannot be cast to io.trino.spi.block.SqlRow`, and
+  maps with `Maps must be represented with SqlMap`, before reaching the gate**
+  (the inlined-value converter likely emits the JSON/varchar Slice where the
+  page needs a ROW/MAP block). All the `alter/struct_evolution*` corpus repros
+  are this same bug (their inserts are small → inlined), not an evolution
+  defect. Fix = either extend the gate to cover struct/map cleanly, or better,
+  implement the inlined nested read (retires B2). Repro files skip-listed in
+  `TestTrinoCorpusReplay` with `BUG:` prefix — un-skip when fixed.
+- [ ] **legacy-delete-mapping-after-rename+add_files divergence** — corpus
+  `delete/delete_legacy_missing_mapping_after_rename_add_files.test` rows
+  diverge between DuckDB and Trino (silent wrong results if real). Investigate
+  before assuming harness artifact.
 
 ### Open research items (read-path)
 
 Full per-item rationale in [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md).
 When promoted, move into the section above it belongs to (e.g. Type-Support
 Improvements, Inlined-Read Type Gaps).
+
+Expected-landing tag `[v: …]`: `CURRENT` = DuckLake v1.0 / DuckDB 1.5.x (what we
+run today); `NEXT` = DuckLake v1.1 (`V1_1_DEV_1`) / DuckDB 2.x, Fall. **[NOW-n]**
+marks the CURRENT-version actionable set — stable ids shared with
+`TODO-WRITE-MODE.md` for the parallel agent working this area now (NOW-1/4/5/6 are
+write-path; NOW-2/3 below are read-path).
 
 - **uint-type-promotion-audit** — upstream PR #1128 fixed type promotion for
   UINTEGER. Verify it's purely DuckDB-execution (not in `ducklake_column.column_type`
@@ -336,15 +412,32 @@ Improvements, Inlined-Read Type Gaps).
   table returns correct rows (`TestDucklakePartialFileFilter`, cross-engine). Consolidated **parquet
   DELETE files** are also filtered now (split carries `deleteFileSnapshotFilters`; the delete reader
   keeps only deletions whose `_ducklake_internal_snapshot_id <= S` — `TestDucklakePartialDeleteFilter`,
-  cross-engine via `flush_inlined_data` consolidation). **Only remaining:** consolidated **PUFFIN**
-  delete files are gated (the deletion-vector reader doesn't yet snapshot-filter per blob) —
-  `TestDucklakePartialFileGuard`. See [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
-- **nested-field-id-top-level-match** — datafusion-ducklake #148 (2026-06) fixed
-  List/struct/map columns reading back **all-NULL**: their field-id matcher keyed off
-  Parquet *leaf* columns, but a column's field-id is stamped on the *top-level* field
-  (the group node for a nested type). We just shipped nested ADD/DROP FIELD (step2-m3);
-  verify our nested field-id resolution reads ids off the top-level field, not the leaf,
-  with a List/struct write→read roundtrip across schema evolution. ~1h spike.
+  cross-engine via `flush_inlined_data` consolidation). Consolidated **PUFFIN** delete files are
+  now snapshot-filtered per blob too (`DucklakePuffinDeleteReader` reads each blob's
+  `ducklake-snapshot-id`) — `TestDucklakePuffinPartialDelete`. **All partial-file reads (data +
+  parquet-delete + puffin-delete) are correct; no read gate remains.** See
+  [DESIGN-maintenance.md § 6](DESIGN-maintenance.md).
+- ✅ **[NOW-3] nested-field-id-top-level-match** — VERIFIED CLEAN 2026-07. Two-part check:
+  (1) STRUCTURAL — `DucklakePageSourceProvider.createParquetPageSource` builds its field-id index
+  from `fileSchema.fields` (TOP-LEVEL fields): `fieldIdToColumnIO[field.id] = messageColumnIO.
+  getChild(field.name)`, i.e. the top-level group `ColumnIO` for a nested type. The primary
+  name-match path also resolves the top-level `ColumnIO`, and `constructField(columnType, columnIO)`
+  builds the nested Field from it. So ids are read off the top-level field, not the leaf — the
+  opposite of the datafusion #148 bug — on BOTH the name-match and the field-id-fallback paths.
+  (2) EMPIRICAL — `TestDucklakeAlterTable.renameNestedColumnsPreserveTheirValues` renames a
+  top-level ARRAY, ROW, and MAP column (so the parquet file keeps the OLD name → the read falls
+  back to field-id matching, the exact bug analog) and value-asserts the nested contents survive
+  (a leaf-keyed matcher would return all-NULL). Passes. (Earlier "PARTIALLY VERIFIED" note was
+  right to distrust the scalar-lineage-column proof; this closes it on the general nested path.)
+  Original: datafusion-ducklake #148 (2026-06) — nested field-id matcher keyed off parquet leaf
+  columns → List/struct/map read back all-NULL.
+- ✅ **[NOW-2] inlined-insert-change-vocab** — VERIFIED CLEAN (2026-07), not applicable. Our
+  `InterveningChanges.applyEntry` already uses the correct DuckLake-1.0 spelling `inlined_insert:<id>`
+  / `inlined_delete:<id>` (not the old `inlined_data_insert` that caused pg_ducklake #216's data
+  loss). And it doesn't gate the read path anyway: `$snapshot_changes` returns the raw `changes_made`
+  text (no parse) and the change feed queries files/inlined rows by `begin_snapshot` (never parses
+  tokens); the parser is used only in write-conflict detection, which round-trips the inlined tokens.
+  (Unknown *future* tokens `else -> throw`, i.e. fail-closed — deliberate, left as is.)
 
 ### Cross-Dialect View Transpilation
 
@@ -393,9 +486,9 @@ DuckDB→Trino transpilation quality against real DuckLake views.
 | DuckDB feature/function | Category | Trino equivalent | Decision |
 |---|---|---|---|
 | `FROM catalog.last_committed_snapshot()` | Connection-local state | None | Not planned |
-| `FROM table_changes(...)` | Change feed | Connector table function/system table | Open (R6) |
-| `FROM table_insertions(...)` | Change feed | Connector table function/system table | Open (R6) |
-| `FROM table_deletions(...)` | Change feed | Connector table function/system table | Open (R6) |
+| `FROM table_changes(...)` | Change feed | `system.table_changes(...)` table function | **Shipped** |
+| `FROM table_insertions(...)` | Change feed | `system.table_insertions(...)` table function | **Shipped** |
+| `FROM table_deletions(...)` | Change feed | `system.table_deletions(...)` table function | **Shipped** |
 | `FROM ducklake_list_files(...)` | Metadata utility | `table$files` covers it; standalone table function later | Later |
 | `rowid` virtual column | Lineage | Hidden column / metadata table if needed | Open (Virtual Columns) |
 | `FROM catalog.options()/settings()` | Config metadata | Session/catalog properties + optional system table | Later |

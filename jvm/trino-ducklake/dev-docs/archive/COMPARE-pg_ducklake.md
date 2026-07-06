@@ -1,5 +1,14 @@
 # Comparison — `pg_ducklake` (Rely Cloud, thin glue over upstream) vs this repo (JVM)
 
+> **Freshness (JVM side, 2026-07):** since this snapshot our JVM implementation has SHIPPED the
+> **change feed** (`table_insertions`/`table_deletions`/`table_changes`) and the **full maintenance
+> suite** (`remove_orphan_files`, `expire_snapshots`, `cleanup_old_files`, `flush_inlined_data`,
+> `rewrite_data_files`/optimize). This supersedes the two "Our JVM: No" rows (Data change feed;
+> Maintenance) and the whole "Maintenance operations — scope notes for roadmap" section below, which
+> is now retrospective rather than future work. Change feed reads DuckLake's embedded row-lineage
+> column, so lineage-preserving UPDATEs pair into `update_preimage`/`update_postimage`; Trino's own
+> writes emit no lineage column, so a Trino-written UPDATE surfaces as `delete`+`insert`.
+
 Snapshot of the `pg_ducklake` project reviewed against our JVM implementation
 (`ducklake-catalog` + `trino-ducklake`).
 
@@ -68,11 +77,11 @@ distinct commit referencing the bug ID.
 
 | Feature | Upstream | Our JVM | Notes |
 |---|---|---|---|
-| **Data change feed** (`table_changes`, `table_insertions`, `table_deletions`) | Yes | No | Already in our "Not yet implemented" list. Reads `ducklake_snapshot_changes` + scans data/delete files per snapshot range. Non-trivial but well-scoped. |
+| **Data change feed** (`table_changes`, `table_insertions`, `table_deletions`) | Yes | **Yes** (shipped) | `system.*` table functions over data/delete files per snapshot range. Reads the embedded row-lineage column so lineage-preserving UPDATEs pair into update pre/post-image; Trino-written UPDATEs surface as `delete`+`insert`. Also reads DuckLake inlined data (inlined inserts/deletes + inline file-position deletes). |
 | **Virtual columns** (`rowid`, `snapshot_id`, `filename`, `file_row_number`, `file_index`) | Yes | No | These are reserved column expressions exposed in scan. Trino could expose them via synthetic column handles. Likely useful for our MERGE story too. |
 | **Sorted tables** (write path applies sort) | Yes | No (readable, sort ignored) | pg_ducklake exposes `ducklake_sorted` index AM + `set_sort()`. Our README acknowledges we don't sort on write. |
 | **`variant` with `->`/`->>` extraction** | Yes (pg_ducklake wraps it) | No (degrades to VARCHAR) | Real structural type. Requires Trino-side support to be useful; VARCHAR degradation is honest. |
-| **Maintenance: `flush_inlined_data`, `merge_adjacent_files`, `rewrite_data_files`, `expire_snapshots`, `cleanup_old_files`, `cleanup_orphaned_files`** | Yes | No | Already on our roadmap. See "Maintenance operations" section below for scoping notes. |
+| **Maintenance: `flush_inlined_data`, `merge_adjacent_files`, `rewrite_data_files`, `expire_snapshots`, `cleanup_old_files`, `cleanup_orphaned_files`** | Yes | **Yes** (shipped) | Shipped as `CALL system.*`: `flush_inlined_data`, `rewrite_data_files` (optimize + `merge_adjacent` variant), `expire_snapshots`, `cleanup_old_files`, `remove_orphan_files`, plus `ANALYZE`. |
 | **`set_commit_message()`** (author/message on snapshot) | Yes | No (session properties planned) | Trivial once we add session properties for `commit_author`, `commit_message`, `commit_extra_info`. |
 | **`freeze()` / export-to-`.ducklake` single-file** | Yes | No | Nice-to-have. |
 | **CHECKPOINT (umbrella maintenance)** | Yes | No | Downstream of the individual ops above. |

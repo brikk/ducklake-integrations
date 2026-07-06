@@ -4,3 +4,6 @@
 [submodule "duckdb-trino-parity-extension"]
 	path = duckdb-trino-parity-extension
 	url = https://github.com/brikk/duckdb-trino-parity-extension
+[submodule "jvm/ducklake-corpus-replay/ducklake"]
+	path = jvm/ducklake-corpus-replay/ducklake
+	url = https://github.com/duckdb/ducklake.git

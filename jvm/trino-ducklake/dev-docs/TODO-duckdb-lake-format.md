@@ -90,9 +90,9 @@ worth doing first.
   already cover scalar types, NULLs, wide-ints (HUGEINT/UHUGEINT), and the inlined
   scalar path on the DuckDB-write→Trino-read direction. Remaining gap: a *systematic*
   per-type × {arrow_stream, appender} × {CTAS, INSERT-into-preexisting} matrix.
-- **T1 — PARTIAL.** UPDATE (`TestDucklakeFileFormatPrecedence`) and DELETE
-  (`TestDucklakeCrossEngineCatalogMetadata`) have incidental coverage; **MERGE on
-  duckdb-format is uncovered**, and neither asserts both writer modes systematically.
+- **T1 — DONE (MERGE axis).** Row-level DELETE/UPDATE/**MERGE** over non-parquet data
+  (duckdb/vortex/lance) is shipped + tested (`AbstractDucklakeRowLevelFormatTest` + per-format
+  suites). Residual nicety: assert both writer modes (arrow_stream / appender) systematically.
 - **T2 — PARTIAL.** ADD COLUMN is covered (incl. the inlined→parquet flush boundary in
   the type audit); **DROP / RENAME COLUMN on duckdb-format are uncovered.**
 - **T3 — LARGELY UNCOVERED** (biggest gap): no duckdb-format-specific tests for
