@@ -124,19 +124,20 @@ class ChangeFeedPageSource(
 
     private fun transform(unit: ChangeFeedUnit, page: SourcePage): SourcePage? {
         val positionCount: Int = page.positionCount
-        val rowIdBlock: Block = page.getBlock(rowIdChannel)
+        // The trailing read column is $file_row_number: the raw FILE POSITION
+        // (delete-survivor rows keep their original positions).
+        val filePositionBlock: Block = page.getBlock(rowIdChannel)
 
         val keptIdx = IntArray(positionCount)
         val keptRowIds = LongArray(positionCount)
         var keptCount = 0
         for (i in 0 until positionCount) {
-            val positional: Long = BIGINT.getLong(rowIdBlock, i)
-            val filePosition: Long = positional - unit.rowIdStart
+            val filePosition: Long = BIGINT.getLong(filePositionBlock, i)
             if (unit.keepPositions != null && !unit.keepPositions.contains(filePosition)) {
                 continue
             }
             keptIdx[keptCount] = i
-            keptRowIds[keptCount] = rowIdFor(unit, filePosition, positional)
+            keptRowIds[keptCount] = rowIdFor(unit, filePosition, unit.rowIdStart + filePosition)
             keptCount++
         }
         if (keptCount == 0) {

@@ -790,7 +790,8 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** Opens one change-feed data file through the ordinary read pipeline, projecting the data
-     * columns followed by `$row_id`, reading as of [table]'s END-snapshot schema. */
+     * columns followed by `$file_row_number` (raw file positions — lineage/rowid resolution
+     * happens in ChangeFeedPageSource), reading as of [table]'s END-snapshot schema. */
     private fun openChangeFeedFile(
             session: ConnectorSession,
             resolvedPath: String,
@@ -821,7 +822,10 @@ class DucklakePageSourceProvider @Inject constructor(
                 null,
                 emptyMap())
         val syntheticHandle = DucklakeTableHandle(table.schemaName, table.tableName, table.tableId, table.endSnapshot)
-        val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.ROW_ID.columnHandle()
+        // $file_row_number, NOT $row_id: the feed needs the raw FILE POSITION to
+        // match keepPositions and index lineage arrays. ($row_id is lineage-first
+        // since F7 — its value is no longer positionally rebasable.)
+        val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.FILE_ROW_NUMBER.columnHandle()
         return try {
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
             createDataFilePageSource(session, split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
@@ -1058,7 +1062,9 @@ class DucklakePageSourceProvider @Inject constructor(
             for (i in columns.indices) {
                 val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
                 if (addRowIdStart != null) {
-                    positionalInjections.add(PositionalInjection(i, addRowIdStart))
+                    positionalInjections.add(PositionalInjection(
+                            i, addRowIdStart,
+                            resolveLineage = columns[i].virtualKind() == VirtualKind.ROW_ID))
                 }
                 else {
                     fileColumns.add(columns[i])
@@ -1160,10 +1166,19 @@ class DucklakePageSourceProvider @Inject constructor(
             var pageSource: ConnectorPageSource = ParquetPageSource(parquetReader)
             pageSource = transforms.build(pageSource)
 
-            // Inject positional virtuals before delete filtering so they reflect original file positions
+            // Inject positional virtuals before delete filtering so they reflect original file
+            // positions. The queryable $row_id resolves the file's embedded lineage column when
+            // present (UPDATE/compaction-preserved rowids) — one footer pass, only when requested.
             if (positionalInjections.isNotEmpty()) {
+                val lineage: LongArray? =
+                        if (positionalInjections.any { it.resolveLineage }) {
+                            readLineage(fileSystem, inputFile.location().toString(), split.fileFormat, split.footerSize)
+                        } else {
+                            null
+                        }
                 pageSource = PositionalVirtualInjectingPageSource(
-                        pageSource, fileColumns.size + positionalInjections.size, positionalInjections, split.rowIdStart)
+                        pageSource, fileColumns.size + positionalInjections.size, positionalInjections,
+                        split.rowIdStart, lineage)
             }
 
             pageSource = applyDeleteFile(fileSystem, split, pageSource)
@@ -1739,20 +1754,34 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** One positional column to inject: its output channel index and whether to add rowIdStart. */
-    private class PositionalInjection(val outputPosition: Int, val addRowIdStart: Boolean)
+    private class PositionalInjection(
+        val outputPosition: Int,
+        val addRowIdStart: Boolean,
+        /**
+         * True only for the queryable `$row_id` virtual (-104): when the file
+         * carries the embedded lineage column, the injected value is the row's
+         * PRESERVED rowid instead of `rowIdStart + position`. The MERGE channel
+         * (-100) must stay positional — DucklakeMergeSink resolves data files by
+         * contiguous `[rowIdStart, +count)` ranges (lineage translation for
+         * chained updates happens in the sink itself).
+         */
+        val resolveLineage: Boolean = false)
 
     /**
      * Wraps a ConnectorPageSource and injects one or more synthetic positional BIGINT columns
      * derived from the cumulative file position: the MERGE $row_id and the queryable $row_id
-     * (value = rowIdStart + position) and $file_row_number (value = position, 0-based). All
-     * share the same per-page running offset. Must be applied BEFORE delete-file filtering so
-     * the values match original file positions.
+     * (value = rowIdStart + position, or the file's embedded lineage value when present and
+     * [PositionalInjection.resolveLineage]) and $file_row_number (value = position, 0-based).
+     * All share the same per-page running offset. Must be applied BEFORE delete-file filtering
+     * so the values match original file positions.
      */
     private class PositionalVirtualInjectingPageSource(
         private val delegate: ConnectorPageSource,
         private val totalChannels: Int,
         injections: List<PositionalInjection>,
-        private val rowIdStart: Long) : ConnectorPageSource
+        private val rowIdStart: Long,
+        /** Embedded lineage values by file position (null = file carries none). */
+        private val lineage: LongArray? = null) : ConnectorPageSource
     {
         private val injections: List<PositionalInjection> = injections.toList()
         private var nextRowOffset: Long = 0
@@ -1775,7 +1804,16 @@ class DucklakePageSourceProvider @Inject constructor(
             val injectedBlocks: HashMap<Int, Block> = HashMap(injections.size * 2)
             for (injection in injections) {
                 val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
-                if (injection.addRowIdStart) {
+                if (injection.resolveLineage && lineage != null) {
+                    for (i in 0 until positionCount) {
+                        val filePosition = nextRowOffset + i
+                        val value =
+                                if (filePosition < lineage.size) lineage[filePosition.toInt()]
+                                else rowIdStart + filePosition
+                        BIGINT.writeLong(blockBuilder, value)
+                    }
+                }
+                else if (injection.addRowIdStart) {
                     for (i in 0 until positionCount) {
                         BIGINT.writeLong(blockBuilder, rowIdStart + nextRowOffset + i)
                     }

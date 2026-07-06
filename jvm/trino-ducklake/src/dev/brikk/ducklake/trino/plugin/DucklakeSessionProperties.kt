@@ -91,8 +91,10 @@ open class DucklakeSessionProperties @Inject constructor() {
                             "rowid in an embedded _ducklake_internal_row_id parquet column (field-id " +
                             "2147483540), so change feeds (Trino AND DuckDB) pair the rewrite into " +
                             "update_preimage/update_postimage instead of delete+insert, and rowids stay " +
-                            "stable across updates. Parquet data files only; off by default.",
-                    false,
+                            "stable across updates. Parquet data files only. ON by default — DuckDB " +
+                            "preserves lineage unconditionally, so this is the cross-engine-faithful " +
+                            "behavior; set false for the legacy fresh-rowid delete+insert shape.",
+                    true,
                     false))
 
     open fun getSessionProperties(): List<PropertyMetadata<*>> = sessionProperties

@@ -439,10 +439,23 @@ allocates `row_id_start` normally and keeps lineage out of column stats). Tests:
 `TestDucklakeChangeFeed.updatePairsIntoPreAndPostImageWithWriteRowLineage`,
 `.mergeMixesLineagePairedUpdatesWithPlainInserts`,
 `TestDucklakeChangeFeedCrossEngine.trinoLineageUpdatePreservesRowidsForDuckdb`.
-Follow-ups (small): compaction writer does not yet PRESERVE existing lineage
-values when rewriting carrying files; `$row_id` virtual is still positional on
-reads (lineage is consumed by the change feed only); default-on decision once
-production-soaked.
+All three follow-ups CLOSED same day (2026-07-06, second pass):
+(1) **Compaction preserves lineage** — `rewrite_data_files` reads the
+lineage-first `$row_id` alongside data columns (delete-aware: injected before
+delete filtering) and embeds every surviving row's ORIGINAL rowid in the merged
+output — recompaction of carrying files preserves the original ids, matching
+upstream compaction which always writes the column.
+(2) **`$row_id` virtual is lineage-first** — the positional injector resolves
+the file's embedded lineage for the queryable `-104` virtual (one footer pass,
+only when requested); the MERGE `-100` channel stays positional (the sink's
+file-range resolution needs it) and the sink translates positional→true id via
+the source file's lineage so CHAINED updates keep the original id forever. The
+change feed's internal readers switched to `$file_row_number` (raw positions)
+since `$row_id` is no longer positionally rebasable.
+(3) **Default ON** — DuckDB preserves lineage unconditionally, so on-by-default
+is the cross-engine-faithful behavior; `write_row_lineage = false` opts into
+the legacy fresh-rowid delete+insert shape (pinned by test). Full suite green
+under the new default.
 
 ## Puffin deletion-vector writes — ✅ DONE 2026-06-29
 

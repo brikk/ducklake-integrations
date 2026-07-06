@@ -147,6 +147,32 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
     }
 
     @Test
+    fun compactionPreservesRowids() {
+        // Merged files embed _ducklake_internal_row_id (each surviving row's ORIGINAL
+        // rowid) — the same column upstream compaction always writes. The queryable
+        // $row_id virtual resolves it, so rowids are stable across compaction.
+        val table = "test_schema.rewrite_rowids"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)")
+            computeActual("INSERT INTO $table VALUES (3, 'c')")
+            computeActual("INSERT INTO $table VALUES (4, 'd')")
+            computeActual("DELETE FROM $table WHERE id = 2")
+            val before: Map<Int, Long> = computeActual("SELECT id, \"\$row_id\" FROM $table").materializedRows
+                    .associate { it.getField(0) as Int to it.getField(1) as Long }
+
+            computeActual(call(table))
+
+            assertThat(fileCount(table)).isEqualTo(1L)
+            val after: Map<Int, Long> = computeActual("SELECT id, \"\$row_id\" FROM $table").materializedRows
+                    .associate { it.getField(0) as Int to it.getField(1) as Long }
+            assertThat(after).`as`("rowids survive compaction (incl. across a delete)").isEqualTo(before)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
     fun compactsSmallFilesPreservingRowsAndTimeTravel() {
         val table = "test_schema.rewrite_basic"
         try {

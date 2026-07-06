@@ -90,7 +90,12 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO $table VALUES (1, 'Hello'), (2, 'DuckLake')")
             val s2 = snapshot()
             computeActual("DELETE FROM $table WHERE id = 1")
-            computeActual("UPDATE $table SET val = concat(val, val, val) WHERE id = 2")
+            // Explicitly OPT OUT of lineage (default is on) to pin the legacy
+            // fresh-rowid shape: the UPDATE surfaces as separate delete + insert.
+            val noLineage = Session.builder(session)
+                    .setCatalogSessionProperty("ducklake", DucklakeSessionProperties.WRITE_ROW_LINEAGE, "false")
+                    .build()
+            computeActual(noLineage, "UPDATE $table SET val = concat(val, val, val) WHERE id = 2")
             val s4 = snapshot()
 
             val result = rows(
@@ -184,6 +189,44 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
 
             assertThat(rows("SELECT val FROM $table ORDER BY id").map { it.getField(0) as String })
                     .containsExactly("keep", "new", "added")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun rowidStableAcrossChainedUpdates() {
+        // Default-on lineage: consecutive UPDATEs of the same row keep its ORIGINAL
+        // rowid forever. The second update reads its old rowid from the MERGE channel
+        // (positional) and the sink translates it through the source file's embedded
+        // lineage — without that translation the chain would break at hop two.
+        val table = "test_schema.cf_chained_updates"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, val VARCHAR)")
+            computeActual("INSERT INTO $table VALUES (1, 'a'), (2, 'b')")
+            val original = rows("SELECT \"\$row_id\" FROM $table WHERE id = 2")[0].getField(0) as Long
+
+            computeActual("UPDATE $table SET val = 'b1' WHERE id = 2")
+            assertThat(rows("SELECT \"\$row_id\" FROM $table WHERE id = 2")[0].getField(0) as Long)
+                    .`as`("first update preserves the rowid (and \$row_id resolves embedded lineage)")
+                    .isEqualTo(original)
+
+            computeActual("UPDATE $table SET val = 'b2' WHERE id = 2")
+            val s = snapshot()
+            assertThat(rows("SELECT \"\$row_id\" FROM $table WHERE id = 2")[0].getField(0) as Long)
+                    .`as`("chained update still carries the ORIGINAL rowid")
+                    .isEqualTo(original)
+
+            // And the second hop pairs in the change feed on the original rowid.
+            val result = rows(
+                    "SELECT change_type, rowid, val FROM " +
+                            "TABLE(ducklake.system.table_changes('test_schema', 'cf_chained_updates', $s, $s)) " +
+                            "ORDER BY change_type")
+            assertThat(result.map { it.getField(0) as String })
+                    .containsExactly("update_postimage", "update_preimage")
+            assertThat(result[0].getField(1) as Long).isEqualTo(original)
+            assertThat(result[1].getField(1) as Long).isEqualTo(original)
         }
         finally {
             tryDropTable(table)

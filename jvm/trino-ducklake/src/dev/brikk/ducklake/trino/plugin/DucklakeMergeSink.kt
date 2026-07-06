@@ -130,7 +130,12 @@ open class DucklakeMergeSink(
                     val oldRowId = pendingUpdateRowId
                             ?: throw IllegalStateException("update-insert row without a preceding update-delete row")
                     updatePositions.add(position)
-                    lineage.add(oldRowId)
+                    // The MERGE channel is POSITIONAL (rowIdStart + file position). If the
+                    // source file itself carries embedded lineage (a prior lineage UPDATE or
+                    // compaction wrote it), the row's TRUE id is the lineage value at that
+                    // position — chaining updates must preserve the ORIGINAL id forever,
+                    // matching DuckDB.
+                    lineage.add(resolveTrueRowId(oldRowId))
                     pendingUpdateRowId = null
                 }
                 else -> Unit // plain DELETE rows: tombstones only, handled via processDeletes
@@ -142,6 +147,41 @@ open class DucklakeMergeSink(
         if (updatePositions.isNotEmpty()) {
             lineageSink.appendPage(withLineageChannel(dataOnlyPage(page, updatePositions), lineage))
         }
+    }
+
+    /** Per-source-file embedded lineage (null = none), loaded lazily for chained-update resolution. */
+    private val lineageBySourceFile = mutableMapOf<Long, LongArray?>()
+
+    /**
+     * Translates a POSITIONAL merge-channel rowid into the row's TRUE DuckLake id:
+     * when the source data file carries the embedded lineage column (written by a
+     * prior lineage UPDATE or compaction), the value at that file position wins —
+     * so chained updates keep the ORIGINAL id forever, matching DuckDB.
+     */
+    private fun resolveTrueRowId(positionalRowId: Long): Long {
+        val entry = rangeByRowIdStart.floorEntry(positionalRowId) ?: return positionalRowId
+        val range = entry.value
+        if (!range.containsRowId(positionalRowId)) {
+            return positionalRowId
+        }
+        val lineage: LongArray? = lineageBySourceFile.getOrPut(range.dataFileId) {
+            if (!range.dataFilePath.endsWith(".parquet", ignoreCase = true)) {
+                null // non-parquet sources never carry the embedded column
+            } else {
+                try {
+                    DucklakeDeleteFileReader.readInternalRowIds(
+                            fileSystem, range.dataFilePath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
+                }
+                catch (e: IOException) {
+                    throw UncheckedIOException("Failed to read row lineage from ${range.dataFilePath}", e)
+                }
+            }
+        }
+        if (lineage == null) {
+            return positionalRowId
+        }
+        val position = positionalRowId - range.rowIdStart
+        return if (position < lineage.size) lineage[position.toInt()] else positionalRowId
     }
 
     private fun dataOnlyPage(page: Page, positions: List<Int>): Page {

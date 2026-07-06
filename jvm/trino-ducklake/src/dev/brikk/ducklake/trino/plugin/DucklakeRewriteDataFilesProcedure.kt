@@ -297,11 +297,15 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
 
     /**
      * Streams one partition group's source rows through the real read path into one or more Parquet
-     * files, rolling over to a new file at [targetSize]. When [partial], a trailing
-     * `_ducklake_internal_snapshot_id` BIGINT column is written (each row tagged with its source
-     * file's begin_snapshot) and per-file begin/partial_max bounds are tracked. The internal column
-     * is appended LAST and carries no field_id, so catalog stats (built over the table columns only)
-     * are unaffected and the read path finds it by name.
+     * files, rolling over to a new file at [targetSize]. Every merged file embeds the row-lineage
+     * column `_ducklake_internal_row_id` (field-id 2147483540) holding each surviving row's ORIGINAL
+     * rowid — sourced from the lineage-first `$row_id` read column, so recompaction of files that
+     * already carry lineage preserves the original ids; upstream compaction always writes this
+     * column, and rowids now survive compaction across engines. When [partial], a
+     * `_ducklake_internal_snapshot_id` BIGINT column is also written (each row tagged with its
+     * source file's begin_snapshot; no field_id — the read path finds it by name) and per-file
+     * begin/partial_max bounds are tracked. Both internal columns are appended AFTER the data
+     * columns, so catalog stats (leaf targets built over the table columns only) are unaffected.
      */
     private inner class GroupWriter(
             private val fileSystem: TrinoFileSystem,
@@ -321,8 +325,16 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         fun write(session: ConnectorSession, splits: List<DucklakeSplit>): List<MergedOutput> {
             var success = false
             try {
+                // Request the queryable $row_id virtual (LAST) alongside the data columns:
+                // it is lineage-first (a source's own embedded lineage wins over
+                // rowIdStart+position — recompaction preserves ORIGINAL ids) and injected
+                // BEFORE delete filtering, so each surviving row carries its true DuckLake
+                // rowid. The merged output embeds these as _ducklake_internal_row_id, the
+                // same column upstream compaction always writes — rowids survive compaction
+                // across engines.
+                val readColumns = columnHandles + VirtualKind.ROW_ID.columnHandle()
                 for (split in splits) {
-                    pageSource(session, tableHandle, split, columnHandles).use { source ->
+                    pageSource(session, tableHandle, split, readColumns).use { source ->
                         while (!source.isFinished) {
                             val sourcePage = source.nextSourcePage ?: continue
                             addPage(sourcePage.page, split.beginSnapshot)
@@ -348,14 +360,17 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             if (writer == null) {
                 openNew()
             }
+            // Incoming page: data channels…, rowid (last, from the $row_id read column).
+            // Output column order: data…, [_ducklake_internal_snapshot_id], _ducklake_internal_row_id.
+            val rowIdBlock = page.getBlock(page.channelCount - 1)
+            val dataBlocks = Array(page.channelCount - 1) { page.getBlock(it) }
+            var outPage = Page(page.positionCount, *dataBlocks)
             if (partial) {
-                writer!!.write(page.appendColumn(RunLengthEncodedBlock.create(BIGINT, sourceBegin, page.positionCount)))
+                outPage = outPage.appendColumn(RunLengthEncodedBlock.create(BIGINT, sourceBegin, page.positionCount))
                 minBegin = minOf(minBegin, sourceBegin)
                 maxBegin = maxOf(maxBegin, sourceBegin)
             }
-            else {
-                writer!!.write(page)
-            }
+            writer!!.write(outPage.appendColumn(rowIdBlock))
             if (writer!!.getApproximateWrittenBytes() >= targetSize) {
                 finishCurrent()
             }
@@ -363,11 +378,16 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
 
         private fun openNew() {
             val names = columnHandles.map { it.columnName } +
-                    if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()
-            val types = columnTypes + if (partial) listOf<Type>(BIGINT) else emptyList()
+                    (if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()) +
+                    listOf(DucklakePageSink.LINEAGE_COLUMN_NAME)
+            val types = columnTypes +
+                    (if (partial) listOf<Type>(BIGINT) else emptyList()) +
+                    listOf<Type>(BIGINT)
             val schemaConverter = ParquetSchemaConverter(types, names, false, false)
             val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                    columnHandles, allCatalogColumns, schemaConverter.messageType)
+                    columnHandles, allCatalogColumns, schemaConverter.messageType,
+                    mapOf(DucklakePageSink.LINEAGE_COLUMN_NAME to
+                            DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong()))
             val fileName = "ducklake-${UUID.randomUUID()}.parquet"
             val outputStream = fileSystem.newOutputFile(Location.of(tableDataPath).appendPath(fileName)).create()
             val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,
