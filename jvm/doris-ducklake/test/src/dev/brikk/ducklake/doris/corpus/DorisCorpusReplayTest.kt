@@ -58,6 +58,7 @@ internal class DorisCorpusReplayTest {
             "add_files/add_files_hive_partition_cast.test" to GAP_HIVE_PARTITION_FILL,
             "add_files/add_files_rename.test" to GAP_NAME_MAPPING,
             "compaction/compaction_multiple_rename_column.test" to GAP_NAME_MAPPING,
+            "delete/delete_legacy_missing_mapping_after_rename_add_files.test" to GAP_NAME_MAPPING,
             // ---- runner-side (not ours) ----
             "add_files/add_files_type_check_timestamp.test" to
                 "ORACLE golden gap: GoldenComparator renders micros only, golden expects timestamp_ns nanos " +

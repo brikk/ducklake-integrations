@@ -95,6 +95,17 @@ internal class DorisCorpusDialectTest {
     }
 
     @Test
+    fun rejectsFilterWhereAggregateClause() {
+        // Doris's parser rejects SQL-standard `agg(...) FILTER (WHERE …)`.
+        assertThat(
+            DorisCorpusDialect.accepts("SELECT COUNT(*) FILTER(WHERE id%2=0) FROM lake.t"),
+        ).isFalse()
+        assertThat(
+            DorisCorpusDialect.accepts("SELECT sum(x) FILTER (WHERE y > 0) FROM lake.t"),
+        ).isFalse()
+    }
+
+    @Test
     fun rejectsInfinityTemporalLiterals() {
         // Doris folds `ts = 'infinity'` to constant-false and prunes the scan
         // to 0 rows, bypassing the connector — a silent wrong answer, so deny.

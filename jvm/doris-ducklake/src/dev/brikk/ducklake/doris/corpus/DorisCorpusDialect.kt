@@ -127,6 +127,9 @@ object DorisCorpusDialect {
         // to 0 rows — WORSE than an error because it looks like a valid answer
         // and bypasses the connector entirely. Deny so it's an engine-skip.
         Regex("['\"]-?INFINITY['\"]"),
+        // SQL-standard `agg(...) FILTER (WHERE …)` — Doris's parser rejects it
+        // (`mismatched input '('`). A dialect gap, not a read-path signal.
+        Regex("\\bFILTER\\s*\\(\\s*WHERE\\b"),
     )
 
     /**

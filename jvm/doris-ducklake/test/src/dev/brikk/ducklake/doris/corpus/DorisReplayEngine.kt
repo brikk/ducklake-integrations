@@ -166,6 +166,14 @@ internal class DorisReplayEngine(
     private fun classify(e: SQLException): Exception {
         val message = e.message ?: return e
         return when {
+            // KNOWN BE GAP (friction 2026-05-19; REPORT-*delete*-nullability):
+            // DuckLake position-delete parquet uses OPTIONAL columns; the BE
+            // iceberg reader's fast path requires REQUIRED and aborts. Every
+            // merge-on-read delete file trips it. Classify as a documented
+            // engine-skip so it surfaces uniformly (not a per-file skip-list
+            // entry) until the BE reader (or DuckLake's writer) is fixed.
+            message.contains("Not nullable column has null values") ->
+                ReplayEngineSkip("KNOWN BE GAP: position-delete parquet OPTIONAL vs REQUIRED — " + firstLine(message))
             // Our connector doesn't surface DuckLake VIEWs (nor DuckDB-dialect
             // views); their names don't resolve FE-side by design.
             message.contains("Unknown table") ||
