@@ -84,7 +84,19 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
 | partitioning | 422 / 0 | partition-bearing + bucket-prune hold across 17 files |
 | schema_evolution | 11 / 0 | |
 | stats | 416 / 0 | found+fixed time-travel-over-compaction over-read (see below) |
-| comments | (in stats+comments run) 0 fail | |
+| comments | 0 fail | |
+| alter | 545 / 0 | read-after-schema-evolution across 34 files |
+| view | (with general) 0 fail | DuckLake views correctly skip (not surfaced yet) |
+| general | 0 fail | |
+| table_changes | (with metadata) 0 fail | |
+| metadata | 0 fail | |
+
+**Read-relevant corpus surface swept — no remaining read gaps.** The
+remaining unswept dirs are write/maintenance (compaction, rewrite_data_files,
+add_files, remove_orphans, migration, checkpoint, sorted_table,
+data_inlining, deletion_inlining) — those exercise DuckDB-side operations the
+oracle performs; our only involvement is the SELECT after, which the swept
+dirs already cover. Full-corpus run remains a CI/later concern.
 
 **REAL BUG found by corpus (stats/count_star_optimization_time_travel):** time
 travel AS OF a snapshot OLDER than a compaction that merged newer rows
