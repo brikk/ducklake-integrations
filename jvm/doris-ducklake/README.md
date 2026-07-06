@@ -174,7 +174,7 @@ metadata, and comments dirs.
 | Time travel over a compaction boundary | Guarded | A read AS OF a snapshot older than a `merge_adjacent_files` compaction needs a per-row hidden-column snapshot filter the BE can't apply — fails loudly instead of over-returning. Latest-snapshot reads unaffected. |
 | Views | No | DuckLake views are not surfaced yet (they skip cleanly) |
 | Function / expression pushdown | No | **Out of scope** — the BE evaluates predicates natively; there's no in-JVM engine to push to |
-| DuckDB-native `.db` / Vortex / Lance data files | No | **Out of scope** — the BE has no reader for them; Parquet-only |
+| DuckDB-native `.db` data files | No | **Out of scope** — the BE has no DuckDB reader; Parquet-only |
 
 ## Write Operations
 
@@ -292,8 +292,10 @@ INSERT OVERWRITE, sorted writes, ALTER, maintenance procedures — see
 
 **Out of scope by design (execution-model mismatch, not backlog):**
 - Function / expression pushdown — the Doris BE evaluates predicates natively.
-- DuckDB-native `.db`, Vortex, and Lance data files — the BE has no reader;
-  Doris is Parquet-only. (Reconsider only if a BE JNI-scanner seam appears.)
+- DuckDB-native `.db` data files — the BE has no DuckDB reader; Doris is
+  Parquet-only. (Additional external file formats — e.g. the experimental
+  Vortex/Lance paths the trino plugin carries — are a possible later decision,
+  not a current goal; they'd need a BE reader or JNI-scanner seam.)
 
 The plan and per-phase working docs live in [`dev-docs/`](dev-docs/) — start
 with [`dev-docs/PLAN.md`](dev-docs/PLAN.md) (phases: read-side Parquet fully →
