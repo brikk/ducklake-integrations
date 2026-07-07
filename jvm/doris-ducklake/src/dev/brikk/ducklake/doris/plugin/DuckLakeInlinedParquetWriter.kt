@@ -31,9 +31,14 @@ import org.apache.parquet.schema.Types
  * Synthesizes a temporary Parquet file from DuckLake **inlined** rows (rows the
  * catalog keeps in `ducklake_inlined_data_*` tables, not in data files) so the
  * Doris BE — which only reads files — can scan them like any other data file.
- * See `dev-docs/DESIGN-corpus-replay-adapter.md`, the friction log entry
- * "No SPI path for a connector to hand FE-computed rows to the BE", and
- * `TODO-read.md`.
+ *
+ * **COMPOSE/DEV ONLY — NOT production-viable.** The BE opens this file by path,
+ * so it only works when the FE and BE share a filesystem at the same path (a
+ * compose bind mount). In a distributed FE/BE cluster the BE can't see a file
+ * the FE wrote locally. The real fix is a shared-storage or SPI payload channel
+ * — see the friction log entry "No way to hand a small FE-built payload to the
+ * BE without shared storage" and `TODO-read.md` (PRODUCTION SOLUTION REQUIRED).
+ * The caller (`DuckLakeScanPlanProvider`) gates this to local-fs warehouses.
  *
  * The file carries `field_id` in its Parquet metadata (`== column_id`, the
  * DuckLake invariant) via the low-level `Types...id(...)` builder, so the BE's

@@ -99,24 +99,35 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   the iceberg "generated/default column" BE seam (check whether the BE backfills
   a not-in-file column from a default, or if it always NULL-fills). May be
   partly BE-gated; investigate the iceberg default-column path first.
-- [x] **Serve inlined data rows — Stage 1 DONE (2026-07-07).** The FE
-  synthesizes a temp Parquet from `readInlinedData` (`DuckLakeInlinedParquetWriter`,
-  low-level parquet `Types...id()` carrying `field_id == column_id`, written
-  via `LocalOutputFile` to sidestep Hadoop UGI on JDK 25) and emits it as a
-  normal FILE_SCAN range appended to the file ranges. The catalog already
-  snapshot-filters the rows; the temp file sits under the table data dir so the
-  BE reads it at the same path. Corpus `data_inlining` 491/0. Value conversion
-  mirrors trino's `DucklakeInlinedValueConverter` (blob `\xNN`, non-finite
-  floats, decimals). **Gotchas fixed:** (a) filtered reads dropped inlined rows
-  when `applyFilter` set `prunedFileIds` — inlined ranges are now ALWAYS added
-  (file-prune targets catalog files, not inlined synthesis; BE re-applies the
-  filter); (b) writer round-trip unit test assume-skips on the JDK-25
-  parquet-format shaded-thrift ABI break (FE runtime is JDK 17; validated
-  live).
-  - **Stage 1 scope:** scalar columns + local-fs warehouse only. Excluded
-    (fail loud → engine-skip): nested (list/struct/map), degraded-to-string
-    types (json/variant/interval/time/uuid/uint*/int128/geometry), and S3
-    warehouses.
+ - [~] **Serve inlined data rows — Stage 1 (2026-07-07): COMPOSE/DEV ONLY, NOT
+   PRODUCTION-VIABLE.** The FE synthesizes a temp Parquet from `readInlinedData`
+   (`DuckLakeInlinedParquetWriter`, low-level parquet `Types...id()` carrying
+   `field_id == column_id`) and emits it as a normal FILE_SCAN range. **This
+   only works because compose bind-mounts the same path into FE and BE.** In a
+   real cluster FE and BE are separate machines — a temp file the FE writes to
+   `java.io.tmpdir` (or any local disk) does not exist on the BE, so the scan
+   can't open it. Gated to local-fs warehouses; keep OFF in real deployments.
+   Corpus `data_inlining` 491/0 (compose). Value conversion mirrors trino's
+   `DucklakeInlinedValueConverter` (blob `\xNN`, non-finite floats, decimals).
+   Gotchas fixed: (a) filtered reads dropped inlined rows when `applyFilter`
+   set `prunedFileIds` — inlined ranges are now ALWAYS added; (b) writer
+   round-trip unit test assume-skips the JDK-25 parquet-format ABI break;
+   (c) temp file goes to `java.io.tmpdir` (NOT under the warehouse) so it can't
+   be miscounted by DuckLake's own `GLOB('<data_path>/**')` queries or mistaken
+   for a real data file by maintenance.
+   - [ ] **PRODUCTION SOLUTION REQUIRED (blocking for real use).** The
+     shared-filesystem assumption is false in a distributed FE/BE cluster.
+     Options (see friction log 2026-07-07 "No way to hand a small FE-built
+     payload to the BE without shared storage"): (1) FE writes the temp payload
+     to the table's OBJECT STORE (the S3/HDFS warehouse the BE already reads) +
+     GC; (2) an SPI small-payload channel that streams literal rows / a parquet
+     blob to the BE over the fragment RPC (no shared storage — the clean fix,
+     needs upstream); (3) a BE-side read-inlined-from-catalog hook. Until one
+     exists, inlined reads must stay gated to shared-storage (compose) setups.
+   - **Stage 1 scope:** scalar columns + local-fs warehouse only. Excluded
+     (fail loud → engine-skip): nested (list/struct/map), degraded-to-string
+     types (json/variant/interval/time/uuid/uint*/int128/geometry), and S3
+     warehouses.
   - [x] **timestamptz read (2026-07-07).** Now readable, inlined AND
     file-based, mapped to naive DATETIMEV2(6). Two fixes: (a) FE type name must
     be `TIMESTAMPTZ` not `TIMESTAMPTZV2` (else Nereids UNSUPPORTED); (b) the

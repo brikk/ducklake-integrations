@@ -17,6 +17,55 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-07-07 · No way to hand a small FE-built payload to the BE without shared storage (inlined-data reads)
+
+**Symptom.** DuckLake keeps small tables' rows inline in the metadata catalog
+(`ducklake_inlined_data_*`), not in data files. To let the BE — which reads
+files only — see them, the FE synthesizes a temp Parquet from the catalog rows
+and emits a normal `FILE_SCAN` range pointing at it. **This only works when
+the FE and BE share a filesystem at the same path.** In compose they do (a
+bind mount); in a real cluster the FE and BE are separate machines, so a
+temp file the FE writes to its local disk (or `java.io.tmpdir`) does not
+exist on the BE — the scan fails to open the file. The current
+implementation is therefore a **dev/compose-only crutch**, gated to
+local-filesystem warehouses, and is NOT production-viable.
+
+**Root cause.** The `fe-connector` SPI has no channel for a connector to ship
+a small FE-computed payload (a few KB of rows) to the BE for a scan. Every
+read path assumes the bytes already live in storage the BE can reach (S3,
+HDFS, or a genuinely shared FS). Confirmed against the P6 SPI: no in-memory /
+values scan-range type, `META_SCAN_NODE`/`fetchSchemaTableData` is a closed
+enum with lossy `TCell` type coverage, `DATA_GEN_SCAN_NODE` is NUMBERS-only,
+and the iceberg/paimon JNI sys-table path is a hardcoded `table_format_type`
+dispatch (see the 2026-07-06 "No SPI path for a connector to hand FE-computed
+rows to the BE" entry — same root gap, this is the concrete write-then-read
+consequence).
+
+**Workaround (compose only).** Write the temp Parquet under
+`java.io.tmpdir`, which the compose `corpusReplayTest` task pins into the
+shared FE↔BE bind mount. Real deployments have no such shared path, so
+inlined reads must remain gated off there.
+
+**Fix (pickable upstream changes, ranked).**
+1. **Have the FE write the temp payload to the table's own object store**
+   (the warehouse the BE already reads — S3/HDFS), not the FE's local disk.
+   Needs the connector to reach the warehouse filesystem from the FE (creds +
+   an FE-side FS write), plus a lifecycle/GC story. Production-viable but
+   heavy, and still a write-per-query.
+2. **A small-payload SPI channel:** let a `ConnectorScanRange` carry literal
+   rows (or a serialized parquet blob) that the coordinator streams to the BE
+   over the existing fragment RPC — no shared storage. This is the clean
+   answer for the KB-scale inlined case; needs an in-memory/values scan-range
+   type + full `TCell`/nested type coverage on the BE side.
+3. **A BE-side "read inlined from catalog" hook** (BE queries the metadata DB
+   directly for the inlined table). Couples the BE to the catalog; least
+   attractive.
+
+Until one lands, inlined-data reads work only where FE and BE share storage;
+tracked in `TODO-read.md`.
+
+---
+
 ## 2026-07-07 · BE parquet reader can't read timestamptz into a TimeStampTz slot
 
 **Symptom.** A DuckLake `timestamptz` column mapped to Doris `TIMESTAMPTZ`

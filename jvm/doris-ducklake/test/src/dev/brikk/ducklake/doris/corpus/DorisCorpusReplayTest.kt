@@ -61,14 +61,23 @@ internal class DorisCorpusReplayTest {
                 "inlined DELETEs (Stage 2): UPDATE produces inlined file-deletions the connector can't apply",
             "data_inlining/data_inlining_transaction_local_delete.test" to
                 "inlined transaction-local deletes (Stage 2 inlined-delete territory)",
+            // These assert physical file counts over the warehouse via recursive
+            // GLOB('<data_path>/**'). Our inlined-data read synthesizes a temp
+            // Parquet on the SHARED warehouse storage (the compose crutch — the
+            // only path the BE can reach), so DuckLake's own file-count query
+            // sees it and returns N+1. This is an inherent flaw of the temp-file
+            // approach, not harness variance — it goes away once inlined rows
+            // reach the BE WITHOUT writing to the warehouse (object-store-with-GC
+            // or an SPI payload channel; see friction log 2026-07-07 + TODO-read
+            // "PRODUCTION SOLUTION REQUIRED"). The lake reads themselves mirror
+            // clean; only these self-file-inspection assertions diverge.
             "data_inlining/basic_data_inlining.test" to
-                "ORACLE-side: SELECT COUNT(*) FROM GLOB(...) physical-file-count assertions depend on exact " +
-                "inlining/flush/checkpoint behavior that differs from the golden text in this harness " +
-                "(oracle vs golden, not a Doris read gap) — the lake reads themselves mirror clean",
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file — inherent to the " +
+                "temp-file-on-shared-storage crutch; fixed by the production channel (friction 2026-07-07)",
             "data_inlining/data_inlining_option.test" to
-                "ORACLE-side: GLOB(...) physical-file-count assertion vs golden (harness inlining variance)",
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file (see basic_data_inlining)",
             "data_inlining/data_inlining_delete.test" to
-                "ORACLE-side: GLOB(...) physical-file-count assertion vs golden (harness inlining variance)",
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file (see basic_data_inlining)",
             // ---- issues/ regressions: map to already-known gaps or non-mirrorable harness tests ----
             "issues/issue_865_update_wrong_result.test" to
                 "inlined file-deletes (DATA_INLINING_ROW_LIMIT 10): UPDATE mixing a committed delete file " +

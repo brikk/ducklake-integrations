@@ -154,7 +154,7 @@ internal class DuckLakeScanPlanProvider(
         // prune can't (and must not) exclude them — the BE re-applies the
         // pushed filter to the inlined range's rows. (Dropping them under a
         // prune was a real bug: `WHERE ...` returned empty for inlined tables.)
-        ranges.addAll(planInlinedDataRanges(dlHandle, tableDataPath))
+        ranges.addAll(planInlinedDataRanges(dlHandle))
         return ranges
     }
 
@@ -178,21 +178,25 @@ internal class DuckLakeScanPlanProvider(
 
     /**
      * Materializes DuckLake inlined DATA rows into a temp Parquet the BE scans
-     * as a normal file range (Stage 1). The catalog snapshot-filters the rows;
+     * as a normal file range. The catalog snapshot-filters the rows;
      * [DuckLakeInlinedParquetWriter] writes them with `field_id == column_id`
      * so the schema dictionary + BE field-id matching resolve them exactly like
      * a real file. One range per live `(schemaVersion)` inlined table.
      *
+     * **COMPOSE/DEV ONLY** — the BE opens the temp file by path, so this only
+     * works when FE and BE share a filesystem (a bind mount). It is NOT
+     * production-viable on a distributed cluster; the local-fs-warehouse guard
+     * keeps it off elsewhere. The production channel (object-store write or an
+     * SPI payload seam) is the blocking follow-up in `TODO-read.md` / the
+     * friction log.
+     *
      * Stage-1 guards (fail loud, never silently wrong):
      *  - **scalar columns only** — a nested (list/struct/map) inlined column
      *    needs the DuckDB-text recursive parser (Stage 2);
-     *  - **local-filesystem warehouse only** — the temp file is written next to
-     *    the table's data files so the BE reaches it at the same path; writing
-     *    to an S3 warehouse from the FE (and its lifecycle) is Stage 2.
+     *  - **local-filesystem warehouse only** (see above).
      */
     private fun planInlinedDataRanges(
         handle: DuckLakeTableHandle,
-        tableDataPath: String,
     ): List<ConnectorScanRange> {
         val infos = catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId)
             .filter { it.hasLiveRows }
@@ -200,7 +204,7 @@ internal class DuckLakeScanPlanProvider(
             return emptyList()
         }
         val columns = topLevelScalarColumnsOrThrow(handle)
-        val localDir = localWarehouseDirOrThrow(tableDataPath)
+        val scratchDir = java.nio.file.Files.createDirectories(inlinedScratchDir())
         val ranges = ArrayList<ConnectorScanRange>(infos.size)
         for (info in infos) {
             val rows = catalog.readInlinedData(handle.tableId, info.schemaVersion, handle.snapshotId, columns)
@@ -208,7 +212,7 @@ internal class DuckLakeScanPlanProvider(
                 continue
             }
             val fileName = "ducklake-inlined-${handle.tableId}-${info.schemaVersion}-${handle.snapshotId}.parquet"
-            val target = localDir.resolve(fileName)
+            val target = scratchDir.resolve(fileName)
             DuckLakeInlinedParquetWriter.write(target, columns, rows)
             val size = java.nio.file.Files.size(target)
             ranges.add(
@@ -275,24 +279,50 @@ internal class DuckLakeScanPlanProvider(
     }
 
     /**
-     * The table's data dir as a local filesystem path, or throw for a non-local
-     * (e.g. `s3://`) warehouse. Stage-1 writes the temp Parquet here so the BE
-     * resolves it at the same absolute path.
+     * Scratch dir for the synthesized inlined-data Parquet. It MUST be reachable
+     * by the BE at the same absolute path — and the ONLY path shared between FE
+     * and BE (even in compose) is the warehouse storage itself. The FE's own
+     * `java.io.tmpdir` is process/container-local and invisible to the BE, so it
+     * cannot be used. We therefore place the file in a `.doris-inlined-scratch`
+     * dot-dir at the local warehouse ROOT: a sibling of the per-table
+     * `<table>_files/` dirs that no table-scoped data-path GLOB reaches
+     * and that maintenance ignores (leading dot), yet lives on the shared
+     * warehouse mount so the BE can open it.
+     *
+     * This is exactly why the whole approach is COMPOSE/DEV ONLY: it leans on
+     * FE and BE sharing warehouse storage as a local filesystem. A real
+     * distributed cluster needs an object-store write or an SPI payload channel
+     * (friction log 2026-07-07). Overridable via the `scratch.path` property.
+     * Throws for a non-local-filesystem warehouse (S3 write is a later item).
      */
-    private fun localWarehouseDirOrThrow(tableDataPath: String): java.nio.file.Path {
-        val uri = try {
-            java.net.URI(tableDataPath)
+    private fun inlinedScratchDir(): java.nio.file.Path {
+        catalogProperties[PROP_SCRATCH_PATH]?.takeIf { it.isNotBlank() }?.let {
+            return java.nio.file.Paths.get(it)
+        }
+        return localWarehouseRootOrThrow().resolve(INLINED_SCRATCH_DIRNAME)
+    }
+
+    /** Warehouse root as a local fs path, or throw for a non-local (e.g. `s3://`) warehouse. */
+    private fun localWarehouseRootOrThrow(): java.nio.file.Path {
+        val root = catalog.getDataPath()
+            ?: catalogProperties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE]
+            ?: throw DorisConnectorException(
+                "DuckLake table has inlined data but no warehouse data path is configured; " +
+                    "cannot place the synthesized inlined-data file.",
+            )
+        val scheme = try {
+            java.net.URI(root).scheme
         } catch (_: Exception) {
             null
         }
-        val scheme = uri?.scheme
-        val localPath = when {
-            scheme == null -> tableDataPath // bare path
-            scheme == "file" -> uri.path
+        val localPath = when (scheme) {
+            null -> root
+            "file" -> java.net.URI(root).path
             else -> throw DorisConnectorException(
-                "DuckLake table has inlined data but its warehouse is '$scheme://…'; the Doris connector " +
-                    "can only materialize inlined rows to a local-filesystem warehouse yet. Flush inlined " +
-                    "data (CALL <lake>.flush_inlined_data()) or disable inlining and rewrite.",
+                "DuckLake table has inlined data but its warehouse is '$scheme://…'; reading inlined rows " +
+                    "is not supported for non-local-filesystem warehouses yet (needs an object-store or SPI " +
+                    "payload channel — see friction log). Flush inlined data " +
+                    "(CALL <lake>.flush_inlined_data()) or disable inlining and rewrite.",
             )
         }
         return java.nio.file.Paths.get(localPath)
@@ -658,6 +688,17 @@ internal class DuckLakeScanPlanProvider(
         // to populateScanLevelParams (the two SPI methods share no instance
         // state), mirroring iceberg's "iceberg.schema_evolution" prop.
         const val PROP_SCHEMA_DICTIONARY: String = "ducklake.schema_dictionary"
+
+        // Optional override for where synthesized inlined-data Parquet is written
+        // (must be BE-reachable at the same path). Default: a dot-dir at the
+        // warehouse root — see inlinedScratchDir.
+        const val PROP_SCRATCH_PATH: String = "scratch.path"
+
+        // Dot-dir at the warehouse root for synthesized inlined-data files. On
+        // the shared warehouse mount (so the BE reaches it) but a sibling of the
+        // per-table dirs, so no table-scoped GLOB counts it and maintenance
+        // (leading dot) ignores it.
+        private const val INLINED_SCRATCH_DIRNAME: String = ".doris-inlined-scratch"
 
         // PluginDrivenScanNode reads this key out of getScanNodeProperties() to
         // decide which BE reader to dispatch to (PluginDrivenScanNode.java
