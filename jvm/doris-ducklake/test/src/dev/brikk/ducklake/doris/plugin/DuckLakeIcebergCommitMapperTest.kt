@@ -29,6 +29,20 @@ internal class DuckLakeIcebergCommitMapperTest {
         return buffer
     }
 
+    private fun leFloat(value: Float): ByteBuffer {
+        val buffer = ByteBuffer.allocate(Float.SIZE_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putFloat(value)
+        buffer.flip()
+        return buffer
+    }
+
+    private fun leDouble(value: Double): ByteBuffer {
+        val buffer = ByteBuffer.allocate(Double.SIZE_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putDouble(value)
+        buffer.flip()
+        return buffer
+    }
+
     private fun utf8(value: String): ByteBuffer =
         ByteBuffer.wrap(value.toByteArray(StandardCharsets.UTF_8))
 
@@ -78,12 +92,12 @@ internal class DuckLakeIcebergCommitMapperTest {
     }
 
     @Test
-    fun decodesLongBoundsAndNullsUnsupportedTypes() {
+    fun decodesLongBounds() {
         val stats = TIcebergColumnStats().apply {
-            valueCounts = mapOf(3 to 5L, 4 to 5L)
-            nullValueCounts = mapOf(3 to 0L, 4 to 0L)
-            lowerBounds = mapOf(3 to leLong(1000), 4 to leLong(7))
-            upperBounds = mapOf(3 to leLong(9000), 4 to leLong(99))
+            valueCounts = mapOf(3 to 5L)
+            nullValueCounts = mapOf(3 to 0L)
+            lowerBounds = mapOf(3 to leLong(1000))
+            upperBounds = mapOf(3 to leLong(9000))
         }
         val data = TIcebergCommitData().apply {
             filePath = "t/f.parquet"
@@ -91,18 +105,69 @@ internal class DuckLakeIcebergCommitMapperTest {
             columnStats = stats
         }
 
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(data, mapOf(3L to "int64"))
+
+        // int64 → little-endian 8-byte decode.
+        assertThat(fragment.columnStats.single().minValue).isEqualTo("1000")
+        assertThat(fragment.columnStats.single().maxValue).isEqualTo("9000")
+    }
+
+    @Test
+    fun decodesFloatDoubleAndDateBounds() {
+        val stats = TIcebergColumnStats().apply {
+            valueCounts = mapOf(1 to 4L, 2 to 4L, 3 to 4L)
+            nullValueCounts = mapOf(1 to 0L, 2 to 0L, 3 to 0L)
+            // float32 (4-byte LE IEEE-754), float64 (8-byte LE), date (4-byte LE int days).
+            lowerBounds = mapOf(1 to leFloat(1.5f), 2 to leDouble(-2.25), 3 to leInt(0))
+            upperBounds = mapOf(1 to leFloat(3.5f), 2 to leDouble(10.75), 3 to leInt(19_737)) // 2024-01-15
+        }
+        val data = TIcebergCommitData().apply {
+            filePath = "t/f.parquet"
+            rowCount = 4
+            columnStats = stats
+        }
+
         val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
-            data, mapOf(3L to "int64", 4L to "float64"),
+            data, mapOf(1L to "float32", 2L to "float64", 3L to "date"),
         )
         val byId = fragment.columnStats.associateBy { it.columnId }
 
-        // int64 → little-endian 8-byte decode.
-        assertThat(byId.getValue(3L).minValue).isEqualTo("1000")
-        assertThat(byId.getValue(3L).maxValue).isEqualTo("9000")
-        // float64 is not a type we decode → bounds null (safe: no pruning), counts still mapped.
-        assertThat(byId.getValue(4L).minValue).isNull()
-        assertThat(byId.getValue(4L).maxValue).isNull()
-        assertThat(byId.getValue(4L).valueCount).isEqualTo(5)
+        // Bounds render as DucklakeStatTypes-parseable strings (BigDecimal for floats, ISO for date).
+        assertThat(byId.getValue(1L).minValue).isEqualTo("1.5")
+        assertThat(byId.getValue(1L).maxValue).isEqualTo("3.5")
+        assertThat(byId.getValue(2L).minValue).isEqualTo("-2.25")
+        assertThat(byId.getValue(2L).maxValue).isEqualTo("10.75")
+        assertThat(byId.getValue(3L).minValue).isEqualTo("1970-01-01")
+        assertThat(byId.getValue(3L).maxValue).isEqualTo("2024-01-15")
+    }
+
+    @Test
+    fun nullsNonFiniteFloatBoundsAndUndecodableTypes() {
+        val stats = TIcebergColumnStats().apply {
+            valueCounts = mapOf(1 to 3L, 2 to 3L)
+            nullValueCounts = mapOf(1 to 0L, 2 to 0L)
+            // A NaN double bound has no ordering; decimal we don't decode at all.
+            lowerBounds = mapOf(1 to leDouble(Double.NaN), 2 to leLong(1))
+            upperBounds = mapOf(1 to leDouble(Double.POSITIVE_INFINITY), 2 to leLong(9))
+        }
+        val data = TIcebergCommitData().apply {
+            filePath = "t/f.parquet"
+            rowCount = 3
+            columnStats = stats
+        }
+
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
+            data, mapOf(1L to "float64", 2L to "decimal(10,2)"),
+        )
+        val byId = fragment.columnStats.associateBy { it.columnId }
+
+        // Non-finite float → null (safe: no pruning); counts still mapped.
+        assertThat(byId.getValue(1L).minValue).isNull()
+        assertThat(byId.getValue(1L).maxValue).isNull()
+        assertThat(byId.getValue(1L).valueCount).isEqualTo(3)
+        // decimal is deliberately not decoded → null bounds.
+        assertThat(byId.getValue(2L).minValue).isNull()
+        assertThat(byId.getValue(2L).maxValue).isNull()
     }
 
     @Test
