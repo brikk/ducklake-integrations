@@ -68,6 +68,24 @@ tracked in `TODO-read.md`.
 
 ---
 
+## 2026-07-07 · timestamptz-in-parquet unreadable on the 4.1.0 BE (FIXED in later Doris)
+
+**UPDATE (2026-07-07):** this is a **4.1.0-BE-only** limitation, not a permanent
+gap. `TIMESTAMPTZ` is a real, supported Doris type (4.1.2 release note:
+"Support TIMESTAMPTZ in multiple aggregate and array functions" #62756), and
+the master BE parquet reader HAS the conversion — `be/src/format/parquet/
+parquet_column_convert.{h,cpp}` defines `Int64ToTimestampTz` / `Int96toTimestampTz`
+and a `ColumnTimeStampTz` dest. Our compose image is the older 4.1.0 BE, which
+predates it. The in-tree `fe-connector-iceberg` already models this correctly:
+it exposes a catalog property `enable.mapping.timestamp_tz` (default OFF →
+naive `DATETIMEV2`; ON → `TIMESTAMPTZ`) — see `IcebergTypeMapping` /
+`IcebergConnectorProperties.ENABLE_MAPPING_TIMESTAMP_TZ`. So our DATETIMEV2
+default MATCHES Doris's own connector default; the right connector change is to
+add the same opt-in property (deferred until we run against a BE new enough to
+validate the ON path — the 4.1.0 compose image can't). Original entry below.
+
+---
+
 ## 2026-07-07 · BE parquet reader can't read timestamptz into a TimeStampTz slot
 
 **Symptom.** A DuckLake `timestamptz` column mapped to Doris `TIMESTAMPTZ`
