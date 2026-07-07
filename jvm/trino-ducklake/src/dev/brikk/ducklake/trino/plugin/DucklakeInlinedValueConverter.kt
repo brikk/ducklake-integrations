@@ -588,6 +588,16 @@ internal class NestedTextParser(private val text: String) {
             }
         }
         expect('}')
+        // Fields ADDED after the inlined row's era carry no key in the era text, so they were
+        // never bound above (they stay null). Project their initial_default when one is declared —
+        // the nested-field variant of the top-level ADD COLUMN ... DEFAULT projection.
+        if (mapping != null) {
+            for (i in fields.indices) {
+                if (values[i] == null && mapping.eraNames.getOrNull(i) == null) {
+                    mapping.defaults.getOrNull(i)?.let { values[i] = it }
+                }
+            }
+        }
         val builder = type.createBlockBuilder(null, 1) as io.trino.spi.block.RowBlockBuilder
         builder.buildEntry<RuntimeException> { fieldBuilders ->
             fields.forEachIndexed { i, f ->

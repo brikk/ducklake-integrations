@@ -1659,7 +1659,15 @@ class DucklakePageSourceProvider @Inject constructor(
             if (location.scheme().isPresent) {
                 return location
             }
-            return Location.of(Path.of(path).toUri().toString())
+            // Local path with no scheme. Prefix file:// on the RAW path — routing through
+            // Path.toUri() percent-encodes, which DOUBLE-encodes a path that already contains
+            // literal %XX escapes: DuckDB writes hive partition directories URL-encoded on disk
+            // (e.g. `category=home%20appliances`, `created_at=…%3A30%3A00`), so Path.toUri turns
+            // the literal `%` into `%25` and the reader looks for a non-existent `%2520` path.
+            // Trino's Location does not percent-decode, so the literal on-disk path is what
+            // newInputFile needs. For paths without special characters this is identical to the
+            // old toUri() form (`file://` + absolute path).
+            return Location.of("file://" + path)
         }
 
         private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =

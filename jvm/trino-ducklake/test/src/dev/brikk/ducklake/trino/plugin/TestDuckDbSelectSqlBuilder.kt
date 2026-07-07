@@ -188,6 +188,24 @@ class TestDuckDbSelectSqlBuilder {
     }
 
     @Test
+    fun testNestedAddedFieldWithDefaultIsStructPackedWithDefault() {
+        // current s = row(a integer, k integer); k added later with DEFAULT 42. The reshape projects
+        // the default literal (rows predating ADD COLUMN s.k … DEFAULT 42), not NULL.
+        val structType = RowType.rowType(RowType.field("a", INTEGER), RowType.field("k", INTEGER))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(
+                        StructFieldPlan("a", INTEGER, "a", null),
+                        StructFieldPlan("k", INTEGER, null, null, "42")))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := (\"s\").\"a\", \"k\" := CAST('42' AS INTEGER)) END AS \"s\" " +
+                        "FROM ducklake_in.main.t")
+    }
+
+    @Test
     fun testNestedDroppedNonTrailingFieldIsOmitted() {
         // current s = row(a, c); the file had row(a, b, c) — b dropped. struct_pack selects a, c by
         // file name, so the file's extra b is simply not read (no positional misbind).

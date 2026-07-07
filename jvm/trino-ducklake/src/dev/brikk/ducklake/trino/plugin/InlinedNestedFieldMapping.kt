@@ -42,11 +42,17 @@ sealed interface InlinedTextFieldMapping {
     /**
      * For a ROW node: [eraNames]`[i]` is the era-text key holding current field
      * i's value (null = the field identity did not exist in that era → NULL);
-     * [children]`[i]` is the mapping for nested field types.
+     * [children]`[i]` is the mapping for nested field types; [defaults]`[i]` is
+     * the parsed native value of field i's `initial_default` when the field was
+     * ADDED after this era (so `eraNames[i]` is null) and declares a default —
+     * projected in place of NULL for rows that predate the field (upstream
+     * issue-1135 semantics, nested-field variant). Null when the field existed in
+     * the era or declares no default.
      */
     data class Struct(
         val eraNames: List<String?>,
         val children: List<InlinedTextFieldMapping?>,
+        val defaults: List<Any?>,
     ) : InlinedTextFieldMapping {
         /** Lowercased era name → current field index. */
         val indexByEraName: Map<String, Int> =
@@ -109,11 +115,26 @@ object InlinedNestedFieldMapper {
                     return null
                 }
                 val eraNames = children.map { eraById[it.columnId]?.columnName }
+                // A field ADDED after this inlined era (absent from eraById) projects its
+                // initial_default for rows that predate it — the nested-field variant of the
+                // top-level ADD COLUMN ... DEFAULT rule. Parsed to the field's native value; an
+                // unparseable / typeless default degrades to null (same as the scalar path).
+                val defaults =
+                    children.mapIndexed { i, child ->
+                        val default = child.initialDefault
+                        if (default != null && eraById[child.columnId] == null) {
+                            runCatching {
+                                DucklakePartitionValueParser.parseIdentity(type.fields[i].type, default)
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                    }
                 val childMappings =
                     children.mapIndexed { i, child ->
                         mapNode(child.columnId, type.fields[i].type, currentByParent, eraById)
                     }
-                InlinedTextFieldMapping.Struct(eraNames, childMappings)
+                InlinedTextFieldMapping.Struct(eraNames, childMappings, defaults)
             }
             is ArrayType -> {
                 val element = currentByParent[columnId]?.singleOrNull() ?: return null

@@ -376,17 +376,31 @@ Repro files skip-listed in `TestTrinoCorpusReplay` with `BUG:` prefixes.
   `__HIVE_DEFAULT_PARTITION__` → NULL, i.e. left unset) and merges the value into
   the split's `partitionValuesByColumnId`, so the existing missing-column
   constant-fill machinery (`buildMissingColumnBlock`) projects the typed value.
-  Rename-safe: values are keyed by `column_id` via `target_field_id`. Corpus
-  repros un-skipped and green: `add_files/add_files_hive{,_mismatch,_partition_cast}.test`.
-- [ ] **nested struct-FIELD initial defaults not projected** — corpus
-  `default/struct_field_default.test`: a FIELD added to a struct with a default
-  (`ALTER ... ADD COLUMN s.k ... DEFAULT 42` shape) must project 42 for old
-  rows; we project NULL. The default lives on the catalog CHILD row's
-  `initial_default` — the 4th path of the issue-1135 family: the reshape
-  planner (`StructFieldPlan.fileName == null` → typed NULL) and the inlined
-  nested-text parser (unbound field → NULL) both need to consult the child
-  row's default. Top-level defaults were fixed 2026-07-07 (parquet
-  missing-column, duckdb-executor CAST, inlined era-defaults).
+   Rename-safe: values are keyed by `column_id` via `target_field_id`. Corpus
+   repros un-skipped and green: `add_files/add_files_hive{,_mismatch}.test`.
+   **Follow-up completion 2026-07-08** (the full `add_files` corpus dir finally ran
+   — earlier "verification" used a malformed `-Ducklake.corpus.dirs` flag that JVM-parsed
+   as `-D ucklake.corpus.dirs` and silently fell back to the default dirs): two more
+   real gaps surfaced and were fixed, so `add_files_hive_partition_cast.test` is now green:
+   (a) **path double-encoding** — the reader's `toLocation` routed the on-disk path through
+   `Path.toUri()`, which percent-encodes the literal `%` in DuckDB's URL-encoded hive dirs
+   (`category=home%20appliances` → looked-for `%2520`); fixed to prefix `file://` on the raw
+   path (Trino's `Location` does not percent-decode). (b) **`DucklakePartitionValueParser`
+   lacked DECIMAL + TIMESTAMP(/TZ)** — those partition values fell back to NULL; added.
+   The file's two `INTERVAL 1 DAY` (unquoted DuckDB literal) queries are a pure dialect gap
+   Trino can't parse, now declined by `TrinoReplayEngine.accepts` (not a connector bug).
+- [x] **nested struct-FIELD initial defaults not projected** — ✅ FIXED 2026-07-08.
+  Corpus `default/struct_field_default.test`: a FIELD added to a struct with a default
+  (`ALTER ... ADD COLUMN s.k ... DEFAULT 42`) must project 42 for old rows; we projected
+  NULL. The default lives on the catalog CHILD row's `initial_default` — the 4th path of
+  the issue-1135 family. Fixed BOTH named paths: the INLINED nested-text parser
+  (`InlinedNestedFieldMapper` threads each era-absent child's parsed `initial_default` into
+  `InlinedTextFieldMapping.Struct.defaults`; `NestedTextParser.parseStruct` fills era-absent
+  fields with it) and the reshape planner (`StructFieldPlan.initialDefault` →
+  `DuckDbSelectSqlBuilder` renders `CAST('<default>' AS type)` instead of `CAST(NULL …)`).
+  Corpus repro un-skipped and green; unit-pinned in `TestNestedFieldReshapePlanner`,
+  `TestDuckDbSelectSqlBuilder`, and (inlined) the corpus mirror. Top-level defaults were
+  fixed 2026-07-07 (parquet missing-column, duckdb-executor CAST, inlined era-defaults).
 - [x] **name-map authoritative for MAPPED files** — ✅ FIXED 2026-07-07. The
   parquet matcher now resolves map-carrying files (`mapping_id` set →
   `split.fieldIdToParquetSourceName` non-empty) through target_field_id ONLY

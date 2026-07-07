@@ -90,7 +90,9 @@ object NestedFieldReshapePlanner {
                     needsReshape = true
                 }
             }
-            fields.add(StructFieldPlan(currentName, fieldType, fileName, childPlan))
+            // initial_default of a subfield ADDED after this file was written (fileName == null):
+            // projected in place of NULL for rows that predate `ADD COLUMN s.child … DEFAULT …`.
+            fields.add(StructFieldPlan(currentName, fieldType, fileName, childPlan, currentChildren[i].initialDefault))
         }
         return if (needsReshape) fields else null
     }

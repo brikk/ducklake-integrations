@@ -41,6 +41,20 @@ class TestNestedFieldReshapePlanner {
     }
 
     @Test
+    fun addedSubfieldWithDefaultCarriesInitialDefault() {
+        // current s = row(a, k) where k was added with DEFAULT 42; the file had only a. The plan for
+        // the era-absent k carries its initial_default so the reshape projects 42, not NULL.
+        val plans = NestedFieldReshapePlanner.buildPlans(
+                listOf(structHandle(200, "s", "a" to INTEGER, "k" to INTEGER)),
+                listOf(struct(200, "s"), child(201, "a", 200, 0), childWithDefault(202, "k", 200, 1, "42")),
+                listOf(struct(200, "s"), child(201, "a", 200, 0)))
+
+        assertThat(plans[200L]).containsExactly(
+                StructFieldPlan("a", INTEGER, "a", null),
+                StructFieldPlan("k", INTEGER, null, null, "42"))
+    }
+
+    @Test
     fun droppedNonTrailingSubfieldOmittedAndReshapeForced() {
         // current s = row(a, c) [201, 203]; file had row(a, b, c) [201, 202, 203] — b dropped.
         val plans = NestedFieldReshapePlanner.buildPlans(
@@ -116,6 +130,9 @@ class TestNestedFieldReshapePlanner {
 
         private fun child(id: Long, name: String, parent: Long?, order: Long): DucklakeColumn =
                 col(id, name, "integer", order, parent)
+
+        private fun childWithDefault(id: Long, name: String, parent: Long?, order: Long, default: String): DucklakeColumn =
+                DucklakeColumn(id, 1L, null, 10L, order, name, "integer", true, parent, default)
 
         private fun col(id: Long, name: String, type: String, order: Long, parent: Long?): DucklakeColumn =
                 DucklakeColumn(id, 1L, null, 10L, order, name, type, true, parent)

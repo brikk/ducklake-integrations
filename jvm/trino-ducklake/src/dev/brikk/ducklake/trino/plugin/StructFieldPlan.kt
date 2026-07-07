@@ -27,15 +27,19 @@ import io.trino.spi.type.Type
  * - [currentName] — the field's name in the current schema; the `struct_pack` key.
  * - [type] — the field's current Trino type; used for `CAST(NULL AS …)` when [fileName] is null.
  * - [fileName] — the field's name in the file, or null if it was ADDED after the file was written
- *   (→ projected as a typed NULL). A field DROPPED since the file simply has no plan entry, so the
- *   `struct_pack` omits it (the file's extra field is left unread).
+ *   (→ projected as its [initialDefault] when one is declared, else a typed NULL). A field DROPPED
+ *   since the file simply has no plan entry, so the `struct_pack` omits it (the file's extra field
+ *   is left unread).
  * - [children] — non-null iff this field is itself a struct that needs reshaping; its own plan.
+ * - [initialDefault] — the field's `ducklake_column.initial_default` value text, projected for rows
+ *   that predate an `ADD COLUMN s.child … DEFAULT …` (only meaningful when [fileName] is null).
  */
 class StructFieldPlan(
         val currentName: String,
         val type: Type,
         val fileName: String?,
-        val children: List<StructFieldPlan>?) {
+        val children: List<StructFieldPlan>?,
+        val initialDefault: String? = null) {
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -43,11 +47,13 @@ class StructFieldPlan(
         return currentName == other.currentName &&
                 type == other.type &&
                 fileName == other.fileName &&
-                children == other.children
+                children == other.children &&
+                initialDefault == other.initialDefault
     }
 
-    override fun hashCode(): Int = java.util.Objects.hash(currentName, type, fileName, children)
+    override fun hashCode(): Int = java.util.Objects.hash(currentName, type, fileName, children, initialDefault)
 
     override fun toString(): String =
-            "StructFieldPlan[currentName=$currentName, type=$type, fileName=$fileName, children=$children]"
+            "StructFieldPlan[currentName=$currentName, type=$type, fileName=$fileName, " +
+                    "children=$children, initialDefault=$initialDefault]"
 }

@@ -114,6 +114,11 @@ class TrinoReplayEngine : ReplayReadEngine {
         // Catalog-scoped table functions (`<alias>.snapshots()`, …) have no
         // 1:1 rewrite; our equivalents are $-tables/PTFs with different names.
         if (Regex("\\b$alias\\.\\w+\\s*\\(").containsMatchIn(s)) return false
+        // DuckDB allows an unquoted interval literal (`INTERVAL 1 DAY`); Trino requires the
+        // quoted SQL-standard form (`INTERVAL '1' DAY`) and cannot parse the bare-number shape.
+        // Pure dialect gap (not a connector bug) — decline it; the mirror only compares results
+        // for queries both engines can run. A quoted `INTERVAL '1'` is unaffected.
+        if (Regex("\\bINTERVAL\\s+\\d", RegexOption.IGNORE_CASE).containsMatchIn(s)) return false
         // DuckDB-specific surfaces we don't attempt in v1. `rowid` is DuckDB's
         // virtual column (ours is `$row_id` — a candidate mapping upgrade).
         val blocked =

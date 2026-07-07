@@ -154,9 +154,17 @@ object DuckDbSelectSqlBuilder {
 
     private fun appendFieldExpr(sql: StringBuilder, field: StructFieldPlan, parentExpr: String) {
         if (field.fileName == null) {
-            // Subfield (or wholly-added nested struct) added after the file was written — typed NULL.
-            sql.append("CAST(NULL AS ")
-                    .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested schema-evolution NULL projection"))
+            // Subfield (or wholly-added nested struct) added after the file was written. Project its
+            // initial_default (rows predating `ADD COLUMN s.child … DEFAULT …`), else a typed NULL.
+            val initialDefault = field.initialDefault
+            sql.append("CAST(")
+            if (initialDefault == null) {
+                sql.append("NULL")
+            } else {
+                sql.append("'").append(initialDefault.replace("'", "''")).append("'")
+            }
+            sql.append(" AS ")
+                    .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested schema-evolution default projection"))
                     .append(")")
             return
         }
