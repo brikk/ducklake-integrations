@@ -44,10 +44,31 @@ internal class DuckLakeTypeMappingTest {
         // nanos clamp to Doris's max datetime scale (6) — documented-lossy, see the
         // mapping's DEGRADED note and DuckLakeTemporalTypeAuditTest.
         assertThat(precision("timestamp_ns")).isEqualTo(6)
-        // DEGRADED (BE-gated): timestamptz maps to naive DATETIMEV2 because the
-        // 4.1.0 BE can't read a TIMESTAMP_MICROS(isAdjustedToUtc) column into a
-        // TimeStampTz slot. Correct UTC values, zone-naive typing.
+        // timestamptz default (enable.mapping.timestamp_tz=false) → naive
+        // DATETIMEV2 (correct UTC values), for BE compatibility.
         assertThat(name("timestamptz")).isEqualTo("DATETIMEV2")
+    }
+
+    @Test
+    fun timestamptzMappingIsGatedByEnableTimestampTz() {
+        // Mirrors the iceberg connector's enable.mapping.timestamp_tz: off →
+        // naive DATETIMEV2; on → zone-aware TIMESTAMPTZ (needs BE >= 4.1.2).
+        val off = DuckLakeTypeMapping.fromDucklakeType("timestamptz", enableTimestampTz = false)
+        assertThat(off.typeName).isEqualTo("DATETIMEV2")
+        assertThat(off.precision).isEqualTo(6)
+
+        val on = DuckLakeTypeMapping.fromDucklakeType("timestamptz", enableTimestampTz = true)
+        assertThat(on.typeName).isEqualTo("TIMESTAMPTZ")
+        assertThat(on.precision).isEqualTo(6)
+    }
+
+    @Test
+    fun nestedTimestamptzHonorsTheFlagConsistently() {
+        val on = DuckLakeTypeMapping.fromDucklakeType("list<timestamptz>", enableTimestampTz = true)
+        assertThat(on.typeName).isEqualTo("ARRAY")
+        assertThat(on.children[0].typeName).isEqualTo("TIMESTAMPTZ")
+        val off = DuckLakeTypeMapping.fromDucklakeType("list<timestamptz>", enableTimestampTz = false)
+        assertThat(off.children[0].typeName).isEqualTo("DATETIMEV2")
     }
 
     @Test

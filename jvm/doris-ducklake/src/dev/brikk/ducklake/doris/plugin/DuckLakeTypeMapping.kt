@@ -28,15 +28,22 @@ internal object DuckLakeTypeMapping {
     /**
      * Convert a DuckLake type string to a Doris [ConnectorType].
      *
+     * [enableTimestampTz] mirrors the iceberg connector's
+     * `enable.mapping.timestamp_tz`: when true, `timestamptz` maps to zone-aware
+     * `TIMESTAMPTZ` (needs a master/nightly BE — the converter is NOT in any 4.1.x release); when false (default) it degrades to
+     * naive `DATETIMEV2` (correct UTC values, zone-naive typing) for BE
+     * compatibility. Threaded recursively so nested timestamptz maps
+     * consistently with the top level.
+     *
      * @throws IllegalArgumentException if the type string cannot be parsed
      */
-    fun fromDucklakeType(ducklakeType: String?): ConnectorType {
+    fun fromDucklakeType(ducklakeType: String?, enableTimestampTz: Boolean = false): ConnectorType {
         requireNotNull(ducklakeType) { "ducklakeType is null" }
         val normalized = ducklakeType.trim().lowercase()
 
         if (normalized.startsWith("list<") && normalized.endsWith(">")) {
             val inner = extractTypeArguments(normalized, "list").trim()
-            return ConnectorType.arrayOf(fromDucklakeType(inner))
+            return ConnectorType.arrayOf(fromDucklakeType(inner, enableTimestampTz))
         }
         if (normalized.startsWith("struct<") && normalized.endsWith(">")) {
             val body = extractTypeArguments(normalized, "struct")
@@ -47,7 +54,7 @@ internal object DuckLakeTypeMapping {
                 val colon = field.indexOf(':')
                 require(colon >= 0) { "Invalid struct field (missing ':'): $field" }
                 names.add(field.substring(0, colon).trim())
-                types.add(fromDucklakeType(field.substring(colon + 1).trim()))
+                types.add(fromDucklakeType(field.substring(colon + 1).trim(), enableTimestampTz))
             }
             return ConnectorType.structOf(names, types)
         }
@@ -58,8 +65,8 @@ internal object DuckLakeTypeMapping {
                 "Invalid map type (need 2 args, got ${parts.size}): $ducklakeType"
             }
             return ConnectorType.mapOf(
-                fromDucklakeType(parts[0].trim()),
-                fromDucklakeType(parts[1].trim()),
+                fromDucklakeType(parts[0].trim(), enableTimestampTz),
+                fromDucklakeType(parts[1].trim(), enableTimestampTz),
             )
         }
 
@@ -87,18 +94,19 @@ internal object DuckLakeTypeMapping {
             "date" -> ConnectorType.of("DATEV2")
             // DuckLake stores timestamps at microsecond precision.
             "timestamp" -> ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
-            // DEGRADED (BE-gated, documented): the ideal mapping is TIMESTAMPTZ
-            // (zone-aware), and the FE now accepts it — but the 4.1.0 BE parquet
-            // reader can't convert a TIMESTAMP_MICROS(isAdjustedToUtc) column
-            // into a TimeStampTz slot ("Unsupported type change: DateTimeV2 =>
-            // TimeStampTz"), so even a real DuckLake timestamptz FILE is
-            // unreadable as TIMESTAMPTZ on this BE. DuckLake stores timestamptz
-            // as a pure UTC instant and the parquet is UTC-micros, so reading it
-            // as naive DATETIMEV2(6) yields the correct UTC wall-clock values
-            // (typed as zone-naive). This is the readable-vs-unreadable
-            // tradeoff; revisit to TIMESTAMPTZ when the BE supports the
-            // conversion. Tracked in the friction log + TODO-read.
-            "timestamptz" -> ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
+            // Mirrors the iceberg connector's enable.mapping.timestamp_tz. The FE
+            // ConnectorColumnConverter keys zone-aware on the name "TIMESTAMPTZ"
+            // (-> ScalarType.createTimeStampTzType); reading it from parquet needs
+            // a master/nightly BE (Int64ToTimestampTz converter; 4.0.x/4.1.x incl. 4.1.2 error
+            // "DateTimeV2 => TimeStampTz"). Default false -> naive DATETIMEV2(6):
+            // DuckLake stores timestamptz as UTC micros, so wall-clock values are
+            // correct, only zone-aware typing is deferred.
+            "timestamptz" ->
+                if (enableTimestampTz) {
+                    ConnectorType.of("TIMESTAMPTZ", MICROS_SCALE, 0)
+                } else {
+                    ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
+                }
             "timestamp_s" -> ConnectorType.of("DATETIMEV2", 0, 0)
             "timestamp_ms" -> ConnectorType.of("DATETIMEV2", 3, 0)
             // DEGRADED (documented-lossy): Doris DATETIMEV2 caps scale at 6, so nanos

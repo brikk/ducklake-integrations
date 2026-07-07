@@ -68,21 +68,25 @@ tracked in `TODO-read.md`.
 
 ---
 
-## 2026-07-07 · timestamptz-in-parquet unreadable on the 4.1.0 BE (FIXED in later Doris)
+## 2026-07-07 · timestamptz-in-parquet unreadable until a MASTER/nightly BE (not any 4.1.x)
 
-**UPDATE (2026-07-07):** this is a **4.1.0-BE-only** limitation, not a permanent
-gap. `TIMESTAMPTZ` is a real, supported Doris type (4.1.2 release note:
-"Support TIMESTAMPTZ in multiple aggregate and array functions" #62756), and
-the master BE parquet reader HAS the conversion — `be/src/format/parquet/
-parquet_column_convert.{h,cpp}` defines `Int64ToTimestampTz` / `Int96toTimestampTz`
-and a `ColumnTimeStampTz` dest. Our compose image is the older 4.1.0 BE, which
-predates it. The in-tree `fe-connector-iceberg` already models this correctly:
-it exposes a catalog property `enable.mapping.timestamp_tz` (default OFF →
-naive `DATETIMEV2`; ON → `TIMESTAMPTZ`) — see `IcebergTypeMapping` /
-`IcebergConnectorProperties.ENABLE_MAPPING_TIMESTAMP_TZ`. So our DATETIMEV2
-default MATCHES Doris's own connector default; the right connector change is to
-add the same opt-in property (deferred until we run against a BE new enough to
-validate the ON path — the 4.1.0 compose image can't). Original entry below.
+**UPDATE (2026-07-07):** `TIMESTAMPTZ` is a real, supported Doris type (4.1.2
+release note: "Support TIMESTAMPTZ in multiple aggregate and array functions"
+#62756 — but that's compute-side, not the parquet reader). The parquet-reader
+conversion (`be/src/format/parquet/parquet_column_convert.{h,cpp}`
+`Int64ToTimestampTz`/`Int96toTimestampTz` → `ColumnTimeStampTz`) is **master-only**:
+**verified that be-4.1.2 STILL errors** `DateTimeV2 => TimeStampTz` (bumped the
+compose BE 4.1.0 → 4.1.2 and re-tested). So it is NOT in any 4.0.x/4.1.x
+release; needs a master/nightly BE.
+
+The in-tree `fe-connector-iceberg` already models this: catalog property
+`enable.mapping.timestamp_tz` (default OFF → naive `DATETIMEV2`; ON →
+`TIMESTAMPTZ`) — `IcebergTypeMapping` / `IcebergConnectorProperties`. **We now
+mirror it exactly** (`DuckLakeConnectorProperties.ENABLE_MAPPING_TIMESTAMP_TZ`,
+threaded through `DuckLakeConnectorMetadata` → `DuckLakeTypeMapping`), so our
+DATETIMEV2 default matches Doris's own connector default and users on a
+master/nightly BE can opt into zone-aware reads. The ON path can't be validated
+on our compose BE (4.1.2) — deferred to a nightly-BE bump. Original entry below.
 
 ---
 
