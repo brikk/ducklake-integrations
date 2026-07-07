@@ -52,6 +52,26 @@ internal class DorisCorpusReplayTest {
             "general/metadata_cache.test" to
                 "KNOWN BE GAP: DuckLake position-delete parquet uses OPTIONAL columns; BE iceberg reader " +
                 "requires REQUIRED (friction log 2026-05-19; REPORT-*delete*-nullability.md)",
+            // ---- data_inlining: served now (Stage 1 scalar); these hit known gaps ----
+            "data_inlining/data_inlining_encryption.test" to
+                "ENCRYPTED DuckLake attach (DuckDB-only parquet encryption); not a Doris read path",
+            "data_inlining/data_inlining_issue504.test" to
+                "inlined timestamptz column: the synthesized parquet's zone-aware timestamp surfaces as " +
+                "UNSUPPORTED in Nereids on read-back (Stage 2 — timestamptz inlined; TODO-read)",
+            "data_inlining/data_inlining_per_schema_alter.test" to
+                "column DEFAULT values over inlined data (same gap as issue_1135; TODO-read)",
+            "data_inlining/data_inlining_update_inline_verification.test" to
+                "inlined DELETEs (Stage 2): UPDATE produces inlined file-deletions the connector can't apply",
+            "data_inlining/data_inlining_transaction_local_delete.test" to
+                "inlined transaction-local deletes (Stage 2 inlined-delete territory)",
+            "data_inlining/basic_data_inlining.test" to
+                "ORACLE-side: SELECT COUNT(*) FROM GLOB(...) physical-file-count assertions depend on exact " +
+                "inlining/flush/checkpoint behavior that differs from the golden text in this harness " +
+                "(oracle vs golden, not a Doris read gap) — the lake reads themselves mirror clean",
+            "data_inlining/data_inlining_option.test" to
+                "ORACLE-side: GLOB(...) physical-file-count assertion vs golden (harness inlining variance)",
+            "data_inlining/data_inlining_delete.test" to
+                "ORACLE-side: GLOB(...) physical-file-count assertion vs golden (harness inlining variance)",
             // ---- issues/ regressions: map to already-known gaps or non-mirrorable harness tests ----
             "issues/issue_865_update_wrong_result.test" to
                 "inlined file-deletes (DATA_INLINING_ROW_LIMIT 10): UPDATE mixing a committed delete file " +

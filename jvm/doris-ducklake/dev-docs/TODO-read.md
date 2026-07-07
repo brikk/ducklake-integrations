@@ -99,10 +99,28 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   the iceberg "generated/default column" BE seam (check whether the BE backfills
   a not-in-file column from a default, or if it always NULL-fills). May be
   partly BE-gated; investigate the iceberg default-column path first.
-- [ ] **Serve inlined data rows** (upgrade the guard into a real read):
-  options — FE-side synthesis of a temp parquet from `readInlinedData` into a
-  scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.
-  Same work unlocks inline DELETE application (Step 7.5).
+- [x] **Serve inlined data rows — Stage 1 DONE (2026-07-07).** The FE
+  synthesizes a temp Parquet from `readInlinedData` (`DuckLakeInlinedParquetWriter`,
+  low-level parquet `Types...id()` carrying `field_id == column_id`, written
+  via `LocalOutputFile` to sidestep Hadoop UGI on JDK 25) and emits it as a
+  normal FILE_SCAN range appended to the file ranges. The catalog already
+  snapshot-filters the rows; the temp file sits under the table data dir so the
+  BE reads it at the same path. Corpus `data_inlining` 491/0. Value conversion
+  mirrors trino's `DucklakeInlinedValueConverter` (blob `\xNN`, non-finite
+  floats, decimals). **Gotchas fixed:** (a) filtered reads dropped inlined rows
+  when `applyFilter` set `prunedFileIds` — inlined ranges are now ALWAYS added
+  (file-prune targets catalog files, not inlined synthesis; BE re-applies the
+  filter); (b) writer round-trip unit test assume-skips on the JDK-25
+  parquet-format shaded-thrift ABI break (FE runtime is JDK 17; validated
+  live).
+  - **Stage 1 scope:** scalar columns + local-fs warehouse only. Excluded
+    (fail loud → engine-skip): nested (list/struct/map), **timestamptz** (the
+    synthesized zone-aware timestamp surfaces UNSUPPORTED in Nereids on
+    read-back — needs a BE round-trip fix), degraded-to-string types
+    (json/variant/interval/time/uuid/uint*/int128/geometry), and S3 warehouses.
+  - [ ] **Stage 2:** nested inlined columns (DuckDB-text recursive parser),
+    timestamptz read-back, inlined DELETEs (of file rows), S3-warehouse temp
+    write + lifecycle/GC, mixed inline+file under a file-prune.
 **Per-dir corpus sweep (2026-07-06, verified GREEN — run one dir at a time,
 ~1 min each; NEVER the full corpus unless explicitly asked):**
 

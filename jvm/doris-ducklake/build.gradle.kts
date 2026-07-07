@@ -76,6 +76,16 @@ dependencies {
     // connector libs (like fe-thrift) — compileOnly, version-matched to FE (1.10.1).
     compileOnly("org.apache.iceberg:iceberg-api:1.10.1")
     compileOnly("org.apache.iceberg:iceberg-core:1.10.1")
+    // Inlined-data reads (DuckLakeInlinedParquetWriter): the FE synthesizes a
+    // temp Parquet from catalog-inlined rows so the BE can scan them. Written
+    // with parquet-avro (field_id-carrying), which is FE-supplied at runtime
+    // (output/fe/lib) — versions matched to the FE. compileOnly so the plugin
+    // jar ships no second copy of parquet/avro/hadoop.
+    compileOnly("org.apache.parquet:parquet-avro:1.17.0")
+    compileOnly("org.apache.parquet:parquet-hadoop:1.17.0")
+    compileOnly("org.apache.parquet:parquet-column:1.17.0")
+    compileOnly("org.apache.avro:avro:1.12.1")
+    compileOnly("org.apache.hadoop:hadoop-common:3.4.2")
 
     implementation(project(":ducklake-catalog"))
 
@@ -93,6 +103,13 @@ dependencies {
     // SchemaParser (the independent oracle), so iceberg is needed at test runtime.
     testImplementation("org.apache.iceberg:iceberg-api:1.10.1")
     testImplementation("org.apache.iceberg:iceberg-core:1.10.1")
+    // Inlined-data writer tests read the written Parquet back to assert
+    // field_ids/types/values, so parquet-avro + hadoop are on the test runtime.
+    testImplementation("org.apache.parquet:parquet-avro:1.17.0")
+    testImplementation("org.apache.parquet:parquet-hadoop:1.17.0")
+    testImplementation("org.apache.parquet:parquet-column:1.17.0")
+    testImplementation("org.apache.avro:avro:1.12.1")
+    testImplementation("org.apache.hadoop:hadoop-common:3.4.2")
 
     // Shared Testcontainer fixture lives in the catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
