@@ -1,12 +1,13 @@
-# Pushdown Reference — DuckDB-Format Reads
+# Pushdown Reference — DuckDB-Engine Reads
 
 The complete set of predicates the connector pushes **server-side into DuckDB**
-when a query reads a **duckdb-format** data file (a `.db` split; see the
-[DuckDB-Format Data Files](README.md#duckdb-format-data-files-experimental)
-section of the README). This is a feature of the *duckdb file format read path*,
-not of the connector in general — parquet-format reads use Trino's standard
-Parquet reader and only get the TupleDomain + file-pruning layer (§1), never the
-expression/function layer (§2–§3).
+when a query reads a data file through the DuckDB engine — **duckdb-format**
+(`.db` splits; see [DuckDB-Format Data Files](README.md#duckdb-format-data-files-experimental)),
+**vortex** (`read_vortex(...)`, filter verified BOUND inside the scan operator —
+pruned decoding), and **lance** (`__lance_scan(...)`). This is a feature of the
+*DuckDB-engine read path*, not of the connector in general — parquet-format
+reads use Trino's standard Parquet reader and only get the TupleDomain +
+file-pruning layer (§1), never the expression/function layer (§2–§3).
 
 For the roadmap, history, and open items (steps 5–6, deferred functions) see
 [TODO-pushdown-duckdb.md](dev-docs/TODO-pushdown-duckdb.md). This doc is the *current
@@ -49,7 +50,7 @@ translator.
 | **Partition pruning — bucket** | `bucket(N, col)`: equality predicates pruned by hashing the constant (Iceberg-compatible Murmur3); ranges are *not* pruned (bucketing scrambles ordering). |
 | **Dynamic filters** | Join-build dynamic filters intersected with file-level stats. |
 
-## 2. Operators & transforms (duckdb-format only)
+## 2. Operators & transforms (DuckDB-engine splits: duckdb/vortex/lance)
 
 Translator-level rewrites — emitted directly as SQL, not via the macro catalog.
 
@@ -64,7 +65,7 @@ Translator-level rewrites — emitted directly as SQL, not via the macro catalog
 | `BETWEEN` | Pushed implicitly — Trino's planner decomposes it to `>= AND <=` before `applyFilter`, so the comparison + `AND` translators handle it. |
 | `concat(a, b, …)` → `(a \|\| b \|\| …)` | Translator rewrite for VARCHAR returns, **not** a macro: DuckDB's `concat` skips NULL while Trino's NULL-propagates; the `\|\|` operator propagates in both, matching Trino. |
 
-## 3. Functions (duckdb-format only)
+## 3. Functions (DuckDB-engine splits: duckdb/vortex/lance)
 
 **95 entries** in `trino_meta()` (the catalog the translator's
 `PUSHABLE_FUNCTIONS` set is kept in lockstep with). Most are `trino_<name>`

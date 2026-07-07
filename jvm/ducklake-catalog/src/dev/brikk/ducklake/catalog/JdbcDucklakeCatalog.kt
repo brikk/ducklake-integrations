@@ -301,6 +301,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                         resolveColumnType(column, childrenByParent),
                         column.nullsAllowed,
                         null,
+                        column.initialDefault,
                     ),
                 )
             }
@@ -946,32 +947,40 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
 
         val colstats = DUCKLAKE_FILE_COLUMN_STATS.`as`("colstats")
         val file = DUCKLAKE_DATA_FILE.`as`("file")
-        // Multi-table JOIN — routed through `metadata` for Quack compatibility.
+        // LEFT JOIN, not inner: a file with NO stats row for this column (e.g. it
+        // predates an ADD COLUMN — upstream issue 1135 — or its stats were never
+        // recorded) must be RETAINED: pruning may only exclude files whose stats
+        // PROVE no row can match. Multi-table JOIN — routed through `metadata`
+        // for Quack compatibility.
         return metadata.fetch(
             dsl,
             dsl.select(
+                file.DATA_FILE_ID,
                 colstats.DATA_FILE_ID,
                 colstats.MIN_VALUE,
                 colstats.MAX_VALUE,
             )
-                .from(colstats)
-                .innerJoin(file)
-                .on(colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID))
-                .where(colstats.TABLE_ID.eq(tableId))
-                .and(colstats.COLUMN_ID.eq(columnId))
-                .and(file.TABLE_ID.eq(tableId))
+                .from(file)
+                .leftJoin(colstats)
+                .on(
+                    colstats.DATA_FILE_ID.eq(file.DATA_FILE_ID)
+                        .and(colstats.TABLE_ID.eq(tableId))
+                        .and(colstats.COLUMN_ID.eq(columnId)),
+                )
+                .where(file.TABLE_ID.eq(tableId))
                 .and(activeAt(file, snapshotId)),
         ) { r -> r }
             .asSequence()
             .filter { r ->
-                isWithinBounds(
-                    lowerBound,
-                    upperBound,
-                    parseStatValue(columnType, r.get(colstats.MIN_VALUE)),
-                    parseStatValue(columnType, r.get(colstats.MAX_VALUE)),
-                )
+                r.get(colstats.DATA_FILE_ID) == null || // no stats row -> unknown -> keep
+                    isWithinBounds(
+                        lowerBound,
+                        upperBound,
+                        parseStatValue(columnType, r.get(colstats.MIN_VALUE)),
+                        parseStatValue(columnType, r.get(colstats.MAX_VALUE)),
+                    )
             }
-            .map { r -> r.get(colstats.DATA_FILE_ID) }
+            .map { r -> r.get(file.DATA_FILE_ID) }
             .toList()
     }
 
@@ -1321,6 +1330,31 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .and(nm.PARENT_COLUMN.isNull)
             // Exclude hive partition entries — those have no parquet column to find.
             .and(nm.IS_PARTITION.isFalse.or(nm.IS_PARTITION.isNull))
+            .forEach { r ->
+                val mappingId = r.get(nm.MAPPING_ID)
+                val fieldId = r.get(nm.TARGET_FIELD_ID)
+                val sourceName = r.get(nm.SOURCE_NAME)
+                if (mappingId != null && fieldId != null && sourceName != null) {
+                    result.getOrPut(mappingId) { mutableMapOf() }[fieldId] = sourceName
+                }
+            }
+        return result
+    }
+
+    override fun getPartitionNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> {
+        if (mappingIds.isEmpty()) {
+            return emptyMap()
+        }
+        val nm = DUCKLAKE_NAME_MAPPING.`as`("nm")
+        val result: MutableMap<Long, MutableMap<Long, String>> = mutableMapOf()
+        dsl.select(nm.MAPPING_ID, nm.TARGET_FIELD_ID, nm.SOURCE_NAME)
+            .from(nm)
+            .where(nm.MAPPING_ID.`in`(mappingIds))
+            // Top-level entries only — a hive partition column is never nested.
+            .and(nm.PARENT_COLUMN.isNull)
+            // Only the hive-partition entries: their value comes from the file path, not a
+            // parquet column (the inverse of getNameMaps, which excludes them).
+            .and(nm.IS_PARTITION.isTrue)
             .forEach { r ->
                 val mappingId = r.get(nm.MAPPING_ID)
                 val fieldId = r.get(nm.TARGET_FIELD_ID)
@@ -3901,6 +3935,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 r.columnType!!,
                 r.nullsAllowed == true,
                 r.parentColumn,
+                r.initialDefault,
             )
         }
 

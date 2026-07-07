@@ -141,10 +141,14 @@ class DucklakeSplitManager @Inject constructor(
                     .filter { it != null }
                     .map { it!! }
                     .collect(java.util.stream.Collectors.toUnmodifiableSet())
-            val nameMapsByMappingId: Map<Long, Map<Long, String>> = if (mappingIds.isEmpty())
-                mapOf()
-            else
-                catalog.getNameMaps(mappingIds)
+            val nameMapsByMappingId: Map<Long, Map<Long, String>> = fetchNameMaps(mappingIds)
+            // Hive-partition entries of the same name maps: columns whose value lives in the
+            // data-file PATH (`key=value/`) rather than the parquet body. DuckDB's
+            // `ducklake_add_data_files(..., hive_partitioning => true)` records partition columns
+            // this way (no partition spec, no ducklake_file_partition_value rows) — see
+            // getPartitionNameMaps. createMergedSplit parses the value out of each file's path and
+            // constant-fills the column via the existing missing-column machinery.
+            val partitionNameMapsByMappingId: Map<Long, Map<Long, String>> = fetchPartitionNameMaps(mappingIds)
 
             // Fetch inlined-delete rows for this table at this snapshot, grouped by
             // data_file_id. DuckLake stores small deletes (below DATA_INLINING_ROW_LIMIT)
@@ -162,7 +166,7 @@ class DucklakeSplitManager @Inject constructor(
             // (a data file can accumulate multiple delete files across snapshots)
             val groupedFiles: Map<Long, List<DucklakeDataFile>> = dataFiles.groupBy { it.dataFileId }
             parquetSplits = groupedFiles.values
-                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId) }
+                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, partitionNameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId) }
         }
 
         // Empty table (no data files at all) with an inlined data table: emit an inlined
@@ -224,6 +228,12 @@ class DucklakeSplitManager @Inject constructor(
         }
         throw IllegalArgumentException("Unknown table function handle: ${function.javaClass.name}")
     }
+
+    private fun fetchNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> =
+        if (mappingIds.isEmpty()) mapOf() else catalog.getNameMaps(mappingIds)
+
+    private fun fetchPartitionNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> =
+        if (mappingIds.isEmpty()) mapOf() else catalog.getPartitionNameMaps(mappingIds)
 
     private fun pruneDataFiles(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle, constraint: Constraint?): List<DucklakeDataFile> {
         if (dataFiles.isEmpty()) {
@@ -572,6 +582,7 @@ class DucklakeSplitManager @Inject constructor(
             activePartitionSpec: Optional<DucklakePartitionSpec>,
             partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>,
             nameMapsByMappingId: Map<Long, Map<Long, String>>,
+            partitionNameMapsByMappingId: Map<Long, Map<Long, String>>,
             inlinedDeletesByFileId: Map<Long, Set<Long>>,
             snapshotId: Long): DucklakeSplit {
         val primary: DucklakeDataFile = dataFileGroup.first()
@@ -603,11 +614,12 @@ class DucklakeSplitManager @Inject constructor(
         }
         val deleteFilePaths: List<String> = deleteFileFooterSizes.keys.toList()
 
-        val partitionValuesByColumnId: Map<Long, String> = buildIdentityPartitionValues(
-                primary.dataFileId,
-                primary.partitionId,
+        val partitionValuesByColumnId: Map<Long, String> = resolvePartitionValuesByColumnId(
+                primary,
+                dataFilePath,
                 activePartitionSpec,
-                partitionValuesByFile)
+                partitionValuesByFile,
+                partitionNameMapsByMappingId)
 
         val fieldIdToParquetSourceName: Map<Long, String> = primary.mappingId
                 ?.let { mid -> nameMapsByMappingId.getOrDefault(mid, mapOf()) }
@@ -661,6 +673,35 @@ class DucklakeSplitManager @Inject constructor(
         }
     }
 
+    /**
+     * The `column_id → partition value` map used to constant-fill partition columns absent from a
+     * file's parquet body. Two disjoint sources, merged: IDENTITY-transform partition-spec values
+     * (from `ducklake_file_partition_value`) and hive-partition columns of an add_files-registered
+     * file (DuckDB `ducklake_add_data_files(..., hive_partitioning => true)`), whose value lives in
+     * the file PATH via `is_partition` name-map entries. A hive-partitioned add_files table has no
+     * partition spec, so the two never overlap.
+     */
+    private fun resolvePartitionValuesByColumnId(
+            primary: DucklakeDataFile,
+            dataFilePath: String,
+            activePartitionSpec: Optional<DucklakePartitionSpec>,
+            partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>>,
+            partitionNameMapsByMappingId: Map<Long, Map<Long, String>>): Map<Long, String> {
+        val identityPartitionValues: Map<Long, String> = buildIdentityPartitionValues(
+                primary.dataFileId,
+                primary.partitionId,
+                activePartitionSpec,
+                partitionValuesByFile)
+        val hivePartitionValues: Map<Long, String> = primary.mappingId
+                ?.let { mid -> partitionNameMapsByMappingId[mid] }
+                ?.let { partitionKeysByColumnId -> parseHivePartitionColumnValues(dataFilePath, partitionKeysByColumnId) }
+                ?: mapOf()
+        return if (hivePartitionValues.isEmpty())
+            identityPartitionValues
+        else
+            identityPartitionValues + hivePartitionValues
+    }
+
     private data class PredicateBounds(val minValue: String?, val maxValue: String?)
 
     companion object {
@@ -692,6 +733,90 @@ class DucklakeSplitManager @Inject constructor(
 
         private fun parsePartitionValue(type: Type, value: String): Any =
             DucklakePartitionValueParser.parseIdentity(type, value)
+
+        // DuckDB's sentinel for a NULL hive partition value (`col=__HIVE_DEFAULT_PARTITION__/`).
+        private const val HIVE_DEFAULT_PARTITION: String = "__HIVE_DEFAULT_PARTITION__"
+
+        /**
+         * Extract this file's hive-partition column values from its PATH. [partitionKeysByColumnId]
+         * maps each partition column's catalog `column_id` to its path key (the name-map
+         * `source_name` DuckDB recorded at add_files time — rename-safe because it is keyed by
+         * column_id). Returns `column_id → decoded value`; a key whose value is the
+         * `__HIVE_DEFAULT_PARTITION__` sentinel is OMITTED so the column projects NULL through the
+         * missing-column path, and a key absent from the path is skipped likewise.
+         */
+        internal fun parseHivePartitionColumnValues(
+                dataFilePath: String,
+                partitionKeysByColumnId: Map<Long, String>): Map<Long, String> {
+            if (partitionKeysByColumnId.isEmpty()) {
+                return mapOf()
+            }
+            val pathValues: Map<String, String> = parseHivePartitionsFromPath(dataFilePath)
+            if (pathValues.isEmpty()) {
+                return mapOf()
+            }
+            val out: MutableMap<Long, String> = linkedMapOf()
+            for ((columnId, sourceName) in partitionKeysByColumnId) {
+                val raw: String = pathValues[sourceName.lowercase(Locale.ROOT)] ?: continue
+                if (raw == HIVE_DEFAULT_PARTITION) {
+                    // NULL partition — leave unset so the read path yields NULL.
+                    continue
+                }
+                out[columnId] = hiveUrlDecode(raw)
+            }
+            return out
+        }
+
+        /**
+         * Parse `key=value` segments out of a file path (hive-style `key=value/` layout). Keys are
+         * lower-cased for case-insensitive matching; values are returned raw (URL-decoded lazily by
+         * the caller). The filename is stripped so a stray `=` in the basename is not split on.
+         */
+        private fun parseHivePartitionsFromPath(path: String): Map<String, String> {
+            val normalized: String = path.replace('\\', '/')
+            val lastSlash: Int = normalized.lastIndexOf('/')
+            val dirs: String = if (lastSlash < 0) "" else normalized.substring(0, lastSlash)
+            val out: MutableMap<String, String> = linkedMapOf()
+            for (segment in dirs.split('/')) {
+                val eq: Int = segment.indexOf('=')
+                if (eq > 0 && eq < segment.length - 1) {
+                    val key: String = segment.substring(0, eq)
+                    val value: String = segment.substring(eq + 1)
+                    out[key.lowercase(Locale.ROOT)] = value
+                }
+            }
+            return out
+        }
+
+        /**
+         * Hive/DuckDB URL-decode a partition path value: `%XX` byte escapes are decoded as UTF-8
+         * (spaces are written `%20`, `=` as `%3D`, etc.). Unlike `java.net.URLDecoder`, a literal
+         * `+` is left as-is — hive does not use `+` for space. Malformed escapes pass through
+         * verbatim.
+         */
+        private fun hiveUrlDecode(value: String): String {
+            if (value.indexOf('%') < 0) {
+                return value
+            }
+            val bytes = java.io.ByteArrayOutputStream(value.length)
+            var i = 0
+            while (i < value.length) {
+                val c: Char = value[i]
+                if (c == '%' && i + 2 < value.length) {
+                    val hi: Int = Character.digit(value[i + 1], 16)
+                    val lo: Int = Character.digit(value[i + 2], 16)
+                    if (hi >= 0 && lo >= 0) {
+                        bytes.write((hi shl 4) + lo)
+                        i += 3
+                        continue
+                    }
+                }
+                // Literal character: emit its UTF-8 bytes verbatim (leaves `+` untouched).
+                bytes.write(c.toString().toByteArray(Charsets.UTF_8))
+                i++
+            }
+            return String(bytes.toByteArray(), Charsets.UTF_8)
+        }
 
         /**
          * Build the per-file `columnId -> partitionValue` map for IDENTITY-transform

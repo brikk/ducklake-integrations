@@ -495,8 +495,9 @@ big-ticket degraded-type item; engine-level type features.
   optional); arithmetic-operator and `concat`/`position` translation (small, deliberately
   deferred).
 - SQLite catalog backend (planned tier).
-- Vortex: type audit beyond scalars/ARRAY/ROW; verify the extension actually *exploits* pushed
-  predicates (the WHERE renders; whether vortex skips decompression is unmeasured).
+- Vortex: type audit beyond scalars/ARRAY/ROW. (Pushdown exploitation MEASURED 2026-07-07:
+  the filter binds INSIDE the READ_VORTEX operator — pruned decoding, not post-filtering;
+  canary test `vortexScanFilterPushdownProbe` pins it. V2 closed.)
 - Upstream watches (canary-driven retests on extension bumps): vortex MAP COPY native crash;
   lance arrow-scan NULL-ROW morph; lance MAP needs format 2.2 (now GATED at schema time —
   2026-06-14 — it failed opaquely as "Failed to close writer", not the clean upfront error an
@@ -573,8 +574,8 @@ until lance format 2.2, scalar-only list elements) are upstream-bound — the ca
 tables, no row-level deletes) are documented choices.
 
 **Vortex — the thinnest, but its holes are small.** `add_files` missing (F2 — cheapest win).
-Type audit + pushdown-exploitation verification (F11). MAP write gated on the upstream native
-crash. s3 streaming reads are env-channel only (documented).
+Type audit (F11; pushdown exploitation verified 2026-07-07 — V2 closed). MAP write gated on the
+upstream native crash. s3 streaming reads are env-channel only (documented).
 
 **Cross-cutting:** the two zero-test unknowns in T1 (row-level CRUD over non-parquet;
 partitioned non-parquet writes) gate several feature claims and go first.

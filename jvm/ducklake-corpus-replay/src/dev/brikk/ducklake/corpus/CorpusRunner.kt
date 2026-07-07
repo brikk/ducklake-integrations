@@ -20,7 +20,20 @@ class CorpusRunner(
     private val engine: ReplayReadEngine? = null,
     /** See [ReplayDriver]'s `metadataRewriter` — the backend axis. */
     private val metadataRewriter: ((String) -> String)? = null,
+    /**
+     * Per-file watchdog: a file whose replay exceeds this budget is abandoned
+     * (its worker thread is daemon and stays blocked; the oracle's resources
+     * leak until JVM exit) and reported as a TIMEOUT file-skip. Protects a run
+     * from pathological hangs — e.g. multi-connection transaction tests that
+     * deadlock on PostgreSQL row locks (see [PostgresAxisSkips]). Zero or
+     * negative disables the watchdog.
+     */
+    private val fileTimeoutSeconds: Long = DEFAULT_FILE_TIMEOUT_SECONDS,
 ) {
+
+    companion object {
+        const val DEFAULT_FILE_TIMEOUT_SECONDS: Long = 300
+    }
 
     fun discover(subdir: String? = null): List<Path> {
         val base = if (subdir == null) corpusRoot else corpusRoot.resolve(subdir)
@@ -34,8 +47,6 @@ class CorpusRunner(
     }
 
     fun run(files: List<Path>): CorpusReport {
-        // corpusRoot = <repo>/test/sql → repo root two levels up (for `data/` refs).
-        val driver = ReplayDriver(engine, repoRoot = corpusRoot.parent?.parent, metadataRewriter = metadataRewriter)
         val results = mutableListOf<FileResult>()
         for (file in files) {
             val rel = file.relativeTo(corpusRoot).toString()
@@ -45,13 +56,35 @@ class CorpusRunner(
                 continue
             }
             val parsed = SltParser.parse(rel, file.readText())
-            results +=
-                runCatching { driver.replay(parsed) }
-                    .getOrElse { e ->
-                        FileResult(rel, "CRASH: ${e.message?.lineSequence()?.firstOrNull() ?: e}", emptyList())
-                    }
+            results += replayGuarded(rel, parsed)
         }
         return CorpusReport(results)
+    }
+
+    private fun replayGuarded(rel: String, parsed: SltFile): FileResult {
+        // Fresh driver per file: an abandoned (timed-out) worker thread must never
+        // touch the state of a later file's replay.
+        // corpusRoot = <repo>/test/sql → repo root two levels up (for `data/` refs).
+        val driver = ReplayDriver(engine, repoRoot = corpusRoot.parent?.parent, metadataRewriter = metadataRewriter)
+        val body = {
+            runCatching { driver.replay(parsed) }
+                .getOrElse { e ->
+                    FileResult(rel, "CRASH: ${e.message?.lineSequence()?.firstOrNull() ?: e}", emptyList())
+                }
+        }
+        if (fileTimeoutSeconds <= 0) {
+            return body()
+        }
+        val future = java.util.concurrent.CompletableFuture.supplyAsync(body) { runnable ->
+            Thread(runnable, "corpus-replay-$rel").apply { isDaemon = true }.start()
+        }
+        return try {
+            future.get(fileTimeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        catch (_: java.util.concurrent.TimeoutException) {
+            FileResult(rel, "TIMEOUT: replay exceeded ${fileTimeoutSeconds}s (worker abandoned — likely a " +
+                    "backend lock hang; candidate for the axis skip list)", emptyList())
+        }
     }
 }
 

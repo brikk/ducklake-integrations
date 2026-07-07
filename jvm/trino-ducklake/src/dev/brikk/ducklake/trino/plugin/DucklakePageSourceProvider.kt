@@ -326,6 +326,71 @@ class DucklakePageSourceProvider @Inject constructor(
                 columnTree(inlinedSplit.tableId, eraSnapshot))
     }
 
+    /**
+     * Converts raw inlined rows to Trino-native values: identity-mapped nested
+     * text parsing, and era-default substitution — rows inlined under an era
+     * that PREDATES a column must project the column's `initial_default`
+     * (upstream issue 1135 semantics, same rule as the parquet missing-column
+     * path). readInlinedData returns NULL for era-absent columns.
+     */
+    private fun convertInlinedRows(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>,
+            realTypes: List<Type>,
+            rawRows: List<List<Any?>>): List<List<Any?>>
+    {
+        val nestedMappings: Map<Long, InlinedTextFieldMapping> =
+                resolveInlinedNestedMappings(inlinedSplit, realColumns)
+        val eraDefaults: Map<Int, Any?> = resolveInlinedEraDefaults(inlinedSplit, realColumns)
+        return rawRows.map { row ->
+            val converted: MutableList<Any?> = ArrayList(row.size)
+            for (i in row.indices) {
+                if (eraDefaults.containsKey(i)) {
+                    converted.add(eraDefaults[i])
+                } else {
+                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
+                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
+                }
+            }
+            converted
+        }
+    }
+
+    /**
+     * For columns ABSENT at the inlined split's schema-version era (added later
+     * via ALTER TABLE ADD COLUMN), the projected value for every row: the parsed
+     * `initial_default` when the column declares one, else null. Columns present
+     * at the era are not in the map (their stored values are used).
+     */
+    private fun resolveInlinedEraDefaults(
+            inlinedSplit: DucklakeInlinedSplit,
+            realColumns: List<DucklakeColumnHandle>): Map<Int, Any?>
+    {
+        if (realColumns.none { it.initialDefault != null }) {
+            return emptyMap()
+        }
+        val eraSnapshot: Long = catalog.resolveSchemaVersionSnapshot(
+                inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
+                ?: return emptyMap()
+        val eraColumnIds: Set<Long> = columnTree(inlinedSplit.tableId, eraSnapshot)
+                .filter { it.parentColumn == null }
+                .mapTo(mutableSetOf()) { it.columnId }
+        val defaults = mutableMapOf<Int, Any?>()
+        realColumns.forEachIndexed { index, handle ->
+            val initialDefault = handle.initialDefault
+            if (initialDefault != null && handle.columnId !in eraColumnIds) {
+                defaults[index] =
+                        try {
+                            DucklakePartitionValueParser.parseIdentity(handle.columnType, initialDefault)
+                        }
+                        catch (_: RuntimeException) {
+                            null
+                        }
+            }
+        }
+        return defaults
+    }
+
     private fun createInlinedPageSource(
             inlinedSplit: DucklakeInlinedSplit,
             columns: List<ColumnHandle>): ConnectorPageSource
@@ -361,16 +426,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val rawRows: List<List<Any?>> = catalog.readInlinedData(
                     inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
-            val nestedMappings: Map<Long, InlinedTextFieldMapping> =
-                    resolveInlinedNestedMappings(inlinedSplit, realColumns)
-            convertedRealRows = rawRows.map { row ->
-                val converted: MutableList<Any?> = ArrayList(row.size)
-                for (i in row.indices) {
-                    converted.add(DucklakeInlinedValueConverter.convertJdbcValue(
-                            row[i], realTypes[i], nestedMappings[realColumns[i].columnId]))
-                }
-                converted
-            }
+            convertedRealRows = convertInlinedRows(inlinedSplit, realColumns, realTypes, rawRows)
             rowCount = convertedRealRows.size
         }
         else if (beginSnapshots != null) {
@@ -1088,37 +1144,20 @@ class DucklakePageSourceProvider @Inject constructor(
                 }
             }
 
+            // A file registered via add_files carries a name map (mapping_id): for such
+            // files the map is AUTHORITATIVE — a column resolves ONLY through its
+            // target_field_id → source_name entry, never by a bare name coincidence.
+            // Otherwise a column DROPPED then RE-ADDED under a new column_id (whose old
+            // physical column of the same name still sits in the file) would resurrect
+            // the dead identity's data (upstream add_files.test: col2 reads NULL, we read
+            // the stale bytes). INSERT-written files have no map → name/field-id matching
+            // as before.
+            val hasNameMap: Boolean = split.fieldIdToParquetSourceName.isNotEmpty()
+
             for (column in fileColumns) {
                 val columnName: String = column.columnName
-                // Try name-based match first, then fall back to field_id match (handles column renames)
-                var columnIO: ColumnIO? = messageColumnIO.getChild(columnName)
-                if (columnIO == null && column.columnId > 0) {
-                    columnIO = fieldIdToColumnIO[column.columnId.toInt()]
-                }
-                // Finally, consult the catalog's name_map for files registered via
-                // add_files — covers the case where the parquet column name differs
-                // from the table column name (e.g. case-difference, or a column-rename
-                // where the file kept its original name). The map is empty for files
-                // without a mapping_id, so this is a no-op for INSERT-written files.
-                if (columnIO == null) {
-                    val parquetSourceName: String? = split.fieldIdToParquetSourceName[column.columnId]
-                    if (parquetSourceName != null && parquetSourceName != columnName) {
-                        columnIO = messageColumnIO.getChild(parquetSourceName)
-                    }
-                }
-                // (4) Era-name fallback for legacy files with NO mapping_id and NO
-                // parquet field_ids (pre-v0.4 add_files registrations whose name map
-                // was never persisted): the file's physical column carries the name
-                // this column had at the file's begin_snapshot. Upstream still reads
-                // such files after a column rename by resolving the era name; without
-                // this we silently NULL-fill (corpus repro:
-                // delete/delete_legacy_missing_mapping_after_rename_add_files.test).
-                if (columnIO == null && column.columnId > 0) {
-                    val eraName: String? = eraColumnNames[column.columnId]
-                    if (eraName != null && !eraName.equals(columnName, ignoreCase = true)) {
-                        columnIO = messageColumnIO.getChild(eraName)
-                    }
-                }
+                val columnIO: ColumnIO? = resolveColumnIO(
+                        column, hasNameMap, messageColumnIO, fieldIdToColumnIO, split, eraColumnNames)
 
                 if (columnIO == null) {
                     // Missing column in file. Two cases:
@@ -1636,14 +1675,64 @@ class DucklakePageSourceProvider @Inject constructor(
          * when the split carries a catalog-recorded partition value for this column (hive-style
          * external imports), parses the string value and projects it as a constant instead.
          */
+        /**
+         * Resolves the parquet [ColumnIO] for a projected column. A file with a
+         * name map ([hasNameMap], set for add_files-registered files) is
+         * AUTHORITATIVE: resolve ONLY through target_field_id → source_name (a
+         * miss = column absent when the file was written → NULL/default), never a
+         * bare-name coincidence — otherwise a dropped-then-re-added column would
+         * resurrect the dead identity's physical data. Unmapped (INSERT-written /
+         * legacy) files: name → field-id → era-name (rename fallbacks), with the bare-name
+         * match gated on era-aware column existence (see below).
+         */
+        private fun resolveColumnIO(
+                column: DucklakeColumnHandle,
+                hasNameMap: Boolean,
+                messageColumnIO: MessageColumnIO,
+                fieldIdToColumnIO: Map<Int, ColumnIO>,
+                split: DucklakeSplit,
+                eraColumnNames: Map<Long, String>): ColumnIO?
+        {
+            if (hasNameMap) {
+                return split.fieldIdToParquetSourceName[column.columnId]
+                        ?.let { messageColumnIO.getChild(it) }
+            }
+            // Bare-name match — but ONLY when this column_id existed at the file's begin_snapshot.
+            // eraColumnNames is column_id → physical name as of begin_snapshot; when it is populated
+            // (real reads carrying a begin_snapshot) a column_id ABSENT from it did not exist when
+            // the file was written, so a physical column that happens to share the current name
+            // belongs to a DIFFERENT, since-dropped identity. Accepting it would resurrect the dead
+            // column's bytes — upstream add_files.test: an unmapped INSERT-written file physically
+            // carrying an old `col2`, read after col2 was DROPPED then RE-ADDED under a new
+            // column_id, must read NULL, not the stale value. An empty era map (test split / no
+            // begin_snapshot) keeps the legacy name-first behavior.
+            if (eraColumnNames.isEmpty() || eraColumnNames.containsKey(column.columnId)) {
+                messageColumnIO.getChild(column.columnName)?.let { return it }
+            }
+            if (column.columnId > 0) {
+                fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
+                val eraName: String? = eraColumnNames[column.columnId]
+                if (eraName != null && !eraName.equals(column.columnName, ignoreCase = true)) {
+                    return messageColumnIO.getChild(eraName)
+                }
+            }
+            return null
+        }
+
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
-            val partitionValue: String? = split.partitionValuesByColumnId[column.columnId]
-            if (partitionValue == null) {
+            // Precedence: hive partition value (external add_files) > the column's
+            // initial_default (rows predating ADD COLUMN ... DEFAULT — upstream issue
+            // 1135: `WHERE b = 42` must match old rows after ADD COLUMN b DEFAULT 42)
+            // > NULL. initial_default is plain value text, same shape the partition
+            // parser consumes.
+            val storedValue: String? = split.partitionValuesByColumnId[column.columnId]
+                    ?: column.initialDefault
+            if (storedValue == null) {
                 return column.columnType.createNullBlock()
             }
             try {
-                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, partitionValue)
+                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, storedValue)
                 return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType, nativeValue)
             }
             catch (_: RuntimeException) {

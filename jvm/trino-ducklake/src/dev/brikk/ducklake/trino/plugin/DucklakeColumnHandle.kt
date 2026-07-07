@@ -35,7 +35,15 @@ data class DucklakeColumnHandle @JsonCreator constructor(
         @get:JvmName("columnType")
         @param:JsonProperty("columnType") val columnType: Type,
         @get:JvmName("nullable")
-        @param:JsonProperty("nullable") val nullable: Boolean)
+        @param:JsonProperty("nullable") val nullable: Boolean,
+        /**
+         * `ducklake_column.initial_default` — the value rows written BEFORE the
+         * column existed must project (plain value text). Null = no default.
+         * NON_NULL keeps the wire format unchanged for the common case.
+         */
+        @get:JvmName("initialDefault")
+        @get:com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        @param:JsonProperty("initialDefault") val initialDefault: String? = null)
         : ColumnHandle
 {
     fun isRowIdColumn(): Boolean

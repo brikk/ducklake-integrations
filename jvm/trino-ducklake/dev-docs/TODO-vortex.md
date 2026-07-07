@@ -1,6 +1,6 @@
 # TODO: Vortex file format support
 
-**Status:** SHIPPED (read + write + `add_files`, incl. partitioned via `hive_partitioning`), via the DuckDB `vortex` extension (V0 probe, V1 read dispatch, V3 write all done). Remaining: audit richer Vortex encodings beyond scalars/ARRAY/ROW, verify predicate-pushdown exploitation (V2), appender-mode + direct-to-s3 write. MAP writes gated on the upstream native crash.
+**Status:** SHIPPED incl. verified predicate pushdown (read + write + `add_files`, incl. partitioned via `hive_partitioning`), via the DuckDB `vortex` extension (V0 probe, V1 read dispatch, V3 write all done). Remaining: audit richer Vortex encodings beyond scalars/ARRAY/ROW, appender-mode + direct-to-s3 write. Predicate-pushdown exploitation VERIFIED 2026-07-07 (filter binds inside the READ_VORTEX operator — see V2). MAP writes gated on the upstream native crash.
 **Scope:** trino-ducklake connector — read via the DuckDB `vortex` extension only. There is **no Trino-Vortex project** to adopt (the Vortex team has not published one), so unlike Lance there is no native-JNI route in scope; Vortex is DuckDB-engine-only for now.
 **Shared machinery:** Route A in [TODO-lance.md](TODO-lance.md) — the "scan a file via a DuckDB format table-function" generalization of the DuckDB executor is the same work; Vortex is the second consumer. Land that generalization once, parameterize by format.
 
@@ -68,8 +68,18 @@ Probe ran as a temporary spike test (`ProbeVortexViaDuckDb`, since deleted — i
 - [x] Quack-engine vortex — server-side INSTALL/LOAD + `FROM read_vortex` without an ATTACH alias;
   verified against the linux quack container (see above).
 
-## Phase V2 — predicate pushdown
-- [ ] TupleDomain + function-shape pushdown via the existing `DuckDbWhereClauseTranslator` / `applyFilter`, same as the `.db` and lance paths — predicates render into the `read_vortex` query. Vortex's compression-cascade should make pushdown especially valuable (skip decompression of pruned columns/ranges); verify the extension honors pushed filters.
+## Phase V2 — predicate pushdown — ✅ DONE 2026-07-07
+- [x] TupleDomain + function-shape pushdown via the existing `DuckDbWhereClauseTranslator` /
+  `applyFilter`, same as the `.db` and lance paths — the rendering plumbing turned out to be
+  format-blind and was ALREADY firing (`createDuckDbPageSource` never gated by format); what V2
+  actually delivered is proof + a canary: (a)
+  `TestDucklakeVortexFileScanRead.fileScanPushesPredicateIntoVortexScan` pins that a pushed
+  `id=2` reaches DuckDB and filters (lance-A2 transplant); (b) the **exploitation question is
+  now MEASURED**: `vortexScanFilterPushdownProbe` EXPLAINs `read_vortex(...) WHERE id=42` and
+  the plan shows the filter **bound INSIDE the READ_VORTEX operator** (`Filters: id=42`, no
+  separate FILTER node) — the extension binds DuckDB's optimizer filter pushdown, so predicates
+  reach the vortex scan itself (pruned decoding), not a post-filter. The probe doubles as a
+  canary against a future extension update losing the binding.
 
 ## Phase V3 — write (DONE 2026-06-08)
 - [x] `DucklakePageSink.openVortexWriter` → `DuckDbArrowStreamFileWriter` parameterized with
