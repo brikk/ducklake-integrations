@@ -224,8 +224,15 @@ Two FE-route gaps surfaced and were fixed to get here (both in
 - [x] **W2c — INSERT (partitioned / BUCKET):** ✅ **VALIDATED GREEN end-to-end** — iceberg
   PartitionSpec → sink `partition_specs_json`/`partition_spec_id`, `partition_id` on the
   commit fragment; the live smoke confirmed the BE's bucket transform == DuckLake's
-  (recorded buckets `{1,2,3}`). Only the date/decimal/float **stat-decode** extension
-  remains (write-side pruning coverage, not correctness).
+  (recorded buckets `{1,2,3}`).
+  - [x] **stat-decode extension (2026-07-07).** `DuckLakeIcebergCommitMapper.decodeBound`
+    now decodes `float32`/`float64` (LE IEEE-754 → BigDecimal-parseable string) and `date`
+    (LE int days → ISO-8601 `yyyy-MM-dd`) min/max in addition to int/varchar; non-finite
+    floats (`NaN`/±Inf) and `decimal`/`timestamp`/unsigned/`int128` stay `null` (safe: no
+    pruning). Oracle: `DucklakeStatTypes.parseStat`, the same parser the READ-path range
+    prune calls on the stored strings. +2 headless tests. Extends write-side pruning
+    coverage (a null bound was already correct, just non-pruning). Decimal deferred (needs
+    the big-endian unscaled + scale, out of the fragment's reach here).
 - [x] **W3 — CTAS** (`CREATE TABLE … AS SELECT`) = W1 DDL + W2 INSERT composed: ✅
   **VALIDATED GREEN end-to-end** on a live FE+BE — Doris creates the table from the
   SELECT schema + the BE writes the rows in one statement; round-trips through Doris
@@ -233,6 +240,30 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   CTAS that infers a NARROW int (literal `1`→TINYINT) crashes the BE Iceberg writer —
   a BE serde/arrow-builder bug, not CTAS-specific (see friction log 2026-06-10); use
   INT/BIGINT or `CAST(… AS INT)`.
+- [ ] **W2d — INSERT OVERWRITE — ⛔ TODO: pin the semantics before building.**
+  The sink already carries `setOverwrite(handle.isOverwrite)`; the *missing* pieces
+  are (a) admission — declare `OVERWRITE` in
+  `DuckLakeWritePlanProvider.supportedOperations()` (default is `{INSERT}` only, so
+  the engine rejects INSERT OVERWRITE before reaching us), and (b) the **catalog
+  commit semantics**, which are NOT a blanket truncate.
+  **Doris `INSERT OVERWRITE` is dynamic-partition-overwrite, not table-truncate:**
+  - **Unpartitioned** → replace the whole table.
+  - **Partitioned, no `PARTITION (...)` clause** → overwrite ONLY the partitions
+    *touched by the incoming rows*; other partitions are untouched (dynamic
+    partition overwrite).
+  - **`PARTITION (p=…)` clause** → overwrite exactly the named partitions
+    (`requiresMaterializeStaticPartitionValues()` / `validateStaticPartitionColumns()`
+    are the P6 seams for the static-partition form).
+  A truncate-then-insert would **over-delete** (wipe untouched partitions) — do NOT
+  do it. The right primitive is a **single-snapshot** catalog op that end-snapshots
+  only the live data/delete/inlined rows belonging to the *target partition set*
+  and registers the new fragments atomically (mirrors `commitMerge`'s one-snapshot
+  pattern; `truncateTable`'s clear logic is the unpartitioned special case). Blocked
+  on: (1) documenting the exact target-partition-set derivation (dynamic from
+  fragment `partition_id`s vs static from the clause), (2) a new conflict-matrix
+  entry, (3) how the BE reports the touched partitions on the overwrite sink.
+  Validation is the compose smoke + a headless catalog-commit test (the corpus /
+  DuckDB oracle has no INSERT OVERWRITE — it's a Doris/Hive-ism).
 - [ ] **W4 — DELETE / UPDATE (merge-on-read):** position-delete files +
   `catalog.commitDelete`/`commitMerge`. **De-risked 2026-06-24 (native amd64 probe).**
   Earlier this was marked "gated on the read-side delete blocker (Step 7, BE
