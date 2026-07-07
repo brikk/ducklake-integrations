@@ -257,11 +257,11 @@ internal class DuckLakeScanPlanProvider(
     /**
      * Whether [DuckLakeInlinedParquetWriter] can encode this column type. The
      * writer covers the non-degraded scalar core (bool, signed/small-unsigned
-     * ints, floats, date, timestamp[_s/_ms/_ns], varchar, blob, decimal).
-     * Excluded (Stage 2): nested (list/struct/map), timestamptz (Nereids
-     * read-back gap), and the degraded-to-STRING/other types the writer's
-     * schema builder rejects (time/timetz, json/variant/interval, uuid,
-     * uint32/64/128, int128, geometry family).
+     * ints, floats, date, timestamp[_s/_ms/_ns], timestamptz, varchar, blob,
+     * decimal). Excluded (Stage 2): nested (list/struct/map) and the
+     * degraded-to-STRING/other types the writer's schema builder rejects
+     * (time/timetz, json/variant/interval, uuid, uint32/64/128, int128,
+     * geometry family).
      */
     private fun isInlinedWritableScalar(ducklakeType: String): Boolean {
         val t = ducklakeType.trim().lowercase(java.util.Locale.getDefault())
@@ -684,7 +684,7 @@ internal class DuckLakeScanPlanProvider(
             "int64", "uint32",
             "float32", "float64",
             "date",
-            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns",
+            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns", "timestamptz",
             "varchar", "blob",
         )
 

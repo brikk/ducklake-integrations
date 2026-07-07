@@ -114,13 +114,19 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   parquet-format shaded-thrift ABI break (FE runtime is JDK 17; validated
   live).
   - **Stage 1 scope:** scalar columns + local-fs warehouse only. Excluded
-    (fail loud → engine-skip): nested (list/struct/map), **timestamptz** (the
-    synthesized zone-aware timestamp surfaces UNSUPPORTED in Nereids on
-    read-back — needs a BE round-trip fix), degraded-to-string types
-    (json/variant/interval/time/uuid/uint*/int128/geometry), and S3 warehouses.
+    (fail loud → engine-skip): nested (list/struct/map), degraded-to-string
+    types (json/variant/interval/time/uuid/uint*/int128/geometry), and S3
+    warehouses.
+  - [x] **timestamptz read (2026-07-07).** Now readable, inlined AND
+    file-based, mapped to naive DATETIMEV2(6). Two fixes: (a) FE type name must
+    be `TIMESTAMPTZ` not `TIMESTAMPTZV2` (else Nereids UNSUPPORTED); (b) the
+    4.1.0 BE can't read a UTC-micros parquet column into a `TimeStampTz` slot
+    ("DateTimeV2 => TimeStampTz"), so we degrade to naive DATETIMEV2 — correct
+    UTC values, zone-naive typing. **Restore `TIMESTAMPTZ` when the BE supports
+    the conversion** (friction log 2026-07-07).
   - [ ] **Stage 2:** nested inlined columns (DuckDB-text recursive parser),
-    timestamptz read-back, inlined DELETEs (of file rows), S3-warehouse temp
-    write + lifecycle/GC, mixed inline+file under a file-prune.
+    inlined DELETEs (of file rows), S3-warehouse temp write + lifecycle/GC,
+    mixed inline+file under a file-prune.
 **Per-dir corpus sweep (2026-07-06, verified GREEN — run one dir at a time,
 ~1 min each; NEVER the full corpus unless explicitly asked):**
 

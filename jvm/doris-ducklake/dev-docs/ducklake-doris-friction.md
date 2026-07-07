@@ -17,6 +17,46 @@ Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 
 ---
 
+## 2026-07-07 · BE parquet reader can't read timestamptz into a TimeStampTz slot
+
+**Symptom.** A DuckLake `timestamptz` column mapped to Doris `TIMESTAMPTZ`
+(`ScalarType.createTimeStampTzType`) fails at read time on the BE — for a real
+DuckLake-written file AND a connector-synthesized one:
+
+```
+[INTERNAL_ERROR]The column type of 'ts' is not supported: Unsupported type
+change: Nullable(DateTimeV2(6)) => Nullable(TimeStampTz(6)),
+src_logical_type: Nullable(DateTimeV2(6)), dst_logical_type: Nullable(TimeStampTz(6))
+```
+
+(There is also an FE-side prerequisite: the connector must emit the type name
+`TIMESTAMPTZ`, not `TIMESTAMPTZV2` — the latter falls through
+`ConnectorColumnConverter` to `UNSUPPORTED` and Nereids `CheckDataTypes`
+rejects the plan with "type UNSUPPORTED is unsupported for Nereids". Fixed on
+our side.)
+
+**Root cause.** DuckLake writes `timestamptz` as parquet `INT64` /
+`TIMESTAMP_MICROS` with `isAdjustedToUtc=true` (verified via
+`parquet_schema`). The 4.1.0 BE parquet reader surfaces that column's logical
+type as `DateTimeV2` and has no conversion path to a `TimeStampTz` scan slot
+(`be/src/vec/exec/format/parquet/...` "Unsupported type change"). So a
+zone-aware Doris slot over a UTC-micros parquet column is unreadable, whether
+the file was written by DuckDB or by our inlined-data synthesizer.
+
+**Workaround.** Map `timestamptz` → naive `DATETIMEV2(6)`
+(`DuckLakeTypeMapping`). The stored micros are already UTC, so the wall-clock
+values are correct; only the zone-aware TYPING is lost (a documented
+degradation — trino keeps it zone-aware via its own reader). The inlined
+writer writes the column as `isAdjustedToUtc=false` micros to match, so the BE
+sees `DateTimeV2 => DateTimeV2`.
+
+**Fix (BE).** Add a `DateTimeV2 -> TimeStampTz` conversion to the parquet
+reader's type-change handling for `isAdjustedToUtc` timestamp columns (read
+the UTC micros into the tz slot). Then the connector can restore the
+`TIMESTAMPTZ` mapping for zone-aware semantics. Tracked in `TODO-read.md`.
+
+---
+
 ## 2026-07-06 · Schema dictionary is scan-node-level; can't express per-FILE column mapping
 
 **Symptom.** A DuckLake table with a DROP-then-re-ADD of a column, over

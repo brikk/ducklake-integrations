@@ -131,7 +131,7 @@ non-degraded core only.
 | `timestamp_s` | DATETIMEV2(0) | Yes | Yes | Second precision |
 | `timestamp_ms` | DATETIMEV2(3) | Yes | Yes | Millisecond precision |
 | `timestamp_ns` | DATETIMEV2(6) | Yes | — | Degraded — Doris caps datetime scale at 6; nanos clamp to micros (does not round-trip on write) |
-| `timestamptz` | TIMESTAMPTZV2(6) | Yes | Yes | Zone-aware; stored at microsecond precision |
+| `timestamptz` | DATETIMEV2(6) | Yes | — | Degraded (BE-gated) — read as naive UTC micros; the 4.1.0 BE can't read a UTC-micros parquet column into a zone-aware slot, so zone-aware typing is deferred (correct UTC values) |
 | `time` | STRING | Yes | — | Degraded — Doris has no first-class TIME |
 | `timetz` | STRING | Yes | — | Degraded |
 | `list<T>` | ARRAY(T) | Yes | — | Full nesting on read |

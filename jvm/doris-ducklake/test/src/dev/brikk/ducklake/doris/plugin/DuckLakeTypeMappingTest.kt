@@ -44,7 +44,10 @@ internal class DuckLakeTypeMappingTest {
         // nanos clamp to Doris's max datetime scale (6) — documented-lossy, see the
         // mapping's DEGRADED note and DuckLakeTemporalTypeAuditTest.
         assertThat(precision("timestamp_ns")).isEqualTo(6)
-        assertThat(name("timestamptz")).isEqualTo("TIMESTAMPTZV2")
+        // DEGRADED (BE-gated): timestamptz maps to naive DATETIMEV2 because the
+        // 4.1.0 BE can't read a TIMESTAMP_MICROS(isAdjustedToUtc) column into a
+        // TimeStampTz slot. Correct UTC values, zone-naive typing.
+        assertThat(name("timestamptz")).isEqualTo("DATETIMEV2")
     }
 
     @Test

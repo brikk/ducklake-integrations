@@ -116,12 +116,13 @@ internal object DuckLakeInlinedParquetWriter {
             "date" -> Types.optional(PrimitiveTypeName.INT32)
                 .`as`(LogicalTypeAnnotation.dateType())
             // DuckLake temporals are micros (ns clamps to micros on read).
-            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns" ->
+            // timestamptz is written NAIVE (isAdjustedToUtc=false) to match the
+            // DATETIMEV2 read mapping: the stored micros are already UTC, and the
+            // BE reads DateTimeV2<=>DateTimeV2 (an isAdjustedToUtc file would trip
+            // the "DateTimeV2 => TimeStampTz" BE gap). See DuckLakeTypeMapping.
+            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns", "timestamptz" ->
                 Types.optional(PrimitiveTypeName.INT64)
                     .`as`(LogicalTypeAnnotation.timestampType(false, LogicalTypeAnnotation.TimeUnit.MICROS))
-            "timestamptz" ->
-                Types.optional(PrimitiveTypeName.INT64)
-                    .`as`(LogicalTypeAnnotation.timestampType(true, LogicalTypeAnnotation.TimeUnit.MICROS))
             "varchar" -> Types.optional(PrimitiveTypeName.BINARY)
                 .`as`(LogicalTypeAnnotation.stringType())
             "blob" -> Types.optional(PrimitiveTypeName.BINARY)

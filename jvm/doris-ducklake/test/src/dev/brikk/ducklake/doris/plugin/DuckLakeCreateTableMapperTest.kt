@@ -52,11 +52,13 @@ internal class DuckLakeCreateTableMapperTest {
         // unsigned promotions, uuid/json/time → other types, and timestamp_ns whose
         // read surface clamps to DATETIMEV2(6) — Doris's max datetime scale — and so
         // write-maps back to "timestamp") which by design don't round-trip — those
-        // are DuckLakeTypeMapping choices, not this mapper's.
+        // are DuckLakeTypeMapping choices, not this mapper's. timestamptz is
+        // likewise excluded: it reads as (degraded) DATETIMEV2 → write-maps to
+        // "timestamp" (BE can't read a TimeStampTz slot; see DuckLakeTypeMapping).
         val core = listOf(
             "boolean", "int8", "int16", "int32", "int64",
             "float32", "float64", "date",
-            "timestamp", "timestamp_s", "timestamp_ms", "timestamptz",
+            "timestamp", "timestamp_s", "timestamp_ms",
             "varchar", "blob", "decimal(10,2)",
         )
         for (t in core) {

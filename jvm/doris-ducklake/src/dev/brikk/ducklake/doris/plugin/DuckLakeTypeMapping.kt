@@ -87,7 +87,18 @@ internal object DuckLakeTypeMapping {
             "date" -> ConnectorType.of("DATEV2")
             // DuckLake stores timestamps at microsecond precision.
             "timestamp" -> ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
-            "timestamptz" -> ConnectorType.of("TIMESTAMPTZV2", MICROS_SCALE, 0)
+            // DEGRADED (BE-gated, documented): the ideal mapping is TIMESTAMPTZ
+            // (zone-aware), and the FE now accepts it — but the 4.1.0 BE parquet
+            // reader can't convert a TIMESTAMP_MICROS(isAdjustedToUtc) column
+            // into a TimeStampTz slot ("Unsupported type change: DateTimeV2 =>
+            // TimeStampTz"), so even a real DuckLake timestamptz FILE is
+            // unreadable as TIMESTAMPTZ on this BE. DuckLake stores timestamptz
+            // as a pure UTC instant and the parquet is UTC-micros, so reading it
+            // as naive DATETIMEV2(6) yields the correct UTC wall-clock values
+            // (typed as zone-naive). This is the readable-vs-unreadable
+            // tradeoff; revisit to TIMESTAMPTZ when the BE supports the
+            // conversion. Tracked in the friction log + TODO-read.
+            "timestamptz" -> ConnectorType.of("DATETIMEV2", MICROS_SCALE, 0)
             "timestamp_s" -> ConnectorType.of("DATETIMEV2", 0, 0)
             "timestamp_ms" -> ConnectorType.of("DATETIMEV2", 3, 0)
             // DEGRADED (documented-lossy): Doris DATETIMEV2 caps scale at 6, so nanos

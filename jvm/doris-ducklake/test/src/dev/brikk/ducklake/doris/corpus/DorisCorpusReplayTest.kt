@@ -55,9 +55,6 @@ internal class DorisCorpusReplayTest {
             // ---- data_inlining: served now (Stage 1 scalar); these hit known gaps ----
             "data_inlining/data_inlining_encryption.test" to
                 "ENCRYPTED DuckLake attach (DuckDB-only parquet encryption); not a Doris read path",
-            "data_inlining/data_inlining_issue504.test" to
-                "inlined timestamptz column: the synthesized parquet's zone-aware timestamp surfaces as " +
-                "UNSUPPORTED in Nereids on read-back (Stage 2 — timestamptz inlined; TODO-read)",
             "data_inlining/data_inlining_per_schema_alter.test" to
                 "column DEFAULT values over inlined data (same gap as issue_1135; TODO-read)",
             "data_inlining/data_inlining_update_inline_verification.test" to
