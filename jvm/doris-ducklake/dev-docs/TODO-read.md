@@ -89,10 +89,58 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
     can't express per-file maps. Needs per-range schema info in the SPI (or a
     BE per-file name→field-id hook) — see the friction log entry
     "Schema dictionary is scan-node-level; can't express per-FILE column mapping".
-- [ ] **Serve inlined data rows** (upgrade the guard into a real read):
-  options — FE-side synthesis of a temp parquet from `readInlinedData` into a
-  scan range, or a JNI-scanner seam. Trino model: `DucklakeInlinedSplit`.
-  Same work unlocks inline DELETE application (Step 7.5).
+- [ ] **Column DEFAULT values** (corpus `issues/issue_1135`). `ALTER TABLE
+  ADD COLUMN b INT DEFAULT 42` must backfill rows written before the column
+  existed with the default (`WHERE b = 42` should match old rows). DuckLake
+  stores the default in `ducklake_column`, but our `DuckLakeColumn` doesn't
+  carry it and `getTableSchema` passes `defaultValue = null`, so old rows read
+  NULL. Two parts: (a) catalog surfaces the default (shared module change), and
+  (b) the read path applies it for rows in files predating the column — likely
+  the iceberg "generated/default column" BE seam (check whether the BE backfills
+  a not-in-file column from a default, or if it always NULL-fills). May be
+  partly BE-gated; investigate the iceberg default-column path first.
+ - [~] **Serve inlined data rows — Stage 1 (2026-07-07): OFF BY DEFAULT,
+   COMPOSE/DEV ONLY.** HARD-BLOCKED unless the catalog property
+   `experimental.inlined.reads=true` is set (so it can't be used by accident);
+   default behavior is a loud "not supported" error. The FE synthesizes a temp
+   Parquet from `readInlinedData`
+   (`DuckLakeInlinedParquetWriter`, low-level parquet `Types...id()` carrying
+   `field_id == column_id`) and emits it as a normal FILE_SCAN range. **This
+   only works because compose bind-mounts the same path into FE and BE.** In a
+   real cluster FE and BE are separate machines — a temp file the FE writes to
+   `java.io.tmpdir` (or any local disk) does not exist on the BE, so the scan
+   can't open it. Gated to local-fs warehouses; keep OFF in real deployments.
+   Corpus `data_inlining` 491/0 (compose). Value conversion mirrors trino's
+   `DucklakeInlinedValueConverter` (blob `\xNN`, non-finite floats, decimals).
+   Gotchas fixed: (a) filtered reads dropped inlined rows when `applyFilter`
+   set `prunedFileIds` — inlined ranges are now ALWAYS added; (b) writer
+   round-trip unit test assume-skips the JDK-25 parquet-format ABI break;
+   (c) temp file goes to `java.io.tmpdir` (NOT under the warehouse) so it can't
+   be miscounted by DuckLake's own `GLOB('<data_path>/**')` queries or mistaken
+   for a real data file by maintenance.
+   - [ ] **PRODUCTION SOLUTION REQUIRED (blocking for real use).** The
+     shared-filesystem assumption is false in a distributed FE/BE cluster.
+     Options (see friction log 2026-07-07 "No way to hand a small FE-built
+     payload to the BE without shared storage"): (1) FE writes the temp payload
+     to the table's OBJECT STORE (the S3/HDFS warehouse the BE already reads) +
+     GC; (2) an SPI small-payload channel that streams literal rows / a parquet
+     blob to the BE over the fragment RPC (no shared storage — the clean fix,
+     needs upstream); (3) a BE-side read-inlined-from-catalog hook. Until one
+     exists, inlined reads must stay gated to shared-storage (compose) setups.
+   - **Stage 1 scope:** scalar columns + local-fs warehouse only. Excluded
+     (fail loud → engine-skip): nested (list/struct/map), degraded-to-string
+     types (json/variant/interval/time/uuid/uint*/int128/geometry), and S3
+     warehouses.
+  - [x] **timestamptz read (2026-07-07).** Now readable, inlined AND
+    file-based, mapped to naive DATETIMEV2(6). Two fixes: (a) FE type name must
+    be `TIMESTAMPTZ` not `TIMESTAMPTZV2` (else Nereids UNSUPPORTED); (b) the
+    4.1.0 BE can't read a UTC-micros parquet column into a `TimeStampTz` slot
+    ("DateTimeV2 => TimeStampTz"), so we degrade to naive DATETIMEV2 — correct
+    UTC values, zone-naive typing. **Restore `TIMESTAMPTZ` when the BE supports
+    the conversion** (friction log 2026-07-07).
+  - [ ] **Stage 2:** nested inlined columns (DuckDB-text recursive parser),
+    inlined DELETEs (of file rows), S3-warehouse temp write + lifecycle/GC,
+    mixed inline+file under a file-prune.
 **Per-dir corpus sweep (2026-07-06, verified GREEN — run one dir at a time,
 ~1 min each; NEVER the full corpus unless explicitly asked):**
 
@@ -114,6 +162,8 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
 | general | 0 fail | |
 | table_changes | (with metadata) 0 fail | |
 | metadata | 0 fail | |
+| constraints/default/reserved_names/comments/snapshot_info/list_files/initialize | 0 fail | |
+| issues | 0 fail (4 skips) | found: column DEFAULT-values gap (issue_1135); rest = known inlined-delete / view / fault-injection |
 
 **Read-relevant corpus surface swept — no remaining read gaps.** The
 remaining unswept dirs are write/maintenance (compaction, rewrite_data_files,

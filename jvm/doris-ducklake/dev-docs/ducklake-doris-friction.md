@@ -10,10 +10,123 @@ hours of debugging.
 Sister docs: [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md)
 (canonical plan), [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md)
 (one-shot architectural review), [`TODO-read.md`](./TODO-read.md)
-(working state).
+(working state), [`CRUTCHES-AND-SHORTCUTS.md`](./CRUTCHES-AND-SHORTCUTS.md)
+(audited inventory of every non-production-clean path — read before trusting a
+feature is deployment-ready).
 
 Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 → **Fix** (small, pickable). Newest first.
+
+---
+
+## 2026-07-07 · No way to hand a small FE-built payload to the BE without shared storage (inlined-data reads)
+
+**Symptom.** DuckLake keeps small tables' rows inline in the metadata catalog
+(`ducklake_inlined_data_*`), not in data files. To let the BE — which reads
+files only — see them, the FE synthesizes a temp Parquet from the catalog rows
+and emits a normal `FILE_SCAN` range pointing at it. **This only works when
+the FE and BE share a filesystem at the same path.** In compose they do (a
+bind mount); in a real cluster the FE and BE are separate machines, so a
+temp file the FE writes to its local disk (or `java.io.tmpdir`) does not
+exist on the BE — the scan fails to open the file. The current
+implementation is therefore a **dev/compose-only crutch**, gated to
+local-filesystem warehouses, and is NOT production-viable.
+
+**Root cause.** The `fe-connector` SPI has no channel for a connector to ship
+a small FE-computed payload (a few KB of rows) to the BE for a scan. Every
+read path assumes the bytes already live in storage the BE can reach (S3,
+HDFS, or a genuinely shared FS). Confirmed against the P6 SPI: no in-memory /
+values scan-range type, `META_SCAN_NODE`/`fetchSchemaTableData` is a closed
+enum with lossy `TCell` type coverage, `DATA_GEN_SCAN_NODE` is NUMBERS-only,
+and the iceberg/paimon JNI sys-table path is a hardcoded `table_format_type`
+dispatch (see the 2026-07-06 "No SPI path for a connector to hand FE-computed
+rows to the BE" entry — same root gap, this is the concrete write-then-read
+consequence).
+
+**Workaround (compose only).** Write the temp Parquet under
+`java.io.tmpdir`, which the compose `corpusReplayTest` task pins into the
+shared FE↔BE bind mount. Real deployments have no such shared path, so
+inlined reads must remain gated off there.
+
+**Fix (pickable upstream changes, ranked).**
+1. **Have the FE write the temp payload to the table's own object store**
+   (the warehouse the BE already reads — S3/HDFS), not the FE's local disk.
+   Needs the connector to reach the warehouse filesystem from the FE (creds +
+   an FE-side FS write), plus a lifecycle/GC story. Production-viable but
+   heavy, and still a write-per-query.
+2. **A small-payload SPI channel:** let a `ConnectorScanRange` carry literal
+   rows (or a serialized parquet blob) that the coordinator streams to the BE
+   over the existing fragment RPC — no shared storage. This is the clean
+   answer for the KB-scale inlined case; needs an in-memory/values scan-range
+   type + full `TCell`/nested type coverage on the BE side.
+3. **A BE-side "read inlined from catalog" hook** (BE queries the metadata DB
+   directly for the inlined table). Couples the BE to the catalog; least
+   attractive.
+
+Until one lands, inlined-data reads work only where FE and BE share storage;
+tracked in `TODO-read.md`.
+
+---
+
+## 2026-07-07 · timestamptz-in-parquet unreadable until a MASTER/nightly BE (not any 4.1.x)
+
+**UPDATE (2026-07-07):** `TIMESTAMPTZ` is a real, supported Doris type (4.1.2
+release note: "Support TIMESTAMPTZ in multiple aggregate and array functions"
+#62756 — but that's compute-side, not the parquet reader). The parquet-reader
+conversion (`be/src/format/parquet/parquet_column_convert.{h,cpp}`
+`Int64ToTimestampTz`/`Int96toTimestampTz` → `ColumnTimeStampTz`) is **master-only**:
+**verified that be-4.1.2 STILL errors** `DateTimeV2 => TimeStampTz` (bumped the
+compose BE 4.1.0 → 4.1.2 and re-tested). So it is NOT in any 4.0.x/4.1.x
+release; needs a master/nightly BE.
+
+The in-tree `fe-connector-iceberg` already models this: catalog property
+`enable.mapping.timestamp_tz` (default OFF → naive `DATETIMEV2`; ON →
+`TIMESTAMPTZ`) — `IcebergTypeMapping` / `IcebergConnectorProperties`. **We now
+mirror it exactly** (`DuckLakeConnectorProperties.ENABLE_MAPPING_TIMESTAMP_TZ`,
+threaded through `DuckLakeConnectorMetadata` → `DuckLakeTypeMapping`), so our
+DATETIMEV2 default matches Doris's own connector default and users on a
+master/nightly BE can opt into zone-aware reads. The ON path can't be validated
+on our compose BE (4.1.2) — deferred to a nightly-BE bump. Original entry below.
+
+---
+
+## 2026-07-07 · BE parquet reader can't read timestamptz into a TimeStampTz slot
+
+**Symptom.** A DuckLake `timestamptz` column mapped to Doris `TIMESTAMPTZ`
+(`ScalarType.createTimeStampTzType`) fails at read time on the BE — for a real
+DuckLake-written file AND a connector-synthesized one:
+
+```
+[INTERNAL_ERROR]The column type of 'ts' is not supported: Unsupported type
+change: Nullable(DateTimeV2(6)) => Nullable(TimeStampTz(6)),
+src_logical_type: Nullable(DateTimeV2(6)), dst_logical_type: Nullable(TimeStampTz(6))
+```
+
+(There is also an FE-side prerequisite: the connector must emit the type name
+`TIMESTAMPTZ`, not `TIMESTAMPTZV2` — the latter falls through
+`ConnectorColumnConverter` to `UNSUPPORTED` and Nereids `CheckDataTypes`
+rejects the plan with "type UNSUPPORTED is unsupported for Nereids". Fixed on
+our side.)
+
+**Root cause.** DuckLake writes `timestamptz` as parquet `INT64` /
+`TIMESTAMP_MICROS` with `isAdjustedToUtc=true` (verified via
+`parquet_schema`). The 4.1.0 BE parquet reader surfaces that column's logical
+type as `DateTimeV2` and has no conversion path to a `TimeStampTz` scan slot
+(`be/src/vec/exec/format/parquet/...` "Unsupported type change"). So a
+zone-aware Doris slot over a UTC-micros parquet column is unreadable, whether
+the file was written by DuckDB or by our inlined-data synthesizer.
+
+**Workaround.** Map `timestamptz` → naive `DATETIMEV2(6)`
+(`DuckLakeTypeMapping`). The stored micros are already UTC, so the wall-clock
+values are correct; only the zone-aware TYPING is lost (a documented
+degradation — trino keeps it zone-aware via its own reader). The inlined
+writer writes the column as `isAdjustedToUtc=false` micros to match, so the BE
+sees `DateTimeV2 => DateTimeV2`.
+
+**Fix (BE).** Add a `DateTimeV2 -> TimeStampTz` conversion to the parquet
+reader's type-change handling for `isAdjustedToUtc` timestamp columns (read
+the UTC micros into the tz slot). Then the connector can restore the
+`TIMESTAMPTZ` mapping for zone-aware semantics. Tracked in `TODO-read.md`.
 
 ---
 

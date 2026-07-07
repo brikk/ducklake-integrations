@@ -61,7 +61,13 @@ services:
       start_period: 60s
 
   doris-be:
-    image: apache/doris:be-4.1.0
+    # 4.1.2 (latest 4.1.x release). NOTE: this does NOT yet read zone-aware
+    # timestamptz from parquet — the Int64ToTimestampTz converter is master-only
+    # (verified: 4.1.2 still errors "DateTimeV2 => TimeStampTz"). The
+    # enable.mapping.timestamp_tz=true path needs a master/nightly BE. The
+    # local-shuffle shim (smoke.sh §6b) is still required (our P6 FE plans
+    # LOCAL_EXCHANGE_NODE=38, absent from 4.1.2's thrift enum).
+    image: apache/doris:be-4.1.2
     container_name: doris-ducklake-be
     hostname: doris-be
     # Host-overridable: defaults to arm64 (Apple Silicon dev box); set

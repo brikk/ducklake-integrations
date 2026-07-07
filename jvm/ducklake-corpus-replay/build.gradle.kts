@@ -1,9 +1,28 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("buildlogic.kotlin.library")
     alias(libs.plugins.detekt)
 }
 
 version = "0.0.1"
+
+// Emit JVM 17 bytecode (built on the tree-wide JDK 25 toolchain). Nothing here
+// needs a Java 18+ API — only duckdb-jdbc + kotlin stdlib — and targeting 17
+// lets the JVM-17 consumers (the doris-ducklake plugin's tests, which must
+// match the JDK-17 Doris FE runtime) depend on this module without a
+// target-JVM-version conflict. Trino-ducklake (JVM 25) consumes 17 bytecode
+// fine. This keeps doris-ducklake a single consistent 17 toolchain and avoids
+// the JDK-25 parquet-format shaded-thrift ABI break in its tests.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
 
 detekt {
     buildUponDefaultConfig = true

@@ -35,6 +35,8 @@ import java.util.Optional
  */
 internal class DuckLakeConnectorMetadata(
     private val catalog: DucklakeCatalog,
+    // enable.mapping.timestamp_tz — see DuckLakeConnectorProperties / DuckLakeTypeMapping.
+    private val enableTimestampTz: Boolean = false,
 ) : ConnectorMetadata {
 
     override fun listDatabaseNames(session: ConnectorSession?): List<String> {
@@ -103,7 +105,7 @@ internal class DuckLakeConnectorMetadata(
             connectorColumns.add(
                 ConnectorColumn(
                     col.columnName,
-                    DuckLakeTypeMapping.fromDucklakeType(col.columnType),
+                    DuckLakeTypeMapping.fromDucklakeType(col.columnType, enableTimestampTz),
                     "", // comment — DuckLake doesn't track per-column comments yet
                     col.nullsAllowed,
                     null, // defaultValue — DuckLake doesn't surface column defaults yet
@@ -132,7 +134,7 @@ internal class DuckLakeConnectorMetadata(
             out[col.columnName] = DuckLakeColumnHandle(
                 col.columnId,
                 col.columnName,
-                DuckLakeTypeMapping.fromDucklakeType(col.columnType),
+                DuckLakeTypeMapping.fromDucklakeType(col.columnType, enableTimestampTz),
                 ordinal++,
             )
         }

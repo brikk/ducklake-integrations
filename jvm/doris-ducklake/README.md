@@ -131,7 +131,7 @@ non-degraded core only.
 | `timestamp_s` | DATETIMEV2(0) | Yes | Yes | Second precision |
 | `timestamp_ms` | DATETIMEV2(3) | Yes | Yes | Millisecond precision |
 | `timestamp_ns` | DATETIMEV2(6) | Yes | — | Degraded — Doris caps datetime scale at 6; nanos clamp to micros (does not round-trip on write) |
-| `timestamptz` | TIMESTAMPTZV2(6) | Yes | Yes | Zone-aware; stored at microsecond precision |
+| `timestamptz` | DATETIMEV2(6) | Yes | — | Degraded (BE-gated) — read as naive UTC micros; the 4.1.0 BE can't read a UTC-micros parquet column into a zone-aware slot, so zone-aware typing is deferred (correct UTC values) |
 | `time` | STRING | Yes | — | Degraded — Doris has no first-class TIME |
 | `timetz` | STRING | Yes | — | Degraded |
 | `list<T>` | ARRAY(T) | Yes | — | Full nesting on read |
@@ -169,7 +169,7 @@ metadata, and comments dirs.
 | Snapshot pinning (MVCC) | Yes | `beginQuerySnapshot` / `applySnapshot` thread the resolved snapshot onto the scan |
 | Table statistics | Yes | Row count + on-disk size from `ducklake_table_stats` |
 | Schema evolution on read | Yes | Renamed / added columns read correctly (added columns NULL for older rows); across the alter suite |
-| Inlined data (small tables) | No | **Guarded** — reads over live `ducklake_inlined_*` rows fail loudly at plan time (rows live in the catalog DB, not Parquet). Serving them is the top read backlog item. |
+| Inlined data (small tables) | No (default) | **Hard-blocked by default** (loud error) — DuckLake keeps small writes in `ducklake_inlined_*` catalog rows, not Parquet. An experimental dev-only path (`experimental.inlined.reads=true`) synthesizes a temp Parquet, but it requires FE and BE to share warehouse storage as a local filesystem, so it is NOT production-viable. A distributed-cluster solution (object-store write or an SPI payload channel) is a required follow-up — see dev-docs. |
 | Delete files (merge-on-read) | Blocked | FE plumbing done; **blocked on the BE** — DuckLake position-delete Parquet uses OPTIONAL columns, the BE Iceberg reader requires REQUIRED (`[CORRUPTION] Not nullable column has null values`). See Known Limitations. |
 | Time travel over a compaction boundary | Guarded | A read AS OF a snapshot older than a `merge_adjacent_files` compaction needs a per-row hidden-column snapshot filter the BE can't apply — fails loudly instead of over-returning. Latest-snapshot reads unaffected. |
 | Views | No | DuckLake views are not surfaced yet (they skip cleanly) |
@@ -273,6 +273,11 @@ Catalog properties on `CREATE CATALOG dl PROPERTIES (...)`:
 ## Not Yet Implemented / Out of Scope
 
 **Read backlog (real gaps):**
+- **Inlined data reads for production** — the experimental
+  `experimental.inlined.reads` path only works with shared FE/BE storage; a
+  distributed solution (object-store temp write + GC, or an SPI payload channel
+  that streams the rows to the BE without shared storage) is required before it
+  can be on by default. See the friction log.
 - **Serving inlined data rows** — turn the loud plan-time guard into an actual
   read (FE-side synthesis of a Parquet range from `readInlinedData`, or a JNI
   scanner seam). Also unblocks inline DELETE application.

@@ -155,7 +155,7 @@ object DorisCorpusDialect {
         // sampling / non-deterministic
         "TABLESAMPLE", "USING SAMPLE", "RANDOM", "UUID",
         // DuckDB virtual columns (ours would be $-prefixed if ever exposed)
-        "ROWID",
+        "ROWID", "FILENAME", "FILE_ROW_NUMBER", "FILE_INDEX",
         // DuckLake metadata functions (oracle-side concern)
         "DUCKLAKE_SNAPSHOTS", "DUCKLAKE_TABLE_INFO", "DUCKLAKE_TABLE_CHANGES",
     )

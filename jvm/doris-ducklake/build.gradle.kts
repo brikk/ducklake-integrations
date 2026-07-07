@@ -30,23 +30,19 @@ kotlin {
     }
 }
 
-// TESTS compile at the toolchain's 25 (they already RUN on 25): the corpus
-// replay module (:ducklake-corpus-replay) is a JVM-25 library, and only test
-// code touches it. Main stays strictly 17 — that's the FE ABI. The classpath
-// attributes must agree or Gradle refuses to resolve the corpus project.
-tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
-    compilerOptions.jvmTarget.set(JvmTarget.JVM_25)
-}
-tasks.named<JavaCompile>("compileTestJava") {
-    sourceCompatibility = JavaVersion.VERSION_25.toString()
-    targetCompatibility = JavaVersion.VERSION_25.toString()
-}
-configurations.testCompileClasspath {
-    attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
-}
-configurations.testRuntimeClasspath {
-    attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
-}
+// Main AND tests emit JVM 17 (built on the tree-wide JDK 25 toolchain) — 17 is
+// the Doris FE ABI, and running tests at 17 matches how the plugin runs inside
+// the FE. The corpus replay module (:ducklake-corpus-replay) also targets 17,
+// so the test classpath resolves it with no target-JVM conflict.
+//
+// Test-classpath ordering: the ~/.m2 fe-thrift (from `mvn install -P flatten`)
+// is a FAT jar that also bundles an OLD shaded `org.apache.parquet.format.*`
+// (a PageHeader without `setData_page_header`), which shadows the real
+// parquet-format-structures-1.17.0 and breaks the inlined-data writer test with
+// a NoSuchMethodError. The FE's own fe-thrift (output/fe/lib) is slim (no
+// parquet), so this is a fat-m2-jar test artifact, not a runtime problem. The
+// test tasks below reorder parquet-format-structures ahead of fe-thrift so the
+// real classes win — see prependParquetFormat.
 
 // mavenLocal is required ONLY for this module: the Doris fe-connector-api / spi
 // artifacts come from a custom branch (PR #62767) installed into ~/.m2. We
@@ -76,6 +72,16 @@ dependencies {
     // connector libs (like fe-thrift) — compileOnly, version-matched to FE (1.10.1).
     compileOnly("org.apache.iceberg:iceberg-api:1.10.1")
     compileOnly("org.apache.iceberg:iceberg-core:1.10.1")
+    // Inlined-data reads (DuckLakeInlinedParquetWriter): the FE synthesizes a
+    // temp Parquet from catalog-inlined rows so the BE can scan them. Written
+    // with parquet-avro (field_id-carrying), which is FE-supplied at runtime
+    // (output/fe/lib) — versions matched to the FE. compileOnly so the plugin
+    // jar ships no second copy of parquet/avro/hadoop.
+    compileOnly("org.apache.parquet:parquet-avro:1.17.0")
+    compileOnly("org.apache.parquet:parquet-hadoop:1.17.0")
+    compileOnly("org.apache.parquet:parquet-column:1.17.0")
+    compileOnly("org.apache.avro:avro:1.12.1")
+    compileOnly("org.apache.hadoop:hadoop-common:3.4.2")
 
     implementation(project(":ducklake-catalog"))
 
@@ -93,6 +99,16 @@ dependencies {
     // SchemaParser (the independent oracle), so iceberg is needed at test runtime.
     testImplementation("org.apache.iceberg:iceberg-api:1.10.1")
     testImplementation("org.apache.iceberg:iceberg-core:1.10.1")
+    // Inlined-data writer tests read the written Parquet back to assert
+    // field_ids/types/values, so parquet-avro + hadoop are on the test runtime.
+    testImplementation("org.apache.parquet:parquet-avro:1.17.0")
+    testImplementation("org.apache.parquet:parquet-hadoop:1.17.0")
+    testImplementation("org.apache.parquet:parquet-column:1.17.0")
+    testImplementation("org.apache.avro:avro:1.12.1")
+    testImplementation("org.apache.hadoop:hadoop-common:3.4.2")
+    // parquet-hadoop's ExampleParquetWriter/GroupWriteSupport reference
+    // hadoop-mapreduce input/output format classes; FE-supplied at runtime.
+    testImplementation("org.apache.hadoop:hadoop-mapreduce-client-core:3.4.2")
 
     // Shared Testcontainer fixture lives in the catalog's java-test-fixtures source set.
     testImplementation(testFixtures(project(":ducklake-catalog")))
@@ -151,15 +167,25 @@ tasks.assemble {
 // the same lake. Kept OUT of the normal `test` task (no cluster in CI).
 val corpusTmpDir = providers.gradleProperty("dorisCorpusDir").orElse("/tmp/ducklake-corpus")
 
+// Reorders the real parquet-format-structures ahead of the fat m2 fe-thrift on
+// a test classpath, so its (correct) org.apache.parquet.format.* classes win
+// over fe-thrift's stale bundled copy. First-on-classpath wins for duplicate
+// classes. See the header note above.
+fun prependParquetFormat(base: FileCollection): FileCollection {
+    val format = base.filter { it.name.startsWith("parquet-format-structures") }
+    return format + base
+}
+
 tasks.test {
     exclude("**/DorisCorpusReplayTest*")
+    classpath = prependParquetFormat(classpath)
 }
 
 val corpusReplayTest by tasks.registering(Test::class) {
     description = "Mirrors upstream DuckLake corpus reads through a live compose Doris FE+BE."
     group = "verification"
     testClassesDirs = sourceSets.test.get().output.classesDirs
-    classpath = sourceSets.test.get().runtimeClasspath
+    classpath = prependParquetFormat(sourceSets.test.get().runtimeClasspath)
     useJUnitPlatform()
     include("**/DorisCorpusReplayTest*")
     maxHeapSize = "2g"

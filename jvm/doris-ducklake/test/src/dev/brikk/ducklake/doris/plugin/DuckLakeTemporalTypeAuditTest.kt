@@ -81,21 +81,23 @@ internal class DuckLakeTemporalTypeAuditTest {
     }
 
     @Test
-    fun timestamptzStaysZoneAwareInsteadOfDegradingToNaiveTimestamp() {
+    fun timestamptzDegradesToNaiveDatetimeUntilTheBeSupportsTimestamptz() {
         withMetadata { md ->
             val types = schemaTypes(md, "temporal_all")
             val tstz = types.getValue("c_tstz")
 
-            // REPORT-datetime-tz-handling Q1: DuckLake stores TIMESTAMPTZ as a pure
-            // instant (the writer's zone is discarded), so the FE type must keep
-            // instant semantics. Degrading to naive DATETIMEV2 would silently
-            // reinterpret the stored instant as a wall-clock value in whatever zone
-            // the reading session happens to use — the exact bug class the trino
-            // report calls the "silent portability bomb".
-            assertThat(tstz.typeName).isEqualTo("TIMESTAMPTZV2")
-            assertThat(tstz.typeName).isNotEqualTo("DATETIMEV2")
-            // TestDucklakeTimestampTzPrecision: DuckLake timestamptz is micros-only,
-            // so the surfaced scale is 6 regardless of any writer-declared precision.
+            // IDEAL: TIMESTAMPTZ (zone-aware) — DuckLake stores it as a pure UTC
+            // instant, so degrading to naive would be the trino report's "silent
+            // portability bomb". BUT the 4.1.0 BE parquet reader can't convert a
+            // TIMESTAMP_MICROS(isAdjustedToUtc) column into a TimeStampTz slot
+            // ("Unsupported type change: DateTimeV2 => TimeStampTz") — even a real
+            // DuckLake timestamptz FILE is unreadable typed as TIMESTAMPTZ. So we
+            // map to DATETIMEV2(6): the stored value IS UTC micros, so the wall
+            // clock is correct; only the zone-aware TYPING is lost. Flip back to
+            // TIMESTAMPTZ when the BE supports the conversion (friction log +
+            // TODO-read). This pins the DELIBERATE degradation.
+            assertThat(tstz.typeName).isEqualTo("DATETIMEV2")
+            // DuckLake timestamptz is micros-only → scale 6.
             assertThat(tstz.precision).isEqualTo(6)
         }
     }
@@ -156,30 +158,32 @@ internal class DuckLakeTemporalTypeAuditTest {
     }
 
     @Test
-    fun zoneAwarenessSurvivesNestedTypeReconstruction() {
+    fun nestedTimestamptzReconstructsConsistentlyWithTopLevel() {
         withMetadata { md ->
             val types = schemaTypes(md, "temporal_nested")
 
             // The catalog stores nested columns as a bare `list`/`struct`/`map`
             // parent row + child rows; JdbcDucklakeCatalog.resolveColumnType
-            // reconstructs the composite string the mapper parses. A bug there
-            // could quietly drop the tz-ness of nested timestamps — the same
-            // degrade-to-naive hazard as the top-level case, one level down.
+            // reconstructs the composite string the mapper parses. Nested
+            // timestamptz must degrade to naive DATETIMEV2 exactly like the
+            // top-level case (BE-gated; see DuckLakeTypeMapping) — the point is
+            // CONSISTENCY at every level, not silent divergence.
             val instants = types.getValue("instants")
             assertThat(instants.typeName).isEqualTo("ARRAY")
-            assertThat(instants.children[0].typeName).isEqualTo("TIMESTAMPTZV2")
+            assertThat(instants.children[0].typeName).isEqualTo("DATETIMEV2")
             assertThat(instants.children[0].precision).isEqualTo(6)
 
             val evt = types.getValue("evt")
             assertThat(evt.typeName).isEqualTo("STRUCT")
             assertThat(evt.fieldNames).containsExactly("occurred", "wall")
+            // occurred (timestamptz) + wall (timestamp) both surface DATETIMEV2 now.
             assertThat(evt.children.map { it.typeName })
-                .containsExactly("TIMESTAMPTZV2", "DATETIMEV2")
+                .containsExactly("DATETIMEV2", "DATETIMEV2")
 
             val byDay = types.getValue("by_day")
             assertThat(byDay.typeName).isEqualTo("MAP")
             assertThat(byDay.children.map { it.typeName })
-                .containsExactly("DATEV2", "TIMESTAMPTZV2")
+                .containsExactly("DATEV2", "DATETIMEV2")
         }
     }
 

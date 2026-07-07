@@ -34,7 +34,10 @@ class DuckLakeConnector internal constructor(
     private var writePlanProvider: DuckLakeWritePlanProvider? = null
 
     override fun getMetadata(session: ConnectorSession?): ConnectorMetadata =
-        DuckLakeConnectorMetadata(catalog())
+        DuckLakeConnectorMetadata(
+            catalog(),
+            properties[DuckLakeConnectorProperties.ENABLE_MAPPING_TIMESTAMP_TZ].toBoolean(),
+        )
 
     override fun getScanPlanProvider(): ConnectorScanPlanProvider {
         var local = scanPlanProvider

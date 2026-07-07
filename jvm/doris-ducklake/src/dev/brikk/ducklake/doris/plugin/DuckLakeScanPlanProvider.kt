@@ -5,6 +5,7 @@ import java.util.Objects
 import java.util.Optional
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
 import dev.brikk.ducklake.catalog.DucklakePartitionSpec
@@ -99,15 +100,14 @@ internal class DuckLakeScanPlanProvider(
                     " at snapshot " + dlHandle.snapshotId,
             )
 
-        // Correctness gate (corpus first-contact finding, 2026-07-06): DuckLake
-        // inlines small INSERTs/DELETEs into metadata-catalog rows
+        // DuckLake inlines small INSERTs/DELETEs into metadata-catalog rows
         // (ducklake_inlined_data_* / ducklake_inlined_delete_*) by default on
-        // PG backends. The Doris read path serves rows from data FILES only,
-        // so a table with live inlined state would SILENTLY return wrong rows
-        // (empty for inlined data, over-counted for inlined deletes). Fail
-        // loudly instead — two cheap metadata probes per plan buy "never
-        // silently wrong". Serving inlined rows is a TODO-read item.
-        failOnLiveInlinedState(dlHandle)
+        // PG backends; the Doris BE reads FILES only. Inlined DELETEs (of file
+        // rows) are unsupported — fail loud, never silently over-return. Inlined
+        // DATA rows are HARD-BLOCKED by default too (planInlinedDataRanges); the
+        // temp-file synthesis is dev/compose-only, opt-in behind
+        // `experimental.inlined.reads`.
+        failOnInlinedDeletes(dlHandle)
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
         val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
@@ -147,28 +147,218 @@ internal class DuckLakeScanPlanProvider(
         for (file in scanFiles) {
             ranges.add(buildRange(file, tableDataPath, partitions, PUSH_DOWN_COUNT_NONE))
         }
+        // Inlined data rows: synthesize a temp Parquet the BE scans alongside
+        // the file ranges (union is implicit — more ranges for the same scan).
+        // ALWAYS added, even under a file-level prune: `prunedFileIds` targets
+        // catalog DATA files by id, but inlined rows live in no file, so the
+        // prune can't (and must not) exclude them — the BE re-applies the
+        // pushed filter to the inlined range's rows. (Dropping them under a
+        // prune was a real bug: `WHERE ...` returned empty for inlined tables.)
+        ranges.addAll(planInlinedDataRanges(dlHandle))
         return ranges
     }
 
     /**
-     * Throws [DorisConnectorException] when the table has live inlined state
-     * at the pinned snapshot — the "not supported" wording is deliberate: it
-     * is the connector's documented-gap convention (and what the corpus
-     * mirror's error classifier recognizes as an engine-skip).
+     * Throws [DorisConnectorException] when the table has inlined DELETEs of
+     * file rows at the pinned snapshot. Those tombstone file-resident rows via
+     * catalog positions the BE can't apply, so scanning would over-return —
+     * fail loud (Stage 2 item). Inlined DATA rows are NOT gated here; they're
+     * served by [planInlinedDataRanges].
      */
-    private fun failOnLiveInlinedState(handle: DuckLakeTableHandle) {
-        val liveInlinedData =
-            catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId).any { it.hasLiveRows }
-        if (liveInlinedData || catalog.hasInlinedDeletes(handle.tableId, handle.snapshotId)) {
+    private fun failOnInlinedDeletes(handle: DuckLakeTableHandle) {
+        if (catalog.hasInlinedDeletes(handle.tableId, handle.snapshotId)) {
             throw DorisConnectorException(
-                "DuckLake table has live inlined " +
-                    (if (liveInlinedData) "data" else "delete") +
-                    " rows in the metadata catalog; reading them is not supported by the Doris " +
-                    "connector yet (rows live in ducklake_inlined_* tables, not parquet). " +
-                    "Flush them (DuckDB: CALL <lake>.flush_inlined_data()) or disable inlining " +
-                    "(CALL <lake>.set_option('data_inlining_row_limit', '0')) and rewrite.",
+                "DuckLake table has inlined DELETEs in the metadata catalog (rows in " +
+                    "ducklake_inlined_delete_*, not a delete file); the Doris connector can't apply " +
+                    "them at scan time yet. Flush them (DuckDB: CALL <lake>.flush_inlined_data()) or " +
+                    "disable inlining (CALL <lake>.set_option('data_inlining_row_limit', '0')) and rewrite.",
             )
         }
+    }
+
+    /**
+     * Materializes DuckLake inlined DATA rows into a temp Parquet the BE scans
+     * as a normal file range. The catalog snapshot-filters the rows;
+     * [DuckLakeInlinedParquetWriter] writes them with `field_id == column_id`
+     * so the schema dictionary + BE field-id matching resolve them exactly like
+     * a real file. One range per live `(schemaVersion)` inlined table.
+     *
+     * **COMPOSE/DEV ONLY** — the BE opens the temp file by path, so this only
+     * works when FE and BE share a filesystem (a bind mount). It is NOT
+     * production-viable on a distributed cluster; the local-fs-warehouse guard
+     * keeps it off elsewhere. The production channel (object-store write or an
+     * SPI payload seam) is the blocking follow-up in `TODO-read.md` / the
+     * friction log.
+     *
+     * Stage-1 guards (fail loud, never silently wrong):
+     *  - **scalar columns only** — a nested (list/struct/map) inlined column
+     *    needs the DuckDB-text recursive parser (Stage 2);
+     *  - **local-filesystem warehouse only** (see above).
+     */
+    private fun planInlinedDataRanges(
+        handle: DuckLakeTableHandle,
+    ): List<ConnectorScanRange> {
+        val infos = catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId)
+            .filter { it.hasLiveRows }
+        if (infos.isEmpty()) {
+            return emptyList()
+        }
+        // HARD-BLOCKED by default. The synthesis path writes a temp Parquet to
+        // shared warehouse storage and only works when FE and BE share that
+        // storage as a local filesystem (a compose bind mount) — it is NOT
+        // production-viable on a distributed FE/BE cluster (friction log
+        // 2026-07-07). Fail loud unless explicitly opted in via the
+        // `experimental.inlined.reads` catalog property, so it can never be used
+        // by accident. Remove the gate when the production channel (object-store
+        // write or SPI payload seam) lands.
+        if (!inlinedReadsEnabled()) {
+            throw DorisConnectorException(
+                "DuckLake table has live inlined data rows (in the metadata catalog, not data files); " +
+                    "reading them is not supported by default — the current implementation writes a temp " +
+                    "file to shared storage and only works where the FE and BE share a filesystem " +
+                    "(dev/compose). Flush inlined data (CALL <lake>.flush_inlined_data()) or disable " +
+                    "inlining (CALL <lake>.set_option('data_inlining_row_limit', '0')) and rewrite. " +
+                    "To enable the experimental dev-only path, set the catalog property " +
+                    "'$PROP_INLINED_READS'='true' (shared FE/BE storage required).",
+            )
+        }
+        val columns = topLevelScalarColumnsOrThrow(handle)
+        val scratchDir = java.nio.file.Files.createDirectories(inlinedScratchDir())
+        val ranges = ArrayList<ConnectorScanRange>(infos.size)
+        for (info in infos) {
+            val rows = catalog.readInlinedData(handle.tableId, info.schemaVersion, handle.snapshotId, columns)
+            if (rows.isEmpty()) {
+                continue
+            }
+            val fileName = "ducklake-inlined-${handle.tableId}-${info.schemaVersion}-${handle.snapshotId}.parquet"
+            val target = scratchDir.resolve(fileName)
+            DuckLakeInlinedParquetWriter.write(target, columns, rows)
+            val size = java.nio.file.Files.size(target)
+            ranges.add(
+                DuckLakeScanRange.Builder()
+                    .path(target.toString())
+                    .start(0L)
+                    .length(size)
+                    .fileSize(size)
+                    .fileFormat(PARQUET_FORMAT)
+                    .positionDeletes(emptyList())
+                    .partitionBearing(false)
+                    .partitionValues(emptyMap())
+                    .pushDownRowCount(PUSH_DOWN_COUNT_NONE)
+                    .build(),
+            )
+        }
+        return ranges
+    }
+
+    /**
+     * Top-level columns at the pinned snapshot, or throw if any is nested or an
+     * inlined-unsupported scalar (Stage 2). Nested (list/struct/map) needs the
+     * DuckDB-text recursive parser. `timestamptz` is excluded for now: the
+     * synthesized parquet's zone-aware timestamp surfaces as an UNSUPPORTED
+     * type in Nereids on read-back (`CheckDataTypes`), unlike a real
+     * DuckLake-written file — needs a BE round-trip fix (Stage 2).
+     */
+    private fun topLevelScalarColumnsOrThrow(handle: DuckLakeTableHandle): List<DucklakeColumn> {
+        val columns = catalog.getTableColumns(handle.tableId, handle.snapshotId)
+            .filter { it.parentColumn == null }
+            .sortedBy { it.columnOrder }
+        val unsupported = columns.firstOrNull { !isInlinedWritableScalar(it.columnType) }
+        if (unsupported != null) {
+            // "not supported" wording is deliberate — the corpus mirror's error
+            // classifier recognizes it as a documented engine-skip.
+            throw DorisConnectorException(
+                "reading inlined data with column '${unsupported.columnName}' (${unsupported.columnType}) " +
+                    "is not supported yet by the Doris connector (nested types, timestamptz, and " +
+                    "degraded-to-string types are Stage 2). Flush inlined data " +
+                    "(CALL <lake>.flush_inlined_data()) or disable inlining and rewrite.",
+            )
+        }
+        return columns
+    }
+
+    /**
+     * Whether [DuckLakeInlinedParquetWriter] can encode this column type. The
+     * writer covers the non-degraded scalar core (bool, signed/small-unsigned
+     * ints, floats, date, timestamp[_s/_ms/_ns], timestamptz, varchar, blob,
+     * decimal). Excluded (Stage 2): nested (list/struct/map) and the
+     * degraded-to-STRING/other types the writer's schema builder rejects
+     * (time/timetz, json/variant/interval, uuid, uint32/64/128, int128,
+     * geometry family).
+     */
+    private fun isInlinedWritableScalar(ducklakeType: String): Boolean {
+        val t = ducklakeType.trim().lowercase(java.util.Locale.getDefault())
+        if (isNestedType(t)) {
+            return false
+        }
+        if (t.startsWith("decimal(")) {
+            return true
+        }
+        return t in INLINED_WRITABLE_SCALARS
+    }
+
+    /**
+     * Scratch dir for the synthesized inlined-data Parquet. It MUST be reachable
+     * by the BE at the same absolute path — and the ONLY path shared between FE
+     * and BE (even in compose) is the warehouse storage itself. The FE's own
+     * `java.io.tmpdir` is process/container-local and invisible to the BE, so it
+     * cannot be used. We therefore place the file in a `.doris-inlined-scratch`
+     * dot-dir at the local warehouse ROOT: a sibling of the per-table
+     * `<table>_files/` dirs that no table-scoped data-path GLOB reaches
+     * and that maintenance ignores (leading dot), yet lives on the shared
+     * warehouse mount so the BE can open it.
+     *
+     * This is exactly why the whole approach is COMPOSE/DEV ONLY: it leans on
+     * FE and BE sharing warehouse storage as a local filesystem. A real
+     * distributed cluster needs an object-store write or an SPI payload channel
+     * (friction log 2026-07-07). Overridable via the `scratch.path` property.
+     * Throws for a non-local-filesystem warehouse (S3 write is a later item).
+     */
+    private fun inlinedScratchDir(): java.nio.file.Path {
+        catalogProperties[PROP_SCRATCH_PATH]?.takeIf { it.isNotBlank() }?.let {
+            return java.nio.file.Paths.get(it)
+        }
+        return localWarehouseRootOrThrow().resolve(INLINED_SCRATCH_DIRNAME)
+    }
+
+    /**
+     * Whether the experimental, dev/compose-only inlined-data read path is
+     * opted in (catalog property `experimental.inlined.reads`=true). Off by
+     * default so the shared-storage-dependent synthesis can never run
+     * accidentally in a real deployment.
+     */
+    private fun inlinedReadsEnabled(): Boolean =
+        catalogProperties[PROP_INLINED_READS]?.trim().equals("true", ignoreCase = true)
+
+    /** Warehouse root as a local fs path, or throw for a non-local (e.g. `s3://`) warehouse. */
+    private fun localWarehouseRootOrThrow(): java.nio.file.Path {
+        val root = catalog.getDataPath()
+            ?: catalogProperties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE]
+            ?: throw DorisConnectorException(
+                "DuckLake table has inlined data but no warehouse data path is configured; " +
+                    "cannot place the synthesized inlined-data file.",
+            )
+        val scheme = try {
+            java.net.URI(root).scheme
+        } catch (_: Exception) {
+            null
+        }
+        val localPath = when (scheme) {
+            null -> root
+            "file" -> java.net.URI(root).path
+            else -> throw DorisConnectorException(
+                "DuckLake table has inlined data but its warehouse is '$scheme://…'; reading inlined rows " +
+                    "is not supported for non-local-filesystem warehouses yet (needs an object-store or SPI " +
+                    "payload channel — see friction log). Flush inlined data " +
+                    "(CALL <lake>.flush_inlined_data()) or disable inlining and rewrite.",
+            )
+        }
+        return java.nio.file.Paths.get(localPath)
+    }
+
+    private fun isNestedType(ducklakeType: String): Boolean {
+        val t = ducklakeType.trim().lowercase(java.util.Locale.getDefault())
+        return t.startsWith("list<") || t.startsWith("struct<") || t.startsWith("map<")
     }
 
     /**
@@ -527,6 +717,23 @@ internal class DuckLakeScanPlanProvider(
         // state), mirroring iceberg's "iceberg.schema_evolution" prop.
         const val PROP_SCHEMA_DICTIONARY: String = "ducklake.schema_dictionary"
 
+        // Opt-in for the EXPERIMENTAL, dev/compose-only inlined-data read path.
+        // Off by default — the synthesis writes a temp file to shared warehouse
+        // storage and requires FE/BE to share it as a local FS, which no real
+        // cluster does. See friction log 2026-07-07 + TODO-read.
+        const val PROP_INLINED_READS: String = "experimental.inlined.reads"
+
+        // Optional override for where synthesized inlined-data Parquet is written
+        // (must be BE-reachable at the same path). Default: a dot-dir at the
+        // warehouse root — see inlinedScratchDir.
+        const val PROP_SCRATCH_PATH: String = "scratch.path"
+
+        // Dot-dir at the warehouse root for synthesized inlined-data files. On
+        // the shared warehouse mount (so the BE reaches it) but a sibling of the
+        // per-table dirs, so no table-scoped GLOB counts it and maintenance
+        // (leading dot) ignores it.
+        private const val INLINED_SCRATCH_DIRNAME: String = ".doris-inlined-scratch"
+
         // PluginDrivenScanNode reads this key out of getScanNodeProperties() to
         // decide which BE reader to dispatch to (PluginDrivenScanNode.java
         // mapFileFormatType: "parquet" → FORMAT_PARQUET, default FORMAT_JNI).
@@ -543,6 +750,18 @@ internal class DuckLakeScanPlanProvider(
         // The ConnectorScanRange "no precomputed count" sentinel every normal
         // range carries; only the collapsed count-pushdown range differs.
         private const val PUSH_DOWN_COUNT_NONE: Long = -1L
+
+        // Scalar DuckLake types DuckLakeInlinedParquetWriter can encode
+        // (decimal(p,s) handled separately). Keep in sync with the writer.
+        private val INLINED_WRITABLE_SCALARS: Set<String> = setOf(
+            "boolean",
+            "int8", "int16", "int32", "uint8", "uint16",
+            "int64", "uint32",
+            "float32", "float64",
+            "date",
+            "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns", "timestamptz",
+            "varchar", "blob",
+        )
 
         /**
          * Maps an FE-form storage key to its BE-canonical `AWS_*` alias,

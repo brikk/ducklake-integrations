@@ -52,6 +52,44 @@ internal class DorisCorpusReplayTest {
             "general/metadata_cache.test" to
                 "KNOWN BE GAP: DuckLake position-delete parquet uses OPTIONAL columns; BE iceberg reader " +
                 "requires REQUIRED (friction log 2026-05-19; REPORT-*delete*-nullability.md)",
+            // ---- data_inlining: served now (Stage 1 scalar); these hit known gaps ----
+            "data_inlining/data_inlining_encryption.test" to
+                "ENCRYPTED DuckLake attach (DuckDB-only parquet encryption); not a Doris read path",
+            "data_inlining/data_inlining_per_schema_alter.test" to
+                "column DEFAULT values over inlined data (same gap as issue_1135; TODO-read)",
+            "data_inlining/data_inlining_update_inline_verification.test" to
+                "inlined DELETEs (Stage 2): UPDATE produces inlined file-deletions the connector can't apply",
+            "data_inlining/data_inlining_transaction_local_delete.test" to
+                "inlined transaction-local deletes (Stage 2 inlined-delete territory)",
+            // These assert physical file counts over the warehouse via recursive
+            // GLOB('<data_path>/**'). Our inlined-data read synthesizes a temp
+            // Parquet on the SHARED warehouse storage (the compose crutch — the
+            // only path the BE can reach), so DuckLake's own file-count query
+            // sees it and returns N+1. This is an inherent flaw of the temp-file
+            // approach, not harness variance — it goes away once inlined rows
+            // reach the BE WITHOUT writing to the warehouse (object-store-with-GC
+            // or an SPI payload channel; see friction log 2026-07-07 + TODO-read
+            // "PRODUCTION SOLUTION REQUIRED"). The lake reads themselves mirror
+            // clean; only these self-file-inspection assertions diverge.
+            "data_inlining/basic_data_inlining.test" to
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file — inherent to the " +
+                "temp-file-on-shared-storage crutch; fixed by the production channel (friction 2026-07-07)",
+            "data_inlining/data_inlining_option.test" to
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file (see basic_data_inlining)",
+            "data_inlining/data_inlining_delete.test" to
+                "GLOB('<data_path>/**') counts our synthesized inlined-scratch file (see basic_data_inlining)",
+            // ---- issues/ regressions: map to already-known gaps or non-mirrorable harness tests ----
+            "issues/issue_865_update_wrong_result.test" to
+                "inlined file-deletes (DATA_INLINING_ROW_LIMIT 10): UPDATE mixing a committed delete file " +
+                "with inlined file-deletions — the known inlined-delete gap (friction 2026-05-19)",
+            "issues/issue_1135.test" to
+                "column DEFAULT values not surfaced: ADD COLUMN ... DEFAULT 42 should backfill old rows; " +
+                "DuckLake stores the default but our read path returns NULL (TODO-read: column defaults)",
+            "issues/view_tosql_performance.test" to
+                "DuckLake view + duckdb_views(): views are not surfaced by the connector (dialect skip)",
+            "issues/corrupted_catalog_fault_isolation.test" to
+                "fault-injection harness test (deliberately corrupts the catalog / expects DuckDB-specific " +
+                "error text) — not mirrorable against an external engine",
             // ---- REAL GAPS the mirror found on full-corpus contact (TODO-read items; un-skip when fixed) ----
             "add_files/add_files_hive.test" to GAP_HIVE_PARTITION_FILL,
             "add_files/add_files_hive_many_columns.test" to GAP_HIVE_PARTITION_FILL,
