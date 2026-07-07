@@ -471,7 +471,19 @@ under the new default.
 
 ## Schema Evolution Gaps
 
-- [ ] `ALTER TABLE SET TYPE` (type promotion)
+- [x] `ALTER TABLE SET TYPE` (type promotion) — DONE 2026-07-08. `setColumnType` SPI +
+  `DucklakeCatalog.setColumnType` (end-snapshot the old column row, insert a new row same
+  column_id/name/order/nullability, new type — mirrors `renameColumn`). WIDENING-only, validated by
+  `DucklakeTypePromotion.isWidening` (Trino projection of DuckLake's promotion set: signed-int chain,
+  int→REAL/DOUBLE, REAL→DOUBLE, TIMESTAMP→TIMESTAMPTZ; no-op same-type; everything else rejected
+  `NOT_SUPPORTED`). Reads across file generations: parquet self-heals via the reader's coercion;
+  the DuckDB-engine (duckdb/vortex) path CASTs the old physical column to the current type
+  (`ExecutionRequest.promotedColumnIds` → `DuckDbSelectSqlBuilder`, resolved by comparing file-era
+  vs current column type strings in `DucklakePageSourceProvider.resolvePromotedColumnIds`); inlined
+  values convert under the current type. Nested (struct-field) type changes out of scope. Pinned by
+  `TestDucklakeTypePromotion` (rules), `TestDucklakeSetColumnType` (e2e: int widening across
+  generations × parquet+duckdb, REAL→DOUBLE, TIMESTAMP→TIMESTAMPTZ, no-op, narrowing/incompatible
+  rejected), `TestDuckDbSelectSqlBuilder` (CAST rendering); `alter` corpus dir green. README flipped.
 - [x] `ALTER TABLE ADD/DROP FIELD` (nested struct field manipulation) — DONE (parquet self-heals;
   non-parquet via per-file struct_pack reshaping; e2e on duckdb + vortex). See § F9/nested in
   TODO-jayson-special-list.md and DESIGN-nested-field-evolution.md.

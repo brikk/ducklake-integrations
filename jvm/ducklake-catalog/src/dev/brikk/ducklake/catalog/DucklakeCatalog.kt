@@ -511,6 +511,16 @@ interface DucklakeCatalog {
     fun renameColumn(tableId: Long, columnId: Long, newName: String)
 
     /**
+     * Change a top-level column's type (`ALTER TABLE ... ALTER COLUMN c SET DATA TYPE …`).
+     * End-snapshots the current column row and inserts a new row with the same column_id but the
+     * updated [newColumnType] (a DuckLake type string). Only the type changes; name, order,
+     * nullability, and default are preserved. Increments schema version; creates a new snapshot
+     * atomically. Widening-compatibility is validated by the caller (connector) before this runs —
+     * the catalog records the change as given. Nested (struct-field) type changes are not supported.
+     */
+    fun setColumnType(tableId: Long, columnId: Long, newColumnType: String)
+
+    /**
      * Add a nested field to a struct column (`ALTER TABLE ... ADD COLUMN parent.child <type>`).
      *
      * [parentPath] is the dotted path to the containing struct, INCLUDING the top-level column name

@@ -179,6 +179,39 @@ class DucklakePageSourceProvider @Inject constructor(
         return NestedFieldReshapePlanner.buildPlans(projectedColumns, currentColumns, fileColumns)
     }
 
+    /**
+     * Top-level scalar columns whose DuckLake type differs between the file's begin_snapshot and the
+     * current schema — i.e. widened by `ALTER … SET DATA TYPE` after the file was written. The
+     * DuckDB-engine SQL builder CASTs these to the current type (the physical file holds the old
+     * one). Empty unless a projected scalar column actually changed type. Nested/complex promotions
+     * are out of scope (the SET TYPE DDL rejects them).
+     */
+    private fun resolvePromotedColumnIds(
+            table: ConnectorTableHandle,
+            split: DucklakeSplit,
+            projectedColumns: List<DucklakeColumnHandle>): Set<Long> {
+        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L || split.beginSnapshot == table.snapshotId) {
+            return emptySet()
+        }
+        val projectedScalarIds: Set<Long> = projectedColumns
+                .filterNot { it.columnType is RowType || it.columnType is io.trino.spi.type.ArrayType || it.columnType is io.trino.spi.type.MapType }
+                .mapTo(mutableSetOf()) { it.columnId }
+        if (projectedScalarIds.isEmpty()) {
+            return emptySet()
+        }
+        val fileTypeById: Map<Long, String> = columnTree(table.tableId, split.beginSnapshot)
+                .filter { it.parentColumn == null }
+                .associate { it.columnId to it.columnType }
+        val currentTypeById: Map<Long, String> = columnTree(table.tableId, table.snapshotId)
+                .filter { it.parentColumn == null }
+                .associate { it.columnId to it.columnType }
+        return projectedScalarIds.filterTo(mutableSetOf()) { id ->
+            val fileType: String? = fileTypeById[id]
+            val currentType: String? = currentTypeById[id]
+            fileType != null && currentType != null && fileType != currentType
+        }
+    }
+
     private fun columnTree(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         val key = FileColumnNamesKey(tableId, snapshotId)
         columnTreeCache[key]?.let { return it }
@@ -289,6 +322,9 @@ class DucklakePageSourceProvider @Inject constructor(
             // renamed struct subfields), which the SQL builder normalizes with struct_pack.
             val structReshapePlans: Map<Long, List<StructFieldPlan>> =
                     resolveStructReshapePlans(table, ducklakeSplit, sourceColumns)
+            // ...and columns whose scalar type widened since the file was written (SET DATA TYPE):
+            // the file holds the old physical type, so the SQL builder CASTs them to the current one.
+            val promotedColumnIds: Set<Long> = resolvePromotedColumnIds(table, ducklakeSplit, sourceColumns)
             return createDuckDbPageSource(
                     dataFileLocation,
                     sourceColumns,
@@ -298,7 +334,8 @@ class DucklakePageSourceProvider @Inject constructor(
                     fileSystem,
                     session,
                     fileColumnNamesById,
-                    structReshapePlans)
+                    structReshapePlans,
+                    promotedColumnIds)
         }
         throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
     }
@@ -1264,7 +1301,8 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             session: ConnectorSession,
             fileColumnNamesById: Map<Long, String>,
-            structReshapePlans: Map<Long, List<StructFieldPlan>>): ConnectorPageSource
+            structReshapePlans: Map<Long, List<StructFieldPlan>>,
+            promotedColumnIds: Set<Long> = emptySet()): ConnectorPageSource
     {
         // Separate positional columns (MERGE $row_id + queryable $row_id / $file_row_number)
         // from file-resident columns. The .db file does not store row IDs / file positions;
@@ -1331,7 +1369,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val effectivePushedExpressions: List<String> = if (requiresContiguousPositions) emptyList() else pushedExpressions
         var pageSource: ConnectorPageSource = DuckDbFilePageSource(
                 executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
-                duckDbTimeZone, fileColumnNamesById, structReshapePlans)
+                duckDbTimeZone, fileColumnNamesById, structReshapePlans, promotedColumnIds)
 
         if (positionalInjections.isNotEmpty()) {
             pageSource = PositionalVirtualInjectingPageSource(

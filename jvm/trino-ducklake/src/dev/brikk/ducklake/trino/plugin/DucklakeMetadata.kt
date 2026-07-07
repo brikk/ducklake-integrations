@@ -966,6 +966,32 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.renameColumn(handle.tableId, ducklakeColumn.columnId, target) }
     }
 
+    // ALTER TABLE ... ALTER COLUMN c SET DATA TYPE <type>. DuckLake permits WIDENING promotions only
+    // (so data files written under the old physical type still read correctly under the new one);
+    // narrowing would corrupt existing rows, so we reject it at DDL time. Reads of files written
+    // before the change get the widened type: parquet self-heals via the reader's type coercion,
+    // the DuckDB-engine (non-parquet) path CASTs to the file-era→current type, and inlined values
+    // convert under the current type. See DucklakeTypePromotion + DucklakePageSourceProvider.
+    override fun setColumnType(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnHandle, type: Type)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        val ducklakeColumn = column as DucklakeColumnHandle
+        val sourceType: Type = ducklakeColumn.columnType
+        if (sourceType == type) {
+            return
+        }
+        if (!DucklakeTypePromotion.isWidening(sourceType, type)) {
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "ALTER COLUMN SET DATA TYPE supports only widening type promotions; " +
+                            "%s -> %s is not allowed for column \"%s\"",
+                    sourceType.displayName, type.displayName, ducklakeColumn.columnName))
+        }
+        // toDucklakeType rejects any target with no DuckLake representation (e.g. an unsupported
+        // timestamp precision) with its own NOT_SUPPORTED before we touch the catalog.
+        val newDucklakeType: String = typeConverter.toDucklakeType(type)
+        translateCatalogExceptions { catalog.setColumnType(handle.tableId, ducklakeColumn.columnId, newDucklakeType) }
+    }
+
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
     // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
     // Reads of files written before a nested change are reconciled per file: parquet self-heals via
