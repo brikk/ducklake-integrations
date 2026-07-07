@@ -103,10 +103,10 @@ internal class DuckLakeScanPlanProvider(
         // DuckLake inlines small INSERTs/DELETEs into metadata-catalog rows
         // (ducklake_inlined_data_* / ducklake_inlined_delete_*) by default on
         // PG backends; the Doris BE reads FILES only. Inlined DELETEs (of file
-        // rows) are still unsupported — fail loud, never silently over-return.
-        // Inlined DATA rows are synthesized into a temp Parquet the BE can scan
-        // (Stage 1: scalar columns, local-fs warehouse) — see
-        // planInlinedDataRanges; unsupported inlined-data cases fail loud too.
+        // rows) are unsupported — fail loud, never silently over-return. Inlined
+        // DATA rows are HARD-BLOCKED by default too (planInlinedDataRanges); the
+        // temp-file synthesis is dev/compose-only, opt-in behind
+        // `experimental.inlined.reads`.
         failOnInlinedDeletes(dlHandle)
 
         val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
@@ -202,6 +202,25 @@ internal class DuckLakeScanPlanProvider(
             .filter { it.hasLiveRows }
         if (infos.isEmpty()) {
             return emptyList()
+        }
+        // HARD-BLOCKED by default. The synthesis path writes a temp Parquet to
+        // shared warehouse storage and only works when FE and BE share that
+        // storage as a local filesystem (a compose bind mount) — it is NOT
+        // production-viable on a distributed FE/BE cluster (friction log
+        // 2026-07-07). Fail loud unless explicitly opted in via the
+        // `experimental.inlined.reads` catalog property, so it can never be used
+        // by accident. Remove the gate when the production channel (object-store
+        // write or SPI payload seam) lands.
+        if (!inlinedReadsEnabled()) {
+            throw DorisConnectorException(
+                "DuckLake table has live inlined data rows (in the metadata catalog, not data files); " +
+                    "reading them is not supported by default — the current implementation writes a temp " +
+                    "file to shared storage and only works where the FE and BE share a filesystem " +
+                    "(dev/compose). Flush inlined data (CALL <lake>.flush_inlined_data()) or disable " +
+                    "inlining (CALL <lake>.set_option('data_inlining_row_limit', '0')) and rewrite. " +
+                    "To enable the experimental dev-only path, set the catalog property " +
+                    "'$PROP_INLINED_READS'='true' (shared FE/BE storage required).",
+            )
         }
         val columns = topLevelScalarColumnsOrThrow(handle)
         val scratchDir = java.nio.file.Files.createDirectories(inlinedScratchDir())
@@ -301,6 +320,15 @@ internal class DuckLakeScanPlanProvider(
         }
         return localWarehouseRootOrThrow().resolve(INLINED_SCRATCH_DIRNAME)
     }
+
+    /**
+     * Whether the experimental, dev/compose-only inlined-data read path is
+     * opted in (catalog property `experimental.inlined.reads`=true). Off by
+     * default so the shared-storage-dependent synthesis can never run
+     * accidentally in a real deployment.
+     */
+    private fun inlinedReadsEnabled(): Boolean =
+        catalogProperties[PROP_INLINED_READS]?.trim().equals("true", ignoreCase = true)
 
     /** Warehouse root as a local fs path, or throw for a non-local (e.g. `s3://`) warehouse. */
     private fun localWarehouseRootOrThrow(): java.nio.file.Path {
@@ -688,6 +716,12 @@ internal class DuckLakeScanPlanProvider(
         // to populateScanLevelParams (the two SPI methods share no instance
         // state), mirroring iceberg's "iceberg.schema_evolution" prop.
         const val PROP_SCHEMA_DICTIONARY: String = "ducklake.schema_dictionary"
+
+        // Opt-in for the EXPERIMENTAL, dev/compose-only inlined-data read path.
+        // Off by default — the synthesis writes a temp file to shared warehouse
+        // storage and requires FE/BE to share it as a local FS, which no real
+        // cluster does. See friction log 2026-07-07 + TODO-read.
+        const val PROP_INLINED_READS: String = "experimental.inlined.reads"
 
         // Optional override for where synthesized inlined-data Parquet is written
         // (must be BE-reachable at the same path). Default: a dot-dir at the

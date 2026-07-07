@@ -101,7 +101,12 @@ internal class DorisReplayEngine(
                     'metadata.url' = 'jdbc:postgresql://$pgFeHostPort/$db',
                     'metadata.user' = '$pgUser',
                     'metadata.password' = '$pgPassword',
-                    'storage.warehouse' = '${attachment.dataPath}'
+                    'storage.warehouse' = '${attachment.dataPath}',
+                    -- Opt into the experimental inlined-data read path: the corpus
+                    -- compose cluster shares warehouse storage FE<->BE (the crutch's
+                    -- precondition), so we exercise + validate the feature here even
+                    -- though it's hard-blocked by default in real deployments.
+                    'experimental.inlined.reads' = 'true'
                 )
                 """.trimIndent(),
             )

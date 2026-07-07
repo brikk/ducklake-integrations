@@ -99,8 +99,11 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
   the iceberg "generated/default column" BE seam (check whether the BE backfills
   a not-in-file column from a default, or if it always NULL-fills). May be
   partly BE-gated; investigate the iceberg default-column path first.
- - [~] **Serve inlined data rows — Stage 1 (2026-07-07): COMPOSE/DEV ONLY, NOT
-   PRODUCTION-VIABLE.** The FE synthesizes a temp Parquet from `readInlinedData`
+ - [~] **Serve inlined data rows — Stage 1 (2026-07-07): OFF BY DEFAULT,
+   COMPOSE/DEV ONLY.** HARD-BLOCKED unless the catalog property
+   `experimental.inlined.reads=true` is set (so it can't be used by accident);
+   default behavior is a loud "not supported" error. The FE synthesizes a temp
+   Parquet from `readInlinedData`
    (`DuckLakeInlinedParquetWriter`, low-level parquet `Types...id()` carrying
    `field_id == column_id`) and emits it as a normal FILE_SCAN range. **This
    only works because compose bind-mounts the same path into FE and BE.** In a
