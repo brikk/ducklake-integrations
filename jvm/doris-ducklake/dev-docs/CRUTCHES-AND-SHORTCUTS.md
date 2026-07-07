@@ -92,11 +92,18 @@ All in the friction log with pickable upstream fixes.
 
 ## 6. Test-harness shortcuts (test-only; no product impact)
 
-- **`DuckLakeInlinedParquetWriterTest` assume-skips** the round-trip cases when
-  the JDK-25 test toolchain hits the parquet-format shaded-thrift ABI break.
-  The FE runtime is JDK 17 (unaffected); the writer is validated live by the
-  `data_inlining` corpus. The value-conversion logic isn't otherwise unit-
-  covered here — a real (if bounded) coverage gap.
+- **`DuckLakeInlinedParquetWriterTest` — RESOLVED 2026-07-07** (was
+  assume-skipped). The failure was NOT a JDK issue: the fat `~/.m2` fe-thrift
+  (`mvn install -P flatten`) bundles a stale shaded `org.apache.parquet.format.*`
+  that shadowed the real `parquet-format-structures-1.17.0` on the test
+  classpath (`NoSuchMethodError: PageHeader.setData_page_header`). The FE's own
+  fe-thrift is slim (no parquet), so it never affected runtime. Fixed by
+  reordering `parquet-format-structures` ahead of fe-thrift on the test
+  classpath (`prependParquetFormat`) + adding the `hadoop-mapreduce-client-core`
+  test dep parquet-hadoop needs. The writer round-trip now has real unit
+  coverage (8 tests). Also: the `:ducklake-corpus-replay` module was lowered to
+  JVM-17 bytecode so `:doris-ducklake` is a single consistent 17 toolchain
+  (removed the JVM-25 test overrides + classpath-attribute hack).
 - **Corpus `assumeTrue` gates** — skip the mirror when there's no live FE/PG or
   the duckdb extensions aren't installable. Correct (the mirror needs a
   cluster); plain `:doris-ducklake:test` never depends on them.

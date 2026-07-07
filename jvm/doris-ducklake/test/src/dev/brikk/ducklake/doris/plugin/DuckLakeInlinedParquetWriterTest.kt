@@ -14,8 +14,6 @@ import org.apache.parquet.io.LocalInputFile
 import org.apache.parquet.schema.LogicalTypeAnnotation
 import org.apache.parquet.schema.MessageType
 
-import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 import org.assertj.core.api.Assertions.assertThat
@@ -26,6 +24,12 @@ import org.assertj.core.api.Assertions.assertThat
  * binds on), column names, scalar type encodings, nulls, and the DuckDB
  * text-form conversions jOOQ can hand back (blob `\xNN`, non-finite floats,
  * decimals). Pure — no cluster.
+ *
+ * Runs on JDK 17 (the `:doris-ducklake:test` task's launcher, matching the
+ * Doris FE runtime), so parquet-format's shaded thrift is ABI-consistent — the
+ * same environment the writer runs in inside the FE. (On a JDK 25 launcher the
+ * shaded-thrift `PageHeader.setData_page_header` ABI break would appear; that
+ * never happens on the FE's 17.)
  */
 internal class DuckLakeInlinedParquetWriterTest {
 
@@ -33,33 +37,6 @@ internal class DuckLakeInlinedParquetWriterTest {
 
     private fun col(name: String, type: String, id: Long = ++nextId) =
         DucklakeColumn(id, 1L, null, 1L, id, name, type, true, null)
-
-    /**
-     * The parquet-column↔parquet-format-structures shaded-thrift ABI is
-     * mismatched under the JDK-25 TEST toolchain (`NoSuchMethodError` on
-     * `PageHeader.setData_page_header`); the FE runtime (JDK 17, curated
-     * matched jar set) is unaffected — the feature is validated live by the
-     * `data_inlining` corpus mirror. Assume-skip these round-trip tests when
-     * that test-JVM ABI break is present so the suite stays green.
-     */
-    @BeforeEach
-    fun assumeParquetWriteWorks() {
-        val probe = Files.createTempFile("inlined-probe", ".parquet")
-        Files.deleteIfExists(probe)
-        val ok = try {
-            DuckLakeInlinedParquetWriter.write(
-                probe,
-                listOf(DucklakeColumn(1L, 1L, null, 1L, 1L, "probe", "int32", true, null)),
-                listOf(listOf<Any?>(1)),
-            )
-            true
-        } catch (_: NoSuchMethodError) {
-            false // parquet-format shaded-thrift ABI break under JDK-25 test toolchain
-        } finally {
-            Files.deleteIfExists(probe)
-        }
-        assumeTrue(ok, "parquet-format ABI mismatch under the JDK-25 test toolchain (FE runtime is JDK 17)")
-    }
 
     // Reads via ParquetFileReader.open(LocalInputFile) — no Hadoop Path/UGI
     // (broken on JDK 25).
