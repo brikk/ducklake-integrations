@@ -63,9 +63,6 @@ class TestTrinoCorpusReplay {
             "geo/ducklake_geometry_add_files.test" to GEO_WKB,
             "geo/ducklake_geometry_inlining.test" to GEO_WKB,
             "geo/ducklake_geometry_merge.test" to GEO_WKB,
-            "default/struct_field_default.test" to
-                "BUG: nested struct-FIELD initial defaults not projected (initial_default on " +
-                "catalog CHILD rows — 4th path of the issue-1135 family; tracked in TODO-READ-MODE)",
             // (2026-07-07: the round-2 add_files bugs were FIXED — hive-partition columns are
             // parsed from the file path via is_partition name-map entries, and unmapped
             // dead-column resurrection is blocked by era-aware column existence. All four

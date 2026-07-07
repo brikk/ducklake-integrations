@@ -60,7 +60,10 @@ class DuckDbFilePageSource(
         fileColumnNamesById: Map<Long, String> = emptyMap(),
         // Per-file struct reshape plans (top-level column_id -> reshaped subfields) for nested
         // schema evolution; empty unless a projected struct's file shape differs. See StructFieldPlan.
-        structReshapePlans: Map<Long, List<StructFieldPlan>> = emptyMap()) : ConnectorPageSource {
+        structReshapePlans: Map<Long, List<StructFieldPlan>> = emptyMap(),
+        // Columns whose type widened since this file was written (ALTER … SET DATA TYPE): projected
+        // with a CAST to the current type (the file holds the old physical type). Empty otherwise.
+        promotedColumnIds: Set<Long> = emptySet()) : ConnectorPageSource {
     private val request: DucklakeDuckDbExecutor.ExecutionRequest = DucklakeDuckDbExecutor.ExecutionRequest(
             attachTarget,
             columns.toList(),
@@ -68,7 +71,8 @@ class DuckDbFilePageSource(
             pushedExpressions.toList(),
             duckDbTimeZone,
             fileColumnNamesById.toMap(),
-            structReshapePlans.toMap())
+            structReshapePlans.toMap(),
+            promotedColumnIds.toSet())
     private val converter: DucklakeArrowToPageConverter = DucklakeArrowToPageConverter(columnTypes)
     private val emptyProjection: Boolean = this.request.isEmptyProjection()
 

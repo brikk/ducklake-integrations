@@ -2926,6 +2926,54 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun setColumnType(tableId: Long, columnId: Long, newColumnType: String) {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("set column type in table $tableId") { tx ->
+            val ctx = tx.dsl()
+
+            // Read the current TOP-LEVEL column metadata (nested-field type changes unsupported).
+            val existing: Record? = ctx.select(col.COLUMN_ORDER, col.COLUMN_NAME, col.NULLS_ALLOWED)
+                .from(col)
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.eq(columnId))
+                .and(col.PARENT_COLUMN.isNull)
+                .and(activeAt(col, tx.getCurrentSnapshotId()))
+                .fetchOne()
+            if (existing == null) {
+                throw RuntimeException("Column not found: $columnId")
+            }
+            val columnOrder = orZero(existing.get(col.COLUMN_ORDER))
+            val columnName = existing.get(col.COLUMN_NAME)
+            val nullsAllowed = existing.get(col.NULLS_ALLOWED) == true
+
+            // End-snapshot the current version.
+            ctx.update(col)
+                .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.eq(columnId))
+                .and(col.END_SNAPSHOT.isNull)
+                .and(col.PARENT_COLUMN.isNull)
+                .execute()
+
+            // Insert the new version: same column_id / name / order / nullability, new type. Default
+            // preserved as the "no default" sentinel, same policy as renameColumn / insertColumnTree.
+            ctx.insertInto(col)
+                .set(col.COLUMN_ID, columnId)
+                .set(col.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(col.TABLE_ID, tableId)
+                .set(col.COLUMN_ORDER, columnOrder)
+                .set(col.COLUMN_NAME, columnName)
+                .set(col.COLUMN_TYPE, newColumnType)
+                .set(col.DEFAULT_VALUE, "NULL")
+                .set(col.NULLS_ALLOWED, nullsAllowed)
+                .set(col.DEFAULT_VALUE_TYPE, "literal")
+                .execute()
+
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
     override fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean) {
         // IF NOT EXISTS pre-check (advisory) so the no-op case doesn't mint an empty snapshot.
         if (ignoreExisting) {

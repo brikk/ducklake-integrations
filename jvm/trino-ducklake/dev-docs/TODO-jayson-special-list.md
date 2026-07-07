@@ -58,8 +58,13 @@ is PARKED by Jayson — see RESEARCH-lance-index-lifecycle.md; he'll define the 
   **NULL-struct guard**, top-level compose, time-travel, delete-interplay). LANCE excluded (ROW
   writes gated upstream). Design: dev-docs/DESIGN-nested-field-evolution.md. `setFieldType`/
   `renameField` stay out. README row flipped to Yes.
-- **SET TYPE** (DDL) — DEFER. Same read-path coupling as above but worse (the converter assumes
-  column TYPES don't change across snapshots; see `project-schema-evolution-nonparquet`).
+- **SET TYPE** (DDL) — ✅ DONE 2026-07-08. The feared read-path coupling turned out tractable: the
+  `alter` corpus dir was already green (parquet self-heals via reader coercion; inlined converts
+  under the current type), so the only real gap was the DuckDB-engine (.db/vortex) path, fixed by a
+  targeted CAST in `DuckDbSelectSqlBuilder` gated on `promotedColumnIds` (file-era-vs-current type
+  diff computed in `DucklakePageSourceProvider`). Write side: `setColumnType` SPI + catalog primitive
+  + widening-only validation (`DucklakeTypePromotion`). See TODO-WRITE-MODE.md § Schema Evolution
+  Gaps for the full note; README flipped to Yes.
 - **F6 maintenance** (biggest hole, design-led): optimize / rewrite_data_files /
   expire_snapshots / remove_orphan_files / stats-recalc.
   ✅ DESIGN + THREE procedures DONE 2026-06-29 — **dev-docs/DESIGN-maintenance.md** settles the

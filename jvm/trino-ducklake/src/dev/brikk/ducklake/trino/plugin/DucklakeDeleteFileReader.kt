@@ -474,7 +474,10 @@ object DucklakeDeleteFileReader {
         if (location.scheme().isPresent) {
             return location
         }
-        return Location.of(Path.of(path).toUri().toString())
+        // Prefix file:// on the RAW path rather than routing through Path.toUri(), which
+        // percent-encodes and DOUBLE-encodes hive partition dirs DuckDB writes URL-encoded
+        // (e.g. `category=home%20appliances`). Trino's Location does not percent-decode.
+        return Location.of("file://" + path)
     }
 
     private data class DeleteFileColumn(val columnName: String, val columnType: Type, val field: Field)

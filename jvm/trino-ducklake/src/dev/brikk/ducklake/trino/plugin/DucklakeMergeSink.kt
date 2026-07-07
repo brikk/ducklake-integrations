@@ -418,10 +418,13 @@ open class DucklakeMergeSink(
             0
         }
 
-    /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI. */
+    /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI.
+     * Prefix file:// on the RAW path (not Path.toUri(), which percent-encodes and would
+     * double-encode paths already carrying literal %XX escapes); Trino's Location does not
+     * percent-decode. */
     private fun toLocation(path: String): Location {
         val location = Location.of(path)
-        return if (location.scheme().isPresent) location else Location.of(java.nio.file.Path.of(path).toUri().toString())
+        return if (location.scheme().isPresent) location else Location.of("file://" + path)
     }
 
     private fun findDataFileRange(dataFileId: Long): DataFileRange? =

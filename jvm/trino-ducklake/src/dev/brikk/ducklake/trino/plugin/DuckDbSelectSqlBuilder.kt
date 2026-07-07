@@ -46,11 +46,12 @@ object DuckDbSelectSqlBuilder {
             // resolution, project by current name (no-evolution fast path / lance-search PTF).
             val fileNames: Map<Long, String> = request.fileColumnNamesById()
             val structReshapePlans: Map<Long, List<StructFieldPlan>> = request.structReshapePlans()
+            val promotedColumnIds: Set<Long> = request.promotedColumnIds()
             for (i in columns.indices) {
                 if (i > 0) {
                     sql.append(", ")
                 }
-                appendProjectedColumn(sql, columns[i], fileNames, structReshapePlans)
+                appendProjectedColumn(sql, columns[i], fileNames, structReshapePlans, promotedColumnIds)
             }
         }
         sql.append(" FROM ").append(fullyQualifiedTable)
@@ -94,7 +95,8 @@ object DuckDbSelectSqlBuilder {
             sql: StringBuilder,
             column: DucklakeColumnHandle,
             fileNames: Map<Long, String>,
-            structReshapePlans: Map<Long, List<StructFieldPlan>>) {
+            structReshapePlans: Map<Long, List<StructFieldPlan>>,
+            promotedColumnIds: Set<Long>) {
         val currentName = column.columnName
         if (fileNames.isEmpty()) {
             appendQuoted(sql, currentName)
@@ -130,6 +132,18 @@ object DuckDbSelectSqlBuilder {
             appendQuoted(sql, currentName)
             return
         }
+        if (column.columnId in promotedColumnIds) {
+            // The column's type widened since this file was written (ALTER … SET DATA TYPE); the
+            // physical file holds the OLD type, so CAST it to the current type. The Arrow→page
+            // converter reads by the current (widened) type, so the vector kinds must match.
+            sql.append("CAST(")
+            appendQuoted(sql, physicalName)
+            sql.append(" AS ")
+                    .append(DuckDbWriterSupport.toDuckDbSqlType(column.columnType, "type-promotion projection"))
+                    .append(") AS ")
+            appendQuoted(sql, currentName)
+            return
+        }
         appendQuoted(sql, physicalName)
         if (physicalName != currentName) {
             sql.append(" AS ")
@@ -154,9 +168,17 @@ object DuckDbSelectSqlBuilder {
 
     private fun appendFieldExpr(sql: StringBuilder, field: StructFieldPlan, parentExpr: String) {
         if (field.fileName == null) {
-            // Subfield (or wholly-added nested struct) added after the file was written — typed NULL.
-            sql.append("CAST(NULL AS ")
-                    .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested schema-evolution NULL projection"))
+            // Subfield (or wholly-added nested struct) added after the file was written. Project its
+            // initial_default (rows predating `ADD COLUMN s.child … DEFAULT …`), else a typed NULL.
+            val initialDefault = field.initialDefault
+            sql.append("CAST(")
+            if (initialDefault == null) {
+                sql.append("NULL")
+            } else {
+                sql.append("'").append(initialDefault.replace("'", "''")).append("'")
+            }
+            sql.append(" AS ")
+                    .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested schema-evolution default projection"))
                     .append(")")
             return
         }
