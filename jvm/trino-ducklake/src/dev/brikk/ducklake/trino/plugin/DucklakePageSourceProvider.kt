@@ -1144,37 +1144,20 @@ class DucklakePageSourceProvider @Inject constructor(
                 }
             }
 
+            // A file registered via add_files carries a name map (mapping_id): for such
+            // files the map is AUTHORITATIVE — a column resolves ONLY through its
+            // target_field_id → source_name entry, never by a bare name coincidence.
+            // Otherwise a column DROPPED then RE-ADDED under a new column_id (whose old
+            // physical column of the same name still sits in the file) would resurrect
+            // the dead identity's data (upstream add_files.test: col2 reads NULL, we read
+            // the stale bytes). INSERT-written files have no map → name/field-id matching
+            // as before.
+            val hasNameMap: Boolean = split.fieldIdToParquetSourceName.isNotEmpty()
+
             for (column in fileColumns) {
                 val columnName: String = column.columnName
-                // Try name-based match first, then fall back to field_id match (handles column renames)
-                var columnIO: ColumnIO? = messageColumnIO.getChild(columnName)
-                if (columnIO == null && column.columnId > 0) {
-                    columnIO = fieldIdToColumnIO[column.columnId.toInt()]
-                }
-                // Finally, consult the catalog's name_map for files registered via
-                // add_files — covers the case where the parquet column name differs
-                // from the table column name (e.g. case-difference, or a column-rename
-                // where the file kept its original name). The map is empty for files
-                // without a mapping_id, so this is a no-op for INSERT-written files.
-                if (columnIO == null) {
-                    val parquetSourceName: String? = split.fieldIdToParquetSourceName[column.columnId]
-                    if (parquetSourceName != null && parquetSourceName != columnName) {
-                        columnIO = messageColumnIO.getChild(parquetSourceName)
-                    }
-                }
-                // (4) Era-name fallback for legacy files with NO mapping_id and NO
-                // parquet field_ids (pre-v0.4 add_files registrations whose name map
-                // was never persisted): the file's physical column carries the name
-                // this column had at the file's begin_snapshot. Upstream still reads
-                // such files after a column rename by resolving the era name; without
-                // this we silently NULL-fill (corpus repro:
-                // delete/delete_legacy_missing_mapping_after_rename_add_files.test).
-                if (columnIO == null && column.columnId > 0) {
-                    val eraName: String? = eraColumnNames[column.columnId]
-                    if (eraName != null && !eraName.equals(columnName, ignoreCase = true)) {
-                        columnIO = messageColumnIO.getChild(eraName)
-                    }
-                }
+                val columnIO: ColumnIO? = resolveColumnIO(
+                        column, hasNameMap, messageColumnIO, fieldIdToColumnIO, split, eraColumnNames)
 
                 if (columnIO == null) {
                     // Missing column in file. Two cases:
@@ -1692,6 +1675,38 @@ class DucklakePageSourceProvider @Inject constructor(
          * when the split carries a catalog-recorded partition value for this column (hive-style
          * external imports), parses the string value and projects it as a constant instead.
          */
+        /**
+         * Resolves the parquet [ColumnIO] for a projected column. A file with a
+         * name map ([hasNameMap], set for add_files-registered files) is
+         * AUTHORITATIVE: resolve ONLY through target_field_id → source_name (a
+         * miss = column absent when the file was written → NULL/default), never a
+         * bare-name coincidence — otherwise a dropped-then-re-added column would
+         * resurrect the dead identity's physical data. Unmapped (INSERT-written /
+         * legacy) files: name → field-id → era-name (rename fallbacks).
+         */
+        private fun resolveColumnIO(
+                column: DucklakeColumnHandle,
+                hasNameMap: Boolean,
+                messageColumnIO: MessageColumnIO,
+                fieldIdToColumnIO: Map<Int, ColumnIO>,
+                split: DucklakeSplit,
+                eraColumnNames: Map<Long, String>): ColumnIO?
+        {
+            if (hasNameMap) {
+                return split.fieldIdToParquetSourceName[column.columnId]
+                        ?.let { messageColumnIO.getChild(it) }
+            }
+            messageColumnIO.getChild(column.columnName)?.let { return it }
+            if (column.columnId > 0) {
+                fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
+                val eraName: String? = eraColumnNames[column.columnId]
+                if (eraName != null && !eraName.equals(column.columnName, ignoreCase = true)) {
+                    return messageColumnIO.getChild(eraName)
+                }
+            }
+            return null
+        }
+
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
             // Precedence: hive partition value (external add_files) > the column's

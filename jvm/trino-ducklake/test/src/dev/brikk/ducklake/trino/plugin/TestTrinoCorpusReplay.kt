@@ -71,8 +71,9 @@ class TestTrinoCorpusReplay {
             "add_files/add_files_hive_mismatch.test" to BUG_HIVE_ADD_FILES,
             "add_files/add_files_hive_partition_cast.test" to BUG_HIVE_ADD_FILES,
             "add_files/add_files.test" to
-                "BUG: name-map must be authoritative for mapped files — name-first matching " +
-                "resurrects a dead re-added column's physical data (tracked in TODO-READ-MODE)",
+                "BUG(partial): mapped-file resolution now map-authoritative (fixed the mapped " +
+                "re-add case); an UNMAPPED old file physically carrying a since-dropped col still " +
+                "name-matches — needs era-aware column existence per file (tracked TODO-READ-MODE)",
             // (2026-07-06: the inlined struct/map crash family was FIXED — nested
             // text parsing in DucklakeInlinedValueConverter — and its 10 repro
             // files un-skipped.)

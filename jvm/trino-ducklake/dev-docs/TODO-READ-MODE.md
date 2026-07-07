@@ -384,17 +384,20 @@ Repro files skip-listed in `TestTrinoCorpusReplay` with `BUG:` prefixes.
   nested-text parser (unbound field → NULL) both need to consult the child
   row's default. Top-level defaults were fixed 2026-07-07 (parquet
   missing-column, duckdb-executor CAST, inlined era-defaults).
-- [ ] **name-map must be AUTHORITATIVE for mapped files (matching order)** —
-  corpus `add_files/add_files.test:170`: col2 dropped, then RE-ADDED (new
-  column_id); an old add_files parquet physically contains a `col2` column
-  belonging to the DEAD identity — upstream reads NULL, we NAME-match it and
-  resurrect dead data. For files WITH a `mapping_id`, upstream resolves columns
-  through the map ONLY (map miss = NULL/default); name matching applies only to
-  unmapped files. Our parquet matcher tries name FIRST for everything. Fix:
-  when `split.fieldIdToParquetSourceName` (or the hive-keys map) is non-empty,
-  match map-only; keep name → field-id → era-name for unmapped files (the
-  era-name legacy fallback stays correct — that path only fires when
-  mapping_id is NULL).
+- [x] **name-map authoritative for MAPPED files** — ✅ FIXED 2026-07-07. The
+  parquet matcher now resolves map-carrying files (`mapping_id` set →
+  `split.fieldIdToParquetSourceName` non-empty) through target_field_id ONLY
+  (map miss = NULL/default), never a bare-name coincidence; unmapped files keep
+  name → field-id → era-name. Fixed the mapped re-add case (`my_file4` col2
+  reads NULL). [ ] **RESIDUAL** — corpus `add_files/add_files.test:170` still
+  diverges on `my_file1`: an UNMAPPED old add_files parquet physically carries a
+  `col2` column written when col2 FIRST existed, before col2 was dropped +
+  re-added under a new column_id. The unmapped name-match path resurrects it
+  (reads `hello`, upstream reads NULL). Correct fix needs per-file era-aware
+  column existence: only name-match an unmapped file's physical column if the
+  current column_id was ALIVE at that file's begin_snapshot. Non-trivial (the
+  era-name map already loads the begin_snapshot column set — extend it to gate
+  name matches, not just supply rename fallbacks). Skip-listed.
 
 ### Corpus-mirror findings (2026-07-06 — REAL BUGS — both ✅ FIXED same day)
 
