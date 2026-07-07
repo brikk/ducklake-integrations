@@ -66,14 +66,10 @@ class TestTrinoCorpusReplay {
             "default/struct_field_default.test" to
                 "BUG: nested struct-FIELD initial defaults not projected (initial_default on " +
                 "catalog CHILD rows — 4th path of the issue-1135 family; tracked in TODO-READ-MODE)",
-            // ---- REAL BUGS round 2 (tracked in TODO-READ-MODE; un-skip when fixed) ----
-            "add_files/add_files_hive.test" to BUG_HIVE_ADD_FILES,
-            "add_files/add_files_hive_mismatch.test" to BUG_HIVE_ADD_FILES,
-            "add_files/add_files_hive_partition_cast.test" to BUG_HIVE_ADD_FILES,
-            "add_files/add_files.test" to
-                "BUG(partial): mapped-file resolution now map-authoritative (fixed the mapped " +
-                "re-add case); an UNMAPPED old file physically carrying a since-dropped col still " +
-                "name-matches — needs era-aware column existence per file (tracked TODO-READ-MODE)",
+            // (2026-07-07: the round-2 add_files bugs were FIXED — hive-partition columns are
+            // parsed from the file path via is_partition name-map entries, and unmapped
+            // dead-column resurrection is blocked by era-aware column existence. All four
+            // add_files repros un-skipped.)
             // (2026-07-06: the inlined struct/map crash family was FIXED — nested
             // text parsing in DucklakeInlinedValueConverter — and its 10 repro
             // files un-skipped.)
@@ -143,9 +139,6 @@ class TestTrinoCorpusReplay {
 
     companion object {
         private const val CHUNK_SIZE = 30
-        private const val BUG_HIVE_ADD_FILES =
-            "BUG: DuckDB hive add_files partition columns read NULL — is_partition name-map " +
-                "entries carry values in the file PATH (tracked in TODO-READ-MODE)"
         private const val ENCRYPTED_LAKE =
             "encrypted lake: parquet encryption keys not threaded to the Trino reader on the " +
                 "mirror axis (footer unreadable)"

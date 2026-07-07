@@ -262,6 +262,19 @@ interface DucklakeCatalog {
     fun getNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>>
 
     /**
+     * Load the HIVE-PARTITION entries of one or more name maps. Returns a map keyed by
+     * `mapping_id` where each value maps `target_field_id → source_name`
+     * for top-level entries (`parent_column` NULL) whose `is_partition`
+     * flag is set. These columns have NO parquet column in the file body — their value
+     * lives in the file PATH (`key=value/` layout, `source_name` being the path key).
+     * The read path parses the value out of the data-file path and constant-fills the
+     * column. Mirrors DuckDB's `ducklake_add_data_files(..., hive_partitioning => true)`,
+     * which records partition columns this way (not as a partition spec /
+     * `ducklake_file_partition_value` rows). Returns an empty map for the empty input set.
+     */
+    fun getPartitionNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>>
+
+    /**
      * Get partition values for all active data files of a table at the given snapshot
      */
     fun getFilePartitionValues(tableId: Long, snapshotId: Long): Map<Long, List<DucklakeFilePartitionValue>>

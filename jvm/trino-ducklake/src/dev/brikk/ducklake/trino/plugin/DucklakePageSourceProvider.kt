@@ -1682,7 +1682,8 @@ class DucklakePageSourceProvider @Inject constructor(
          * miss = column absent when the file was written → NULL/default), never a
          * bare-name coincidence — otherwise a dropped-then-re-added column would
          * resurrect the dead identity's physical data. Unmapped (INSERT-written /
-         * legacy) files: name → field-id → era-name (rename fallbacks).
+         * legacy) files: name → field-id → era-name (rename fallbacks), with the bare-name
+         * match gated on era-aware column existence (see below).
          */
         private fun resolveColumnIO(
                 column: DucklakeColumnHandle,
@@ -1696,7 +1697,18 @@ class DucklakePageSourceProvider @Inject constructor(
                 return split.fieldIdToParquetSourceName[column.columnId]
                         ?.let { messageColumnIO.getChild(it) }
             }
-            messageColumnIO.getChild(column.columnName)?.let { return it }
+            // Bare-name match — but ONLY when this column_id existed at the file's begin_snapshot.
+            // eraColumnNames is column_id → physical name as of begin_snapshot; when it is populated
+            // (real reads carrying a begin_snapshot) a column_id ABSENT from it did not exist when
+            // the file was written, so a physical column that happens to share the current name
+            // belongs to a DIFFERENT, since-dropped identity. Accepting it would resurrect the dead
+            // column's bytes — upstream add_files.test: an unmapped INSERT-written file physically
+            // carrying an old `col2`, read after col2 was DROPPED then RE-ADDED under a new
+            // column_id, must read NULL, not the stale value. An empty era map (test split / no
+            // begin_snapshot) keeps the legacy name-first behavior.
+            if (eraColumnNames.isEmpty() || eraColumnNames.containsKey(column.columnId)) {
+                messageColumnIO.getChild(column.columnName)?.let { return it }
+            }
             if (column.columnId > 0) {
                 fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
                 val eraName: String? = eraColumnNames[column.columnId]

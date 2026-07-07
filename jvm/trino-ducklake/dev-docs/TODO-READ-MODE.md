@@ -362,19 +362,22 @@ record what blows up. That tells us what the first PR scope is.
 Both are silent-wrong-results on DuckDB-registered external (add_files) parquet.
 Repro files skip-listed in `TestTrinoCorpusReplay` with `BUG:` prefixes.
 
-- [ ] **hive-partition columns from DuckDB add_files read as NULL** — DuckDB's
-  `ducklake_add_data_files(..., hive_partitioning => true)` records NO
-  `ducklake_file_partition_value` rows and NO partition spec; instead the
-  partition columns are `ducklake_name_mapping` entries with
-  **`is_partition = true`** (probed 2026-07-07: `mapping_id=0`,
-  `source_name=part_key`, `target_field_id=<column_id>`, `is_partition=true`),
-  and the VALUE lives in the file PATH (`part_key=1/part_key2=10/data.parquet`)
-  — parsed at read time. Our reader ignores `is_partition`, tries to match a
-  parquet column named `part_key`, misses → NULL. Fix: surface `is_partition`
-  through `getNameMaps`, carry `hivePartitionKeysByColumnId` on the split, and
-  project path-parsed constants (URL-decode `%20`;
-  `__HIVE_DEFAULT_PARTITION__` → NULL) via the existing missing-column
-  machinery. Repro: `add_files/add_files_hive{,_mismatch,_partition_cast}.test`.
+- [x] **hive-partition columns from DuckDB add_files read as NULL** — ✅ FIXED
+  2026-07-07. DuckDB's `ducklake_add_data_files(..., hive_partitioning => true)`
+  records NO `ducklake_file_partition_value` rows and NO partition spec; instead
+  the partition columns are `ducklake_name_mapping` entries with
+  **`is_partition = true`** (`mapping_id`, `source_name=part_key`,
+  `target_field_id=<column_id>`), and the VALUE lives in the file PATH
+  (`part_key=1/part_key2=10/data.parquet`). The reader used to ignore
+  `is_partition`, try to match a parquet column named `part_key`, miss → NULL.
+  Fix: new `DucklakeCatalog.getPartitionNameMaps` surfaces the `is_partition`
+  entries (`column_id → path key`); `DucklakeSplitManager` parses each file's
+  path for the matching `key=value` segment (URL-decode `%20`;
+  `__HIVE_DEFAULT_PARTITION__` → NULL, i.e. left unset) and merges the value into
+  the split's `partitionValuesByColumnId`, so the existing missing-column
+  constant-fill machinery (`buildMissingColumnBlock`) projects the typed value.
+  Rename-safe: values are keyed by `column_id` via `target_field_id`. Corpus
+  repros un-skipped and green: `add_files/add_files_hive{,_mismatch,_partition_cast}.test`.
 - [ ] **nested struct-FIELD initial defaults not projected** — corpus
   `default/struct_field_default.test`: a FIELD added to a struct with a default
   (`ALTER ... ADD COLUMN s.k ... DEFAULT 42` shape) must project 42 for old
@@ -389,15 +392,18 @@ Repro files skip-listed in `TestTrinoCorpusReplay` with `BUG:` prefixes.
   `split.fieldIdToParquetSourceName` non-empty) through target_field_id ONLY
   (map miss = NULL/default), never a bare-name coincidence; unmapped files keep
   name → field-id → era-name. Fixed the mapped re-add case (`my_file4` col2
-  reads NULL). [ ] **RESIDUAL** — corpus `add_files/add_files.test:170` still
-  diverges on `my_file1`: an UNMAPPED old add_files parquet physically carries a
-  `col2` column written when col2 FIRST existed, before col2 was dropped +
-  re-added under a new column_id. The unmapped name-match path resurrects it
-  (reads `hello`, upstream reads NULL). Correct fix needs per-file era-aware
-  column existence: only name-match an unmapped file's physical column if the
-  current column_id was ALIVE at that file's begin_snapshot. Non-trivial (the
-  era-name map already loads the begin_snapshot column set — extend it to gate
-  name matches, not just supply rename fallbacks). Skip-listed.
+  reads NULL). [x] **RESIDUAL — ✅ FIXED 2026-07-07.** corpus
+  `add_files/add_files.test:170` diverged on the row-100 file: an UNMAPPED
+  INSERT-written parquet physically carries a `col2` column written when col2
+  FIRST existed, before col2 was dropped + re-added under a new column_id. The
+  unmapped bare-name match resurrected it (read `hello`, upstream reads NULL).
+  Fix: `resolveColumnIO` now gates the bare-name match on era-aware column
+  existence — `eraColumnNames` (already loaded: `column_id → physical name` as of
+  the file's `begin_snapshot`) is consulted, and a `column_id` absent from it
+  (i.e. not alive when the file was written) is NOT allowed to name-match, so the
+  since-dropped identity's bytes stay hidden → NULL. Empty era map (test split /
+  no begin_snapshot) keeps the legacy name-first behavior. Corpus repro
+  un-skipped and green.
 
 ### Corpus-mirror findings (2026-07-06 — REAL BUGS — both ✅ FIXED same day)
 

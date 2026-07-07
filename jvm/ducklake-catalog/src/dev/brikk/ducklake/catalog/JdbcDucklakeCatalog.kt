@@ -1341,6 +1341,31 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         return result
     }
 
+    override fun getPartitionNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> {
+        if (mappingIds.isEmpty()) {
+            return emptyMap()
+        }
+        val nm = DUCKLAKE_NAME_MAPPING.`as`("nm")
+        val result: MutableMap<Long, MutableMap<Long, String>> = mutableMapOf()
+        dsl.select(nm.MAPPING_ID, nm.TARGET_FIELD_ID, nm.SOURCE_NAME)
+            .from(nm)
+            .where(nm.MAPPING_ID.`in`(mappingIds))
+            // Top-level entries only — a hive partition column is never nested.
+            .and(nm.PARENT_COLUMN.isNull)
+            // Only the hive-partition entries: their value comes from the file path, not a
+            // parquet column (the inverse of getNameMaps, which excludes them).
+            .and(nm.IS_PARTITION.isTrue)
+            .forEach { r ->
+                val mappingId = r.get(nm.MAPPING_ID)
+                val fieldId = r.get(nm.TARGET_FIELD_ID)
+                val sourceName = r.get(nm.SOURCE_NAME)
+                if (mappingId != null && fieldId != null && sourceName != null) {
+                    result.getOrPut(mappingId) { mutableMapOf() }[fieldId] = sourceName
+                }
+            }
+        return result
+    }
+
     override fun getInlinedDataInfos(tableId: Long, snapshotId: Long): List<DucklakeInlinedDataInfo> {
         // A table can have multiple inlined data tables (one per schema version).
         val inlined = DUCKLAKE_INLINED_DATA_TABLES.`as`("inlined")
