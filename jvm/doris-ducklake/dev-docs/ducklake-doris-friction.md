@@ -10,7 +10,9 @@ hours of debugging.
 Sister docs: [`ducklake-doris-integration-spi-plan.md`](./ducklake-doris-integration-spi-plan.md)
 (canonical plan), [`ducklake-doris-sanity-check.md`](./ducklake-doris-sanity-check.md)
 (one-shot architectural review), [`TODO-read.md`](./TODO-read.md)
-(working state).
+(working state), [`CRUTCHES-AND-SHORTCUTS.md`](./CRUTCHES-AND-SHORTCUTS.md)
+(audited inventory of every non-production-clean path — read before trusting a
+feature is deployment-ready).
 
 Entry shape: **Symptom** → **Root cause** (file:line) → **Workaround**
 → **Fix** (small, pickable). Newest first.
