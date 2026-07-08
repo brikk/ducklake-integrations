@@ -374,19 +374,32 @@ genuinely wired upstream (unlike plugin DELETE).
   bytecode-major check is the one that actually caught us before.)
   - Idea parked: promote to a shared `build-logic` convention plugin so every module that
     deploys into the JDK-17 FE gets it (currently only `:ducklake-catalog`).
-- [ ] **PG driver Metaspace leak — verify/mitigate (flagged 2026-07-08 by upstream commit
-  `34bd8eede75`).** Upstream fixed the same bug class in `fe-connector-jdbc`: a JDBC driver
-  self-registers into the static `java.sql.DriverManager` on class load and `close()` never
-  deregisters it, so an evicted per-catalog driver classloader stays pinned by DriverManager
-  → serial CREATE→DROP→CREATE of the same catalog leaks one driver's worth of Metaspace per
-  cycle (their live FE OOM'd: 34 leaked FactoryURLClassLoaders, Metaspace 165MB→1565MB/5.5h).
-  **We don't use `JdbcConnectorClient`, but we have the same shape:**
-  `DuckLakeConnector.buildCatalog()` does `Class.forName("org.postgresql.Driver")` on the
-  plugin (child, per-catalog) classloader and never deregisters. TODO: confirm whether a
-  DuckLake CREATE→DROP→CREATE loop leaks a driver classloader (jmap -histo:live for
-  FactoryURLClassLoader / DriverInfo count), and if so mitigate — e.g. register the driver via
-  a shared/parent-classloader-pinned static once, or deregister on `Connector.close()`. Not
-  observed yet; noting before it bites a long-lived FE.
+- [x] **PG driver Metaspace leak — FIXED (2026-07-08).** Upstream `34bd8eede75` fixed the same bug
+  class in `fe-connector-jdbc`. Our shape: `DuckLakeConnector` registers the Postgres `Driver` into
+  the static process-lived `DriverManager`, pinning the plugin classloader. **Severity (verified
+  against fe-core):** the plugin classloader is built ONCE at FE startup
+  (`ConnectorPluginManager.loadPlugins`) and REUSED across catalogs (NOT rebuilt per catalog like
+  upstream's `JdbcConnectorClient`), so ordinary CREATE→DROP→CREATE churn does **not** leak; the only
+  leak is on **plugin reload/unload** (one classloader pinned per reload) — low-frequency but real.
+  - **Fix:** `registerPostgresDriver()` loads the PG driver via `Class.forName(..., initialize=true)`
+    (its static init self-registers the instance — verified by disassembly:
+    `org.postgresql.Driver` has `static { register(); }`), then — **only when running under an
+    isolated plugin classloader** ([runsUnderIsolatedPluginClassLoader]) — captures that exact
+    registered instance into `ourPostgresDriver`. `close()` deregisters precisely it, releasing the
+    classloader pin. No redundant/second registration.
+  - **Why the isolation guard is correct (not a test-skip crutch):** the registered driver is ours to
+    clean up ONLY when our classloader is dedicated to the plugin (production). In a **shared**
+    classloader (unit tests on a flat classpath, where `org.postgresql.Driver` is the process-wide
+    ServiceLoader driver on the *same* loader as us) that instance is used by everyone else, and there
+    is no leak to fix anyway (a shared loader is never reclaimed on unload). So arming cleanup only on
+    an isolated loader is exactly the condition under which the leak exists — a TRUE guard, not
+    "skip in tests". Verified: full `:doris-ducklake:test` + detekt + checkAbi GREEN;
+    `DuckLakeConnectorDriverDeregisterTest` confirms open/close cycles leave the shared PG driver
+    usable (the shared-loader/no-op-cleanup path).
+  - **Follow-up (nice-to-have, not required):** the truly correct layer would be fe-core deregistering
+    plugin-loaded drivers when `DirectoryPluginRuntimeManager.closeClassLoader` tears down a plugin
+    loader on reload — a small upstream ask. Our connector-side fix is sufficient and self-contained
+    for now.
 - [ ] **HikariCP version skew** (FE pins 6.0.0; our plugin zip ships 7.0.2). Verify 6↔7 wire compat or downgrade ours. Sanity-check §3.2.
 - [ ] **Plugin-zip exclusion audit** — once a quarter, diff our `pluginZip` task's exclude list against `fe-connector-iceberg/src/main/assembly/plugin-zip.xml` in the worktree. Drift introduces silent runtime conflicts.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
