@@ -992,6 +992,47 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.setColumnType(handle.tableId, ducklakeColumn.columnId, newDucklakeType) }
     }
 
+    // ALTER TABLE ... ALTER COLUMN s.child SET DATA TYPE <type>. The nested-field generalization of
+    // setColumnType: same widening-only contract (DuckLake permits widening promotions only, so
+    // files written under the old physical type still read correctly). `fieldPath` is the dotted path
+    // INCLUDING the top-level column name (e.g. [s, child]). We resolve the child's current Trino type
+    // by walking the catalog column tree, validate the promotion, and hand the DuckLake type string to
+    // the catalog. Reads across file generations: parquet self-heals, the DuckDB-engine (non-parquet)
+    // path CASTs the widened field inside struct_pack (NestedFieldReshapePlanner + DuckDbSelectSqlBuilder),
+    // and inlined values convert under the current type.
+    override fun setFieldType(session: ConnectorSession, tableHandle: ConnectorTableHandle, fieldPath: List<String>, type: Type)
+    {
+        val handle = tableHandle as DucklakeTableHandle
+        val sourceType: Type = resolveFieldTrinoType(handle.tableId, handle.snapshotId, fieldPath)
+        if (sourceType == type) {
+            return
+        }
+        if (!DucklakeTypePromotion.isWidening(sourceType, type)) {
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "ALTER COLUMN SET DATA TYPE supports only widening type promotions; " +
+                            "%s -> %s is not allowed for field \"%s\"",
+                    sourceType.displayName, type.displayName, fieldPath.joinToString(".")))
+        }
+        // toDucklakeType rejects any target with no DuckLake representation with its own NOT_SUPPORTED.
+        val newDucklakeType: String = typeConverter.toDucklakeType(type)
+        translateCatalogExceptions { catalog.setFieldType(handle.tableId, fieldPath, newDucklakeType) }
+    }
+
+    // Resolve the current Trino type of a nested field by walking the catalog column tree along the
+    // dotted `fieldPath` (top-level column name first). Matches by name + parent_column, mirroring
+    // the catalog's resolveColumnIdByPath. Throws NOT_SUPPORTED if any path step is missing.
+    private fun resolveFieldTrinoType(tableId: Long, snapshotId: Long, fieldPath: List<String>): Type {
+        val columns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
+        var parentId: Long? = null
+        var current: DucklakeColumn? = null
+        for (name in fieldPath) {
+            current = columns.firstOrNull { it.columnName == name && it.parentColumn == parentId }
+                    ?: throw TrinoException(NOT_SUPPORTED, "Field not found: ${fieldPath.joinToString(".")} (no '$name')")
+            parentId = current.columnId
+        }
+        return typeConverter.toTrinoType(current!!.columnType)
+    }
+
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
     // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
     // Reads of files written before a nested change are reconciled per file: parquet self-heals via

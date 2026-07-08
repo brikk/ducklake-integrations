@@ -33,13 +33,18 @@ import io.trino.spi.type.Type
  * - [children] — non-null iff this field is itself a struct that needs reshaping; its own plan.
  * - [initialDefault] — the field's `ducklake_column.initial_default` value text, projected for rows
  *   that predate an `ADD COLUMN s.child … DEFAULT …` (only meaningful when [fileName] is null).
+ * - [promoted] — true iff this field is PRESENT in the file ([fileName] non-null) but its type
+ *   widened since the file was written (`ALTER COLUMN s.child SET DATA TYPE …`). The physical file
+ *   holds the OLD type, so the builder CASTs the field to the current [type] inside `struct_pack`.
+ *   Distinct from [initialDefault], which is for era-absent fields ([fileName] == null).
  */
 class StructFieldPlan(
         val currentName: String,
         val type: Type,
         val fileName: String?,
         val children: List<StructFieldPlan>?,
-        val initialDefault: String? = null) {
+        val initialDefault: String? = null,
+        val promoted: Boolean = false) {
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -48,12 +53,13 @@ class StructFieldPlan(
                 type == other.type &&
                 fileName == other.fileName &&
                 children == other.children &&
-                initialDefault == other.initialDefault
+                initialDefault == other.initialDefault &&
+                promoted == other.promoted
     }
 
-    override fun hashCode(): Int = java.util.Objects.hash(currentName, type, fileName, children, initialDefault)
+    override fun hashCode(): Int = java.util.Objects.hash(currentName, type, fileName, children, initialDefault, promoted)
 
     override fun toString(): String =
             "StructFieldPlan[currentName=$currentName, type=$type, fileName=$fileName, " +
-                    "children=$children, initialDefault=$initialDefault]"
+                    "children=$children, initialDefault=$initialDefault, promoted=$promoted]"
 }

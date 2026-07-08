@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import io.airlift.slice.Slices
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
+import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.RowType
 import io.trino.spi.type.VarcharType.VARCHAR
@@ -202,6 +203,23 @@ class TestDuckDbSelectSqlBuilder {
         assertThat(sql).isEqualTo(
                 "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
                         "struct_pack(\"a\" := (\"s\").\"a\", \"k\" := CAST('42' AS INTEGER)) END AS \"s\" " +
+                        "FROM ducklake_in.main.t")
+    }
+
+    @Test
+    fun testNestedPromotedFieldIsStructPackedWithCast() {
+        // current s = row(a bigint); the file stored a as integer (ALTER COLUMN s.a SET DATA TYPE
+        // BIGINT since). The present field is CAST to the current type inside struct_pack — the file
+        // holds the old physical type and the Arrow→page converter reads by the current type.
+        val structType = RowType.rowType(RowType.field("a", BIGINT))
+        val request = reshapeRequest(
+                DucklakeColumnHandle(200L, "s", structType, true),
+                listOf(StructFieldPlan("a", BIGINT, "a", null, null, true)))
+
+        val sql = DuckDbSelectSqlBuilder.buildSelectSql("ducklake_in.main.t", request)
+        assertThat(sql).isEqualTo(
+                "SELECT CASE WHEN \"s\" IS NULL THEN NULL ELSE " +
+                        "struct_pack(\"a\" := CAST((\"s\").\"a\" AS BIGINT)) END AS \"s\" " +
                         "FROM ducklake_in.main.t")
     }
 
