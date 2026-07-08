@@ -77,10 +77,14 @@ jobs:
         with:
           # The known-good HOST build output path (see extension README "Building").
           path: duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension
-          # Key = platform + duckdb version label + the pinned extension SHA. The
-          # SHA is the true determinant (it pins the duckdb submodule too); the
-          # v1.5.3 token mirrors the extension's MainDistributionPipeline duckdb_version
-          # and acts as a coarse cache-buster if we ever retarget the DuckDB line.
+          # Key = platform + a coarse DuckDB-line label + the pinned extension SHA. The SHA is the
+          # TRUE determinant: it transitively pins the extension sources AND its nested `duckdb`
+          # submodule (currently DuckDB v1.5.4 — what the host build actually bakes in). The
+          # `v1.5.3` token is just an opaque, stable cache-buster (it happens to mirror the
+          # extension repo's MainDistributionPipeline release-pipeline input, which is NOT what the
+          # host `make` targets). Its literal value doesn't affect correctness; kept as-is so the
+          # already-built cache entry from the first run still hits (bumping it forces a ~30-min
+          # rebuild for no benefit).
           key: trino-parity-ext-linux-amd64-duckdb-v1.5.3-${{ steps.ext-sha.outputs.sha }}
 
       # Secondary, best-effort ccache cache. Separate from the binary cache so a
@@ -171,6 +175,30 @@ jobs:
         # wrapper dist) and reads the wrapper version from jvm/gradle/wrapper.
         uses: gradle/actions/setup-gradle@v6
 
+      # Pull the trino_parity binary built by build-parity-extension. download-artifact
+      # extracts the artifact's single file into this directory.
+      - name: Download trino_parity extension
+        uses: actions/download-artifact@v8
+        with:
+          name: trino-parity-extension
+          path: ${{ github.workspace }}/parity-extension
+
+      # Stage the binary where the `bundleParityExtension` Gradle task expects the HOST build
+      # (parityExtensionSources maps hostPlatform -> duckdb-trino-parity-extension/build/release/
+      # extension/trino_parity/trino_parity.duckdb_extension). This is what makes the extension
+      # BUNDLED into the plugin's classpath resources, which is REQUIRED by tests that resolve it
+      # via TrinoParityExtensionResolver.resolveBundledExtensionPath() — the no-arg
+      # InProcessDuckDbExecutor() (Lance/Vortex/complex-type executor tests, IllegalStateException
+      # without it) and TestTrinoFunctionAliases (AssertionError without it). The
+      # -Dducklake.test.parityExtensionPath below only covers CONNECTOR tests (DucklakeQueryRunner
+      # threads it into config); the direct-executor + bundled-resolver tests need the RESOURCE.
+      # Must be staged before Gradle runs so bundleParityExtension picks it up.
+      - name: Stage parity extension for bundling
+        run: |
+          dest=duckdb-trino-parity-extension/build/release/extension/trino_parity
+          mkdir -p "$dest"
+          cp "${{ github.workspace }}/parity-extension/trino_parity.duckdb_extension" "$dest/trino_parity.duckdb_extension"
+
       # detekt and tests are split into two invocations ON PURPOSE. detekt runs in the
       # Gradle daemon (heap bumped in jvm/gradle.properties for cold-cache dependency
       # resolution); tests fork their own 3 GB JVM. Running them together lets the two
@@ -187,15 +215,6 @@ jobs:
           :ducklake-corpus-replay:detekt
           :trino-ducklake:detekt
           --stacktrace
-
-      # Pull the trino_parity binary built by build-parity-extension. download-artifact
-      # extracts the artifact's single file into this directory, so the binary lands at
-      # ${{ github.workspace }}/parity-extension/trino_parity.duckdb_extension.
-      - name: Download trino_parity extension
-        uses: actions/download-artifact@v8
-        with:
-          name: trino-parity-extension
-          path: ${{ github.workspace }}/parity-extension
 
       - name: tests (excluding :doris-ducklake)
         working-directory: jvm
