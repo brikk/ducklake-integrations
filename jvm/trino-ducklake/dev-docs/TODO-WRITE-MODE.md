@@ -29,6 +29,30 @@ column stats, and per-table `location` have all landed; see § Adopt
 Existing Parquet Files (`add_files`), § Bucket Partitioning, § Nested-
 Leaf File Column Stats, and § Per-Table Storage Path below.)
 
+## CI Follow-ups (GitHub Actions)
+
+The `.github/workflows/ci.yml` PR gate builds the `trino_parity` extension (cached by submodule
+SHA) and runs detekt + tests for all buildable modules; `corpus-nightly.yml` runs the full corpus.
+Two tests are currently EXCLUDED from the PR gate via `-PexcludeTags` (JUnit tags) with follow-ups:
+
+- [ ] **`quack-container` — glibc-portable parity extension for the Quack sidecar.** The
+  `build-parity-extension` job builds the extension with host `make` on `ubuntu-latest` (glibc
+  2.39). That binary loads fine in-process but NOT inside the older Quack container
+  (`GLIBC_2.38 not found`), so `TestDucklakeLanceS3QuackRead` + `TestDucklakeQuackS3InitRace` are
+  tag-excluded on PRs. Fix: build a glibc-portable binary via the extension's Docker cross-target
+  (`make linux-amd64`, or the `duckdb/extension-ci-tools` manylinux path) — a portable (old-glibc)
+  binary is forward-compatible, so ONE binary would serve both the in-process executor AND the
+  Quack container. Wire it into a dedicated job (Quack is the experimental backend, so it need not
+  gate every PR — a nightly/on-demand job is fine). Then drop `quack-container` from the exclude
+  list.
+- [ ] **`ci-unstable` — `TestDucklakeRemoveOrphanFiles.removesEmptiedOrphanDatasetDirectory`.**
+  Passes locally; on the CI runner the emptied orphan `.lance` dataset DIRECTORY survives
+  `remove_orphan_files` (procedure reports success, `Files.exists(dataset)` stays true). Storage-only
+  path (`listFiles`/`deleteDirectory` in `DucklakeRemoveOrphanFilesProcedure`), no Quack/glibc
+  involvement — cause not yet reproduced. Method-level tag so the rest of the class still gates CI.
+  Investigate (add CI-side logging or reproduce in an ubuntu-24.04 container): likely an empty-dir
+  discovery/removal difference on the runner filesystem, or a real edge in the emptied-dir sweep.
+
 ## DuckDB-as-Catalog Backend (Local + Quack)
 
 **Status: local-DuckDB backend ready; Quack backend experimental, gated on upstream maturity.**

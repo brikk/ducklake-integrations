@@ -1,0 +1,75 @@
+# Nightly FULL corpus replay for brikk/ducklake-integrations.
+#
+# The PR job (ci.yml) runs TestTrinoCorpusReplay against only its default starter
+# directories to stay fast. This scheduled job runs the SAME test against the ENTIRE
+# upstream DuckLake sqllogictest corpus via -Dducklake.corpus.dirs=all, which is far
+# slower and unsuitable for every push.
+#
+# Same build contract as ci.yml: everything runs under jvm/, Java 25 is mandatory,
+# :doris-ducklake is never touched (pre-existing local-Maven Doris drift; excluded
+# until the Doris FE is rebuilt), and only the corpus test is exercised here.
+
+name: Corpus Nightly
+
+on:
+  schedule:
+    # ~03:17 UTC daily. Off-the-hour minute to avoid the top-of-hour scheduler surge.
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: corpus-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-corpus-replay:
+    runs-on: ubuntu-latest
+    # The full corpus is large; give it a generous ceiling.
+    timeout-minutes: 180
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v7
+        with:
+          # The corpus fixture is the submodule jvm/ducklake-corpus-replay/ducklake
+          # (duckdb/ducklake) — mandatory for this test. `recursive` also pulls the
+          # OPTIONAL duckdb-trino-parity-extension (checked out only, never built).
+          submodules: recursive
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          # Java 25 floor: build-logic sets jvmToolchain(25); Java 21 fails configuration.
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Full corpus replay (-Dducklake.corpus.dirs=all)
+        working-directory: jvm
+        # Run ONLY TestTrinoCorpusReplay, over the full corpus.
+        #   --tests targets the single class inside :trino-ducklake:test.
+        #   -Dducklake.corpus.dirs=all selects every corpus directory. The leading `d`
+        #     is load-bearing: `-Ducklake...` is misparsed as `-D ucklake...` and would
+        #     silently run only the starter set. The build's test task forwards this
+        #     system property into the forked test JVM.
+        # Docker (Testcontainers PostgreSQL, preinstalled on ubuntu-latest) and outbound
+        # network (INSTALL ducklake/postgres extensions) are required; air-gapped runners
+        # self-skip via assumeTrue. No secrets needed.
+        run: >-
+          ./gradlew :trino-ducklake:test
+          --tests dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay
+          -Dducklake.corpus.dirs=all
+          --stacktrace
+
+      - name: Upload corpus replay report
+        # Upload on success or failure — nightly corpus results are worth keeping either way.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-nightly-reports
+          path: |
+            jvm/trino-ducklake/build/reports
+            jvm/trino-ducklake/build/test-results
+          if-no-files-found: ignore
+          retention-days: 30

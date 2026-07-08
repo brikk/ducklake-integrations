@@ -21,6 +21,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
@@ -50,6 +51,12 @@ import java.util.Optional
  * SAME_THREAD: both tests funnel server-side INSTALL/LOAD statements into one shared Quack
  * server; concurrent INSTALLs can race the extension download.
  */
+// quack-container: mounts the trino_parity binary into the Quack sidecar CONTAINER. CI excludes
+// this tag (-PexcludeTags) because the extension we build on the runner links against the runner's
+// glibc (2.39), which the older Quack container can't load ("GLIBC_2.38 not found"). Runs locally
+// where the container/binary glibc match. Fix tracked: build a glibc-portable binary via the
+// extension's Docker target for a dedicated Quack CI job (dev-docs/TODO-WRITE-MODE.md).
+@Tag("quack-container")
 @Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeLanceS3QuackRead {
     @Test
