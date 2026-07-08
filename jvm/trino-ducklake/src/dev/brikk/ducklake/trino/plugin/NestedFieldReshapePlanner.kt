@@ -37,6 +37,10 @@ object NestedFieldReshapePlanner {
         val currentByParent: Map<Long, List<DucklakeColumn>> = childrenByParent(currentColumns)
         val fileByParent: Map<Long, List<DucklakeColumn>> = childrenByParent(fileColumns)
         val fileNameById: Map<Long, String> = fileColumns.associate { it.columnId to it.columnName }
+        // File-era DuckLake type string per column_id — used to detect a subfield whose type widened
+        // since the file was written (ALTER COLUMN s.child SET DATA TYPE): present in the file but at
+        // the OLD physical type, so the struct_pack must CAST it to the current type.
+        val fileTypeById: Map<Long, String> = fileColumns.associate { it.columnId to it.columnType }
 
         val plans: MutableMap<Long, List<StructFieldPlan>> = LinkedHashMap()
         for (column in projectedColumns) {
@@ -44,7 +48,7 @@ object NestedFieldReshapePlanner {
             if (type is RowType && fileNameById.containsKey(column.columnId)) {
                 // Struct present in the file — reshape if its shape drifted. (A struct ADDED after
                 // the file is absent from the file tree; the top-level NULL projection handles it.)
-                val plan = buildStructPlan(type, column.columnId, currentByParent, fileByParent, fileNameById)
+                val plan = buildStructPlan(type, column.columnId, currentByParent, fileByParent, fileNameById, fileTypeById)
                 if (plan != null) {
                     plans[column.columnId] = plan
                 }
@@ -63,7 +67,8 @@ object NestedFieldReshapePlanner {
             structColumnId: Long,
             currentByParent: Map<Long, List<DucklakeColumn>>,
             fileByParent: Map<Long, List<DucklakeColumn>>,
-            fileNameById: Map<Long, String>): List<StructFieldPlan>? {
+            fileNameById: Map<Long, String>,
+            fileTypeById: Map<Long, String>): List<StructFieldPlan>? {
         val currentChildren: List<DucklakeColumn> = currentByParent[structColumnId] ?: emptyList()
         val fileChildren: List<DucklakeColumn> = fileByParent[structColumnId] ?: emptyList()
         // Conservative structural diff: a different child-id sequence (add / drop / reorder) forces a
@@ -82,17 +87,25 @@ object NestedFieldReshapePlanner {
             if (fileName == null || fileName != currentName) {
                 needsReshape = true
             }
+            // Type widened since the file was written (present field, differing type string): the
+            // file holds the OLD physical type, so the struct_pack must CAST it to the current type.
+            // A type change alone must force a reshape even if names/shape are otherwise unchanged.
+            val promoted: Boolean = fileName != null && fileTypeById[childColumnId] != currentChildren[i].columnType
+            if (promoted) {
+                needsReshape = true
+            }
             var childPlan: List<StructFieldPlan>? = null
             val fieldType = field.type
             if (fieldType is RowType && fileName != null) {
-                childPlan = buildStructPlan(fieldType, childColumnId, currentByParent, fileByParent, fileNameById)
+                childPlan = buildStructPlan(fieldType, childColumnId, currentByParent, fileByParent, fileNameById, fileTypeById)
                 if (childPlan != null) {
                     needsReshape = true
                 }
             }
             // initial_default of a subfield ADDED after this file was written (fileName == null):
             // projected in place of NULL for rows that predate `ADD COLUMN s.child … DEFAULT …`.
-            fields.add(StructFieldPlan(currentName, fieldType, fileName, childPlan, currentChildren[i].initialDefault))
+            fields.add(StructFieldPlan(
+                    currentName, fieldType, fileName, childPlan, currentChildren[i].initialDefault, promoted))
         }
         return if (needsReshape) fields else null
     }

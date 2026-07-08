@@ -2974,6 +2974,48 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun setFieldType(tableId: Long, fieldPath: List<String>, newColumnType: String) {
+        val col = DUCKLAKE_COLUMN.`as`("col")
+        executeWriteTransaction("set field type ${fieldPath.joinToString(".")} in table $tableId") { tx ->
+            val ctx = tx.dsl()
+            // Resolve the target CHILD column_id by walking parent_column down the path (same helper
+            // as dropField). The child row carries its own parent_column, which we must preserve.
+            val columns = activeColumnRows(ctx, tableId, tx.getCurrentSnapshotId())
+            val columnId = resolveColumnIdByPath(columns, fieldPath)
+            val existing = columns.first { it.columnId == columnId }
+            val columnOrder = existing.columnOrder
+            val columnName = existing.columnName
+            val nullsAllowed = existing.nullsAllowed
+            val parentColumn = existing.parentColumn
+
+            // End-snapshot the current version.
+            ctx.update(col)
+                .set(col.END_SNAPSHOT, tx.getNewSnapshotId())
+                .where(col.TABLE_ID.eq(tableId))
+                .and(col.COLUMN_ID.eq(columnId))
+                .and(col.END_SNAPSHOT.isNull)
+                .execute()
+
+            // Insert the new version: same column_id / name / order / parent_column / nullability,
+            // new type. Default preserved as the "no default" sentinel — same policy as setColumnType.
+            ctx.insertInto(col)
+                .set(col.COLUMN_ID, columnId)
+                .set(col.BEGIN_SNAPSHOT, tx.getNewSnapshotId())
+                .set(col.TABLE_ID, tableId)
+                .set(col.COLUMN_ORDER, columnOrder)
+                .set(col.COLUMN_NAME, columnName)
+                .set(col.COLUMN_TYPE, newColumnType)
+                .set(col.DEFAULT_VALUE, "NULL")
+                .set(col.NULLS_ALLOWED, nullsAllowed)
+                .set(col.DEFAULT_VALUE_TYPE, "literal")
+                .set(col.PARENT_COLUMN, parentColumn)
+                .execute()
+
+            tx.incrementSchemaVersion(tableId)
+            tx.recordChange(WriteChange.AlteredTable(tableId))
+        }
+    }
+
     override fun addField(tableId: Long, parentPath: List<String>, field: TableColumnSpec, ignoreExisting: Boolean) {
         // IF NOT EXISTS pre-check (advisory) so the no-op case doesn't mint an empty snapshot.
         if (ignoreExisting) {

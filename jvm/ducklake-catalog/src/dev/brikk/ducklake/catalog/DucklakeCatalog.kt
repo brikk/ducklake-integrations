@@ -521,6 +521,19 @@ interface DucklakeCatalog {
     fun setColumnType(tableId: Long, columnId: Long, newColumnType: String)
 
     /**
+     * Change a nested struct-FIELD's type (`ALTER TABLE ... ALTER COLUMN s.child SET DATA TYPE …`).
+     *
+     * [fieldPath] is the dotted path to the field, INCLUDING the top-level column name (e.g.
+     * `[s, child]` for `s.child`, `[s, inner, child]` deeper). The target child column_id is resolved
+     * by walking `parent_column` from the top-level column down the path (same as [dropField]).
+     * End-snapshots the current child row and inserts a new row with the same column_id / order /
+     * name / parent_column / nullability but the updated [newColumnType] (a DuckLake type string);
+     * the "no default" sentinel is preserved. Increments schema version; creates a new snapshot
+     * atomically. Widening-compatibility is validated by the caller (connector) before this runs.
+     */
+    fun setFieldType(tableId: Long, fieldPath: List<String>, newColumnType: String)
+
+    /**
      * Add a nested field to a struct column (`ALTER TABLE ... ADD COLUMN parent.child <type>`).
      *
      * [parentPath] is the dotted path to the containing struct, INCLUDING the top-level column name

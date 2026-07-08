@@ -410,17 +410,26 @@ generate new parquet files and need a similar metadata-insert path.
     cover round-trip insert+read on VARCHAR and BIGINT columns, plus
     equality-predicate pruning.
 
-## Sorted Table Writes — ⏸ PARKED (awaiting scope decision, 2026-06-29)
+## Sorted Table Writes — ✅ DONE 2026-07-08 (recommended gated scope)
 
-- [ ] **Apply table sort spec during Parquet writes** in `DucklakePageSink`. Today the spec is read
-  + exposed to the planner only (`DucklakeSortPropertyMapper` → `SortingProperty`); nothing sorts on
-  write. Central write-path change (handle + `beginInsert`/`beginCreateTable` + sink provider + core
-  sink). Scoping done — see TODO-jayson-special-list.md § F7 for the full notes. Forks: in-memory
-  `io.trino.spi.PageSorter` (injectable) vs spill `io.trino.plugin.hive.SortingFileWriter`;
-  unpartitioned-only vs partitioned+sorted (OOM); no `sorted_by` table property exists yet (so only
-  DuckDB-sorted tables + Trino INSERT benefit). **Recommended when unparked:** gated in-memory
-  PageSorter, parquet + unpartitioned + sort-spec-present only (existing writes unchanged), per-file
-  sorted output. See [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+- [x] **Apply table sort spec during Parquet writes** in `DucklakePageSink`. Shipped the recommended
+  scope: gated in-memory `io.trino.spi.PageSorter`, parquet + unpartitioned + resolvable-sort-spec
+  only; every other write path is byte-for-byte unchanged. The gate lives in ONE place
+  (`DucklakeMetadata.resolveWriteSortColumns`, wired into `beginInsert`/`beginCreateTable`): it emits
+  a non-empty `DucklakeWritableTableHandle.sortColumns` only when unpartitioned + parquet + the
+  catalog sort spec resolves to ≥1 leading column via the SAME `DucklakeSortPropertyMapper`
+  .resolveHonoredPrefix the read side uses (so write and read agree on the honored prefix). The sink
+  re-checks the invariants defensively, buffers appended pages when active, and at `finish()` sorts
+  the buffer with `PageSorter` (channels + `SortOrder` from the resolved prefix) and replays through
+  the normal unpartitioned write path (lazy writer-open + size rollover preserved). No `sorted_by`
+  Trino property yet, so the benefit is Trino INSERTs into DuckDB-sorted tables; MERGE/lineage sinks
+  are intentionally NOT sorted (handle stays empty). In-memory buffer is unbounded but confined to
+  the gated scope (accepted v1 trade-off, reported via `getMemoryUsage`). Pinned by
+  `TestDucklakeSortedWrites` (ASC/DESC/two-key physical order via `$file_row_number` + single-file
+  assert; fallback regressions for unsorted / partitioned+sorted / duckdb-format+sorted). See
+  [archive/DUCKLAKE_1_0_IMPACT.md § Sorted Tables](archive/DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+  Follow-ups (not done): a Trino `sorted_by` table property; spill-based sort for large unpartitioned
+  inserts; partitioned+sorted.
 
 ## Lineage-preserving writes — ✅ DONE 2026-07-06 (F7 capstone)
 

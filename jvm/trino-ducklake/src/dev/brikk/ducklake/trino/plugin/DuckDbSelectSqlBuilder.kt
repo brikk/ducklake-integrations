@@ -184,6 +184,15 @@ object DuckDbSelectSqlBuilder {
         }
         val childExpr = "(" + parentExpr + ")." + quoteIdentifier(field.fileName)
         if (field.children == null) {
+            if (field.promoted) {
+                // The field's type widened since the file was written (ALTER COLUMN s.child SET DATA
+                // TYPE). The file holds the OLD physical type, so CAST it to the current type — the
+                // Arrow→page converter reads by the current (widened) type, so the vectors must match.
+                sql.append("CAST(").append(childExpr).append(" AS ")
+                        .append(DuckDbWriterSupport.toDuckDbSqlType(field.type, "nested type-promotion projection"))
+                        .append(")")
+                return
+            }
             // Leaf: a scalar, or a nested struct whose shape matches the file (read as-is).
             sql.append(childExpr)
         }

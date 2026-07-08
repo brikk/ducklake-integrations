@@ -41,6 +41,13 @@ import java.util.Locale
  * parser we treat foreign-dialect expressions as opaque and emit no sort
  * property at all rather than misinterpret quoting/identifier rules.
  */
+/**
+ * One entry of the honored sort prefix: the lowercased top-level column name plus its
+ * resolved [SortOrder]. Callers map [lowercaseColumnName] to whatever they need — a
+ * [ColumnHandle] on the read side, a page channel index on the write side.
+ */
+internal data class ResolvedSortColumn(val lowercaseColumnName: String, val order: SortOrder)
+
 class DucklakeSortPropertyMapper private constructor() {
     companion object {
         private const val DUCKDB_DIALECT = "duckdb"
@@ -55,10 +62,42 @@ class DucklakeSortPropertyMapper private constructor() {
         fun toLocalProperties(
                 sortKeys: List<DucklakeSortKey>,
                 columnHandlesByLowercaseName: Map<String, out ColumnHandle>): List<LocalProperty<ColumnHandle>> {
-            if (sortKeys.isEmpty()) {
+            val resolved = resolveHonoredPrefix(sortKeys, columnHandlesByLowercaseName.keys)
+            if (resolved.isEmpty()) {
                 return ImmutableList.of()
             }
             val properties = ImmutableList.builder<LocalProperty<ColumnHandle>>()
+            for (column in resolved) {
+                // resolveHonoredPrefix only emits names present in the map, so this is non-null.
+                val handle = columnHandlesByLowercaseName.getValue(column.lowercaseColumnName)
+                properties.add(SortingProperty(handle, column.order))
+            }
+            return properties.build()
+        }
+
+        /**
+         * Shared honored-prefix resolution: the single source of truth for which sort keys
+         * both the read side (planner [SortingProperty] hints) and the write side (physically
+         * sorting rows) may act on. Returns the *leading resolvable prefix* of [sortKeys],
+         * each entry lowercased-column-name + [SortOrder]. Stops (returning only the safe
+         * prefix, possibly empty) at the first key that is:
+         *
+         *   - non-contiguous by `sort_key_index` (guards against a half-applied sort-info
+         *     update masquerading surviving keys as an adjacent prefix),
+         *   - not the `duckdb` dialect (foreign dialects are opaque without a parser),
+         *   - not a simple column reference, or
+         *   - naming a column absent from [resolvableLowercaseColumnNames].
+         *
+         * Read and write MUST agree on this prefix, otherwise a data file could be sorted by a
+         * key the planner did not advertise (or vice versa), so both callers route through here.
+         */
+        internal fun resolveHonoredPrefix(
+                sortKeys: List<DucklakeSortKey>,
+                resolvableLowercaseColumnNames: Set<String>): List<ResolvedSortColumn> {
+            if (sortKeys.isEmpty()) {
+                return emptyList()
+            }
+            val resolved = ArrayList<ResolvedSortColumn>(sortKeys.size)
             // Track the expected next sort_key_index so the safe-prefix guarantee is self-contained
             // rather than relying on the caller's ORDER BY. A gap (e.g. indices 0, 2 with 1 missing
             // due to a partial/half-applied sort-info update) would otherwise make the surviving
@@ -68,24 +107,23 @@ class DucklakeSortPropertyMapper private constructor() {
             var expectedIndex = sortKeys[0].sortKeyIndex
             for (key in sortKeys) {
                 if (key.sortKeyIndex != expectedIndex) {
-                    // Non-contiguous index — bail to safe prefix. Same conservative stance as the
-                    // dialect / unresolved-column cases below.
                     break
                 }
                 if (!DUCKDB_DIALECT.equals(key.dialect, ignoreCase = true)) {
-                    // Unknown dialect — bail to safe prefix (possibly empty). Better to lose
-                    // a planner optimization than to misreport order.
                     break
                 }
                 val columnName = parseColumnReference(key.expression) ?: break
-                val handle = columnHandlesByLowercaseName[columnName.lowercase(Locale.ROOT)]
-                    ?: // Expression names a column we don't see at this snapshot (likely renamed
-                    // / dropped after the sort spec was written). Stop here.
+                val lowercase = columnName.lowercase(Locale.ROOT)
+                if (!resolvableLowercaseColumnNames.contains(lowercase)) {
+                    // Expression names a column we don't see at this snapshot (likely renamed
+                    // / dropped after the sort spec was written) or one not being written by
+                    // this sink. Stop here.
                     break
-                properties.add(SortingProperty(handle, toSortOrder(key.direction, key.nullOrder)))
+                }
+                resolved.add(ResolvedSortColumn(lowercase, toSortOrder(key.direction, key.nullOrder)))
                 expectedIndex++
             }
-            return properties.build()
+            return resolved
         }
 
         /**

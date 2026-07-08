@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.RowType
 import org.assertj.core.api.Assertions.assertThat
@@ -52,6 +53,21 @@ class TestNestedFieldReshapePlanner {
         assertThat(plans[200L]).containsExactly(
                 StructFieldPlan("a", INTEGER, "a", null),
                 StructFieldPlan("k", INTEGER, null, null, "42"))
+    }
+
+    @Test
+    fun promotedSubfieldForcesReshapeAndMarksPromoted() {
+        // current s = row(a bigint); the file stored a as integer (ALTER COLUMN s.a SET DATA TYPE
+        // BIGINT since). Names/shape are otherwise identical, so the type change ALONE must force a
+        // plan, and the present field is flagged promoted so the builder CASTs it.
+        val plans = NestedFieldReshapePlanner.buildPlans(
+                listOf(structHandle(200, "s", "a" to BIGINT)),
+                listOf(struct(200, "s"), col(201, "a", "bigint", 0, 200)),
+                listOf(struct(200, "s"), col(201, "a", "integer", 0, 200)))
+
+        assertThat(plans).containsOnlyKeys(200L)
+        assertThat(plans[200L]).containsExactly(
+                StructFieldPlan("a", BIGINT, "a", null, null, true))
     }
 
     @Test

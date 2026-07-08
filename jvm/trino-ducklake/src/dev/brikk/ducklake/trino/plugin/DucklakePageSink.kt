@@ -31,9 +31,11 @@ import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.hive.parquet.ParquetWriterConfig
 import io.trino.spi.Page
 import io.trino.spi.PageIndexerFactory
+import io.trino.spi.PageSorter
 import io.trino.spi.StandardErrorCode
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorPageSink
+import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
 import org.apache.parquet.format.CompressionCodec
 import org.apache.parquet.schema.MessageType
@@ -55,6 +57,12 @@ class DucklakePageSink(
         duckdbTargetWriteBytes: Long,
         private val trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
+        /**
+         * Trino's in-memory sorter, used ONLY when [DucklakeWritableTableHandle.sortColumns] is
+         * non-empty (gated to parquet + unpartitioned + resolvable sort spec in
+         * [DucklakeMetadata]). Null-safe: when sorting is inactive it is never touched.
+         */
+        private val pageSorter: PageSorter? = null,
         /**
          * Lineage-preserving mode (UPDATE/MERGE rewrites): every page appended to
          * this sink carries ONE extra trailing BIGINT channel holding each row's
@@ -90,6 +98,21 @@ class DucklakePageSink(
     private val writers: MutableList<DucklakeFileWriter?> = mutableListOf()
     private val completedFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
     private val writtenFilePaths: MutableList<Location> = mutableListOf()
+
+    // Sorted-write support. Active ONLY for the gated case (parquet + unpartitioned + a resolvable
+    // sort spec), enforced upstream in DucklakeMetadata by leaving sortColumns empty otherwise; we
+    // re-check the local invariants (parquet, no partitioner) defensively so a stray handle can
+    // never flip on buffering for a path that must stay byte-for-byte unchanged. When active,
+    // appendPage BUFFERS pages in memory instead of writing; finish() sorts the whole buffer with
+    // PageSorter and replays it through the normal unpartitioned write path. The buffer is
+    // deliberately unbounded: it is confined to the gated scope and is the accepted v1 memory
+    // trade-off (a single INSERT into a sorted, unpartitioned table). getMemoryUsage() reports the
+    // buffered bytes so the engine still accounts for it.
+    private val sortColumns: List<DucklakeSortColumn> = handle.sortColumns
+    private val sortingActive: Boolean
+    private val sortTypes: List<Type>
+    private val bufferedPages: MutableList<Page> = mutableListOf()
+    private var bufferedRetainedBytes: Long = 0
 
     init {
 
@@ -153,10 +176,26 @@ class DucklakePageSink(
         else {
             this.partitioner = null
         }
+
+        // Sorting is active only when the handle carries a resolved prefix AND the local
+        // invariants hold: parquet writer path and no partitioner. (DucklakeMetadata already
+        // guarantees these when it populates sortColumns; the defensive re-check keeps the
+        // no-buffering contract for every other path.) pageSorter must be present when active.
+        this.sortingActive = sortColumns.isNotEmpty() &&
+                partitioner == null &&
+                FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)
+        if (sortingActive) {
+            requireNonNull(pageSorter, "pageSorter is null but sorting is active")
+        }
+        // Channel types the PageSorter sees. Mirrors the parquet writer's channel layout: the
+        // catalog columns, plus the trailing synthetic rowid channel in lineage mode. Sort
+        // channels only ever index the leading catalog columns, so the extra channel simply
+        // rides along with each sorted row.
+        this.sortTypes = if (writeRowLineage) columnTypes + BIGINT else columnTypes
     }
 
     override fun getMemoryUsage(): Long {
-        var total: Long = 0
+        var total: Long = bufferedRetainedBytes
         for (writer in writers) {
             if (writer != null) {
                 total += writer.getRetainedBytes()
@@ -189,6 +228,15 @@ class DucklakePageSink(
         // checker is a no-op (zero per-page overhead) when the table has no unsigned
         // columns, which is the common case.
         unsignedRangeChecker.validate(page)
+
+        if (sortingActive) {
+            // Buffer for the finish()-time global sort. The engine hands the sink fully
+            // materialized pages, so retaining the reference is safe; PageSorter copies the
+            // rows into its own index when we sort.
+            bufferedPages.add(page)
+            bufferedRetainedBytes += page.retainedSizeInBytes
+            return ConnectorPageSink.NOT_BLOCKED
+        }
 
         try {
             if (partitioner == null) {
@@ -289,6 +337,9 @@ class DucklakePageSink(
 
     override fun finish(): CompletableFuture<Collection<Slice>> {
         try {
+            if (sortingActive && bufferedPages.isNotEmpty()) {
+                writeSortedBuffer()
+            }
             for (i in writers.indices) {
                 if (writers[i] != null) {
                     closeWriter(i)
@@ -306,6 +357,34 @@ class DucklakePageSink(
         return completedFuture(fragments)
     }
 
+    /**
+     * Sort the buffered pages globally by the resolved prefix and replay them through the normal
+     * unpartitioned write path (which handles lazy writer open and size-based rollover). Writing
+     * in sorted order means each emitted file is internally sorted AND files are emitted
+     * smallest-first, so the whole INSERT is globally sorted even if it rolls over to several
+     * files. Only reached when sorting is active (parquet, unpartitioned).
+     */
+    @Throws(IOException::class)
+    private fun writeSortedBuffer() {
+        val totalPositions: Long = bufferedPages.sumOf { it.positionCount.toLong() }
+        val expectedPositions: Int = totalPositions.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val sortChannels: List<Int> = sortColumns.map { it.channel }
+        val sortOrders: List<io.trino.spi.connector.SortOrder> = sortColumns.map { it.sortOrder }
+        val sorted: Iterator<Page> = pageSorter!!.sort(
+                sortTypes,
+                bufferedPages,
+                sortChannels,
+                sortOrders,
+                expectedPositions)
+        // Release the input buffer's accounting up front; the sorter has taken ownership of the
+        // rows and the sorted output is streamed page-by-page below.
+        bufferedPages.clear()
+        bufferedRetainedBytes = 0
+        while (sorted.hasNext()) {
+            appendUnpartitioned(sorted.next())
+        }
+    }
+
     override fun abort() {
         for (writer in writers) {
             if (writer != null) {
@@ -318,6 +397,8 @@ class DucklakePageSink(
             }
         }
         writers.clear()
+        bufferedPages.clear()
+        bufferedRetainedBytes = 0
 
         // Best-effort delete all written files
         for (path in writtenFilePaths) {
