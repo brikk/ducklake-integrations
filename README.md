@@ -22,12 +22,30 @@ metadata tables, and bidirectional DuckDB compatibility.
 See the [trino-ducklake README](jvm/trino-ducklake/README.md) for features, build
 instructions, and configuration.
 
+### [doris-ducklake](jvm/doris-ducklake/) (in development)
+
+Apache Doris connector plugin for DuckLake, built as an out-of-tree plugin against Doris's
+new **catalog SPI**. That SPI is not yet in a stable Doris release — it is landing upstream
+over the coming months (tracked on the `branch-catalog-spi` line) and ships in an upcoming
+Doris release — so this module targets that forthcoming release rather than a current one.
+
+Read-side support is well advanced (schema/type mapping, predicate and count pushdown,
+partition and bucket pruning, time travel, MVCC snapshot pinning), with write support
+progressing (DDL, INSERT/CTAS including partitioned and bucketed writes, and the
+`expire_snapshots` maintenance procedure). Some features remain gated on upstream Doris work
+(notably merge-on-read DELETE/UPDATE/MERGE, which needs row-identity infrastructure the plugin
+SPI does not yet expose). Read correctness is validated against the same upstream corpus via a
+Doris engine adapter in the conformance harness below.
+
+See the [doris-ducklake README](jvm/doris-ducklake/README.md) for current status, the build,
+and the local FE+BE compose smoke setup.
+
 ### [ducklake-corpus-replay](jvm/ducklake-corpus-replay/)
 
 Conformance harness that replays **DuckLake's upstream sqllogictest corpus** (the reference
 C++ implementation's own `test/sql/` suite, pinned as a git submodule) through an embedded
 DuckDB oracle, validating results against the upstream golden text — then mirrors every lake
-read through an engine adapter (Trino today; Doris planned) live-vs-live against the oracle
+read through an engine adapter (Trino and Doris) live-vs-live against the oracle
 on a shared PostgreSQL catalog. Engine-agnostic core (`ReplayReadEngine` seam); adapters live
 in the engine modules. The corpus grows with every upstream release, so spec-conformance
 coverage compounds automatically.
