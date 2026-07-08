@@ -12,10 +12,10 @@ index 1746f9f33d4..d2930901c0e 100644
      /**
       * create the catalog instance from catalog log.
 diff --git a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-index cd194492e7b..707e511be5d 100644
+index 44c2a7bb593..51e57e39357 100644
 --- a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
 +++ b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-@@ -940,6 +940,8 @@ public class CreateTableInfo {
+@@ -941,6 +941,8 @@ public class CreateTableInfo {
                  return ENGINE_PAIMON;
              case "iceberg":
                  return ENGINE_ICEBERG;

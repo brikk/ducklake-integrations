@@ -2,8 +2,11 @@
 
 The DuckLake connector is a Doris **plugin (SPI) connector**. The Doris FE
 (worktree `~/DEV/OSS/doris-catalog-spi`, branch `branch-catalog-spi`, the
-P-series connector-SPI migration — **baseline: `8b391c7459d`, the P6 iceberg
-cutover**; see `../dev-docs/REPORT-doris-p6-iceberg-spi-cutover.md`) carries a couple of
+P-series connector-SPI migration — **baseline: `3ba75b7cf8a`** (re-vendored
+2026-07-08 from `8b391c7459d`, the P6 iceberg cutover, which is the same P6
+change rebased upstream as `6043399`; `3ba75b7cf8a` = P6 + two follow-on catalog
+fixes, see below); see `../dev-docs/REPORT-doris-p6-iceberg-spi-cutover.md`)
+carries a couple of
 generic guards keyed on a hard-coded catalog-type set, so they don't yet know
 about the `"ducklake"` catalog type. Until these land upstream we apply them as
 working-tree patches to the local FE checkout, build the FE, and overlay it into
@@ -13,11 +16,27 @@ These are **not** committed to the OSS Doris checkout — they live here as a
 reapplyable patch (`ducklake-fe.patch`) so the FE build is reproducible and the
 upstream asks are tracked. See [[doris-fe-build-macos]] + [[doris-compose-smoke-remote]].
 
+### Re-vendor log
+
+- **2026-07-08 → `3ba75b7cf8a`.** Bumped from `8b391c7` to the branch tip. Two new
+  catalog commits on top of P6, **neither affecting our connector**:
+  `34bd8eede75` "jdbc: keep driver classloaders alive per URL to stop Metaspace
+  leak" (touches `fe-connector-jdbc`, which we don't use — but the same leak class
+  applies to our own `Class.forName("org.postgresql.Driver")`; tracked as a TODO in
+  `../dev-docs/TODO-read.md`), and `3ba75b7cf8a` "drop dangling MaxComputeExternalTableTest"
+  (fe-core test-compile fix). **`fe-connector-api`/`-spi` unchanged since `8b391c7`**,
+  so the connector recompiled with **zero** source changes (unlike the P6 rebuild's
+  3 compile-break fixes); thrift changes in the gap don't touch our iceberg types.
+  Patch #1 (`CatalogFactory`) applied clean; patch #2 (`CreateTableInfo`) needed only
+  a line-offset refresh (`--3way`), regenerated here. FE rebuilt, SPI jars re-installed
+  to `~/.m2` (`-P flatten`), plugin zip + `doris-fe:pr62767-local` overlay image rebuilt,
+  module suite + detekt + checkAbi green.
+
 ## Apply + rebuild
 
 ```bash
-cd ~/DEV/OSS/doris-catalog-spi   # branch-catalog-spi @ 8b391c7459d
-git apply /path/to/jvm/doris-ducklake/fe-patches/ducklake-fe.patch   # or keep as WT changes
+cd ~/DEV/OSS/doris-catalog-spi   # branch-catalog-spi @ 3ba75b7cf8a
+git apply --3way /path/to/jvm/doris-ducklake/fe-patches/ducklake-fe.patch   # --3way tolerates line-offset drift
 JAVA_HOME=<jdk17> DISABLE_BUILD_UI=ON ./build.sh --fe                 # ~2 min incremental
 # then re-install the SPI artifacts our gradle build compiles against (mavenLocal):
 #   cd fe && <mvn> install -pl fe-connector/fe-connector-api,fe-connector/fe-connector-spi,fe-thrift -DskipTests

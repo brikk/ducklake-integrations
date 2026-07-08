@@ -374,6 +374,19 @@ genuinely wired upstream (unlike plugin DELETE).
   bytecode-major check is the one that actually caught us before.)
   - Idea parked: promote to a shared `build-logic` convention plugin so every module that
     deploys into the JDK-17 FE gets it (currently only `:ducklake-catalog`).
+- [ ] **PG driver Metaspace leak — verify/mitigate (flagged 2026-07-08 by upstream commit
+  `34bd8eede75`).** Upstream fixed the same bug class in `fe-connector-jdbc`: a JDBC driver
+  self-registers into the static `java.sql.DriverManager` on class load and `close()` never
+  deregisters it, so an evicted per-catalog driver classloader stays pinned by DriverManager
+  → serial CREATE→DROP→CREATE of the same catalog leaks one driver's worth of Metaspace per
+  cycle (their live FE OOM'd: 34 leaked FactoryURLClassLoaders, Metaspace 165MB→1565MB/5.5h).
+  **We don't use `JdbcConnectorClient`, but we have the same shape:**
+  `DuckLakeConnector.buildCatalog()` does `Class.forName("org.postgresql.Driver")` on the
+  plugin (child, per-catalog) classloader and never deregisters. TODO: confirm whether a
+  DuckLake CREATE→DROP→CREATE loop leaks a driver classloader (jmap -histo:live for
+  FactoryURLClassLoader / DriverInfo count), and if so mitigate — e.g. register the driver via
+  a shared/parent-classloader-pinned static once, or deregister on `Connector.close()`. Not
+  observed yet; noting before it bites a long-lived FE.
 - [ ] **HikariCP version skew** (FE pins 6.0.0; our plugin zip ships 7.0.2). Verify 6↔7 wire compat or downgrade ours. Sanity-check §3.2.
 - [ ] **Plugin-zip exclusion audit** — once a quarter, diff our `pluginZip` task's exclude list against `fe-connector-iceberg/src/main/assembly/plugin-zip.xml` in the worktree. Drift introduces silent runtime conflicts.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
