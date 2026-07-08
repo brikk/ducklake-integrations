@@ -676,8 +676,10 @@ no capability gain). Design notes: [dev-docs/DESIGN-maintenance.md](dev-docs/DES
 
 ### DDL
 
-- `ALTER TABLE SET TYPE` (type promotion) — deferred (the read path assumes column types are
-  stable across snapshots).
+- `ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE` (type promotion) is supported for **widening**
+  changes, on both top-level columns and nested struct fields (see the feature chart above). Still
+  **not** supported: narrowing / incompatible changes (rejected at DDL time), and type changes to
+  list elements or map values.
 
 ### Commit Context
 
