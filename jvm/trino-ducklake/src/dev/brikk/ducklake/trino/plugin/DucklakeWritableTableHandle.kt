@@ -43,7 +43,17 @@ data class DucklakeWritableTableHandle @JsonCreator constructor(
         @get:JvmName("fileFormat")
         @param:JsonProperty("fileFormat") val fileFormat: String,
         @get:JvmName("duckDbWriterMode")
-        @param:JsonProperty("duckDbWriterMode") val duckDbWriterMode: String)
+        @param:JsonProperty("duckDbWriterMode") val duckDbWriterMode: String,
+        /**
+         * The honored write-side sort prefix (see [DucklakeSortColumn]). Non-empty ONLY for the
+         * gated case — parquet format, unpartitioned table, a resolvable DuckLake sort spec — in
+         * which the page sink physically sorts rows before writing. Empty (the default) means the
+         * sink behaves exactly as before: no buffering, no sorting. Resolved in [DucklakeMetadata]
+         * so read and write agree on the honored prefix; defaulted so every existing positional
+         * constructor call and JSON payload (which omits it) round-trips to "unsorted".
+         */
+        @get:JvmName("sortColumns")
+        @param:JsonProperty("sortColumns") val sortColumns: List<DucklakeSortColumn> = emptyList())
         : ConnectorInsertTableHandle, ConnectorOutputTableHandle
 {
     override fun toString(): String

@@ -24,6 +24,7 @@ import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.plugin.hive.parquet.ParquetWriterConfig
 import io.trino.spi.NodeVersion
 import io.trino.spi.PageIndexerFactory
+import io.trino.spi.PageSorter
 import io.trino.spi.connector.ConnectorInsertTableHandle
 import io.trino.spi.connector.ConnectorMergeSink
 import io.trino.spi.connector.ConnectorMergeTableHandle
@@ -45,7 +46,8 @@ class DucklakePageSinkProvider @Inject constructor(
     private val fileFormatDataSourceStats: FileFormatDataSourceStats,
     ducklakeConfig: DucklakeConfig,
     nodeVersion: NodeVersion,
-    private val pageIndexerFactory: PageIndexerFactory
+    private val pageIndexerFactory: PageIndexerFactory,
+    private val pageSorter: PageSorter
 )
         : ConnectorPageSinkProvider {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -123,5 +125,6 @@ class DucklakePageSinkProvider @Inject constructor(
                     duckdbTargetWriteBytes,
                     trinoVersion,
                     pageIndexerFactory,
+                    pageSorter,
                     writeRowLineage)
 }

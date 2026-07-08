@@ -1086,6 +1086,8 @@ class DucklakeMetadata(
 
         val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 
+        val fileFormat: String = resolveWriteFormat(session, handle.tableId, handle.snapshotId)
+
         return DucklakeWritableTableHandle(
                 handle.schemaName,
                 handle.tableName,
@@ -1095,8 +1097,54 @@ class DucklakeMetadata(
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                resolveWriteFormat(session, handle.tableId, handle.snapshotId),
-                DucklakeSessionProperties.getDuckDbWriterMode(session))
+                fileFormat,
+                DucklakeSessionProperties.getDuckDbWriterMode(session),
+                resolveWriteSortColumns(
+                        handle.tableId, handle.snapshotId, ducklakeColumns, activePartitionSpec, fileFormat))
+    }
+
+    /**
+     * Resolve the honored write-side sort prefix for a page sink, or empty when sorting must
+     * stay off. This is the ONE place the sorted-write gate is enforced: we return a non-empty
+     * list ONLY when
+     *
+     *   1. the table is UNPARTITIONED (partitioned + sorted falls back to unsorted — the sink
+     *      routes rows per partition and a global sort across partitions is out of scope), and
+     *   2. the data file format is parquet (the only sink path that sorts; duckdb/vortex/lance
+     *      keep their existing behavior), and
+     *   3. the table's catalog sort spec resolves to at least one leading column via the exact
+     *      same rules the read side uses ([DucklakeSortPropertyMapper.resolveHonoredPrefix]).
+     *
+     * Any failing condition yields [emptyList], so the sink is byte-for-byte unchanged.
+     */
+    private fun resolveWriteSortColumns(
+            tableId: Long,
+            snapshotId: Long,
+            columns: List<DucklakeColumnHandle>,
+            activePartitionSpec: Optional<DucklakePartitionSpec>,
+            fileFormat: String): List<DucklakeSortColumn>
+    {
+        if (activePartitionSpec.isPresent) {
+            return emptyList()
+        }
+        if (!DucklakeSessionProperties.FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
+            return emptyList()
+        }
+        val sortKeys: List<DucklakeSortKey> = catalog.getSortKeys(tableId, snapshotId)
+        if (sortKeys.isEmpty()) {
+            return emptyList()
+        }
+        // Channel index = position of the column in the sink's block layout (handle.columns).
+        // First occurrence wins if a name somehow repeats; lowercased to match the mapper.
+        val channelByLowercaseName: MutableMap<String, Int> = HashMap()
+        for ((index, column) in columns.withIndex()) {
+            channelByLowercaseName.putIfAbsent(column.columnName.lowercase(Locale.ROOT), index)
+        }
+        val resolved: List<ResolvedSortColumn> =
+                DucklakeSortPropertyMapper.resolveHonoredPrefix(sortKeys, channelByLowercaseName.keys)
+        return resolved.map { column ->
+            DucklakeSortColumn(channelByLowercaseName.getValue(column.lowercaseColumnName), column.order)
+        }
     }
 
     override fun finishInsert(
@@ -1210,7 +1258,13 @@ class DucklakeMetadata(
                 activePartitionSpec,
                 temporalPartitionEncoding,
                 fileFormat,
-                DucklakeSessionProperties.getDuckDbWriterMode(session))
+                DucklakeSessionProperties.getDuckDbWriterMode(session),
+                // A freshly-created table generally has no sort spec yet (Trino has no
+                // `sorted_by` property; DuckDB's SET SORTED BY runs post-create), so this is
+                // normally empty — but resolving here keeps CTAS consistent with INSERT for the
+                // rare case a sort spec is already visible at this snapshot.
+                resolveWriteSortColumns(
+                        table.tableId, snapshotId, columnHandles, activePartitionSpec, fileFormat))
     }
 
     override fun finishCreateTable(
