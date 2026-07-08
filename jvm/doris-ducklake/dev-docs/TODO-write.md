@@ -340,6 +340,45 @@ Two FE-route gaps surfaced and were fixed to get here (both in
   DuckDB+DuckLake on the same metadata DB (W2 smoke). The reverse (DuckDB-written
   read by Doris) is the existing read smoke.
 
+## Maintenance procedures (P6 `getProcedureOps` seam)
+
+- [x] **`expire_snapshots` — connector side BUILT + headless-tested (2026-07-07).**
+  `ALTER TABLE <t> EXECUTE expire_snapshots(...)` routes generically through the P6
+  `Connector.getProcedureOps()` → [`DuckLakeProcedureOps`] (`SINGLE_CALL` mode; no
+  distributed rewrite driver needed — it's a metadata-only catalog transaction).
+  Drives the existing catalog primitives `listExpirableSnapshots(olderThan, versions)`
+  + `expireSnapshots(ids) → ExpireSnapshotsResult` (which only *schedules* dead files
+  for a later age-gated physical cleanup). Semantic template: trino-ducklake's
+  `DucklakeExpireSnapshotsProcedure`.
+  - **Arg contract** (Doris passes procedure args as `Map<String,String>`, so no real
+    array type): `retention_threshold` (varchar, default `7d`), `snapshot_ids`
+    (comma-separated bigints, mutually exclusive with retention), `dry_run` (bool,
+    default false). Keys case-insensitive. Retention floored by catalog prop
+    `maintenance.min-retention` (default `7d`); explicit `snapshot_ids` bypass the floor.
+  - **Catalog-wide vs table-scoped (documented + surfaced, not faked):** DuckLake
+    snapshots are catalog-wide, but Doris only offers `ALTER TABLE t EXECUTE`. Runs
+    catalog-wide, ignores the named table for selection, and the result's `scope`
+    column says so. A WHERE/PARTITION clause is rejected loudly.
+  - **Result:** one-row table `(dry_run, scope, expired_snapshot_count,
+    scheduled_file_count, snapshot_ids)`.
+  - **Tests:** +17 headless (`DuckLakeProcedureOpsTest`) — arg contract, duration
+    parser, floor rejection before touching the catalog, dry-run-never-expires,
+    mutual exclusion, conflict wrapping. Fake catalog is a throwing `Proxy` so an
+    unexpected catalog call fails loud.
+  - **⚠️ NOT yet live-smoked.** Headless-only; needs a compose `smoke.sh` step
+    (`ALTER TABLE ... EXECUTE expire_snapshots(dry_run => true/false)` on a real FE+BE,
+    cross-verify via the catalog's snapshot tables). Also note `expireSnapshots` is
+    "not supported on the Quack backend yet" per the catalog contract — irrelevant to
+    Doris (we use `JdbcDucklakeCatalog`/Postgres), but keep in mind for any Quack path.
+- [ ] **`rewrite_data_files` (compaction) procedure** — the DISTRIBUTED counterpart
+  (uses P6's free `ConnectorRewriteDriver` + `planRewrite`/`ConnectorRewriteGroup`).
+  Bigger: needs the rewrite sink + partial-compaction back-dating
+  (`rewriteDataFilesPartial`/`PartialMergedFile`). Trino template exists
+  (`DucklakeRewriteDataFilesProcedure`).
+- [ ] **`cleanup_old_files` / `remove_orphan_files`** — physical GC of the files
+  `expire_snapshots` scheduled (`listFilesScheduledForDeletion` + `removeScheduledFileRows`)
+  and orphan detection (`listReferencedFilePaths`). Needs BE/FS file deletion wiring.
+
 ## Reference
 
 - **Execution template (live):** `MaxComputeConnectorTransaction` +

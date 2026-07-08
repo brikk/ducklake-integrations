@@ -22,6 +22,11 @@ internal object DuckLakeConnectorProperties {
     // a TimeStampTz slot (Int64ToTimestampTz, master-only; NOT in 4.0.x/4.1.x releases incl. 4.1.2 — verified).
     const val ENABLE_MAPPING_TIMESTAMP_TZ = "enable.mapping.timestamp_tz"
 
+    // Retention floor for the expire_snapshots maintenance procedure's retention mode — the
+    // Doris analogue of Trino's `ducklake.maintenance.min-retention`. Guards against a too-small
+    // retention_threshold nuking recent time-travel snapshots. Default 7d (see DuckLakeProcedureOps).
+    const val MAINTENANCE_MIN_RETENTION = "maintenance.min-retention"
+
     fun catalogProperties(): List<ConnectorPropertyMetadata<*>> =
         listOf(
             ConnectorPropertyMetadata.requiredStringProperty(
@@ -47,6 +52,13 @@ internal object DuckLakeConnectorProperties {
                 "Map DuckLake timestamptz to zone-aware Doris TIMESTAMPTZ (needs a master/nightly BE — the converter is NOT in any 4.1.x release); " +
                     "default false maps to naive DATETIMEV2 (correct UTC values).",
                 false,
+            ),
+            ConnectorPropertyMetadata.stringProperty(
+                MAINTENANCE_MIN_RETENTION,
+                "Minimum age floor for expire_snapshots retention mode (protects recent " +
+                    "time-travel snapshots from a too-small retention_threshold). Format " +
+                    "<number><unit> (s/m/h/d), e.g. 7d. Default 7d.",
+                "7d",
             ),
         )
 
