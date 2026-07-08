@@ -5,6 +5,7 @@ import org.jooq.codegen.gradle.CodegenTask
 import org.jooq.meta.jaxb.GeneratedAnnotationType
 import org.jooq.meta.jaxb.VisibilityModifier
 import org.gradle.api.artifacts.ResolvedDependency
+import java.util.zip.ZipFile
 
 plugins {
     id("buildlogic.kotlin.library")
@@ -229,4 +230,146 @@ tasks.register("printCompileDependencyTree") {
             .sortedBy { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
             .forEach { walk(it) }
     }
+}
+
+// ABI floor guard for the Doris FE deploy target.
+//
+// This library ships into the Doris fe-connector plugin, whose FE process is pinned
+// to JDK 17. Anything on the RUNTIME classpath that carries bytecode newer than
+// Java 17 (class file major version 61) will `UnsupportedClassVersionError` at
+// deploy time. `targetCompatibility = VERSION_17` only governs the bytecode WE
+// compile from source — it does nothing about a PREBUILT dependency jar that was
+// itself compiled for a newer JVM. That drift is exactly what bit us when a jOOQ
+// 3.21 bump silently shipped newer bytecode; source-level compatibility passed but
+// the deployed FE choked. This task reads the real class file major version of
+// every runtime .class (our own output + all transitive jars) and fails the build
+// if any exceeds 61.
+//
+// Multi-release-jar (MRJAR) nuance: modern jars ship META-INF/versions/<N>/Foo.class
+// variants (9/17/21/...). A META-INF/versions/21/Foo.class legitimately has major 65
+// but is INERT on JDK 17 — the JVM uses the base (root) Foo.class there. So we only
+// inspect versioned entries where <N> <= 17, and always inspect the base classes.
+// Flagging a META-INF/versions/21/ class would be a false positive. module-info.class
+// is skipped (its major version reflects the module descriptor's --release, not code
+// that runs pre-module-path here, and it's noise for this check).
+tasks.register("checkAbi") {
+    group = "verification"
+    description = "Fails if any runtime .class has bytecode major > 61 (Java 17) — Doris FE ABI floor."
+
+    // Snapshot the inputs at configuration time so the doLast body stays
+    // configuration-cache friendly (no Project access at execution time).
+    val runtimeClasspath = configurations.getByName("runtimeClasspath")
+    val mainOutput = sourceSets["main"].output
+    val abiFloorMajor = 61 // Java 17
+
+    doLast {
+        // Read a class file's major version from bytes 6-7 (u2 big-endian),
+        // after verifying the 0xCAFEBABE magic. Returns null for non-class / short input.
+        fun majorVersion(bytes: ByteArray): Int? {
+            if (bytes.size < 8) return null
+            val magic =
+                ((bytes[0].toInt() and 0xFF) shl 24) or
+                    ((bytes[1].toInt() and 0xFF) shl 16) or
+                    ((bytes[2].toInt() and 0xFF) shl 8) or
+                    (bytes[3].toInt() and 0xFF)
+            if (magic != -0x35014542) return null // 0xCAFEBABE as signed Int
+            val major = ((bytes[6].toInt() and 0xFF) shl 8) or (bytes[7].toInt() and 0xFF)
+            return major
+        }
+
+        // For an MRJAR entry name, decide whether it is relevant on JDK 17.
+        // Returns false only for META-INF/versions/<N>/... where N > 17 (inert here)
+        // or for module-info.class. Base classes and versions/<N<=17> are relevant.
+        fun isRelevantEntry(name: String): Boolean {
+            if (!name.endsWith(".class")) return false
+            if (name == "module-info.class" || name.endsWith("/module-info.class")) return false
+            val prefix = "META-INF/versions/"
+            if (name.startsWith(prefix)) {
+                val rest = name.substring(prefix.length)
+                val slash = rest.indexOf('/')
+                if (slash <= 0) return false
+                val ver = rest.substring(0, slash).toIntOrNull() ?: return false
+                return ver <= 17
+            }
+            return true
+        }
+
+        val violations = mutableListOf<String>()
+        var scannedClasses = 0
+        var scannedArtifacts = 0
+
+        // 1) The module's own compiled main output (a .class we produced must be checked too).
+        mainOutput.classesDirs.files
+            .filter { it.exists() }
+            .forEach { dir ->
+                scannedArtifacts++
+                dir.walkTopDown()
+                    .filter { it.isFile && isRelevantEntry(it.toRelativeString(dir).replace('\\', '/')) }
+                    .forEach { classFile ->
+                        val header = ByteArray(8)
+                        classFile.inputStream().use { it.read(header) }
+                        val major = majorVersion(header) ?: return@forEach
+                        scannedClasses++
+                        if (major > abiFloorMajor) {
+                            violations +=
+                                ":ducklake-catalog (main output) -> " +
+                                    "${classFile.absolutePath} has bytecode major $major (> $abiFloorMajor / Java 17)"
+                        }
+                    }
+            }
+
+        // 2) Every jar on the resolved runtime classpath (these are the jars that ship).
+        //    Resolve artifacts so we can name the offending coordinate, not just the file.
+        val artifactByFile =
+            runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+                .associateBy({ it.file }, { "${it.moduleVersion.id}" })
+
+        runtimeClasspath.files
+            .filter { it.isFile && it.name.endsWith(".jar") }
+            .forEach { jar ->
+                scannedArtifacts++
+                val coord = artifactByFile[jar] ?: jar.name
+                ZipFile(jar).use { zip ->
+                    val entries = zip.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        if (entry.isDirectory) continue
+                        if (!isRelevantEntry(entry.name)) continue
+                        val header = ByteArray(8)
+                        zip.getInputStream(entry).use { it.read(header) }
+                        val major = majorVersion(header) ?: continue
+                        scannedClasses++
+                        if (major > abiFloorMajor) {
+                            violations +=
+                                "$coord -> ${entry.name} has bytecode major $major (> $abiFloorMajor / Java 17)"
+                        }
+                    }
+                }
+            }
+
+        if (violations.isNotEmpty()) {
+            val msg =
+                buildString {
+                    appendLine(
+                        "checkAbi: found ${violations.size} class(es) with bytecode newer than " +
+                            "Java 17 (major > $abiFloorMajor) on the :ducklake-catalog runtime classpath.",
+                    )
+                    appendLine("The Doris FE runs JDK 17 and would fail with UnsupportedClassVersionError:")
+                    violations.sorted().forEach { appendLine("  $it") }
+                }
+            throw GradleException(msg.trimEnd())
+        }
+
+        println(
+            "checkAbi: scanned $scannedClasses classes across $scannedArtifacts artifacts, " +
+                "all <= major $abiFloorMajor (Java 17)",
+        )
+    }
+}
+
+// Wire into `check` so CI catches dependency ABI drift automatically. This is a plain
+// task dependency (check -> checkAbi); checkAbi only reads resolved config + jars, so
+// there's no cycle with compile/test tasks.
+tasks.named("check") {
+    dependsOn("checkAbi")
 }

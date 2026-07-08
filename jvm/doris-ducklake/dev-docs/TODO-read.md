@@ -361,7 +361,19 @@ genuinely wired upstream (unlike plugin DELETE).
 
 ## Build hygiene (run before merging code from any step above)
 
-- [ ] **CI gate for JDK 17 ABI** on `:ducklake-catalog`: fail the build if a Java 18+ source feature creeps in OR if a runtime-classpath jar has a class with major version > 61. Cheapest form: `-Werror -Xlint:options` for source drift; a `:ducklake-catalog:checkAbi` task that walks the runtime configuration jars and asserts every `.class` ≤ 61 for transitive drift. Sanity-check §4a. Without this, the next jOOQ-3.21-style bump silently re-breaks deploy.
+- [x] **CI gate for JDK 17 ABI** on `:ducklake-catalog` (2026-07-07). Added a
+  `:ducklake-catalog:checkAbi` task (in `ducklake-catalog/build.gradle.kts`) that reads the
+  real class-file major version of every runtime `.class` — the module's own main output AND
+  every jar on `runtimeClasspath` — and fails the build (listing all violators by coordinate)
+  if any exceeds 61 (Java 17). Wired into `check` so CI catches transitive drift automatically.
+  Handles multi-release jars correctly (ignores inert `META-INF/versions/<N>/` where N > 17, so
+  it won't false-positive on MRJAR 21/65 variants) and `module-info.class`. Verified: passes on
+  the current tree (7668 classes / 17 artifacts), and independently confirmed it fails loud when
+  the threshold is lowered. Closes the "next jOOQ-3.21-style bump silently re-breaks deploy" gap.
+  (Source-feature drift via `-Werror -Xlint` is a separate, lesser concern — not done; the
+  bytecode-major check is the one that actually caught us before.)
+  - Idea parked: promote to a shared `build-logic` convention plugin so every module that
+    deploys into the JDK-17 FE gets it (currently only `:ducklake-catalog`).
 - [ ] **HikariCP version skew** (FE pins 6.0.0; our plugin zip ships 7.0.2). Verify 6↔7 wire compat or downgrade ours. Sanity-check §3.2.
 - [ ] **Plugin-zip exclusion audit** — once a quarter, diff our `pluginZip` task's exclude list against `fe-connector-iceberg/src/main/assembly/plugin-zip.xml` in the worktree. Drift introduces silent runtime conflicts.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
