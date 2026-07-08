@@ -15,12 +15,17 @@
 name: CI
 
 on:
+  # PRs are the gate for feature branches (runs on any PR).
   pull_request:
+  # Pushes to main run post-merge validation AND populate the Actions cache. GitHub scopes
+  # caches per-branch: entries created on the DEFAULT branch (main) are readable by ALL
+  # branches, but a feature branch's cache is NOT visible to main or to siblings. So building
+  # the parity extension on main seeds the cache that every PR/feature branch then restores.
+  # (If you also direct-push feature branches WITHOUT opening a PR, add them here or open a PR
+  # so they get CI — bare feature-branch pushes are intentionally not built to avoid
+  # double-runs with pull_request.)
   push:
-    # NOTE for maintainers: this work is currently on `trino-focus`; `main` is the
-    # long-lived branch. Trigger on both for now and trim this list once the branch
-    # strategy settles.
-    branches: [main, trino-focus]
+    branches: [main]
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
@@ -77,15 +82,12 @@ jobs:
         with:
           # The known-good HOST build output path (see extension README "Building").
           path: duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension
-          # Key = platform + a coarse DuckDB-line label + the pinned extension SHA. The SHA is the
-          # TRUE determinant: it transitively pins the extension sources AND its nested `duckdb`
-          # submodule (currently DuckDB v1.5.4 — what the host build actually bakes in). The
-          # `v1.5.3` token is just an opaque, stable cache-buster (it happens to mirror the
-          # extension repo's MainDistributionPipeline release-pipeline input, which is NOT what the
-          # host `make` targets). Its literal value doesn't affect correctness; kept as-is so the
-          # already-built cache entry from the first run still hits (bumping it forces a ~30-min
-          # rebuild for no benefit).
-          key: trino-parity-ext-linux-amd64-duckdb-v1.5.3-${{ steps.ext-sha.outputs.sha }}
+          # Key = platform + DuckDB-line label + the pinned extension SHA. The SHA is the TRUE
+          # determinant: it transitively pins the extension sources AND its nested `duckdb`
+          # submodule (currently DuckDB v1.5.4 — what the host build actually bakes in), so the
+          # label value doesn't affect correctness. It's kept accurate (v1.5.4) as a human-readable
+          # hint + manual cache-buster if we ever retarget the DuckDB line independent of the SHA.
+          key: trino-parity-ext-linux-amd64-duckdb-v1.5.4-${{ steps.ext-sha.outputs.sha }}
 
       # Secondary, best-effort ccache cache. Separate from the binary cache so a
       # new extension SHA (binary MISS) can still reuse most DuckDB object files.
