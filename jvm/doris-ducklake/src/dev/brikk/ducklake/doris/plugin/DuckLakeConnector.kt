@@ -10,6 +10,7 @@ import org.apache.doris.connector.api.Connector
 import org.apache.doris.connector.api.ConnectorCapability
 import org.apache.doris.connector.api.ConnectorMetadata
 import org.apache.doris.connector.api.ConnectorSession
+import org.apache.doris.connector.api.procedure.ConnectorProcedureOps
 import org.apache.doris.connector.api.scan.ConnectorScanPlanProvider
 import org.apache.doris.connector.api.write.ConnectorWritePlanProvider
 import org.apache.doris.connector.spi.ConnectorContext
@@ -32,6 +33,9 @@ class DuckLakeConnector internal constructor(
 
     @Volatile
     private var writePlanProvider: DuckLakeWritePlanProvider? = null
+
+    @Volatile
+    private var procedureOps: DuckLakeProcedureOps? = null
 
     override fun getMetadata(session: ConnectorSession?): ConnectorMetadata =
         DuckLakeConnectorMetadata(
@@ -77,6 +81,26 @@ class DuckLakeConnector internal constructor(
                         properties,
                     )
                     writePlanProvider = local
+                }
+            }
+        }
+        return local!!
+    }
+
+    /**
+     * Table-procedure surface (`ALTER TABLE t EXECUTE <proc>(...)`). Lazily/singleton-built like
+     * the scan/write providers so the catalog is only constructed on first real use. Today it
+     * exposes `expire_snapshots` — see [DuckLakeProcedureOps] for the catalog-wide-vs-table
+     * semantics.
+     */
+    override fun getProcedureOps(): ConnectorProcedureOps {
+        var local = procedureOps
+        if (local == null) {
+            synchronized(this) {
+                local = procedureOps
+                if (local == null) {
+                    local = DuckLakeProcedureOps(catalog(), properties)
+                    procedureOps = local
                 }
             }
         }
