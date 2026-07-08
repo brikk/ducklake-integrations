@@ -20,6 +20,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
@@ -65,6 +66,9 @@ import java.util.concurrent.TimeUnit
  *
  * SAME_THREAD: the test manages its own concurrency against one shared Quack server.
  */
+// quack-container: see TestDucklakeLanceS3QuackRead. CI excludes this tag — the runner-built
+// trino_parity binary (glibc 2.39) can't load in the older Quack container.
+@Tag("quack-container")
 @Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeQuackS3InitRace {
 
