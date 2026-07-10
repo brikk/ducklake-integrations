@@ -20,8 +20,13 @@ import org.apache.doris.connector.api.pushdown.ConnectorPredicate
 /**
  * Table-procedure surface of the DuckLake connector — the procedure-side analogue of
  * [DuckLakeScanPlanProvider] / [DuckLakeWritePlanProvider], returned from
- * [DuckLakeConnector.getProcedureOps]. Today it exposes a single maintenance procedure,
- * `expire_snapshots`, driven by `ALTER TABLE <t> EXECUTE expire_snapshots(...)`.
+ * [DuckLakeConnector.getProcedureOps]. Exposes the maintenance procedures
+ * `ALTER TABLE <t> EXECUTE <proc>(...)`:
+ *  - `expire_snapshots` — metadata-only: end-snapshots old versions and SCHEDULES their now-dead
+ *    files for later deletion (a catalog transaction; no storage I/O).
+ *  - `cleanup_old_files` — the second phase: physically deletes the blobs `expire_snapshots`
+ *    scheduled, once older than a grace period, via the connector's own S3 client
+ *    ([WarehouseBlobStore]); then drops their schedule rows.
  *
  * ## Why one ops class per connector (not one per procedure)
  * Doris routes every `ALTER TABLE EXECUTE` for a connector through this one
@@ -43,13 +48,15 @@ import org.apache.doris.connector.api.pushdown.ConnectorPredicate
  */
 internal class DuckLakeProcedureOps(
     private val catalog: DucklakeCatalog,
-    properties: Map<String, String>,
+    private val properties: Map<String, String>,
+    blobStoreProvider: (() -> WarehouseBlobStore)? = null,
 ) : ConnectorProcedureOps {
 
-    // Retention-mode floor: protects recent time-travel from being nuked by a too-small
-    // retention_threshold. Read from the catalog property `maintenance.min-retention` (mirroring
-    // Trino's `ducklake.maintenance.min-retention`); absent/blank falls back to the conservative
-    // 7d default. Parsed once at construction so a misconfigured catalog fails fast, not per call.
+    // Retention floor shared by expire_snapshots (protect recent time-travel snapshots) and
+    // cleanup_old_files (grace period protecting in-flight, possibly cross-engine, readers of a
+    // scheduled file). From catalog prop `maintenance.min-retention` (mirroring Trino's
+    // `ducklake.maintenance.min-retention`); absent/blank → conservative 7d. Parsed once at
+    // construction so a misconfigured catalog fails fast, not per call.
     private val minRetentionMillis: Long =
         parseDuration(
             properties[DuckLakeConnectorProperties.MAINTENANCE_MIN_RETENTION]
@@ -58,13 +65,26 @@ internal class DuckLakeProcedureOps(
             DuckLakeConnectorProperties.MAINTENANCE_MIN_RETENTION,
         )
 
-    /** The single procedure we expose today; the engine uses this for routing + `SHOW`-style discovery. */
-    override fun getSupportedProcedures(): List<String> = listOf(EXPIRE_SNAPSHOTS)
+    // The warehouse root that relative scheduled-file paths resolve against (the catalog data_path,
+    // NOT a per-table dir — per the DucklakeScheduledFile contract). Falls back to the configured
+    // storage.warehouse property. Lazy: only cleanup_old_files needs it, so expire_snapshots never
+    // calls getDataPath() (keeps read-only / expire-only paths from touching it).
+    private val warehouseRoot: String? by lazy {
+        catalog.getDataPath() ?: properties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE]
+    }
+
+    // Lazily built so a read-only catalog / expire_snapshots never constructs an S3 client, and a
+    // missing-credential failure surfaces only when cleanup_old_files actually runs. Tests inject a
+    // provider returning a fake [WarehouseBlobStore]; prod defaults to the S3/MinIO client.
+    private val blobStore: WarehouseBlobStore by lazy {
+        (blobStoreProvider ?: { S3WarehouseBlobStore.fromProperties(properties) })()
+    }
+
+    override fun getSupportedProcedures(): List<String> = listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES)
 
     /**
-     * `expire_snapshots` is metadata-only (a plain catalog transaction that schedules dead files;
-     * it does NOT rewrite data), so it runs as a single synchronous in-FE call — never a
-     * distributed rewrite. `planRewrite` is therefore left as the interface default (it throws).
+     * Both procedures are metadata + FE-side storage ops (never a distributed data rewrite), so they
+     * run as a single synchronous in-FE call. `planRewrite` is left as the interface default (throws).
      */
     override fun getExecutionMode(procedureName: String): ProcedureExecutionMode =
         ProcedureExecutionMode.SINGLE_CALL
@@ -78,21 +98,24 @@ internal class DuckLakeProcedureOps(
         whereCondition: ConnectorPredicate?,
         partitionNames: List<String>?,
     ): ConnectorProcedureResult {
-        if (!EXPIRE_SNAPSHOTS.equals(procedureName, ignoreCase = true)) {
-            throw DorisConnectorException(
+        val proc = SUPPORTED_BY_LOWER[procedureName?.lowercase(Locale.ROOT)]
+            ?: throw DorisConnectorException(
                 "DuckLake connector does not support procedure '$procedureName'; " +
                     "supported: ${getSupportedProcedures()}",
             )
-        }
-        // A WHERE / PARTITION clause is meaningless for a catalog-wide snapshot GC — reject it loud
-        // rather than silently ignoring an operator's intent to scope the operation.
+        // Both procedures are catalog-wide GC — a WHERE / PARTITION clause is meaningless; reject it
+        // loud rather than silently ignoring an operator's intent to scope the operation.
         if (whereCondition != null) {
-            throw DorisConnectorException("expire_snapshots does not accept a WHERE condition")
+            throw DorisConnectorException("$proc does not accept a WHERE condition")
         }
         if (!partitionNames.isNullOrEmpty()) {
-            throw DorisConnectorException("expire_snapshots does not accept a PARTITION clause")
+            throw DorisConnectorException("$proc does not accept a PARTITION clause")
         }
-        return expireSnapshots(properties.orEmpty())
+        return when (proc) {
+            EXPIRE_SNAPSHOTS -> expireSnapshots(properties.orEmpty())
+            CLEANUP_OLD_FILES -> cleanupOldFiles(properties.orEmpty())
+            else -> error("unreachable: $proc") // SUPPORTED_BY_LOWER only maps known procedures
+        }
     }
 
     /**
@@ -173,6 +196,92 @@ internal class DuckLakeProcedureOps(
         return ConnectorProcedureResult(RESULT_SCHEMA, listOf(row))
     }
 
+    /**
+     * Core body of `cleanup_old_files` — the physical-deletion phase that pairs with
+     * `expire_snapshots`'s scheduling phase. Deletes the warehouse blobs in
+     * `ducklake_files_scheduled_for_deletion` older than the grace period (`retention_threshold`,
+     * floored by [minRetentionMillis] to protect in-flight, possibly cross-engine, readers), then
+     * drops the schedule rows of the files actually deleted (a file that fails to delete keeps its
+     * row for a later retry). `dry_run = true` reports what WOULD be deleted and touches no storage.
+     *
+     * Delete is best-effort per file (see [WarehouseBlobStore.delete]); we only
+     * [DucklakeCatalog.removeScheduledFileRows] for the successes, so a partial run makes real
+     * progress and is safely resumable.
+     */
+    @Suppress("ThrowsCount")
+    private fun cleanupOldFiles(properties: Map<String, String>): ConnectorProcedureResult {
+        val args = CaseInsensitiveArgs(properties)
+        val dryRun = parseBoolean(args[DRY_RUN], DRY_RUN)
+        val retention = args[RETENTION_THRESHOLD]?.takeIf { it.isNotBlank() } ?: DEFAULT_RETENTION
+        val retentionMillis = parseDuration(retention, RETENTION_THRESHOLD)
+        if (retentionMillis < minRetentionMillis) {
+            throw DorisConnectorException(
+                "retention_threshold '$retention' is below the minimum " +
+                    "'${DuckLakeConnectorProperties.MAINTENANCE_MIN_RETENTION}' floor " +
+                    "(${minRetentionMillis}ms); refusing to delete recently-scheduled files.",
+            )
+        }
+        val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
+        val scheduled = catalog.listFilesScheduledForDeletion(cutoff)
+        if (scheduled.isEmpty() || dryRun) {
+            return cleanupResult(dryRun, retention, deleted = 0, wouldDelete = scheduled.size, failed = 0)
+        }
+
+        // Map each resolved absolute URI back to its data_file_id so we can drop exactly the rows we
+        // deleted. Multiple ids can't share a URI in practice, but last-writer-wins is fine here.
+        val idByUri = LinkedHashMap<String, Long>(scheduled.size)
+        for (f in scheduled) {
+            idByUri[resolveScheduledUri(f.path, f.pathIsRelative)] = f.dataFileId
+        }
+
+        val outcome = blobStore.delete(idByUri.keys)
+        val deletedIds = outcome.deleted.mapNotNull { idByUri[it] }
+        if (deletedIds.isNotEmpty()) {
+            catalog.removeScheduledFileRows(deletedIds)
+        }
+        return cleanupResult(
+            dryRun = false,
+            retention = retention,
+            deleted = outcome.deleted.size,
+            wouldDelete = scheduled.size,
+            failed = outcome.failed.size,
+        )
+    }
+
+    /**
+     * Resolve a scheduled file's stored path to an absolute storage URI. Relative paths join the
+     * catalog data_path ROOT ([warehouseRoot]); absolute paths pass through. Fails loud if a
+     * relative path has no known root (we can't safely guess where to delete).
+     */
+    private fun resolveScheduledUri(path: String, isRelative: Boolean): String {
+        if (!isRelative) {
+            return path
+        }
+        val root = warehouseRoot
+            ?: throw DorisConnectorException(
+                "cleanup_old_files: relative scheduled path '$path' but no warehouse root " +
+                    "('storage.warehouse') is configured to resolve it against",
+            )
+        return if (root.endsWith("/")) root + path else "$root/$path"
+    }
+
+    /** One-row result for cleanup_old_files. `deleted_file_count` is what WOULD be deleted on a dry run. */
+    private fun cleanupResult(
+        dryRun: Boolean,
+        retention: String,
+        deleted: Int,
+        wouldDelete: Int,
+        failed: Int,
+    ): ConnectorProcedureResult {
+        val row = listOf(
+            dryRun.toString(),
+            retention,
+            (if (dryRun) wouldDelete else deleted).toString(),
+            failed.toString(),
+        )
+        return ConnectorProcedureResult(CLEANUP_RESULT_SCHEMA, listOf(row))
+    }
+
     /** Parse a comma-separated `snapshot_ids` list; every element must be a bigint. */
     private fun parseSnapshotIds(raw: String): Set<Long> {
         val ids = raw.split(',')
@@ -199,6 +308,11 @@ internal class DuckLakeProcedureOps(
 
     internal companion object {
         internal const val EXPIRE_SNAPSHOTS = "expire_snapshots"
+        internal const val CLEANUP_OLD_FILES = "cleanup_old_files"
+
+        // Case-insensitive dispatch: lowercased procedure name → canonical name.
+        private val SUPPORTED_BY_LOWER: Map<String, String> =
+            listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES).associateBy { it }
 
         internal const val RETENTION_THRESHOLD = "retention_threshold"
         internal const val SNAPSHOT_IDS = "snapshot_ids"
@@ -227,6 +341,20 @@ internal class DuckLakeProcedureOps(
             column("expired_snapshot_count", ConnectorType.of("BIGINT")),
             column("scheduled_file_count", ConnectorType.of("STRING")),
             column("snapshot_ids", ConnectorType.of("STRING")),
+        )
+
+        /**
+         * Result schema for cleanup_old_files (all values Strings):
+         *  - `dry_run` — whether this was a dry run
+         *  - `retention_threshold` — the effective grace period used
+         *  - `deleted_file_count` — blobs deleted (dry run: how many WOULD be)
+         *  - `failed_file_count` — blobs that couldn't be deleted (kept scheduled for retry)
+         */
+        private val CLEANUP_RESULT_SCHEMA: List<ConnectorColumn> = listOf(
+            column("dry_run", ConnectorType.of("BOOLEAN")),
+            column("retention_threshold", ConnectorType.of("STRING")),
+            column("deleted_file_count", ConnectorType.of("BIGINT")),
+            column("failed_file_count", ConnectorType.of("BIGINT")),
         )
 
         private fun column(name: String, type: ConnectorType): ConnectorColumn =

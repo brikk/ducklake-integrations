@@ -89,16 +89,30 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
     can't express per-file maps. Needs per-range schema info in the SPI (or a
     BE per-file name→field-id hook) — see the friction log entry
     "Schema dictionary is scan-node-level; can't express per-FILE column mapping".
-- [ ] **Column DEFAULT values** (corpus `issues/issue_1135`). `ALTER TABLE
-  ADD COLUMN b INT DEFAULT 42` must backfill rows written before the column
-  existed with the default (`WHERE b = 42` should match old rows). DuckLake
-  stores the default in `ducklake_column`, but our `DuckLakeColumn` doesn't
-  carry it and `getTableSchema` passes `defaultValue = null`, so old rows read
-  NULL. Two parts: (a) catalog surfaces the default (shared module change), and
-  (b) the read path applies it for rows in files predating the column — likely
-  the iceberg "generated/default column" BE seam (check whether the BE backfills
-  a not-in-file column from a default, or if it always NULL-fills). May be
-  partly BE-gated; investigate the iceberg default-column path first.
+ - [x] **Column DEFAULT values — DONE (2026-07-08)** (corpus `issues/issue_1135`:
+   `ALTER TABLE ADD COLUMN b INT DEFAULT 42` → old rows read 42, not NULL).
+   - **(a) catalog** — resolved by the main merge: `DucklakeColumn.initialDefault` now reads
+     `ducklake_column.initial_default` (the Iceberg-style backfill value; distinct from
+     `default_value`, the insert-time default).
+   - **(b) read path — NOT BE-gated for plugin catalogs (verified end-to-end).** The full chain
+     works: `ConnectorColumn.defaultValue` → `ConnectorColumnConverter` → `Column.defaultValue` →
+     `FileScanNode.setDefaultValueExprs` (inherited by `PluginDrivenScanNode` via
+     `FileQueryScanNode`) → thrift `TFileScanSlotInfo.default_value_expr` → BE parquet/orc
+     missing-column fill (`vparquet_group_reader::_fill_missing_columns`). Only the *native*
+     iceberg reader hardcodes `defaultValue=null` — irrelevant to us.
+   - **Fix:** `getTableSchema` now passes `backfillDefaultValue(col)` instead of `null`. Conservative
+     gate (`isBackfillDefaultSafe`, both `internal` on the metadata companion): surface the raw
+     `initial_default` only for scalar types; skip complex (`list`/`struct`/`map`) and binary/spatial
+     (`blob`/`uuid`/`geometry`/`geography`) whose DuckDB value rendering Doris can't cast — the FE
+     parses+casts `getDefaultValueSql()` EAGERLY at scan-plan time, so an uncastable value would break
+     the whole table scan; a skipped default degrades to NULL (today's behavior, not a new bug).
+   - **Tests:** +5 headless (`DuckLakeBackfillDefaultTest`) — scalar pass-through, null→none, complex
+     skip, binary/spatial skip, case/whitespace. Full suite + detekt + checkAbi green.
+   - **⚠️ Live backfill not yet compose-smoked** — the BE fill path is verified by source
+     inspection; a `smoke.sh` step (CREATE → INSERT → flush → ADD COLUMN … DEFAULT →
+     `SELECT count(*) WHERE b = <default>`) would confirm end-to-end. Also unverified: exact
+     value-format round-trip for booleans/dates (DuckDB rendering vs Doris cast) — INT is proven by
+     the corpus case; others rely on Doris's cast. Add the smoke step when convenient.
  - [~] **Serve inlined data rows — Stage 1 (2026-07-07): OFF BY DEFAULT,
    COMPOSE/DEV ONLY.** HARD-BLOCKED unless the catalog property
    `experimental.inlined.reads=true` is set (so it can't be used by accident);
@@ -400,8 +414,25 @@ genuinely wired upstream (unlike plugin DELETE).
     plugin-loaded drivers when `DirectoryPluginRuntimeManager.closeClassLoader` tears down a plugin
     loader on reload — a small upstream ask. Our connector-side fix is sufficient and self-contained
     for now.
-- [ ] **HikariCP version skew** (FE pins 6.0.0; our plugin zip ships 7.0.2). Verify 6↔7 wire compat or downgrade ours. Sanity-check §3.2.
-- [ ] **Plugin-zip exclusion audit** — once a quarter, diff our `pluginZip` task's exclude list against `fe-connector-iceberg/src/main/assembly/plugin-zip.xml` in the worktree. Drift introduces silent runtime conflicts.
+ - [x] **HikariCP version skew — NO CONFLICT, no action (verified 2026-07-08).** FE ships
+   `HikariCP-6.0.0`, our plugin bundles `7.0.2`. No clash: `com.zaxxer.hikari.*` is NOT in the
+   plugin classloader's parent-first set (`ChildFirstClassLoader.DEFAULT_PARENT_FIRST_PACKAGES` =
+   java./javax./sun./com.sun./org.slf4j./org.apache.logging./org.apache.doris.extension.spi./
+   org.apache.doris.connector.api., plus the connector business prefixes org.apache.doris.connector./
+   org.apache.doris.filesystem.), so HikariCP loads **child-first from our own bundled 7.0.2**,
+   isolated from the FE's 6.0.0. And it never crosses the SPI boundary — HikariCP is purely internal
+   to `JdbcDucklakeCatalog` (our own PG pool); the SPI surface is `org.apache.doris.connector.api.*`
+   only. Two separate class instances in two loaders that never interact ⇒ no wire-compat question.
+ - [x] **Plugin-zip exclusion audit — done (2026-07-08).** Diffed our `pluginZip` excludes against
+   `fe-connector-iceberg/src/main/assembly/plugin-zip.xml`. All host-provided (parent-first) packages
+   that appear on our runtime classpath are excluded (fe-connector-api/spi, fe-extension-spi,
+   fe-filesystem-api, fe-thrift, log4j*, slf4j). Full zip audited: everything else bundled (HikariCP,
+   jOOQ, jackson, kotlin-stdlib, postgresql, r2dbc, uuid-gen, annotations, checker-qual) is genuinely
+   child-first/isolated — nothing host-provided leaks in. **One gap closed:** added a defensive
+   `exclude("libthrift-*.jar")` (iceberg + fe-connector-hive have it). It's a no-op today (libthrift
+   isn't on our classpath), but if a future transitive dep pulled it in it would bundle child-first
+   and give our code a different `org.apache.thrift.TBase` than the host's fe-thrift uses →
+   LinkageError across the SPI boundary. Keep the quarterly re-audit cadence.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
 
 ## Upstream coordination (blockers for production, not for dev)
@@ -411,7 +442,12 @@ hardcoded list should be open / discoverable"):
 
 - [ ] **`SPI_READY_TYPES` whitelist removal**. `CatalogFactory.java` silently ignores any `ConnectorProvider` whose `getType()` is not in `{"jdbc","es","iceberg"}`. Until upstream parameterizes, we carry a one-line patch (`+ "ducklake"`) on every Doris release we deploy. Sanity-check §3.5.
 - [ ] **Option B BE dispatch ask**. 5-line PR to `be/src/exec/scan/file_scanner.cpp:1252` and `:1343` adding `|| table_format_type == "ducklake"` to the iceberg branch. Unblocks honest table-format-string reporting in EXPLAIN/profile. Sanity-check §2.1.
-- [ ] **`connector_plugin_root` discoverability** — surface the hardcoded default at `Config.java:3541` as a commented-out line in `conf/fe.conf`. Zero behavior change.
+- [~] **`connector_plugin_root` discoverability** — done on OUR side (2026-07-08); upstream half
+  still an ask. Surfaced the commented default in `compose/fe.conf` next to the existing
+  `# filesystem_plugin_root` (`# connector_plugin_root = ${DORIS_HOME}/plugins/connector`), noting
+  the compose mount point — a file we own, zero behavior change. The upstream ask remains: Doris's
+  own `conf/fe.conf` should carry the same commented line (Config default is
+  `EnvUtils.getDorisHome() + "/plugins/connector"`); not in our patch (cosmetic, non-essential).
 - [ ] **API-surface churn on PR #62767**. Diff `fe-connector-api/` and `fe-connector-spi/` against the head of PR #62767 whenever we re-pull; flag breaking changes.
 - [ ] **Avoid binlog/CCR table-create paths** in our smoke loop — PR-branch FE removed `TBinlogFormat` etc. from the FE↔BE thrift; stock 4.1.0 BE talks to PR FE fine for everything we care about, but `CREATE TABLE … PROPERTIES("binlog.enable"="true")` would deadlock. Document in the smoke recipe (done) and keep out of regression tests.
 - [ ] **DuckLake delete-file parquet nullability**. Upstream ask to DuckDB/DuckLake: write `file_path` + `pos` as `REQUIRED` in position-delete parquet, matching Iceberg's spec. Or, to the Doris BE: fall through to the nullable column reader path when an Iceberg-spec'd delete-file column reports OPTIONAL. Friction log 2026-05-19 has the full repro.

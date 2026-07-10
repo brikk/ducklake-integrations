@@ -26,9 +26,9 @@ internal class DuckLakeProcedureOpsTest {
     // ---- getSupportedProcedures / getExecutionMode ----
 
     @Test
-    fun advertisesOnlyExpireSnapshotsAsSingleCall() {
+    fun advertisesExpireSnapshotsAsSingleCall() {
         val ops = DuckLakeProcedureOps(FakeCatalog(), emptyMap())
-        assertThat(ops.getSupportedProcedures()).containsExactly("expire_snapshots")
+        assertThat(ops.getSupportedProcedures()).contains("expire_snapshots")
         assertThat(ops.getExecutionMode("expire_snapshots")).isEqualTo(ProcedureExecutionMode.SINGLE_CALL)
     }
 
