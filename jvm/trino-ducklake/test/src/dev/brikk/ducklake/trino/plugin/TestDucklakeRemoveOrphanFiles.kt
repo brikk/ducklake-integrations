@@ -102,15 +102,15 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
     }
 
-    /** The directory the table's real .parquet data files live in (under the local data path). */
-    private fun tableDataDir(): Path {
-        Files.walk(dataDir).use { w ->
-            val parquet = w.filter { it.toString().endsWith(".parquet") }.findFirst()
-            return parquet.map { it.parent }.orElseThrow {
-                AssertionError("no .parquet data file found under $dataDir")
-            }
-        }
-    }
+    /**
+     * The data directory of a SPECIFIC table (`<root>/test_schema/<bareTableName>/`), resolved
+     * deterministically. Must not be a "first .parquet under dataDir" scan: this suite is
+     * SAME_THREAD over one shared catalog + data dir, and dropped-table files linger physically,
+     * so a first-match scan can return a *different* table's dir — which silently plants the test's
+     * orphan where the per-table sweep never looks (the flake behind the line-181 control failure).
+     */
+    private fun tableDataDir(bareTableName: String): Path =
+        dataDir.resolve("test_schema").resolve(bareTableName)
 
     private fun parquetFiles(dir: Path): List<String> {
         Files.list(dir).use { s ->
@@ -132,7 +132,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val table = "test_schema.orphan_basic"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)")
-            val dir = tableDataDir()
+            val dir = tableDataDir("orphan_basic")
             val realBefore = parquetFiles(dir).toSet()
             assertThat(realBefore).isNotEmpty
             // An orphan older than the 7d default retention floor.
@@ -158,7 +158,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val table = "test_schema.orphan_foreign"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
-            val dir = tableDataDir()
+            val dir = tableDataDir("orphan_foreign")
             val realBefore = parquetFiles(dir).toSet()
 
             // Foreign files a user could legitimately park under the data path — all aged past the
@@ -242,7 +242,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val table = "test_schema.orphan_dataset_dir"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
-            val dir = tableDataDir()
+            val dir = tableDataDir("orphan_dataset_dir")
             // An orphaned lance dataset directory (from a failed commit): member files only. Named
             // as this connector writes lance datasets (ducklake-<uuid>.lance) — the orphan scope
             // recognizes it by that enclosing dataset-dir name, not by the member files.
@@ -274,7 +274,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val table = "test_schema.orphan_recent"
         try {
             computeActual("CREATE TABLE $table AS SELECT 1 AS id")
-            val dir = tableDataDir()
+            val dir = tableDataDir("orphan_recent")
             // A freshly-written orphan (age 0) — could be an in-flight writer's file; must survive.
             val orphan = plantOrphan(dir, "ducklake-orphan-recent.parquet", ageDays = 0)
 
@@ -293,7 +293,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val table = "test_schema.orphan_dryrun"
         try {
             computeActual("CREATE TABLE $table AS SELECT 1 AS id")
-            val dir = tableDataDir()
+            val dir = tableDataDir("orphan_dryrun")
             val orphan = plantOrphan(dir, "ducklake-orphan-dryrun.parquet", ageDays = 30)
 
             computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
