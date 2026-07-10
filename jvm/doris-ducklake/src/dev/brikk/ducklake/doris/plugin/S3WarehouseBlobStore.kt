@@ -1,5 +1,6 @@
 package dev.brikk.ducklake.doris.plugin
 
+import io.minio.ListObjectsArgs
 import io.minio.MinioClient
 import io.minio.RemoveObjectArgs
 
@@ -43,6 +44,42 @@ internal class S3WarehouseBlobStore(private val client: MinioClient) : Warehouse
         return BlobDeleteResult(deleted, failed)
     }
 
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    override fun list(prefixUri: String): List<BlobEntry> {
+        val (bucket, keyPrefix) = parseS3Uri(dirUri(prefixUri))
+        val results = try {
+            client.listObjects(
+                ListObjectsArgs.builder()
+                    .bucket(bucket)
+                    .prefix(keyPrefix)
+                    .recursive(true)
+                    .build(),
+            )
+        } catch (e: Exception) {
+            // Listing failures are fatal to orphan detection: proceeding would treat a partial/empty
+            // listing as "no live files" and could delete real data. Fail loud.
+            throw DorisConnectorException("failed to list warehouse objects under $prefixUri: ${e.message}", e)
+        }
+        val entries = ArrayList<BlobEntry>()
+        for (result in results) {
+            val item = try {
+                result.get()
+            } catch (e: Exception) {
+                throw DorisConnectorException("failed to read a listed object under $prefixUri: ${e.message}", e)
+            }
+            if (item.isDir) {
+                continue // common-prefix placeholder; recursive(true) returns objects, but guard anyway
+            }
+            val modified = item.lastModified()?.toInstant()
+                ?: throw DorisConnectorException(
+                    "listed object '${item.objectName()}' has no last-modified time; refusing to " +
+                        "age-gate orphan deletion without it",
+                )
+            entries.add(BlobEntry("s3://$bucket/${item.objectName()}", modified))
+        }
+        return entries
+    }
+
     internal companion object {
         private val S3_SCHEMES = setOf("s3", "s3a", "s3n")
 
@@ -69,6 +106,13 @@ internal class S3WarehouseBlobStore(private val client: MinioClient) : Warehouse
          * schemes. Throws [IllegalArgumentException] for a non-S3 scheme, a missing bucket, or an
          * empty key — caller turns that into a per-object failure.
          */
+        /**
+         * Normalize a directory URI to end with exactly one `/`, so the S3 prefix has directory
+         * semantics: listing under `s3://b/data/t/` must NOT also match a sibling `s3://b/data/t2/…`.
+         * A missing trailing slash is the classic orphan-detection foot-gun (sibling-prefix bleed).
+         */
+        internal fun dirUri(uri: String): String = uri.trimEnd('/') + "/"
+
         internal fun parseS3Uri(uri: String): Pair<String, String> {
             val schemeSep = uri.indexOf("://")
             require(schemeSep > 0) { "not an absolute URI: $uri" }

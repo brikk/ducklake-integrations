@@ -4,6 +4,8 @@ import java.time.Instant
 import java.util.Locale
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeSchema
+import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.ExpireSnapshotsResult
 import dev.brikk.ducklake.catalog.TransactionConflictException
 
@@ -27,6 +29,10 @@ import org.apache.doris.connector.api.pushdown.ConnectorPredicate
  *  - `cleanup_old_files` — the second phase: physically deletes the blobs `expire_snapshots`
  *    scheduled, once older than a grace period, via the connector's own S3 client
  *    ([WarehouseBlobStore]); then drops their schedule rows.
+ *  - `remove_orphan_files` — deletes `.parquet` objects under the warehouse that NO catalog row
+ *    references (residue of aborted commits) and are older than a grace period. Catalog-wide
+ *    (models upstream `ducklake_delete_orphaned_files`): globs the whole `data_path`, diffs against
+ *    `listAllReferencedFilePaths` (all tables), and — like the two above — IGNORES the named table.
  *
  * ## Why one ops class per connector (not one per procedure)
  * Doris routes every `ALTER TABLE EXECUTE` for a connector through this one
@@ -80,7 +86,14 @@ internal class DuckLakeProcedureOps(
         (blobStoreProvider ?: { S3WarehouseBlobStore.fromProperties(properties) })()
     }
 
-    override fun getSupportedProcedures(): List<String> = listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES)
+    // Resolves table / schema / root data paths for remove_orphan_files scope tiers. Lazy — only
+    // that procedure needs it.
+    private val pathResolver: DuckLakePathResolver by lazy {
+        DuckLakePathResolver(catalog, properties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE])
+    }
+
+    override fun getSupportedProcedures(): List<String> =
+        listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES, REMOVE_ORPHAN_FILES)
 
     /**
      * Both procedures are metadata + FE-side storage ops (never a distributed data rewrite), so they
@@ -103,8 +116,8 @@ internal class DuckLakeProcedureOps(
                 "DuckLake connector does not support procedure '$procedureName'; " +
                     "supported: ${getSupportedProcedures()}",
             )
-        // Both procedures are catalog-wide GC — a WHERE / PARTITION clause is meaningless; reject it
-        // loud rather than silently ignoring an operator's intent to scope the operation.
+        // A WHERE / PARTITION clause is meaningless for these GC procedures; reject it loud rather
+        // than silently ignoring an operator's intent to scope the operation.
         if (whereCondition != null) {
             throw DorisConnectorException("$proc does not accept a WHERE condition")
         }
@@ -114,6 +127,7 @@ internal class DuckLakeProcedureOps(
         return when (proc) {
             EXPIRE_SNAPSHOTS -> expireSnapshots(properties.orEmpty())
             CLEANUP_OLD_FILES -> cleanupOldFiles(properties.orEmpty())
+            REMOVE_ORPHAN_FILES -> removeOrphanFiles(table, properties.orEmpty())
             else -> error("unreachable: $proc") // SUPPORTED_BY_LOWER only maps known procedures
         }
     }
@@ -224,7 +238,7 @@ internal class DuckLakeProcedureOps(
         val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
         val scheduled = catalog.listFilesScheduledForDeletion(cutoff)
         if (scheduled.isEmpty() || dryRun) {
-            return cleanupResult(dryRun, retention, deleted = 0, wouldDelete = scheduled.size, failed = 0)
+            return fileGcResult(dryRun, retention, deleted = 0, wouldDelete = scheduled.size, failed = 0)
         }
 
         // Map each resolved absolute URI back to its data_file_id so we can drop exactly the rows we
@@ -239,13 +253,119 @@ internal class DuckLakeProcedureOps(
         if (deletedIds.isNotEmpty()) {
             catalog.removeScheduledFileRows(deletedIds)
         }
-        return cleanupResult(
+        return fileGcResult(
             dryRun = false,
             retention = retention,
             deleted = outcome.deleted.size,
             wouldDelete = scheduled.size,
             failed = outcome.failed.size,
         )
+    }
+
+    /**
+     * Core body of `remove_orphan_files` — deletes DuckLake residue under the in-scope directory that
+     * NO catalog row references (aborted-commit / failed-CREATE leftovers) and is older than the
+     * grace period (`retention_threshold`, floored by [minRetentionMillis] to protect files an
+     * in-flight, possibly cross-engine, writer produced but hasn't committed). Storage-only: touches
+     * no catalog state (orphans have no rows). `dry_run = true` reports without deleting.
+     *
+     * **Tiered scope from the named table's viewpoint** (Doris routes procedures only through
+     * `ALTER TABLE <t> EXECUTE`, which always names a table — there is no ALTER CATALOG/DATABASE
+     * EXECUTE). The `scope` arg widens outward from that table:
+     *  - `table` (default) → just the named table's data dir.
+     *  - `schema` (alias `database`) → every table in the named table's schema; scan the schema dir.
+     *  - `catalog` → every table in every schema; scan the warehouse root.
+     * This delivers the same semantics as the Trino plugin's optional-arg tiers (dev-docs
+     * DESIGN-maintenance §8.2/§8.3), adapted to Doris's grammar.
+     *
+     * The known set is the UNION of every in-scope table's [DucklakeCatalog.listReferencedFilePaths],
+     * each resolved against ITS OWN data path — so a wide sweep can't mistake one table's live files
+     * for another's orphans, and scanning the schema/root DIRECTORY (not per-table) reaches
+     * failed-CREATE residue that has no catalog row to name. Only `ducklake-`-prefixed managed residue
+     * is ever deleted ([OrphanFiles]); foreign files always survive.
+     */
+    @Suppress("ThrowsCount")
+    private fun removeOrphanFiles(table: ConnectorTableHandle?, properties: Map<String, String>): ConnectorProcedureResult {
+        val args = CaseInsensitiveArgs(properties)
+        val dryRun = parseBoolean(args[DRY_RUN], DRY_RUN)
+        val retention = args[RETENTION_THRESHOLD]?.takeIf { it.isNotBlank() } ?: DEFAULT_RETENTION
+        val retentionMillis = parseDuration(retention, RETENTION_THRESHOLD)
+        if (retentionMillis < minRetentionMillis) {
+            throw DorisConnectorException(
+                "retention_threshold '$retention' is below the minimum " +
+                    "'${DuckLakeConnectorProperties.MAINTENANCE_MIN_RETENTION}' floor " +
+                    "(${minRetentionMillis}ms); refusing to delete recently-written files.",
+            )
+        }
+        val scope = parseScope(args[SCOPE])
+        val handle = table?.asDuckLakeHandle<DuckLakeTableHandle>()
+            ?: throw DorisConnectorException(
+                "remove_orphan_files must be run as ALTER TABLE <table> EXECUTE remove_orphan_files(...); " +
+                    "use scope='schema'/'catalog' to widen from that table",
+            )
+
+        val (targets, scanRoots) = resolveOrphanScope(scope, handle)
+        val knownPaths = targets.flatMap { (schema, tbl) ->
+            val tableDataPath = pathResolver.resolveTableDataPath(schema, tbl)
+            catalog.listReferencedFilePaths(tbl.tableId)
+                .map { pathResolver.resolveFilePath(it.path, it.pathIsRelative, tableDataPath) }
+        }.toSet()
+
+        val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
+        val orphans = scanRoots
+            .flatMap { OrphanFiles.find(blobStore.list(it), knownPaths, cutoff) }
+            .distinct()
+
+        if (orphans.isEmpty() || dryRun) {
+            return fileGcResult(dryRun, retention, deleted = 0, wouldDelete = orphans.size, failed = 0)
+        }
+        val outcome = blobStore.delete(orphans)
+        return fileGcResult(
+            dryRun = false,
+            retention = retention,
+            deleted = outcome.deleted.size,
+            wouldDelete = orphans.size,
+            failed = outcome.failed.size,
+        )
+    }
+
+    /**
+     * Resolve the in-scope (schema, table) targets and the directory root(s) to scan, from the named
+     * table's viewpoint widened by [scope]. Catalog/schema scopes enumerate live tables so their
+     * referenced files populate the known set; the directory scan reaches residue with no table row.
+     */
+    private fun resolveOrphanScope(
+        scope: OrphanScope,
+        handle: DuckLakeTableHandle,
+    ): Pair<List<Pair<DucklakeSchema, DucklakeTable>>, List<String>> = when (scope) {
+        OrphanScope.TABLE -> {
+            val schema = catalog.getSchema(handle.database, handle.snapshotId)
+                ?: throw DorisConnectorException("schema not found: ${handle.database}")
+            val tbl = catalog.getTable(handle.database, handle.table, handle.snapshotId)
+                ?: throw DorisConnectorException("table not found: ${handle.database}.${handle.table}")
+            listOf(schema to tbl) to listOf(pathResolver.resolveTableDataPath(schema, tbl))
+        }
+        OrphanScope.SCHEMA -> {
+            val schema = catalog.getSchema(handle.database, handle.snapshotId)
+                ?: throw DorisConnectorException("schema not found: ${handle.database}")
+            catalog.listTables(schema.schemaId, handle.snapshotId).map { schema to it } to
+                listOf(pathResolver.resolveSchemaDataPath(schema))
+        }
+        OrphanScope.CATALOG ->
+            catalog.listSchemas(handle.snapshotId)
+                .flatMap { s -> catalog.listTables(s.schemaId, handle.snapshotId).map { s to it } } to
+                listOf(pathResolver.rootDataPath())
+    }
+
+    private fun parseScope(raw: String?): OrphanScope {
+        return when (raw?.trim()?.lowercase(Locale.ROOT)) {
+            null, "", "table" -> OrphanScope.TABLE
+            "schema", "database" -> OrphanScope.SCHEMA
+            "catalog" -> OrphanScope.CATALOG
+            else -> throw DorisConnectorException(
+                "Invalid scope '$raw': expected 'table' (default), 'schema' (alias 'database'), or 'catalog'",
+            )
+        }
     }
 
     /**
@@ -265,8 +385,9 @@ internal class DuckLakeProcedureOps(
         return if (root.endsWith("/")) root + path else "$root/$path"
     }
 
-    /** One-row result for cleanup_old_files. `deleted_file_count` is what WOULD be deleted on a dry run. */
-    private fun cleanupResult(
+    /** One-row result shared by cleanup_old_files + remove_orphan_files. On a dry run,
+     * `deleted_file_count` reports what WOULD be deleted. */
+    private fun fileGcResult(
         dryRun: Boolean,
         retention: String,
         deleted: Int,
@@ -279,7 +400,7 @@ internal class DuckLakeProcedureOps(
             (if (dryRun) wouldDelete else deleted).toString(),
             failed.toString(),
         )
-        return ConnectorProcedureResult(CLEANUP_RESULT_SCHEMA, listOf(row))
+        return ConnectorProcedureResult(FILE_GC_RESULT_SCHEMA, listOf(row))
     }
 
     /** Parse a comma-separated `snapshot_ids` list; every element must be a bigint. */
@@ -298,6 +419,9 @@ internal class DuckLakeProcedureOps(
         return ids.toSet()
     }
 
+    /** remove_orphan_files scope, widening from the named table. */
+    private enum class OrphanScope { TABLE, SCHEMA, CATALOG }
+
     /** Case-insensitive view over the raw `properties` map (Doris may lowercase argument keys). */
     private class CaseInsensitiveArgs(properties: Map<String, String>) {
         private val byLowerKey: Map<String, String> =
@@ -309,14 +433,16 @@ internal class DuckLakeProcedureOps(
     internal companion object {
         internal const val EXPIRE_SNAPSHOTS = "expire_snapshots"
         internal const val CLEANUP_OLD_FILES = "cleanup_old_files"
+        internal const val REMOVE_ORPHAN_FILES = "remove_orphan_files"
 
         // Case-insensitive dispatch: lowercased procedure name → canonical name.
         private val SUPPORTED_BY_LOWER: Map<String, String> =
-            listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES).associateBy { it }
+            listOf(EXPIRE_SNAPSHOTS, CLEANUP_OLD_FILES, REMOVE_ORPHAN_FILES).associateBy { it }
 
         internal const val RETENTION_THRESHOLD = "retention_threshold"
         internal const val SNAPSHOT_IDS = "snapshot_ids"
         internal const val DRY_RUN = "dry_run"
+        internal const val SCOPE = "scope"
 
         internal const val DEFAULT_RETENTION = "7d"
 
@@ -344,13 +470,13 @@ internal class DuckLakeProcedureOps(
         )
 
         /**
-         * Result schema for cleanup_old_files (all values Strings):
+         * Result schema shared by cleanup_old_files + remove_orphan_files (all values Strings):
          *  - `dry_run` — whether this was a dry run
          *  - `retention_threshold` — the effective grace period used
          *  - `deleted_file_count` — blobs deleted (dry run: how many WOULD be)
-         *  - `failed_file_count` — blobs that couldn't be deleted (kept scheduled for retry)
+         *  - `failed_file_count` — blobs that couldn't be deleted (left for a later retry)
          */
-        private val CLEANUP_RESULT_SCHEMA: List<ConnectorColumn> = listOf(
+        private val FILE_GC_RESULT_SCHEMA: List<ConnectorColumn> = listOf(
             column("dry_run", ConnectorType.of("BOOLEAN")),
             column("retention_threshold", ConnectorType.of("STRING")),
             column("deleted_file_count", ConnectorType.of("BIGINT")),

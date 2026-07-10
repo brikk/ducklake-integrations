@@ -391,16 +391,63 @@ Two FE-route gaps surfaced and were fixed to get here (both in
     only by source; add a `smoke.sh` step (INSERT → expire_snapshots → cleanup_old_files → assert the
     blob is gone from MinIO + the schedule row cleared). The compose warehouse is already MinIO/S3,
     so this is straightforward.
-- [ ] **`remove_orphan_files`** — the riskier sibling: LIST warehouse blobs, diff against
-  `catalog.listReferencedFilePaths`, delete orphans older than a grace period. Needs a LIST op added
-  to `WarehouseBlobStore` (`S3WarehouseBlobStore` via MinIO `listObjects`), a conservative dry-run
-  default, and care (it deletes files never in the catalog). Trino template
-  (`DucklakeRemoveOrphanFilesProcedure`).
+- [x] **`remove_orphan_files` — DONE (2026-07-10), matches the Trino cross-engine contract**
+  (DESIGN-maintenance §8, trino commits `2ddd76e`/`eefcb74`). Deletes DuckLake residue under the
+  in-scope directory that NO catalog row references (aborted-commit / failed-CREATE leftovers) older
+  than a grace period (`retention_threshold`, floored by `maintenance.min-retention`). Storage-only;
+  `dry_run` reports without deleting.
+  - **⚠️ RESIDUE GATE (the critical safety fix — two earlier drafts were wrong):** a file is deletable
+    only if `OrphanFiles.isDucklakeManagedResidue`: basename **starts with `ducklake-`** (the prefix
+    every DuckLake writer uses — this connector, Trino, DuckDB) AND ends with a managed extension.
+    Doris set = `{.parquet, .puffin, .db}` (cross-engine core; OMITS Trino's `.vortex`/`.lance` per
+    the Doris deployment). This is the key gate: foreign files a user parked under the warehouse
+    (`_SUCCESS`, `foo.txt`, `.crc`, **their own non-`ducklake-` `data.parquet`**) are NEVER deleted.
+    (Draft 1 had no filter → deleted everything; draft 2 filtered `.parquet` suffix only → still
+    deleted foreign parquet. The `ducklake-` prefix is what actually makes it safe.)
+  - **Tiered scope from the named table's viewpoint** (Doris has ONLY `ALTER TABLE <t> EXECUTE` —
+    no ALTER CATALOG/DATABASE EXECUTE, and `CALL` can't reach connector procedures; verified in
+    grammar + `CallFunc`). A `scope` arg widens outward: `table` (default) / `schema` (alias
+    `database`) / `catalog`. Same semantics as the Trino plugin's optional-arg tiers (§8.2), adapted
+    to Doris's grammar. Upstream ask filed below to add ALTER CATALOG/DATABASE EXECUTE someday.
+  - **Known set = UNION of every in-scope table's `listReferencedFilePaths(tableId)`** resolved
+    against ITS OWN data path (iterate-targets, matching Trino `eefcb74` — NOT a single catalog-wide
+    query; an earlier `listAllReferencedFilePaths()` catalog method was added then removed to match).
+    Scan roots: table dir / schema dir (`resolveSchemaDataPath`) / warehouse root (`rootDataPath`).
+    Scanning the schema/root DIRECTORY (not per-table) is what reaches failed-CREATE residue with no
+    catalog row.
+  - **Storage:** `WarehouseBlobStore.list(prefix)` + `BlobEntry(uri, lastModified)`;
+    `S3WarehouseBlobStore.list` uses MinIO `listObjects(recursive)` with a **directory-safe prefix**
+    (`dirUri` appends `/`). List failures FATAL (a partial listing read as "no live files" → data loss).
+  - **Tests:** headless `DuckLakeRemoveOrphanFilesTest` — `OrphanFiles` residue gate (foreign/own-parquet/
+    vortex/lance/`_SUCCESS` all kept; ducklake- parquet/puffin/db deleted), scope tiers (table/schema/
+    catalog dirs + union + failed-CREATE reclaim), database alias, dry-run, floor, invalid-scope +
+    PARTITION reject, `dirUri`. Full suite + detekt + checkAbi green; result schema shared with cleanup.
+  - **⚠️ NOT yet compose-smoked** — real MinIO list+delete verified by source only; add a `smoke.sh`
+    step (stray `ducklake-*.parquet` + foreign `_SUCCESS`/`data.parquet` under the warehouse →
+    remove_orphan_files → assert only the ducklake- stray gone, referenced + foreign files untouched;
+    plus a `scope='catalog'` variant reclaiming a failed-CREATE ghost dir).
+- [ ] **`flush_inlined_data` — DEFERRED (2026-07-10), design recorded.** Materializes a table's
+   inlined rows into data files (`catalog.flushInlinedData`). Deferred because Doris's inlined-data
+   support is experimental + hard-blocked and has NO inlined *write* path yet — flush is a write.
+   Revisit when that lands. **Target design (match Trino `eefcb74` §8.2, adapted to Doris):** same
+   tiered `scope` arg as remove_orphan_files (`table` default / `schema` / `catalog`); wide scopes
+   iterate tables-with-inlined-rows and flush each; **partitioned tables skipped-with-log in wide
+   scope**, but an explicit single-table (`scope=table`) call on a partitioned table still errors
+   (unchanged). Needs the Doris inlined *write* path first (materialize rows → parquet → the same
+   `TIcebergTableSink` INSERT machinery), so this is gated on that, not on the procedure shell.
+- [ ] **UPSTREAM ASK — `ALTER CATALOG/DATABASE ... EXECUTE`.** Doris routes plugin procedures ONLY
+   through `ALTER TABLE <t> EXECUTE` (grammar `alterTableExecute`; `ALTER CATALOG` has no EXECUTE;
+   `CALL` is a hardcoded `CallFunc` switch that can't reach connectors). So catalog-/schema-wide
+   maintenance is expressed via a `scope` arg on a table statement ("from this table, widen out").
+   The clean fix is an fe-core contribution: `ALTER CATALOG c EXECUTE proc(...)` /
+   `ALTER DATABASE c.db EXECUTE proc(...)` grammar + routing + an SPI path handing the connector a
+   catalog/database context (today `ConnectorProcedureOps.execute` only gets a `ConnectorTableHandle`).
+   Our scope resolution is already entry-point-agnostic, so it "just works" if this lands.
 - [ ] **`rewrite_data_files` (compaction) procedure** — the DISTRIBUTED counterpart
-  (uses P6's free `ConnectorRewriteDriver` + `planRewrite`/`ConnectorRewriteGroup`).
-  Bigger: needs the rewrite sink + partial-compaction back-dating
-  (`rewriteDataFilesPartial`/`PartialMergedFile`). Trino template exists
-  (`DucklakeRewriteDataFilesProcedure`).
+   (uses P6's free `ConnectorRewriteDriver` + `planRewrite`/`ConnectorRewriteGroup`).
+   Bigger: needs the rewrite sink + partial-compaction back-dating
+   (`rewriteDataFilesPartial`/`PartialMergedFile`). Trino template exists
+   (`DucklakeRewriteDataFilesProcedure`).
 
 ## Reference
 
