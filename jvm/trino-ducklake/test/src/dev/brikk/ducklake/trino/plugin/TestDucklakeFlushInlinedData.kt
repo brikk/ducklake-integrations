@@ -77,6 +77,39 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
     }
 
     @Test
+    fun catalogWideFlushMovesEveryInlinedTable() {
+        val a = "flush_cw_a"
+        val b = "flush_cw_b"
+        try {
+            computeActual("CREATE TABLE test_schema.$a (id INTEGER, name VARCHAR)")
+            computeActual("CREATE TABLE test_schema.$b (id INTEGER, name VARCHAR)")
+            writeInlinedRows(a, "(1, 'a')", "(2, 'b')")
+            writeInlinedRows(b, "(3, 'c')")
+            assertRowsStayedInlined(a, 2L)
+            assertRowsStayedInlined(b, 1L)
+
+            // No schema_name / table_name => flush every table with inlined rows across the catalog.
+            computeActual("CALL ducklake.system.flush_inlined_data()")
+
+            assertRowsWrittenToParquet(a)
+            assertRowsWrittenToParquet(b)
+            assertThat(computeScalar("SELECT count(*) FROM test_schema.$a")).isEqualTo(2L)
+            assertThat(computeScalar("SELECT count(*) FROM test_schema.$b")).isEqualTo(1L)
+        }
+        finally {
+            tryDropTable("test_schema.$a")
+            tryDropTable("test_schema.$b")
+        }
+    }
+
+    @Test
+    fun flushTableNameWithoutSchemaIsRejected() {
+        assertThatThrownBy {
+            computeActual("CALL ducklake.system.flush_inlined_data(table_name => 'orders')")
+        }.hasMessageContaining("table_name requires schema_name")
+    }
+
+    @Test
     fun duckdbReadsFlushedRows() {
         val table = "test_schema.flush_xengine"
         val bare = "flush_xengine"

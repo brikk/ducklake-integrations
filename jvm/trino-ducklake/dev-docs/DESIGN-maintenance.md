@@ -61,10 +61,11 @@ a per-table data path, so a table scope maps cleanly onto a directory):
 `cleanup_all` / `dry_run` named params. We keep the *semantics* identical but present them as
 table-scoped Trino procedures; see § 5 for the mapping.)
 
-**Scope note:** `remove_orphan_files` / `flush_inlined_data` are table-scoped **today**; a proposed
-optional-arg model widens them to schema-wide / catalog-wide, and `remove_orphan_files` filters
-orphans by DuckLake file-type + `ducklake-` prefix (NOT upstream's parquet-only). Both are the
-**cross-engine contract in § 8** that Trino and Doris must implement identically.
+**Scope note:** `remove_orphan_files` / `flush_inlined_data` now take **optional** `schema_name` /
+`table_name` — table (both) → schema (schema only) → catalog-wide (neither); and
+`remove_orphan_files` filters orphans by DuckLake file-type + `ducklake-` prefix (NOT upstream's
+parquet-only). Both are the **cross-engine contract in § 8** that Trino and Doris must implement
+identically.
 
 ## 3. First procedure: `remove_orphan_files` (this PR)
 
@@ -264,7 +265,7 @@ engine (a Trino-aborted or DuckDB-aborted write). Trino impl:
 `DucklakeRemoveOrphanFilesProcedure.isDucklakeManagedResidue` (pinned by
 `TestDucklakeRemoveOrphanFiles.leavesForeignAndNonDucklakeFilesAlone`).
 
-### 8.2 Scope tiers via optional args — table / schema / catalog-wide  ⏳ PROPOSED
+### 8.2 Scope tiers via optional args — table / schema / catalog-wide  ✅ SHIPPED (Trino)
 
 Convention: **the more args you supply, the narrower the scope** — matching `expire_snapshots` /
 `cleanup_old_files`, which are already arg-less catalog-wide. Make `schema_name` / `table_name`
@@ -273,16 +274,20 @@ optional (nullable):
 ```
 remove_orphan_files()                    -- catalog-wide
 remove_orphan_files('sales')             -- schema-wide
-remove_orphan_files('sales', 'orders')   -- one table    (✅ shipped today)
+remove_orphan_files('sales', 'orders')   -- one table
 
 flush_inlined_data()                     -- all tables with inlined rows
-flush_inlined_data('sales', 'orders')    -- one table     (✅ shipped today)
+flush_inlined_data('sales')              -- schema-wide
+flush_inlined_data('sales', 'orders')    -- one table
 ```
 
-Validation: `table_name` given ⇒ `schema_name` required. Prefer this over a `scope => 'catalog'`
-flag (redundant with arg presence) or new procedure names (surface bloat).
+Validation: `table_name` given ⇒ `schema_name` required. Chose this over a `scope => 'catalog'`
+flag (redundant with arg presence) or new procedure names (surface bloat). Trino impl:
+`DucklakeRemoveOrphanFilesProcedure` / `DucklakeFlushInlinedDataProcedure` (both args now optional,
+default null). `flush_inlined_data` wide-scope skips partitioned tables with a log (vs the
+single-table call which errors); catalog/schema-wide `remove_orphan_files` is § 8.3.
 
-### 8.3 Catalog-wide `remove_orphan_files` — the implementation nuance  ⏳ PROPOSED
+### 8.3 Catalog-wide `remove_orphan_files` — the implementation nuance  ✅ SHIPPED (Trino)
 
 Catalog-wide is **not** just "loop over tables" — residue from a **failed `CREATE TABLE`** (the
 motivating case) has no live table to enumerate. A correct catalog-wide sweep must:
@@ -297,6 +302,16 @@ the overlapping-custom-`location` cross-table-deletion risk (a global known-set 
 table's live files for another's orphans). Keep the min-retention floor + `dry_run` — they matter
 *more* at catalog scope. `flush_inlined_data` catalog-wide is the easy one (iterate tables with
 inlined rows; non-destructive; no global-set subtlety).
+
+**Trino impl (shipped):** `DucklakeRemoveOrphanFilesProcedure` builds the known-set as the union of
+every in-scope table's `listReferencedFilePaths` resolved against *its own* data path, then `sweep`s
+the scan root(s): catalog-wide = `pathResolver.rootDataPath()`; schema-wide =
+`resolveSchemaDataPath(schema)`; table = the table's data path. Pinned by
+`TestDucklakeRemoveOrphanFiles.catalogWideSweepReclaimsAllTablesAndFailedCreateResidue` (two live
+tables + a failed-CREATE `cw_ghost` dir reclaimed; a root `_SUCCESS` survives) and
+`TestDucklakeFlushInlinedData.catalogWideFlushMovesEveryInlinedTable`. **Known limitation:** the
+wide scan walks only the root/schema tree, so orphans under a table with a custom *absolute*
+`location` outside that tree need a table-scoped call.
 
 ## 7. `optimize` / `rewrite_data_files` — non-partial v1 (the compaction WRITER) — ✅ DONE
 

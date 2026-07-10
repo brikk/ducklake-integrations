@@ -38,11 +38,20 @@ import java.lang.invoke.MethodType
 import java.time.Instant
 
 /**
- * Implements `CALL <catalog>.system.remove_orphan_files(schema_name, table_name,
- * retention_threshold => '7d', dry_run => false)` — deletes files under a table's data path that
- * **no catalog row references** and that are **older than the retention threshold**. Orphans are
- * the residue of failed/aborted commits (a data file written, then the catalog commit lost):
+ * Implements `CALL <catalog>.system.remove_orphan_files(schema_name => ..., table_name => ...,
+ * retention_threshold => '7d', dry_run => false)` — deletes files under the target data path(s)
+ * that **no catalog row references** and that are **older than the retention threshold**. Orphans
+ * are the residue of failed/aborted commits (a data file written, then the catalog commit lost):
  * before this, Trino had no way to reclaim them.
+ *
+ * Scope by argument presence (the more you supply, the narrower):
+ *  - `schema_name` + `table_name` → one table's data path (the known set is that table's files).
+ *  - `schema_name` only → every table in the schema; scans the schema's data directory.
+ *  - neither → the whole catalog; scans the warehouse root. The known set is the UNION of every
+ *      in-scope table's referenced files, so residue from a **failed CREATE TABLE** (no catalog
+ *      row, so no per-table sweep could name it) is reclaimed, and one table's live files are never
+ *      mistaken for another's orphans. (Tables with a custom absolute `location` outside the
+ *      scanned root are covered by a table-scoped call — the wide scan only walks the root tree.)
  *
  * Safety (see dev-docs/DESIGN-maintenance.md):
  *  - Orphans have no catalog row, so this touches storage ONLY — no snapshot, no catalog mutation,
@@ -80,8 +89,10 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
                 "system",
                 "remove_orphan_files",
                 ImmutableList.of(
-                        Procedure.Argument("SCHEMA_NAME", VARCHAR),
-                        Procedure.Argument("TABLE_NAME", VARCHAR),
+                        // schema_name / table_name are OPTIONAL: the more you supply, the narrower
+                        // the scope — table (both) → schema (schema only) → catalog-wide (neither).
+                        Procedure.Argument("SCHEMA_NAME", VARCHAR, false, null),
+                        Procedure.Argument("TABLE_NAME", VARCHAR, false, null),
                         Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, "7d"),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
                 REMOVE_ORPHAN_FILES.bindTo(this),
@@ -95,43 +106,87 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
             retentionThreshold: String?,
             dryRun: Boolean,
     ) {
-        val schemaArg = requireArg(schemaName, "schema_name")
-        val tableArg = requireArg(tableName, "table_name")
+        if (!tableName.isNullOrEmpty() && schemaName.isNullOrEmpty()) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "table_name requires schema_name (a table can't be named without its schema)")
+        }
         val retention = parseRetention(retentionThreshold)
-        val isDryRun = dryRun
-
         val snapshotId = catalog.currentSnapshotId
-        val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
-        val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
-
-        // The known set: every path the catalog references for this table, normalized to absolute.
-        val knownPaths: Set<String> = catalog.listReferencedFilePaths(table.tableId)
-                .map { resolveKnown(it, tableDataPath) }
-                .toSet()
-
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
         val cutoff: Instant = Instant.now().minusMillis(retention.toMillis())
-        val orphans: List<Location> = findOrphans(fileSystem, tableDataPath, knownPaths, cutoff)
 
+        // Resolve the target tables and the directory root(s) to scan by scope:
+        //   both args -> one table; schema only -> that schema; neither -> the whole catalog.
+        // The KNOWN set is always the UNION of the referenced files of EVERY table in scope,
+        // each resolved against ITS OWN data path — so a schema-/catalog-wide sweep can't mistake
+        // one table's live files for another's orphans, and it reaches residue from a FAILED
+        // CREATE TABLE (which has no catalog row) by scanning the schema/root directory itself.
+        val targets: List<Pair<DucklakeSchema, DucklakeTable>>
+        val scanRoots: List<String>
+        val scopeLabel: String
+        when {
+            !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty() -> {
+                val (schema, table) = resolveTable(schemaName, tableName, snapshotId)
+                targets = listOf(schema to table)
+                scanRoots = listOf(pathResolver.resolveTableDataPath(schema, table))
+                scopeLabel = "table $schemaName.$tableName"
+            }
+            !schemaName.isNullOrEmpty() -> {
+                val schema = catalog.getSchema(schemaName, snapshotId)
+                        ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+                targets = catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
+                scanRoots = listOf(pathResolver.resolveSchemaDataPath(schema))
+                scopeLabel = "schema $schemaName"
+            }
+            else -> {
+                targets = allTables(snapshotId)
+                scanRoots = listOf(pathResolver.rootDataPath())
+                scopeLabel = "catalog"
+            }
+        }
+
+        val knownPaths: Set<String> = targets.flatMap { (schema, table) ->
+            val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
+            catalog.listReferencedFilePaths(table.tableId).map { resolveKnown(it, tableDataPath) }
+        }.toSet()
+
+        sweep(fileSystem, scanRoots, knownPaths, cutoff, dryRun, scopeLabel)
+    }
+
+    /** Finds + deletes (or, on dry-run, reports) DuckLake orphan residue under each of [scanRoots]. */
+    private fun sweep(
+            fileSystem: TrinoFileSystem,
+            scanRoots: List<String>,
+            knownPaths: Set<String>,
+            cutoff: Instant,
+            dryRun: Boolean,
+            scopeLabel: String,
+    ) {
+        val orphans: List<Location> = scanRoots.flatMap { findOrphans(fileSystem, it, knownPaths, cutoff) }
         if (orphans.isEmpty()) {
-            log.info("remove_orphan_files: no orphans under %s for %s.%s", tableDataPath, schemaArg, tableArg)
+            log.info("remove_orphan_files: no orphans for %s", scopeLabel)
             return
         }
-        if (isDryRun) {
-            log.info("remove_orphan_files (dry_run): %d orphan file(s) under %s for %s.%s would be deleted: %s",
-                    orphans.size, tableDataPath, schemaArg, tableArg, orphans)
+        if (dryRun) {
+            log.info("remove_orphan_files (dry_run): %d orphan file(s) for %s would be deleted: %s",
+                    orphans.size, scopeLabel, orphans)
             return
         }
         try {
             fileSystem.deleteFiles(orphans)
         }
         catch (e: IOException) {
-            throw TrinoException(NOT_SUPPORTED, "Failed to delete orphan files for $schemaArg.$tableArg: ${e.message}", e)
+            throw TrinoException(NOT_SUPPORTED, "Failed to delete orphan files for $scopeLabel: ${e.message}", e)
         }
-        removeEmptiedDatasetDirectories(fileSystem, tableDataPath, orphans)
-        log.info("remove_orphan_files: deleted %d orphan file(s) under %s for %s.%s",
-                orphans.size, tableDataPath, schemaArg, tableArg)
+        scanRoots.forEach { removeEmptiedDatasetDirectories(fileSystem, it, orphans) }
+        log.info("remove_orphan_files: deleted %d orphan file(s) for %s", orphans.size, scopeLabel)
     }
+
+    /** Every (schema, table) live at [snapshotId], across all schemas — the catalog-wide target set. */
+    private fun allTables(snapshotId: Long): List<Pair<DucklakeSchema, DucklakeTable>> =
+        catalog.listSchemas(snapshotId).flatMap { schema ->
+            catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
+        }
 
     /**
      * After deleting orphan *files*, an orphaned lance/vortex dataset *directory* (whose members
@@ -277,13 +332,6 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
                             + "(set by ducklake.remove-orphan-files.min-retention); refusing to delete recently-written files")
         }
         return retention
-    }
-
-    private fun requireArg(value: String?, name: String): String {
-        if (value.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "$name is required")
-        }
-        return value
     }
 
     private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {

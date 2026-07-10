@@ -189,6 +189,49 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
     }
 
+    @Test
+    fun catalogWideSweepReclaimsAllTablesAndFailedCreateResidue() {
+        val tableA = "test_schema.cw_a"
+        val tableB = "test_schema.cw_b"
+        try {
+            computeActual("CREATE TABLE $tableA AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
+            computeActual("CREATE TABLE $tableB AS SELECT * FROM (VALUES (2, 'b')) AS t(id, name)")
+            val schemaDir = dataDir.resolve("test_schema")
+
+            // Aged ducklake- orphans under each live table's dir.
+            val orphanA = plantOrphan(schemaDir.resolve("cw_a"), "ducklake-orphan-a.parquet", ageDays = 8)
+            val orphanB = plantOrphan(schemaDir.resolve("cw_b"), "ducklake-orphan-b.parquet", ageDays = 8)
+            // Residue from a FAILED CREATE TABLE: files under a table dir with NO catalog row.
+            // A per-table sweep couldn't reach this (nothing to name); catalog-wide must.
+            val ghostDir = schemaDir.resolve("cw_ghost")
+            Files.createDirectories(ghostDir)
+            val ghost = plantOrphan(ghostDir, "ducklake-${java.util.UUID.randomUUID()}.parquet", ageDays = 8)
+            // Foreign file at the warehouse root — must survive even a catalog-wide sweep.
+            val foreign = plantOrphan(dataDir, "_SUCCESS", ageDays = 8)
+
+            // No schema_name / table_name => catalog-wide.
+            computeActual("CALL system.remove_orphan_files(retention_threshold => '7d', dry_run => false)")
+
+            assertThat(Files.exists(orphanA)).`as`("table A orphan reclaimed").isFalse()
+            assertThat(Files.exists(orphanB)).`as`("table B orphan reclaimed").isFalse()
+            assertThat(Files.exists(ghost)).`as`("failed-CREATE residue reclaimed catalog-wide").isFalse()
+            assertThat(Files.exists(foreign)).`as`("foreign root file survives").isTrue()
+            assertThat(computeScalar("SELECT count(*) FROM $tableA") as Long).isEqualTo(1L)
+            assertThat(computeScalar("SELECT count(*) FROM $tableB") as Long).isEqualTo(1L)
+        }
+        finally {
+            tryDrop(tableA)
+            tryDrop(tableB)
+        }
+    }
+
+    @Test
+    fun tableNameWithoutSchemaIsRejected() {
+        assertThatThrownBy {
+            computeActual("CALL system.remove_orphan_files(table_name => 'orders')")
+        }.hasMessageContaining("table_name requires schema_name")
+    }
+
     // ci-unstable: passes locally but the emptied orphan .lance dataset DIRECTORY is not removed on
     // the CI runner's filesystem (remove_orphan_files reports success, dir survives) — cause not yet
     // reproduced/understood. Method-level tag so the rest of this class still gates CI. Excluded via

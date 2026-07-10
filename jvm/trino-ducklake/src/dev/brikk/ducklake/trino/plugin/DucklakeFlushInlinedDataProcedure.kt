@@ -80,31 +80,75 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 "system",
                 "flush_inlined_data",
                 ImmutableList.of(
-                        Procedure.Argument("SCHEMA_NAME", VARCHAR),
-                        Procedure.Argument("TABLE_NAME", VARCHAR)),
+                        // Optional: both → one table; schema only → the schema; neither → every
+                        // table with inlined rows across the catalog.
+                        Procedure.Argument("SCHEMA_NAME", VARCHAR, false, null),
+                        Procedure.Argument("TABLE_NAME", VARCHAR, false, null)),
                 FLUSH_INLINED_DATA.bindTo(this),
                 true)
 
     @Suppress("unused") // invoked via MethodHandle
     fun flushInlinedData(session: ConnectorSession, schemaName: String?, tableName: String?) {
-        val schemaArg = requireArg(schemaName, "schema_name")
-        val tableArg = requireArg(tableName, "table_name")
-
+        if (!tableName.isNullOrEmpty() && schemaName.isNullOrEmpty()) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "table_name requires schema_name (a table can't be named without its schema)")
+        }
         val snapshotId = catalog.currentSnapshotId
-        val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
+        val explicitSingle = !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty()
+        val targets: List<Pair<DucklakeSchema, DucklakeTable>> = when {
+            explicitSingle -> listOf(resolveTable(schemaName!!, tableName!!, snapshotId))
+            !schemaName.isNullOrEmpty() -> {
+                val schema = catalog.getSchema(schemaName, snapshotId)
+                        ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+                catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
+            }
+            else -> catalog.listSchemas(snapshotId).flatMap { schema ->
+                catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
+            }
+        }
+
+        var flushed = 0
+        for ((schema, table) in targets) {
+            if (flushOneTable(session, schema, table, snapshotId, failOnPartitioned = explicitSingle)) {
+                flushed++
+            }
+        }
+        if (!explicitSingle) {
+            log.info("flush_inlined_data: flushed %d table(s) with inlined rows", flushed)
+        }
+    }
+
+    /**
+     * Flushes one table's inlined rows to a Parquet file. Returns true if a file was written.
+     * Partitioned tables are unsupported (their inlined rows have no partition assignment): when
+     * [failOnPartitioned] (an explicit single-table call) throws a clear error; otherwise (a
+     * schema-/catalog-wide sweep) logs and skips so one partitioned table can't abort the batch.
+     */
+    private fun flushOneTable(
+            session: ConnectorSession,
+            schema: DucklakeSchema,
+            table: DucklakeTable,
+            snapshotId: Long,
+            failOnPartitioned: Boolean,
+    ): Boolean {
         val tableId = table.tableId
 
         // v1: a partitioned table's inlined rows have no partition assignment to write into a
         // hive-style file; gate rather than produce an unpartitioned (unprunable) file.
         if (catalog.getPartitionSpecs(tableId, snapshotId).isNotEmpty()) {
-            throw TrinoException(NOT_SUPPORTED,
-                    "flush_inlined_data does not support partitioned tables yet: $schemaArg.$tableArg")
+            if (failOnPartitioned) {
+                throw TrinoException(NOT_SUPPORTED,
+                        "flush_inlined_data does not support partitioned tables yet: ${schema.schemaName}.${table.tableName}")
+            }
+            log.info("flush_inlined_data: skipping partitioned table %s.%s (unsupported)",
+                    schema.schemaName, table.tableName)
+            return false
         }
 
         val liveInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableId, snapshotId)
                 .filter { it.hasLiveRows }
         if (liveInfos.isEmpty()) {
-            return // nothing inlined — no-op
+            return false // nothing inlined — no-op
         }
 
         // Top-level columns at the current snapshot; the rows we write conform to these.
@@ -126,7 +170,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             }
         }
         if (rows.isEmpty()) {
-            return // descriptor said live, but no rows resolved at this snapshot — nothing to do
+            return false // descriptor said live, but no rows resolved at this snapshot — nothing to do
         }
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
@@ -140,13 +184,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         catch (e: TransactionConflictException) {
             throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
         }
-    }
-
-    private fun requireArg(value: String?, name: String): String {
-        if (value.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "$name is required")
-        }
-        return value
+        return true
     }
 
     private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
@@ -212,6 +250,8 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
     }
 
     companion object {
+        private val log: io.airlift.log.Logger = io.airlift.log.Logger.get(DucklakeFlushInlinedDataProcedure::class.java)
+
         private val FLUSH_INLINED_DATA: MethodHandle
 
         init {
