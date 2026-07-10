@@ -7,6 +7,20 @@ The connector talks to the DuckLake metadata catalog over JDBC (HikariCP + jOOQ)
 IDs are allocated app-side from the snapshot row). So adding a SQL backend is mostly a driver +
 fixture exercise, not a rewrite.
 
+## Bootstrap & the "not initialized" error
+
+The connector never issues the catalog schema DDL — it assumes the `ducklake_*` tables already
+exist (created once by attaching the catalog from DuckDB, or by any DuckLake engine). Startup only
+opens the connection pool; the first *query* is what reads the schema. So:
+- If the database is **unreachable** (server down / wrong creds / missing database), the HikariCP
+  pool fails to open during eager connector init → the catalog fails to load.
+- If the database is reachable but **not bootstrapped** (empty DB, or a fresh auto-created local
+  `.db`), the connector loads and Trino starts, but the first catalog read fails. Rather than the
+  opaque low-level `table "ducklake_snapshot" does not exist`, `JdbcDucklakeCatalog` detects this
+  (`isMissingCatalogSchema`, cross-backend) and throws `DucklakeCatalogNotInitializedException`
+  with an actionable message; the Trino side (`DucklakeSnapshotResolver`) surfaces it as a
+  `GENERIC_USER_ERROR`. Pinned by `TestJdbcDucklakeCatalogNotInitialized`.
+
 ## Support matrix
 
 | Backend | Connector read/write | Bootstrap (schema create) | Cross-engine (DuckDB reads same catalog) | Status |

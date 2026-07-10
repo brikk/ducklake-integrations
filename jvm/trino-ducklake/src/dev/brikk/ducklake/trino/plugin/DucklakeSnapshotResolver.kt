@@ -15,7 +15,9 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.inject.Inject
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeCatalogNotInitializedException
 import dev.brikk.ducklake.catalog.DucklakeSnapshot
+import io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR
 import io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS
 import io.trino.spi.StandardErrorCode.INVALID_SESSION_PROPERTY
 import io.trino.spi.TrinoException
@@ -80,21 +82,35 @@ open class DucklakeSnapshotResolver(
             return resolveSnapshotIdAtOrBefore(catalogDefaultSnapshotTimestamp)
         }
 
-        return catalog.currentSnapshotId
+        return notInitializedAware { catalog.currentSnapshotId }
     }
 
     fun resolveSnapshotIdById(snapshotId: Long): Long {
         if (snapshotId <= 0) {
             throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID must be greater than 0: $snapshotId")
         }
-        val snapshot: DucklakeSnapshot = catalog.getSnapshot(snapshotId)
+        val snapshot: DucklakeSnapshot = notInitializedAware { catalog.getSnapshot(snapshotId) }
                 ?: throw TrinoException(INVALID_ARGUMENTS, "DuckLake snapshot ID does not exist: $snapshotId")
         return snapshot.snapshotId
     }
 
     fun resolveSnapshotIdAtOrBefore(timestamp: Instant): Long {
-        val snapshot: DucklakeSnapshot = catalog.getSnapshotAtOrBefore(timestamp)
+        val snapshot: DucklakeSnapshot = notInitializedAware { catalog.getSnapshotAtOrBefore(timestamp) }
                 ?: throw TrinoException(INVALID_ARGUMENTS, "No DuckLake snapshot exists at or before timestamp: $timestamp")
         return snapshot.snapshotId
+    }
+
+    /**
+     * Translates the catalog-lib [DucklakeCatalogNotInitializedException] (reachable DB, but the
+     * `ducklake_*` schema was never bootstrapped) into a user-facing [TrinoException] with the
+     * actionable message, instead of letting it surface as an opaque internal error.
+     */
+    private inline fun <T> notInitializedAware(block: () -> T): T {
+        try {
+            return block()
+        }
+        catch (e: DucklakeCatalogNotInitializedException) {
+            throw TrinoException(GENERIC_USER_ERROR, e.message, e)
+        }
     }
 }

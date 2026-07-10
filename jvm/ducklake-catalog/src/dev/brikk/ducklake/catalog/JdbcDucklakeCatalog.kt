@@ -98,6 +98,10 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     private val dsl: DSLContext
     private val metadata: MetadataQuery
 
+    // Retained only for diagnostics (the "catalog not initialized" message). Never used for
+    // connection — the pool already holds the parsed URL.
+    private val catalogDatabaseUrl: String = config.catalogDatabaseUrl ?: "<unset>"
+
     init {
         @Suppress("SENSELESS_COMPARISON")
         if (config == null) throw NullPointerException("config is null")
@@ -185,24 +189,49 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
     fun forConnection(connection: Connection): DSLContext =
         DSL.using(connection, dialect, jooqSettings)
 
+    /**
+     * Runs a catalog read and, if it fails because the `ducklake_*` metadata schema does not
+     * exist (a reachable-but-un-bootstrapped catalog), rethrows a clear
+     * [DucklakeCatalogNotInitializedException] instead of the opaque low-level SQL error. Any
+     * other failure propagates unchanged.
+     */
+    private inline fun <T> guardInitialized(block: () -> T): T {
+        try {
+            return block()
+        }
+        catch (e: DataAccessException) {
+            val sqlException = findSqlException(e)
+            if (sqlException != null && isMissingCatalogSchema(sqlException)) {
+                throw DucklakeCatalogNotInitializedException(
+                    "DuckLake catalog at \"$catalogDatabaseUrl\" has no metadata schema " +
+                        "(the ducklake_* tables are missing). Initialize the catalog once before " +
+                        "using it — e.g. attach it from DuckDB: INSTALL ducklake; LOAD ducklake; " +
+                        "ATTACH 'ducklake:<backend-connection>' AS lake (DATA_PATH '<data-path>'); " +
+                        "DETACH lake; — then retry.",
+                    e)
+            }
+            throw e
+        }
+    }
+
     override val currentSnapshotId: Long
-        get() {
+        get() = guardInitialized {
             val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
             val maxId: Long? = dsl.select(DSL.max(snap.SNAPSHOT_ID))
                 .from(snap)
                 .fetchOne(0, Long::class.java)
-            return maxId ?: throw IllegalStateException("No snapshots found in ducklake_snapshot table")
+            maxId ?: throw IllegalStateException("No snapshots found in ducklake_snapshot table")
         }
 
-    override fun getSnapshot(snapshotId: Long): DucklakeSnapshot? {
+    override fun getSnapshot(snapshotId: Long): DucklakeSnapshot? = guardInitialized {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
-        return dsl.selectFrom(snap)
+        dsl.selectFrom(snap)
             .where(snap.SNAPSHOT_ID.eq(snapshotId))
             .fetchOne()
             ?.let { toDucklakeSnapshot(it) }
     }
 
-    override fun getSnapshotAtOrBefore(timestamp: Instant): DucklakeSnapshot? {
+    override fun getSnapshotAtOrBefore(timestamp: Instant): DucklakeSnapshot? = guardInitialized {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         // Push the predicate + ordering + limit into SQL so the database returns the single
         // matching row instead of materializing the whole snapshot table and filtering in Java.
@@ -210,7 +239,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         // by snapshot_id DESC (independent of snapshot_time monotonicity), so this is identical
         // to the prior scan-and-findFirst. SNAPSHOT_TIME is an OffsetDateTime column; compare at
         // UTC, which preserves the instant the Java filter used (snapshotTime() == toInstant()).
-        return dsl.selectFrom(snap)
+        dsl.selectFrom(snap)
             .where(snap.SNAPSHOT_TIME.le(timestamp.atOffset(ZoneOffset.UTC)))
             .orderBy(snap.SNAPSHOT_ID.desc())
             .limit(1)
@@ -218,9 +247,9 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             ?.let { toDucklakeSnapshot(it) }
     }
 
-    override fun listSnapshots(): List<DucklakeSnapshot> {
+    override fun listSnapshots(): List<DucklakeSnapshot> = guardInitialized {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
-        return dsl.selectFrom(snap)
+        dsl.selectFrom(snap)
             .orderBy(snap.SNAPSHOT_ID.desc())
             .fetch { toDucklakeSnapshot(it) }
     }
@@ -3983,6 +4012,29 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
                 current = current.cause
             }
             return null
+        }
+
+        /**
+         * Recognizes the "the `ducklake_snapshot` metadata table does not exist" error across
+         * backends — i.e. the catalog database is reachable but its DuckLake schema was never
+         * created. Matched by the standard "undefined table" SQLStates/codes AND a message that
+         * names a `ducklake_` table (so a genuinely missing user table can't be misclassified).
+         */
+        internal fun isMissingCatalogSchema(exception: SQLException): Boolean {
+            val sqlState = exception.sqlState
+            val undefinedTableState = sqlState == "42P01" || // PostgreSQL undefined_table
+                sqlState == "42S02"                          // MySQL / SQL-standard base table not found
+            val undefinedTableCode = exception.errorCode == 1146 // MySQL ER_NO_SUCH_TABLE
+            val message = exception.message?.lowercase(Locale.ROOT)
+            val messageSaysMissing = message != null &&
+                message.contains("ducklake_") &&
+                (
+                    message.contains("does not exist") ||       // PostgreSQL / DuckDB
+                        message.contains("doesn't exist") ||    // MySQL
+                        message.contains("no such table") ||    // SQLite
+                        message.contains("not found")           // DuckDB Catalog Error variants
+                    )
+            return undefinedTableState || undefinedTableCode || messageSaysMissing
         }
 
         private fun isDuplicateKeyViolation(exception: SQLException): Boolean {
