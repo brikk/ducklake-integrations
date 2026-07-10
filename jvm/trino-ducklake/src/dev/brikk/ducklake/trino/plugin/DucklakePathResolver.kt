@@ -26,12 +26,18 @@ open class DucklakePathResolver(
     constructor(catalog: DucklakeCatalog, config: DucklakeConfig)
             : this(catalog, config.getDataPath())
 
-    open fun resolveTableDataPath(schema: DucklakeSchema, table: DucklakeTable): String
-    {
-        val rootDataPath: String = (catalog.getDataPath() ?: configuredDataPath)
+    /** The warehouse root data path (catalog's configured `data_path`, or the connector fallback). */
+    open fun rootDataPath(): String =
+        (catalog.getDataPath() ?: configuredDataPath)
             ?: throw IllegalStateException("No data path configured for relative file paths")
 
-        val schemaDataPath = resolveScopedPath(schema.path, schema.pathIsRelative, rootDataPath)
+    /** A schema's data directory: root + the schema's (possibly relative) path. */
+    open fun resolveSchemaDataPath(schema: DucklakeSchema): String =
+        resolveScopedPath(schema.path, schema.pathIsRelative, rootDataPath())
+
+    open fun resolveTableDataPath(schema: DucklakeSchema, table: DucklakeTable): String
+    {
+        val schemaDataPath = resolveSchemaDataPath(schema)
         return resolveScopedPath(table.path, table.pathIsRelative, schemaDataPath)
     }
 

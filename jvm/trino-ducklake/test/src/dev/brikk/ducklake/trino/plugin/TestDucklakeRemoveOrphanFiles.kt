@@ -153,6 +153,85 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
     }
 
+    @Test
+    fun leavesForeignAndNonDucklakeFilesAlone() {
+        val table = "test_schema.orphan_foreign"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
+            val dir = tableDataDir()
+            val realBefore = parquetFiles(dir).toSet()
+
+            // Foreign files a user could legitimately park under the data path — all aged past the
+            // retention floor. NONE should be deleted: no ducklake- prefix (or not a managed type).
+            val foreign = listOf(
+                plantOrphan(dir, "_SUCCESS", ageDays = 30),
+                plantOrphan(dir, "foo.txt", ageDays = 30),
+                plantOrphan(dir, "notes.md", ageDays = 30),
+                // A user's OWN parquet that we didn't write (no ducklake- prefix) — must survive.
+                plantOrphan(dir, "my-export.parquet", ageDays = 30),
+                // Right prefix but not a managed data/delete extension — must survive.
+                plantOrphan(dir, "ducklake-scratch.log", ageDays = 30),
+            )
+            // A genuine aged ducklake- orphan as a positive control (proves the sweep ran).
+            val realOrphan = plantOrphan(dir, "ducklake-orphan-aged.parquet", ageDays = 30)
+
+            computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
+                    + "table_name => 'orphan_foreign', retention_threshold => '7d', dry_run => false)")
+
+            assertThat(Files.exists(realOrphan)).`as`("aged ducklake- orphan deleted (control)").isFalse()
+            for (f in foreign) {
+                assertThat(Files.exists(f)).`as`("foreign file must be left alone: ${f.fileName}").isTrue()
+            }
+            assertThat(parquetFiles(dir)).`as`("real data files untouched").containsAll(realBefore)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
+    fun catalogWideSweepReclaimsAllTablesAndFailedCreateResidue() {
+        val tableA = "test_schema.cw_a"
+        val tableB = "test_schema.cw_b"
+        try {
+            computeActual("CREATE TABLE $tableA AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
+            computeActual("CREATE TABLE $tableB AS SELECT * FROM (VALUES (2, 'b')) AS t(id, name)")
+            val schemaDir = dataDir.resolve("test_schema")
+
+            // Aged ducklake- orphans under each live table's dir.
+            val orphanA = plantOrphan(schemaDir.resolve("cw_a"), "ducklake-orphan-a.parquet", ageDays = 8)
+            val orphanB = plantOrphan(schemaDir.resolve("cw_b"), "ducklake-orphan-b.parquet", ageDays = 8)
+            // Residue from a FAILED CREATE TABLE: files under a table dir with NO catalog row.
+            // A per-table sweep couldn't reach this (nothing to name); catalog-wide must.
+            val ghostDir = schemaDir.resolve("cw_ghost")
+            Files.createDirectories(ghostDir)
+            val ghost = plantOrphan(ghostDir, "ducklake-${java.util.UUID.randomUUID()}.parquet", ageDays = 8)
+            // Foreign file at the warehouse root — must survive even a catalog-wide sweep.
+            val foreign = plantOrphan(dataDir, "_SUCCESS", ageDays = 8)
+
+            // No schema_name / table_name => catalog-wide.
+            computeActual("CALL system.remove_orphan_files(retention_threshold => '7d', dry_run => false)")
+
+            assertThat(Files.exists(orphanA)).`as`("table A orphan reclaimed").isFalse()
+            assertThat(Files.exists(orphanB)).`as`("table B orphan reclaimed").isFalse()
+            assertThat(Files.exists(ghost)).`as`("failed-CREATE residue reclaimed catalog-wide").isFalse()
+            assertThat(Files.exists(foreign)).`as`("foreign root file survives").isTrue()
+            assertThat(computeScalar("SELECT count(*) FROM $tableA") as Long).isEqualTo(1L)
+            assertThat(computeScalar("SELECT count(*) FROM $tableB") as Long).isEqualTo(1L)
+        }
+        finally {
+            tryDrop(tableA)
+            tryDrop(tableB)
+        }
+    }
+
+    @Test
+    fun tableNameWithoutSchemaIsRejected() {
+        assertThatThrownBy {
+            computeActual("CALL system.remove_orphan_files(table_name => 'orders')")
+        }.hasMessageContaining("table_name requires schema_name")
+    }
+
     // ci-unstable: passes locally but the emptied orphan .lance dataset DIRECTORY is not removed on
     // the CI runner's filesystem (remove_orphan_files reports success, dir survives) — cause not yet
     // reproduced/understood. Method-level tag so the rest of this class still gates CI. Excluded via
@@ -164,8 +243,10 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
             val dir = tableDataDir()
-            // An orphaned lance-style dataset directory (from a failed commit): member files only.
-            val dataset = dir.resolve("ghost-${java.util.UUID.randomUUID()}.lance")
+            // An orphaned lance dataset directory (from a failed commit): member files only. Named
+            // as this connector writes lance datasets (ducklake-<uuid>.lance) — the orphan scope
+            // recognizes it by that enclosing dataset-dir name, not by the member files.
+            val dataset = dir.resolve("ducklake-${java.util.UUID.randomUUID()}.lance")
             val part = dataset.resolve("data").resolve("part-0.lance")
             val manifest = dataset.resolve("_versions").resolve("1.manifest")
             Files.createDirectories(part.parent)
