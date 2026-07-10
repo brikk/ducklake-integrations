@@ -4,6 +4,8 @@ import java.time.Instant
 import java.util.Locale
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeSchema
+import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.ExpireSnapshotsResult
 import dev.brikk.ducklake.catalog.TransactionConflictException
 
@@ -82,6 +84,12 @@ internal class DuckLakeProcedureOps(
     // provider returning a fake [WarehouseBlobStore]; prod defaults to the S3/MinIO client.
     private val blobStore: WarehouseBlobStore by lazy {
         (blobStoreProvider ?: { S3WarehouseBlobStore.fromProperties(properties) })()
+    }
+
+    // Resolves table / schema / root data paths for remove_orphan_files scope tiers. Lazy — only
+    // that procedure needs it.
+    private val pathResolver: DuckLakePathResolver by lazy {
+        DuckLakePathResolver(catalog, properties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE])
     }
 
     override fun getSupportedProcedures(): List<String> =
@@ -255,23 +263,29 @@ internal class DuckLakeProcedureOps(
     }
 
     /**
-     * Core body of `remove_orphan_files` — deletes objects under the warehouse that NO catalog row
-     * references (residue of aborted commits) and are older than the grace period
-     * (`retention_threshold`, floored by [minRetentionMillis] to protect files an in-flight, possibly
-     * cross-engine, writer produced but hasn't yet committed). Storage-only: touches no catalog
-     * state (orphans have no rows). `dry_run = true` reports without deleting.
+     * Core body of `remove_orphan_files` — deletes DuckLake residue under the in-scope directory that
+     * NO catalog row references (aborted-commit / failed-CREATE leftovers) and is older than the
+     * grace period (`retention_threshold`, floored by [minRetentionMillis] to protect files an
+     * in-flight, possibly cross-engine, writer produced but hasn't committed). Storage-only: touches
+     * no catalog state (orphans have no rows). `dry_run = true` reports without deleting.
      *
-     * **Catalog-wide, modeling upstream `ducklake_delete_orphaned_files` exactly:** it recursively
-     * lists the whole `data_path` and diffs against [DucklakeCatalog.listAllReferencedFilePaths] (all
-     * tables' files + scheduled), keeping only `.parquet` candidates ([OrphanFiles.find]) — the same
-     * scheme, root, and extension filter (`suffix(filename, '.parquet')`) as upstream. Like
-     * expire_snapshots/cleanup_old_files this is catalog-wide, so the named table (Doris routes us
-     * one via `ALTER TABLE <t> EXECUTE`) is IGNORED for selection; the result says so. The known set
-     * and listing are resolved to the SAME absolute-URI form so the diff can't misclassify a live
-     * file as an orphan.
+     * **Tiered scope from the named table's viewpoint** (Doris routes procedures only through
+     * `ALTER TABLE <t> EXECUTE`, which always names a table — there is no ALTER CATALOG/DATABASE
+     * EXECUTE). The `scope` arg widens outward from that table:
+     *  - `table` (default) → just the named table's data dir.
+     *  - `schema` (alias `database`) → every table in the named table's schema; scan the schema dir.
+     *  - `catalog` → every table in every schema; scan the warehouse root.
+     * This delivers the same semantics as the Trino plugin's optional-arg tiers (dev-docs
+     * DESIGN-maintenance §8.2/§8.3), adapted to Doris's grammar.
+     *
+     * The known set is the UNION of every in-scope table's [DucklakeCatalog.listReferencedFilePaths],
+     * each resolved against ITS OWN data path — so a wide sweep can't mistake one table's live files
+     * for another's orphans, and scanning the schema/root DIRECTORY (not per-table) reaches
+     * failed-CREATE residue that has no catalog row to name. Only `ducklake-`-prefixed managed residue
+     * is ever deleted ([OrphanFiles]); foreign files always survive.
      */
     @Suppress("ThrowsCount")
-    private fun removeOrphanFiles(@Suppress("UNUSED_PARAMETER") table: ConnectorTableHandle?, properties: Map<String, String>): ConnectorProcedureResult {
+    private fun removeOrphanFiles(table: ConnectorTableHandle?, properties: Map<String, String>): ConnectorProcedureResult {
         val args = CaseInsensitiveArgs(properties)
         val dryRun = parseBoolean(args[DRY_RUN], DRY_RUN)
         val retention = args[RETENTION_THRESHOLD]?.takeIf { it.isNotBlank() } ?: DEFAULT_RETENTION
@@ -283,16 +297,24 @@ internal class DuckLakeProcedureOps(
                     "(${minRetentionMillis}ms); refusing to delete recently-written files.",
             )
         }
-        val root = warehouseRoot
+        val scope = parseScope(args[SCOPE])
+        val handle = table?.asDuckLakeHandle<DuckLakeTableHandle>()
             ?: throw DorisConnectorException(
-                "remove_orphan_files needs a warehouse root ('storage.warehouse') to scan for orphans",
+                "remove_orphan_files must be run as ALTER TABLE <table> EXECUTE remove_orphan_files(...); " +
+                    "use scope='schema'/'catalog' to widen from that table",
             )
 
-        // Known set: every path the catalog references across ALL tables (live + end-snapshotted +
-        // scheduled), resolved to the same absolute-URI form the listing produces.
-        val knownPaths = catalog.listAllReferencedFilePaths().toSet()
+        val (targets, scanRoots) = resolveOrphanScope(scope, handle)
+        val knownPaths = targets.flatMap { (schema, tbl) ->
+            val tableDataPath = pathResolver.resolveTableDataPath(schema, tbl)
+            catalog.listReferencedFilePaths(tbl.tableId)
+                .map { pathResolver.resolveFilePath(it.path, it.pathIsRelative, tableDataPath) }
+        }.toSet()
+
         val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
-        val orphans = OrphanFiles.find(blobStore.list(root), knownPaths, cutoff, ORPHAN_CANDIDATE_SUFFIXES)
+        val orphans = scanRoots
+            .flatMap { OrphanFiles.find(blobStore.list(it), knownPaths, cutoff) }
+            .distinct()
 
         if (orphans.isEmpty() || dryRun) {
             return fileGcResult(dryRun, retention, deleted = 0, wouldDelete = orphans.size, failed = 0)
@@ -305,6 +327,45 @@ internal class DuckLakeProcedureOps(
             wouldDelete = orphans.size,
             failed = outcome.failed.size,
         )
+    }
+
+    /**
+     * Resolve the in-scope (schema, table) targets and the directory root(s) to scan, from the named
+     * table's viewpoint widened by [scope]. Catalog/schema scopes enumerate live tables so their
+     * referenced files populate the known set; the directory scan reaches residue with no table row.
+     */
+    private fun resolveOrphanScope(
+        scope: OrphanScope,
+        handle: DuckLakeTableHandle,
+    ): Pair<List<Pair<DucklakeSchema, DucklakeTable>>, List<String>> = when (scope) {
+        OrphanScope.TABLE -> {
+            val schema = catalog.getSchema(handle.database, handle.snapshotId)
+                ?: throw DorisConnectorException("schema not found: ${handle.database}")
+            val tbl = catalog.getTable(handle.database, handle.table, handle.snapshotId)
+                ?: throw DorisConnectorException("table not found: ${handle.database}.${handle.table}")
+            listOf(schema to tbl) to listOf(pathResolver.resolveTableDataPath(schema, tbl))
+        }
+        OrphanScope.SCHEMA -> {
+            val schema = catalog.getSchema(handle.database, handle.snapshotId)
+                ?: throw DorisConnectorException("schema not found: ${handle.database}")
+            catalog.listTables(schema.schemaId, handle.snapshotId).map { schema to it } to
+                listOf(pathResolver.resolveSchemaDataPath(schema))
+        }
+        OrphanScope.CATALOG ->
+            catalog.listSchemas(handle.snapshotId)
+                .flatMap { s -> catalog.listTables(s.schemaId, handle.snapshotId).map { s to it } } to
+                listOf(pathResolver.rootDataPath())
+    }
+
+    private fun parseScope(raw: String?): OrphanScope {
+        return when (raw?.trim()?.lowercase(Locale.ROOT)) {
+            null, "", "table" -> OrphanScope.TABLE
+            "schema", "database" -> OrphanScope.SCHEMA
+            "catalog" -> OrphanScope.CATALOG
+            else -> throw DorisConnectorException(
+                "Invalid scope '$raw': expected 'table' (default), 'schema' (alias 'database'), or 'catalog'",
+            )
+        }
     }
 
     /**
@@ -358,6 +419,9 @@ internal class DuckLakeProcedureOps(
         return ids.toSet()
     }
 
+    /** remove_orphan_files scope, widening from the named table. */
+    private enum class OrphanScope { TABLE, SCHEMA, CATALOG }
+
     /** Case-insensitive view over the raw `properties` map (Doris may lowercase argument keys). */
     private class CaseInsensitiveArgs(properties: Map<String, String>) {
         private val byLowerKey: Map<String, String> =
@@ -378,14 +442,9 @@ internal class DuckLakeProcedureOps(
         internal const val RETENTION_THRESHOLD = "retention_threshold"
         internal const val SNAPSHOT_IDS = "snapshot_ids"
         internal const val DRY_RUN = "dry_run"
+        internal const val SCOPE = "scope"
 
         internal const val DEFAULT_RETENTION = "7d"
-
-        // File suffixes remove_orphan_files will consider — mirrors upstream DuckLake's
-        // `suffix(filename, '.parquet')` orphan glob. Doris reads parquet only, so this is the exact
-        // set; foreign files (_SUCCESS, .crc, other engines' files) are never touched. (Our Trino
-        // plugin, which also manages lance/vortex, would extend this set.)
-        internal val ORPHAN_CANDIDATE_SUFFIXES: Set<String> = setOf(".parquet")
 
         private const val CATALOG_WIDE_SCOPE = "catalog-wide (ignores the named table)"
 

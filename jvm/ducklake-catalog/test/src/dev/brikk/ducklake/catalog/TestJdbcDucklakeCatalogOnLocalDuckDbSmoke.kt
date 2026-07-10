@@ -140,35 +140,4 @@ class TestJdbcDucklakeCatalogOnLocalDuckDbSmoke {
             .extracting(java.util.function.Function<DucklakeSchema, String> { it.schemaName })
             .doesNotContain(schemaName)
     }
-
-    @Test
-    fun listAllReferencedFilePathsResolvesDataFilesAbsolutelyForOrphanDetection() {
-        val catalog = catalog!!
-        val schemaName = "known_sch"
-        catalog.createSchema(schemaName)
-        catalog.createTable(
-            schemaName, "known_tbl", listOf(TableColumnSpec.leaf("id", "INTEGER", false)), null, null,
-        )
-        val table = catalog.getTable(schemaName, "known_tbl", catalog.currentSnapshotId)
-            ?: throw AssertionError("table not visible after createTable")
-
-        // Commit a data file with a RELATIVE path — the catalog must resolve it to an absolute URI
-        // under the data_path (root + schema + table + file), the form orphan detection diffs against.
-        catalog.commitInsert(
-            table.tableId,
-            listOf(DucklakeWriteFragment("part-0.parquet", 1024L, 64L, 3L, emptyList())),
-        )
-
-        val known = catalog.listAllReferencedFilePaths()
-        val root = catalog.getDataPath() ?: throw AssertionError("no data_path")
-        assertThat(known)
-            .`as`("data file resolved to an absolute path under the data_path root, ending with its name")
-            .anySatisfy {
-                assertThat(it).startsWith(root)
-                assertThat(it).endsWith("part-0.parquet")
-            }
-
-        catalog.dropTable(schemaName, "known_tbl")
-        catalog.dropSchema(schemaName)
-    }
 }

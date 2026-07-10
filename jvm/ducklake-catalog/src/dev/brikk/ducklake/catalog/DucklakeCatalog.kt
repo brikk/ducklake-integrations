@@ -138,21 +138,6 @@ interface DucklakeCatalog {
     fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef>
 
     /**
-     * The **catalog-wide** known set for orphan-file detection: every storage path the catalog
-     * references across ALL tables, resolved to an **absolute** URI. Union of every
-     * `ducklake_data_file` + `ducklake_delete_file` row (all tables, all snapshots — end-snapshotted
-     * rows included, since their physical files are still catalog-owned until cleanup) and all
-     * `ducklake_files_scheduled_for_deletion` rows, each resolved against the catalog `data_path`
-     * (data/delete files via their table's data dir; scheduled files as stored).
-     *
-     * Mirrors upstream DuckLake's `GetKnownFilesForCleanupQuery`, which `ducklake_delete_orphaned_files`
-     * diffs against a recursive glob of the whole `data_path`: a file under the warehouse that is NOT
-     * in this set has no catalog row and is an orphan candidate. Returned distinct; absolute form
-     * matches the object-store listing so the diff is exact. Empty when no `data_path` is configured.
-     */
-    fun listAllReferencedFilePaths(): List<String>
-
-    /**
      * Snapshot ids eligible for expiry — every snapshot EXCEPT the latest (which is never
      * expirable), optionally narrowed to those older than [olderThan] or to an explicit [versions]
      * set. [olderThan] and [versions] are mutually exclusive; pass both null to list all

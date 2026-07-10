@@ -576,57 +576,6 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         return refs
     }
 
-    override fun listAllReferencedFilePaths(): List<String> {
-        val root = readDataPath(dsl) ?: return emptyList()
-        // Cache each table's resolved data dir (root + schema.path + table.path) — data/delete file
-        // relative paths join it. Mirrors scheduleFile's resolution + upstream GetKnownFilesForCleanupQuery.
-        val tableDataPathCache = HashMap<Long, String?>()
-        val paths = LinkedHashSet<String>()
-        val add: (Long?, String?, Boolean?) -> Unit = { tableId, path, isRelative ->
-            resolveReferencedFilePath(tableId, path, isRelative, tableDataPathCache)?.let { paths.add(it) }
-        }
-
-        val df = DUCKLAKE_DATA_FILE.`as`("df")
-        dsl.select(df.TABLE_ID, df.PATH, df.PATH_IS_RELATIVE).from(df)
-            .fetch { add(it.value1(), it.value2(), it.value3()) }
-        val delf = DUCKLAKE_DELETE_FILE.`as`("delf")
-        dsl.select(delf.TABLE_ID, delf.PATH, delf.PATH_IS_RELATIVE).from(delf)
-            .fetch { add(it.value1(), it.value2(), it.value3()) }
-        // Scheduled files carry no table_id; a relative one resolves against the data_path ROOT
-        // (that's how scheduleFile stores them — absolute — but honor the flag defensively).
-        val sched = DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.`as`("sched")
-        dsl.select(sched.PATH, sched.PATH_IS_RELATIVE).from(sched)
-            .fetch { r ->
-                val p = r.value1()
-                if (p != null) {
-                    paths.add(if (r.value2() == true) joinPaths(root, p) else p)
-                }
-            }
-        return paths.toList()
-    }
-
-    /**
-     * Resolve one data/delete file's stored path to an absolute URI: absolute paths pass through;
-     * relative paths join their table's resolved data dir (root + schema + table path). Returns null
-     * for a null path or a table whose data dir can't be resolved (no data_path / missing rows).
-     */
-    private fun resolveReferencedFilePath(
-        tableId: Long?,
-        path: String?,
-        isRelative: Boolean?,
-        tableDataPathCache: HashMap<Long, String?>,
-    ): String? {
-        if (path == null) {
-            return null
-        }
-        if (isRelative != true) {
-            return path
-        }
-        val tid = tableId ?: return null
-        val tableDataPath = tableDataPathCache.getOrPut(tid) { resolveTableDataPathById(dsl, tid) } ?: return null
-        return joinPaths(tableDataPath, path)
-    }
-
     override fun listExpirableSnapshots(olderThan: Instant?, versions: Set<Long>?): List<Long> {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         val maxId: Long = dsl.select(DSL.max(snap.SNAPSHOT_ID)).from(snap)
