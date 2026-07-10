@@ -353,14 +353,21 @@ generate new parquet files and need a similar metadata-insert path.
 
 ## `add_files` Follow-Ups
 
-- [ ] **`.db` (duckdb-format) file registration** (from the driving-list F2 sweep; niche but
-  symmetric with parquet/lance/vortex). `add_files` currently accepts `parquet`, `lance`, and
-  `vortex` (`FILE_FORMAT` arg); registering a pre-existing DuckDB `.db` data file as a
-  `file_format='duckdb'` catalog entry is the missing symmetric case. Same opaque shape as the
-  lance/vortex registration (no footer/stats/name-map; record_count via a scan through the
-  DuckDB-engine executor; file_size from the filesystem). Low priority — external `.db` files
-  are an unusual source. See `DucklakeAddFilesProcedure` (the `FORMAT_LANCE`/`FORMAT_VORTEX`
-  branches are the template).
+- [x] **`.db` (duckdb-format) file registration** (from the driving-list F2 sweep; niche but
+  symmetric with parquet/lance/vortex). Landed 2026-07-10. `add_files` now accepts
+  `file_format => 'duckdb'` alongside `parquet`/`lance`/`vortex`, registering a pre-existing
+  DuckDB `.db` data file opaquely (no footer/stats/name-map). Same shape as lance/vortex:
+  `DucklakeAddFilesProcedure.buildDuckDbFragment` records `file_format='duckdb'`, `file_size`
+  from the filesystem (single file, like vortex), and `record_count` by scanning the file's
+  `main.t` table through the DuckDB executor via an **ATTACH** target (not a FileScan table
+  function) — `countRowsViaAttach` builds a `DuckDbAttachTarget.LocalPath` for local paths or
+  `HttpfsS3` (with the catalog `ducklake_s3` secret) for `s3://`, since a `.db` ATTACH reads
+  through DuckDB's own filesystem layer which honors the secret. Partitioned tables require
+  `hive_partitioning => true` (same opaque-file gate as lance/vortex; the partition column
+  must be present in the file body, its value read from the `key=value/` path for pruning).
+  Read-back reuses the existing `resolveDuckDbReadTarget` `FORMAT_DUCKDB` ATTACH path. Pinned by
+  `TestDucklakeDuckDbAddFiles` (round-trip + on-disk size, partitioned with hive_partitioning,
+  partitioned-without-hive rejection, unknown-format rejection).
 - [ ] **`allow_missing` recurses into STRUCT fields.** Upstream's
   `add_files_missing_fields.test` exercises a `ROW(a INT)` parquet against a
   `ROW(a INT, b INT)` table column. Our `DucklakeAddFilesNameMapper.mapStruct`
