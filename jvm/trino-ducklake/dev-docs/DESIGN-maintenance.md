@@ -61,6 +61,11 @@ a per-table data path, so a table scope maps cleanly onto a directory):
 `cleanup_all` / `dry_run` named params. We keep the *semantics* identical but present them as
 table-scoped Trino procedures; see § 5 for the mapping.)
 
+**Scope note:** `remove_orphan_files` / `flush_inlined_data` are table-scoped **today**; a proposed
+optional-arg model widens them to schema-wide / catalog-wide, and `remove_orphan_files` filters
+orphans by DuckLake file-type + `ducklake-` prefix (NOT upstream's parquet-only). Both are the
+**cross-engine contract in § 8** that Trino and Doris must implement identically.
+
 ## 3. First procedure: `remove_orphan_files` (this PR)
 
 Chosen first because it is **the safest and addresses the named operational hole**:
@@ -89,10 +94,17 @@ CALL system.remove_orphan_files(schema_name, table_name, retention_threshold => 
      two-phase pipeline — not orphans).
    Lance datasets are *directories*; their member files all live under the dataset dir, so a
    registered lance/vortex/duckdb/parquet path is matched by prefix as well as exact path.
-3. `fileSystem.listFiles(tableDataPath)` recursively; for each `FileEntry`:
-   - skip if its location is in (or under a directory in) the known set,
-   - skip if `now - entry.lastModified() < retention_threshold` (the grace period),
-   - otherwise it is a deletable orphan.
+ 3. `fileSystem.listFiles(tableDataPath)` recursively; for each `FileEntry`:
+    - skip if its location is in (or under a directory in) the known set,
+    - skip if it is **not recognizably DuckLake residue** — i.e. NOT a `ducklake-`-prefixed
+      data/delete file with a managed extension (`.parquet`/`.puffin`/`.db`/`.vortex`) and NOT a
+      member of a `ducklake-<uuid>.lance` dataset directory. This gate (`isDucklakeManagedResidue`)
+      is what stops the sweep from deleting foreign files a user parked under the data path
+      (`_SUCCESS`, `foo.txt`, `.crc`, their own non-`ducklake-` parquet). It is broader than upstream
+      DuckDB's `.parquet`-only filter (we also reclaim our `.db`/`.vortex`/`.puffin`/`.lance`
+      residue, which DuckDB leaves behind) but is NOT a blind unreferenced-file diff.
+    - skip if `now - entry.lastModified() < retention_threshold` (the grace period),
+    - otherwise it is a deletable orphan.
 4. `dry_run = true`: log the orphans (count + paths) at INFO, delete nothing.
    `dry_run = false`: `fileSystem.deleteFiles(orphans)` and log the count.
 
@@ -210,9 +222,81 @@ cross-snapshot-merged files — including the partial-emitting variant — is re
 - A file we leave in `ducklake_files_scheduled_for_deletion` is drained equally well by DuckLake's
   own `ducklake_cleanup_old_files`, and vice-versa — the schedule table is the shared contract.
 - `remove_orphan_files` ≙ upstream `ducklake_delete_orphaned_files` (filesystem set minus known
-  set, mtime-gated). We scope to one table's data path rather than globbing the whole catalog data
-  path; running it per table covers the same ground and fits Trino's procedure ergonomics.
+  set, mtime-gated) — but with a **different file-type filter**, see § 8.
 - The grace period is the single safety knob shared across engines; keep the default conservative.
+
+## 8. Orphan file-type scoping + catalog-wide scope — CROSS-ENGINE CONTRACT (Trino + Doris)
+
+**This section is the shared spec both the Trino and Doris connectors must implement identically.**
+Trino status is noted per item; Doris should match the same semantics.
+
+### 8.1 Orphan file-type filter — delete only OUR residue, not foreign files  ✅ SHIPPED (Trino)
+
+Upstream `ducklake_delete_orphaned_files` filters candidates to **`.parquet` only** — its query is
+`SELECT filename FROM read_blob({DATA_PATH} || '**') WHERE suffix(filename, '.parquet') AND NOT
+EXISTS (known_files …)` (`vendor/ducklake/src/storage/ducklake_metadata_manager.cpp:4837`). So it
+*abandons* every non-parquet residue: `.db`, `.vortex`, `.puffin`, `.lance` dirs — and it would also
+ignore a stray `.txt` because it isn't `.parquet`.
+
+**Our rule (both engines):** a listed file (already: unreferenced by the catalog + older than the
+retention grace period) is deletable **iff it is recognizably DuckLake-written residue** — never a
+blind unreferenced-file diff. Two shapes:
+
+1. **Single data/delete file** — basename starts with the `ducklake-` prefix **AND** ends with a
+   managed extension: `.parquet` / `.puffin` / `.db` / `.vortex`.
+2. **Lance dataset member** — Lance is a *directory* `ducklake-<uuid>.lance/` whose internal files
+   do NOT carry the prefix; recognize them by the enclosing `ducklake-<uuid>.lance` directory
+   anywhere in the path.
+
+Everything else is left untouched: `_SUCCESS`, `foo.txt`, `.crc` sidecars, a user's own
+non-`ducklake-` `data.parquet`, logs, etc. This is deliberately **broader than upstream** (we
+reclaim our own `.db`/`.vortex`/`.puffin`/`.lance` residue that DuckDB leaves behind) and
+**narrower than a raw diff** (we never touch files we didn't write).
+
+Why the prefix check is safe + cross-engine: **every** DuckLake writer names files `ducklake-…`:
+- data files — this connector `ducklake-<uuid>.parquet|.db|.vortex`, lance dir
+  `ducklake-<uuid>.lance`; DuckDB `ducklake-<uuidv7>.parquet`.
+- delete files — this connector `ducklake-delete-<uuid>.parquet|.puffin`; DuckDB
+  `ducklake-<uuid>-delete.parquet|.puffin`.
+
+Both arrangements start with `ducklake-`, so the prefix filter recognizes residue from *either*
+engine (a Trino-aborted or DuckDB-aborted write). Trino impl:
+`DucklakeRemoveOrphanFilesProcedure.isDucklakeManagedResidue` (pinned by
+`TestDucklakeRemoveOrphanFiles.leavesForeignAndNonDucklakeFilesAlone`).
+
+### 8.2 Scope tiers via optional args — table / schema / catalog-wide  ⏳ PROPOSED
+
+Convention: **the more args you supply, the narrower the scope** — matching `expire_snapshots` /
+`cleanup_old_files`, which are already arg-less catalog-wide. Make `schema_name` / `table_name`
+optional (nullable):
+
+```
+remove_orphan_files()                    -- catalog-wide
+remove_orphan_files('sales')             -- schema-wide
+remove_orphan_files('sales', 'orders')   -- one table    (✅ shipped today)
+
+flush_inlined_data()                     -- all tables with inlined rows
+flush_inlined_data('sales', 'orders')    -- one table     (✅ shipped today)
+```
+
+Validation: `table_name` given ⇒ `schema_name` required. Prefer this over a `scope => 'catalog'`
+flag (redundant with arg presence) or new procedure names (surface bloat).
+
+### 8.3 Catalog-wide `remove_orphan_files` — the implementation nuance  ⏳ PROPOSED
+
+Catalog-wide is **not** just "loop over tables" — residue from a **failed `CREATE TABLE`** (the
+motivating case) has no live table to enumerate. A correct catalog-wide sweep must:
+
+1. Build a **global known-set** = union of *every* table's referenced files (all snapshots +
+   `ducklake_files_scheduled_for_deletion`), and
+2. List the **warehouse `DATA_PATH` root** (not per-table subdirs), then delete § 8.1-recognized
+   residue older than the retention grace not in the global set.
+
+This mirrors upstream's whole-`DATA_PATH` model, catches the aborted-CREATE files, and also removes
+the overlapping-custom-`location` cross-table-deletion risk (a global known-set can't mistake one
+table's live files for another's orphans). Keep the min-retention floor + `dry_run` — they matter
+*more* at catalog scope. `flush_inlined_data` catalog-wide is the easy one (iterate tables with
+inlined rows; non-destructive; no global-set subtlety).
 
 ## 7. `optimize` / `rewrite_data_files` — non-partial v1 (the compaction WRITER) — ✅ DONE
 

@@ -153,6 +153,42 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
     }
 
+    @Test
+    fun leavesForeignAndNonDucklakeFilesAlone() {
+        val table = "test_schema.orphan_foreign"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
+            val dir = tableDataDir()
+            val realBefore = parquetFiles(dir).toSet()
+
+            // Foreign files a user could legitimately park under the data path — all aged past the
+            // retention floor. NONE should be deleted: no ducklake- prefix (or not a managed type).
+            val foreign = listOf(
+                plantOrphan(dir, "_SUCCESS", ageDays = 30),
+                plantOrphan(dir, "foo.txt", ageDays = 30),
+                plantOrphan(dir, "notes.md", ageDays = 30),
+                // A user's OWN parquet that we didn't write (no ducklake- prefix) — must survive.
+                plantOrphan(dir, "my-export.parquet", ageDays = 30),
+                // Right prefix but not a managed data/delete extension — must survive.
+                plantOrphan(dir, "ducklake-scratch.log", ageDays = 30),
+            )
+            // A genuine aged ducklake- orphan as a positive control (proves the sweep ran).
+            val realOrphan = plantOrphan(dir, "ducklake-orphan-aged.parquet", ageDays = 30)
+
+            computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
+                    + "table_name => 'orphan_foreign', retention_threshold => '7d', dry_run => false)")
+
+            assertThat(Files.exists(realOrphan)).`as`("aged ducklake- orphan deleted (control)").isFalse()
+            for (f in foreign) {
+                assertThat(Files.exists(f)).`as`("foreign file must be left alone: ${f.fileName}").isTrue()
+            }
+            assertThat(parquetFiles(dir)).`as`("real data files untouched").containsAll(realBefore)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
     // ci-unstable: passes locally but the emptied orphan .lance dataset DIRECTORY is not removed on
     // the CI runner's filesystem (remove_orphan_files reports success, dir survives) — cause not yet
     // reproduced/understood. Method-level tag so the rest of this class still gates CI. Excluded via
@@ -164,8 +200,10 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
             val dir = tableDataDir()
-            // An orphaned lance-style dataset directory (from a failed commit): member files only.
-            val dataset = dir.resolve("ghost-${java.util.UUID.randomUUID()}.lance")
+            // An orphaned lance dataset directory (from a failed commit): member files only. Named
+            // as this connector writes lance datasets (ducklake-<uuid>.lance) — the orphan scope
+            // recognizes it by that enclosing dataset-dir name, not by the member files.
+            val dataset = dir.resolve("ducklake-${java.util.UUID.randomUUID()}.lance")
             val part = dataset.resolve("data").resolve("part-0.lance")
             val manifest = dataset.resolve("_versions").resolve("1.manifest")
             Files.createDirectories(part.parent)
