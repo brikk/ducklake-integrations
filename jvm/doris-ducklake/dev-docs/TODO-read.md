@@ -388,32 +388,26 @@ genuinely wired upstream (unlike plugin DELETE).
   bytecode-major check is the one that actually caught us before.)
   - Idea parked: promote to a shared `build-logic` convention plugin so every module that
     deploys into the JDK-17 FE gets it (currently only `:ducklake-catalog`).
-- [x] **PG driver Metaspace leak — FIXED (2026-07-08).** Upstream `34bd8eede75` fixed the same bug
-  class in `fe-connector-jdbc`. Our shape: `DuckLakeConnector` registers the Postgres `Driver` into
-  the static process-lived `DriverManager`, pinning the plugin classloader. **Severity (verified
-  against fe-core):** the plugin classloader is built ONCE at FE startup
-  (`ConnectorPluginManager.loadPlugins`) and REUSED across catalogs (NOT rebuilt per catalog like
-  upstream's `JdbcConnectorClient`), so ordinary CREATE→DROP→CREATE churn does **not** leak; the only
-  leak is on **plugin reload/unload** (one classloader pinned per reload) — low-frequency but real.
-  - **Fix:** `registerPostgresDriver()` loads the PG driver via `Class.forName(..., initialize=true)`
-    (its static init self-registers the instance — verified by disassembly:
-    `org.postgresql.Driver` has `static { register(); }`), then — **only when running under an
-    isolated plugin classloader** ([runsUnderIsolatedPluginClassLoader]) — captures that exact
-    registered instance into `ourPostgresDriver`. `close()` deregisters precisely it, releasing the
-    classloader pin. No redundant/second registration.
-  - **Why the isolation guard is correct (not a test-skip crutch):** the registered driver is ours to
-    clean up ONLY when our classloader is dedicated to the plugin (production). In a **shared**
-    classloader (unit tests on a flat classpath, where `org.postgresql.Driver` is the process-wide
-    ServiceLoader driver on the *same* loader as us) that instance is used by everyone else, and there
-    is no leak to fix anyway (a shared loader is never reclaimed on unload). So arming cleanup only on
-    an isolated loader is exactly the condition under which the leak exists — a TRUE guard, not
-    "skip in tests". Verified: full `:doris-ducklake:test` + detekt + checkAbi GREEN;
-    `DuckLakeConnectorDriverDeregisterTest` confirms open/close cycles leave the shared PG driver
-    usable (the shared-loader/no-op-cleanup path).
-  - **Follow-up (nice-to-have, not required):** the truly correct layer would be fe-core deregistering
-    plugin-loaded drivers when `DirectoryPluginRuntimeManager.closeClassLoader` tears down a plugin
-    loader on reload — a small upstream ask. Our connector-side fix is sufficient and self-contained
-    for now.
+ - [~] **PG driver Metaspace leak — deregister-on-close REVERTED (2026-07-10); leak deferred to a
+   proper unload hook.** History: `701780c` added deregister-on-`close()` (capturing the PG `Driver`
+   instance, guarded to an isolated plugin classloader). **The compose smoke caught it as a real
+   regression:** `DROP CATALOG dl` → `Connector.close()` → deregistered the PG driver; the recreated
+   `CREATE CATALOG dl` then failed with `SQLException: No suitable driver`. Root cause: the plugin
+   classloader is built ONCE at FE startup and **SHARED across every DuckLake catalog**, so the driver
+   registration is shared — and `close()` fires on catalog DROP/re-init (frequent), NOT on plugin
+   unload. Deregistering there breaks every other live catalog + all future `CREATE CATALOG` (the PG
+   static initializer only self-registers once per classloader, so it can't re-register after a
+   deregister). The fix was in the wrong place: `close()` ≠ plugin unload.
+   - **Reverted to:** `buildCatalog()` just `Class.forName("org.postgresql.Driver")` (register once
+     per shared loader; stays for the process). `close()` closes only the Hikari pool. No deregister.
+     Removed the held-instance/isolation-guard machinery + `DuckLakeConnectorDriverDeregisterTest`.
+   - **Net:** ordinary CREATE→DROP→CREATE churn does NOT leak (shared long-lived loader → registration
+     is process-lifetime by nature) AND now works. The ONLY real leak is on **plugin reload/unload**
+     (fe-core tears the loader down but the still-registered driver pins it) — low severity (rare admin
+     action). Correct fix is a **plugin-unload hook** (fe-core deregistering plugin-loaded drivers in
+     `DirectoryPluginRuntimeManager.closeClassLoader`), an upstream ask — NOT `Connector.close()`.
+     Deferred. **Lesson: verified live via the smoke, which the headless tests structurally could not
+     (single shared classloader, multi-catalog lifecycle only exists in a real FE).**
  - [x] **HikariCP version skew — NO CONFLICT, no action (verified 2026-07-08).** FE ships
    `HikariCP-6.0.0`, our plugin bundles `7.0.2`. No clash: `com.zaxxer.hikari.*` is NOT in the
    plugin classloader's parent-first set (`ChildFirstClassLoader.DEFAULT_PARENT_FIRST_PACKAGES` =

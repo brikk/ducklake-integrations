@@ -201,7 +201,9 @@ docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
         's3.region'         = 'us-east-1',
         's3.access_key'     = 'minioadmin',
         's3.secret_key'     = 'minioadmin',
-        'use_path_style'    = 'true'
+        'use_path_style'    = 'true',
+        -- Tiny floor so §13's maintenance-GC smoke can use short retentions (prod default 7d).
+        'maintenance.min-retention' = '1s'
     );
     SHOW CATALOGS;
     SHOW DATABASES FROM dl;
@@ -289,7 +291,9 @@ docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
         's3.region'         = 'us-east-1',
         's3.access_key'     = 'minioadmin',
         's3.secret_key'     = 'minioadmin',
-        'use_path_style'    = 'true'
+        'use_path_style'    = 'true',
+        -- Tiny floor so §13's maintenance-GC smoke can use short retentions (prod default 7d).
+        'maintenance.min-retention' = '1s'
     );
 " 2>&1 | tail -5
 
@@ -704,5 +708,75 @@ else
         SWITCH dl; DROP TABLE IF EXISTS tpch.doris_ctas;
     " 2>&1 | tail -1
 fi
+
+# 13. Maintenance-GC procedures (F6 / getProcedureOps): expire_snapshots,
+# cleanup_old_files, remove_orphan_files. These are the only procedures whose
+# FE-side S3 blob ops (S3WarehouseBlobStore.list/delete) can't be proven by the
+# headless unit tests — this section validates them against real MinIO.
+#
+# The catalog sets maintenance.min-retention=1s (§7) so the tiny retentions below
+# clear the floor; a `sleep 2` ages fixtures past the 1s grace window.
+#
+# The assertive test is remove_orphan_files: drop a recognizable ducklake- orphan
+# plus foreign files (_SUCCESS, a user's own data.parquet) at the warehouse root,
+# sweep scope=catalog, and prove ONLY the ducklake- orphan is deleted (exercises
+# list + delete end-to-end). expire_snapshots (metadata) + cleanup_old_files (the
+# schedule→delete drain) are run for real too, proving routing + the shared delete
+# path; they operate on whatever churn the earlier steps produced.
+GC_ANCHOR="dl.tpch.orders" # any real table; expire/cleanup ignore it, orphan uses it only for the handle
+mc_run() { # run an mc script against the substrate MinIO
+    docker run --rm --network trino-ducklake-dev_default --entrypoint sh minio/mc:latest -c "
+        mc alias set m http://trino-ducklake-minio:9000 minioadmin minioadmin >/dev/null 2>&1
+        $1"
+}
+
+log "§13 expire_snapshots (catalog-wide, retention_threshold=1s)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    ALTER TABLE ${GC_ANCHOR} EXECUTE expire_snapshots('retention_threshold' = '1s');
+" 2>&1 | tail -5 || log "§13 expire_snapshots: non-zero exit (see above)"
+
+log "§13 cleanup_old_files (drains the schedule → deletes blobs, retention_threshold=1s)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    ALTER TABLE ${GC_ANCHOR} EXECUTE cleanup_old_files('retention_threshold' = '1s');
+" 2>&1 | tail -5 || log "§13 cleanup_old_files: non-zero exit (see above)"
+
+log "§13 remove_orphan_files: seeding orphan + foreign files at the warehouse root…"
+# ducklake-*.parquet = recognizable residue (delete); _SUCCESS + data.parquet = foreign (keep).
+mc_run "
+    printf 'orphan'  | mc pipe m/ducklake/data/ducklake-smoke-orphan.parquet
+    printf 'success' | mc pipe m/ducklake/data/_SUCCESS
+    printf 'foreign' | mc pipe m/ducklake/data/data.parquet
+" 2>&1 | tail -2
+sleep 2 # age the fixtures past the 1s retention grace
+
+log "§13 remove_orphan_files (scope=catalog, retention_threshold=1s)…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    ALTER TABLE ${GC_ANCHOR} EXECUTE remove_orphan_files('scope' = 'catalog', 'retention_threshold' = '1s');
+" 2>&1 | tail -5 || log "§13 remove_orphan_files: non-zero exit (see above)"
+
+log "§13 verifying storage state (orphan gone; foreign files survive)…"
+# `mc stat` returns non-zero when the object is absent (unlike `mc ls <object>`, which exits 0 on a
+# missing exact path — that idiom gave false "present" results).
+exists() { mc_run "mc stat m/ducklake/data/$1 >/dev/null 2>&1 && echo present || echo gone" 2>/dev/null | tail -1; }
+orphan_state=$(exists ducklake-smoke-orphan.parquet)
+success_state=$(exists _SUCCESS)
+foreign_state=$(exists data.parquet)
+log "  ducklake-smoke-orphan.parquet: ${orphan_state}  |  _SUCCESS: ${success_state}  |  data.parquet: ${foreign_state}"
+
+# doris_w's referenced files must be untouched — read it back (if W2 created it).
+gc_readback=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+    SELECT COUNT(*) FROM dl.tpch.doris_w;
+" 2>/dev/null | tail -1)
+
+if [[ "${orphan_state}" == "gone" && "${success_state}" == "present" && "${foreign_state}" == "present" ]]; then
+    log "§13 GC GREEN: remove_orphan_files deleted the ducklake- orphan and left foreign files intact"
+    log "  (real MinIO list+delete via S3WarehouseBlobStore); referenced doris_w still reads ${gc_readback:-?} rows. 🎉"
+else
+    log "§13 GC CHECK: orphan=${orphan_state} (exp gone), _SUCCESS=${success_state} (exp present), data.parquet=${foreign_state} (exp present) — inspect above."
+fi
+
+# Clean up the foreign test fixtures we parked at the warehouse root (the orphan is deleted by the
+# procedure when GREEN). Best-effort; never fails the smoke.
+mc_run "mc rm m/ducklake/data/_SUCCESS m/ducklake/data/data.parquet m/ducklake/data/ducklake-smoke-orphan.parquet 2>/dev/null; true" >/dev/null 2>&1 || true
 
 log "Smoke complete."
