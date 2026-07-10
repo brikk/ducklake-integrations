@@ -391,11 +391,31 @@ Two FE-route gaps surfaced and were fixed to get here (both in
     only by source; add a `smoke.sh` step (INSERT → expire_snapshots → cleanup_old_files → assert the
     blob is gone from MinIO + the schedule row cleared). The compose warehouse is already MinIO/S3,
     so this is straightforward.
-- [ ] **`remove_orphan_files`** — the riskier sibling: LIST warehouse blobs, diff against
-  `catalog.listReferencedFilePaths`, delete orphans older than a grace period. Needs a LIST op added
-  to `WarehouseBlobStore` (`S3WarehouseBlobStore` via MinIO `listObjects`), a conservative dry-run
-  default, and care (it deletes files never in the catalog). Trino template
-  (`DucklakeRemoveOrphanFilesProcedure`).
+- [x] **`remove_orphan_files` — DONE (2026-07-10).** Deletes objects under a table's data path that
+  NO catalog row references (residue of aborted commits) and are older than a grace period
+  (`retention_threshold`, floored by `maintenance.min-retention`). Storage-only (orphans have no
+  catalog rows → no catalog mutation). `dry_run` reports without deleting.
+  - **Table-scoped** (unlike catalog-wide expire/cleanup): diffs ONE table's storage against
+    `catalog.listReferencedFilePaths(tableId)`, so it uses the `ALTER TABLE <t> EXECUTE` handle and
+    REQUIRES one (rejects a null handle). Resolves the table data path via `DuckLakePathResolver`.
+  - **Storage:** added `WarehouseBlobStore.list(prefix)` + `BlobEntry(uri, lastModified)`;
+    `S3WarehouseBlobStore.list` uses MinIO `listObjects(recursive)` with a **directory-safe prefix**
+    (`dirUri` appends `/` so `.../t` can't bleed into a sibling `.../t2/…` — the classic
+    orphan-detection foot-gun). List failures are FATAL (fail loud — a partial listing must never be
+    read as "no live files" → data loss).
+  - **Data-loss-critical selection isolated + exhaustively tested:** `OrphanFiles.find` (pure) keeps
+    a file unless it is (a) not in the known set (exact URI identity), (b) not under a known dataset
+    directory prefix, AND (c) older than the cutoff. Known set + listing are resolved to the SAME
+    absolute-URI form so a live file can't be misclassified.
+  - **Grace period is the core safety net:** a file a still-in-flight (possibly cross-engine) writer
+    produced but hasn't committed looks like an orphan; the floor (default 7d) protects it.
+  - **Tests:** +10 headless (`DuckLakeRemoveOrphanFilesTest`) — `OrphanFiles.find` (known/dir-prefix/
+    age/exact-match), orchestration (null-handle reject, delete-orphans-keep-referenced, dry-run,
+    retention floor before listing, PARTITION reject), and `dirUri` normalization. Full suite +
+    detekt + checkAbi green; result schema shared with cleanup (`fileGcResult`).
+  - **⚠️ NOT yet compose-smoked** — real MinIO list+delete verified by source only; add a `smoke.sh`
+    step (write a stray blob under a table dir → remove_orphan_files → assert gone, referenced files
+    untouched). Trino template: `DucklakeRemoveOrphanFilesProcedure`.
 - [ ] **`rewrite_data_files` (compaction) procedure** — the DISTRIBUTED counterpart
   (uses P6's free `ConnectorRewriteDriver` + `planRewrite`/`ConnectorRewriteGroup`).
   Bigger: needs the rewrite sink + partial-compaction back-dating

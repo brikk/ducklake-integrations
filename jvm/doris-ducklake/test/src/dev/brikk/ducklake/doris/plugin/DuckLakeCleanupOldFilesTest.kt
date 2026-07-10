@@ -163,6 +163,8 @@ internal class DuckLakeCleanupOldFilesTest {
             val failed = uris.filter { it in failUris }.associateWith { "simulated failure" }
             return BlobDeleteResult(deleted, failed)
         }
+
+        override fun list(prefixUri: String): List<BlobEntry> = emptyList() // cleanup never lists
     }
 
     /** Recording catalog stub; throwing-proxy for everything the procedure doesn't call. */
