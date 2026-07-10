@@ -75,6 +75,9 @@ internal object DuckDbWriterSupport {
             is VarcharType -> return "VARCHAR"
             UuidType.UUID -> return "UUID"
         }
+        if (DucklakeJsonSupport.isJson(type)) {
+            return "JSON"
+        }
         return toDuckDbComplexSqlType(type, writerLabel)
     }
 

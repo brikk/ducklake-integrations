@@ -151,6 +151,20 @@ class TestDucklakeTypeConverter {
         assertThat(converter.toTrinoType("uint128")).isEqualTo(VarcharType.VARCHAR)
     }
 
+    // ==================== JSON (native Trino JsonType) ====================
+
+    @Test
+    fun testJsonMapsToNativeJsonType() {
+        // DuckLake "json" maps to Trino's native JsonType (io.trino.type.JsonType), not the old
+        // VARCHAR degradation. Resolved via the TypeManager since JsonType is not on the SPI.
+        assertThat(converter.toTrinoType("json")).isEqualTo(io.trino.type.JsonType.JSON)
+    }
+
+    @Test
+    fun testJsonTypeMapsBackToJson() {
+        assertThat(converter.toDucklakeType(io.trino.type.JsonType.JSON)).isEqualTo("json")
+    }
+
     // ==================== Write-path precision (toDucklakeType) ====================
 
     @Test

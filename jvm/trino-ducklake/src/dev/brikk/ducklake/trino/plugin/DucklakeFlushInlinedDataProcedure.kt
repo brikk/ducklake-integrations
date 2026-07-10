@@ -166,7 +166,9 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             columnTypes: List<Type>,
             rows: List<List<Any?>>): DucklakeWriteFragment {
         val columnNames: List<String> = columnHandles.map { it.columnName }
-        val schemaConverter = ParquetSchemaConverter(columnTypes, columnNames, false, false)
+        // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
+        val schemaConverter = ParquetSchemaConverter(
+                columnTypes.map { DucklakeJsonSupport.toParquetWriteType(it) }, columnNames, false, false)
         val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                 columnHandles, allCatalogColumns, schemaConverter.messageType)
 

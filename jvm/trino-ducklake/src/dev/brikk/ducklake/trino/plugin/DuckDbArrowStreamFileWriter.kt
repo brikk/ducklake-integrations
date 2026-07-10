@@ -417,7 +417,8 @@ constructor(
      * types (ARRAY/ROW/MAP) get counts only — DuckDB would happily MIN/MAX them
      * lexicographically, but formatStatValue has no catalog representation for the result. */
     private fun statsMinMaxSupported(type: Type): Boolean =
-        !(type == VARBINARY || type == UuidType.UUID
+        // JSON is not orderable in DuckDB (MIN/MAX errors) — skip stats, like VARBINARY/UUID.
+        !(type == VARBINARY || type == UuidType.UUID || DucklakeJsonSupport.isJson(type)
                 || type is ArrayType || type is RowType || type is MapType)
 
     @Throws(SQLException::class)
@@ -780,6 +781,12 @@ constructor(
                     return ArrowType.Utf8()
                 }
             }
+            // JSON: the table column is created as DuckDB JSON (toDuckDbSqlType); we exchange the
+            // JSON text over Arrow as Utf8 and DuckDB casts it back to JSON on INSERT (same shape
+            // as UUID above).
+            if (DucklakeJsonSupport.isJson(type)) {
+                return ArrowType.Utf8()
+            }
             throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
         }
         private fun closeQuietly(c: AutoCloseable?) {
@@ -963,7 +970,24 @@ constructor(
                 is MapType -> {
                     DuckDbComplexVectorWriter.populateMapVector(vector as MapVector, type, block, rowCount)
                 }
-                else -> throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
+                else -> {
+                    // JSON rides as Utf8 over the Arrow exchange (see toArrowType), same as VARCHAR.
+                    if (DucklakeJsonSupport.isJson(type)) {
+                        val v = vector as VarCharVector
+                        v.allocateNew(rowCount)
+                        for (i in 0 until rowCount) {
+                            if (block.isNull(i)) {
+                                v.setNull(i)
+                            }
+                            else {
+                                v.setSafe(i, type.getSlice(block, i).toStringUtf8().toByteArray(StandardCharsets.UTF_8))
+                            }
+                        }
+                    }
+                    else {
+                        throw TrinoException(NOT_SUPPORTED, "DuckDB Arrow-stream writer does not yet support type: $type")
+                    }
+                }
             }
         }
 

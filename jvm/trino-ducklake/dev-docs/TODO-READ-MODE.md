@@ -209,12 +209,34 @@ data file's scan.
   bounding-box stats use). Wants integration with a Trino spatial library. See
   [archive/DUCKLAKE_1_0_IMPACT.md § Geometry Type](archive/DUCKLAKE_1_0_IMPACT.md#4-geometry-type).
 
-- [ ] **Other degraded types — `json` / `interval` / `uint128`** (driving-list F8 sweep). Data
-  round-trips today as its degraded representation (json/interval → VARCHAR, uint128 → VARCHAR);
-  what's missing is *typed* support. Plausible upgrades: JSON accessor/path functions over the
-  VARCHAR (pairs with the Variant item above), and native INTERVAL once Trino's mapping is worth
-  it. `uint128` is likely a permanent VARCHAR trade (no native Trino unsigned-128 type). All are
-  engine-level type work, not connector plumbing — do only when a workload pushes.
+- [x] **`json` → native Trino `JsonType`** (driving-list F8). Landed 2026-07-10. DuckLake `json`
+  now maps to Trino's native `io.trino.type.JsonType` (was degraded VARCHAR), so JSON path/accessor
+  functions (`json_extract`, `json_format`, `->`, etc.) work directly on the column. Since JsonType
+  lives in `trino-main` (not the connector's `trino-spi` compile classpath), it is resolved via
+  `TypeManager.getType(TypeSignature("json"))` and recognized elsewhere by its signature base string
+  through `DucklakeJsonSupport.isJson` (the same reflective-bridge pattern `DuckDbExpressionTranslator`
+  uses for `LikePattern`). Physically JSON is a UTF-8 string — exactly how DuckDB stores it — so:
+  - **Parquet read**: reconstructs `JsonType` and reads the BINARY column via Trino's
+    `AbstractVariableWidthType` reader path (no change needed there).
+  - **Parquet write**: `DucklakeJsonSupport.toParquetWriteType` swaps JSON→VARCHAR for the physical
+    write schema (the `ParquetSchemaConverter`/`ParquetWriters` library rejects `JsonType`); the
+    catalog type stays `json` (top-level only; nested JSON inside ARRAY/MAP/ROW fails loud for v1).
+  - **DuckDB-format write + read**: `toDuckDbSqlType` → `JSON`; the appender / arrow-stream writers
+    exchange the JSON text as Utf8; the Arrow→page converter wraps it back into a JSON Slice.
+  - **Stats**: JSON is excluded from min/max (not orderable in DuckDB) — value/null counts only.
+  Pinned by `TestDucklakeCrossEngineJson` (parquet round-trip Trino↔DuckDB, duckdb-format appender +
+  arrow-stream Trino round-trip, DuckDB-writes/Trino-reads with a `json_extract_scalar` assertion)
+  and `TestDucklakeTypeConverter` (json↔JsonType mapping). Nested JSON, JSON identity-partitioning,
+  and JSON predicate pushdown are follow-ups (all currently safe: fail-loud or don't-push).
+- [ ] **`interval` / `uint128` — permanent VARCHAR trade** (driving-list F8). Both stay degraded to
+  VARCHAR; data round-trips as text. Neither has a lossless native Trino mapping:
+  - `uint128` (DuckDB UHUGEINT, `0..3.4e38`) exceeds every Trino type — `DECIMAL(38,0)` tops out
+    below it and there is no unsigned-128 type. Permanent.
+  - `interval`: DuckDB's `INTERVAL` carries months **and** days **and** micros in one value; Trino
+    splits intervals into `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` and cannot hold all
+    three components at once, so there is no lossless mapping (the corpus replay already declines
+    DuckDB interval literals as a dialect gap — `TrinoReplayEngine.accepts`). Revisit only if Trino
+    grows a combined interval type or a workload accepts a lossy/guarded split.
 
 ## Virtual Columns
 

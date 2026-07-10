@@ -253,9 +253,24 @@ internal class DucklakeArrowToPageConverter(columnTypes: List<Type>) {
                     writeComplexColumn(type, vector, builder, rowCount)
                 }
                 else -> {
-                    throw TrinoException(
-                            NOT_SUPPORTED,
-                            "DuckDB-format reader does not yet support type: $type")
+                    // JSON: DuckDB exports JSON columns as Utf8 (the JSON text) over Arrow, same
+                    // as VARCHAR. Wrap the bytes into the JSON Slice via the SPI writeSlice.
+                    if (DucklakeJsonSupport.isJson(type)) {
+                        val v = vector as VarCharVector
+                        for (i in 0 until rowCount) {
+                            if (v.isNull(i)) {
+                                builder.appendNull()
+                            }
+                            else {
+                                type.writeSlice(builder, Slices.wrappedBuffer(*v.get(i)))
+                            }
+                        }
+                    }
+                    else {
+                        throw TrinoException(
+                                NOT_SUPPORTED,
+                                "DuckDB-format reader does not yet support type: $type")
+                    }
                 }
             }
             return builder.build()

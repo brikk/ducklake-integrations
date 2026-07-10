@@ -57,17 +57,19 @@ import java.util.OptionalLong
 
 /**
  * Implements `CALL <catalog>.system.add_files(...)` — registers
- * pre-existing data files (parquet, lance dataset directories, vortex files) as DuckLake
- * data files of a table without rewriting. Mirrors upstream's `ducklake_add_data_files`
- * table function for parquet; lance/vortex are registered opaquely (no footer/stats/name
- * map) and read through the FileScan paths.
+ * pre-existing data files (parquet, lance dataset directories, vortex files, duckdb
+ * `.db` files) as DuckLake data files of a table without rewriting. Mirrors upstream's
+ * `ducklake_add_data_files` table function for parquet; lance/vortex/duckdb are registered
+ * opaquely (no footer/stats/name map) and read through the FileScan / ATTACH paths.
  *
  * v1 contract:
  *
  *   - Each entry in `FILES` is a concrete file path (no glob expansion yet).
  *   - Parquet column names must match the table column names case-insensitively;
- *       reordering is permitted. Lance/vortex reads project by name, so their column
- *       names must match the table's exactly (as DuckDB renders them).
+ *       reordering is permitted. Lance/vortex/duckdb reads project by name, so their column
+ *       names must match the table's exactly (as DuckDB renders them). A duckdb `.db` file
+ *       must hold the data in a single `main.t` table (the shape the connector's own duckdb
+ *       writer emits and the read path ATTACHes).
  *   - Hive partitioning supports the IDENTITY transform only (path segments of the
  *       form `key=value/`). Files for tables with transform-based partition
  *       specs (year / month / etc.) are out of scope for v1.
@@ -87,6 +89,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         private val pathResolver: DucklakePathResolver,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val executorFactory: DucklakeDuckDbExecutorFactory,
+        private val duckDbS3Config: DuckDbS3Config,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -105,9 +108,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         // Optional format selector. Default 'parquet' keeps every existing call
                         // unchanged. 'lance' registers an externally-written Lance dataset
                         // *directory* (read via the FileScan __lance_scan path); 'vortex' a
-                        // single externally-written .vortex file (FileScan read_vortex path) —
-                        // both without a parquet footer, see buildLanceFragment /
-                        // buildVortexFragment.
+                        // single externally-written .vortex file (FileScan read_vortex path);
+                        // 'duckdb' a single externally-written .db file (read via the ATTACH
+                        // path, reading its main.t table) — all three without a parquet footer,
+                        // see buildLanceFragment / buildVortexFragment / buildDuckDbFragment.
                         Procedure.Argument("FILE_FORMAT", VARCHAR, false, "parquet")),
                 ADD_FILES.bindTo(this),
                 true)
@@ -133,13 +137,13 @@ class DucklakeAddFilesProcedure @Inject constructor(
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
         }
         val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
-        if (format != FORMAT_PARQUET
-                && format != DucklakeSessionProperties.FORMAT_LANCE
-                && format != DucklakeSessionProperties.FORMAT_VORTEX) {
+        // add_files supports every format the connector can write (parquet + the three opaque
+        // scan/attach formats), which is exactly SUPPORTED_DATA_FILE_FORMATS.
+        if (format !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "add_files file_format must be 'parquet', 'lance', or 'vortex', got '$format'")
+                    "add_files file_format must be 'parquet', 'lance', 'vortex', or 'duckdb', got '$format'")
         }
-        // lance + vortex register opaquely (no footer, no stats, no name map). Partitioned
+        // lance + vortex + duckdb register opaquely (no footer, no stats, no name map). Partitioned
         // registration is supported via hive_partitioning => true (the partition values are read
         // from the key=value/ path layout, identity transforms only — see the gate below).
         val isScanRegistered: Boolean = format != FORMAT_PARQUET
@@ -204,6 +208,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 DucklakeSessionProperties.FORMAT_VORTEX -> {
                     val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
                     buildVortexFragment(fileSystem, filePath, pv, pid)
+                }
+                DucklakeSessionProperties.FORMAT_DUCKDB -> {
+                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
+                    buildDuckDbFragment(fileSystem, filePath, pv, pid)
                 }
                 else -> buildFragment(
                         fileSystem,
@@ -453,6 +461,45 @@ class DucklakeAddFilesProcedure @Inject constructor(
     }
 
     /**
+     * Builds a fragment for an externally-written single DuckDB `.db` file. Like lance/vortex the
+     * registration is opaque: no footer, no column stats, no name map — the read path ATTACHes the
+     * file READ_ONLY and projects its `main.t` table by column name, so the file's column names must
+     * match the table's (as DuckDB renders them). record_count is sourced by scanning the file's
+     * `main.t` through the same DuckDB executor the read path uses (ATTACH, not a FileScan table
+     * function); file_size comes from the filesystem (duckdb is a single file, like vortex).
+     */
+    private fun buildDuckDbFragment(
+            fileSystem: TrinoFileSystem,
+            filePath: String,
+            partitionValues: Map<Int, String?>,
+            partitionId: Long?,
+    ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
+        val fileSize: Long
+        try {
+            val inputFile: TrinoInputFile = fileSystem.newInputFile(Location.of(filePath))
+            if (!inputFile.exists()) {
+                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
+            }
+            fileSize = inputFile.length()
+        }
+        catch (e: IOException) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
+        }
+        val recordCount: Long = countRowsViaAttach(filePath)
+        return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
+                filePath,
+                /* pathIsRelative */ false,
+                DucklakeSessionProperties.FORMAT_DUCKDB,
+                fileSize,
+                /* footerSize */ 0L,
+                recordCount,
+                /* columnStats */ emptyList(),
+                partitionValues,
+                partitionId,
+                /* nameMap */ null)
+    }
+
+    /**
      * Counts the rows of a scan-registered dataset (lance directory / vortex file) by scanning
      * it through the DuckDB executor (the same engine the read path uses), reusing the FileScan
      * source. Doubles as a readability/existence check — a missing or unreadable dataset
@@ -463,7 +510,33 @@ class DucklakeAddFilesProcedure @Inject constructor(
         // process AWS_* env, never DuckDB secrets (HANDOFF O1), so the httpfs + secret setup the
         // config triggers is pure overhead (and a concurrent-CREATE race on the Quack engine).
         val target = DuckDbAttachTarget.FileScan(url, scanFunction, extension, null)
-        // Empty projection → `SELECT 1 FROM <scan>(...)`, one row per dataset row.
+        return countRows(target, extension, url)
+    }
+
+    /**
+     * Counts the rows of a scan-registered DuckDB `.db` file by ATTACHing it READ_ONLY through the
+     * DuckDB executor (the same engine + attach target the read path uses) and scanning its
+     * `main.t` table. Local paths attach directly; `s3://` URLs attach through httpfs with the
+     * catalog's `ducklake_s3` secret (unlike lance/vortex, a `.db` ATTACH reads through DuckDB's own
+     * filesystem layer, which DOES honor the secret — see [DuckDbAttachTarget]). Doubles as a
+     * readability/existence check.
+     */
+    private fun countRowsViaAttach(url: String): Long {
+        val target: DuckDbAttachTarget = if (isS3(url)) {
+            DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config)
+        }
+        else {
+            DuckDbAttachTarget.LocalPath(java.nio.file.Path.of(stripFileScheme(url)))
+        }
+        return countRows(target, DucklakeSessionProperties.FORMAT_DUCKDB, url)
+    }
+
+    /**
+     * Scans [target] through the DuckDB executor with an empty projection (`SELECT 1 FROM
+     * <source>`, one row per file/dataset row) and returns the total row count. Shared by the
+     * FileScan (lance/vortex) and ATTACH (duckdb) registration paths.
+     */
+    private fun countRows(target: DuckDbAttachTarget, label: String, url: String): Long {
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
                 target, emptyList<DucklakeColumnHandle>(), TupleDomain.all<DucklakeColumnHandle>())
         var count = 0L
@@ -476,10 +549,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
             }
         }
         catch (e: SQLException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $extension dataset: $url", e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $label dataset: $url", e)
         }
         catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $extension dataset: $url", e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $label dataset: $url", e)
         }
         return count
     }
@@ -550,6 +623,14 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         private fun aggregateRecordCount(thriftMetadata: org.apache.parquet.format.FileMetaData): Long =
             thriftMetadata.getNum_rows()
+
+        /** Mirrors the read path's s3-scheme detection (DucklakePageSourceProvider). */
+        private fun isS3(url: String): Boolean =
+            url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
+
+        /** Strip a `file://` scheme so DuckDB's ATTACH gets a bare local path. */
+        private fun stripFileScheme(url: String): String =
+            if (url.startsWith("file://")) url.removePrefix("file://") else url
 
         // Post-script size: 4-byte LE FileMetaData length + 4-byte magic. Mirrors Trino's
         // MetadataReader.POST_SCRIPT_SIZE.

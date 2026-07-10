@@ -380,7 +380,8 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             val names = columnHandles.map { it.columnName } +
                     (if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()) +
                     listOf(DucklakePageSink.LINEAGE_COLUMN_NAME)
-            val types = columnTypes +
+            // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
+            val types = columnTypes.map { DucklakeJsonSupport.toParquetWriteType(it) } +
                     (if (partial) listOf<Type>(BIGINT) else emptyList()) +
                     listOf<Type>(BIGINT)
             val schemaConverter = ParquetSchemaConverter(types, names, false, false)
