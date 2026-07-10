@@ -353,6 +353,14 @@ generate new parquet files and need a similar metadata-insert path.
 
 ## `add_files` Follow-Ups
 
+- [ ] **`.db` (duckdb-format) file registration** (from the driving-list F2 sweep; niche but
+  symmetric with parquet/lance/vortex). `add_files` currently accepts `parquet`, `lance`, and
+  `vortex` (`FILE_FORMAT` arg); registering a pre-existing DuckDB `.db` data file as a
+  `file_format='duckdb'` catalog entry is the missing symmetric case. Same opaque shape as the
+  lance/vortex registration (no footer/stats/name-map; record_count via a scan through the
+  DuckDB-engine executor; file_size from the filesystem). Low priority — external `.db` files
+  are an unusual source. See `DucklakeAddFilesProcedure` (the `FORMAT_LANCE`/`FORMAT_VORTEX`
+  branches are the template).
 - [ ] **`allow_missing` recurses into STRUCT fields.** Upstream's
   `add_files_missing_fields.test` exercises a `ROW(a INT)` parquet against a
   `ROW(a INT, b INT)` table column. Our `DucklakeAddFilesNameMapper.mapStruct`
@@ -518,8 +526,8 @@ under the new default.
   generations × parquet+duckdb, REAL→DOUBLE, TIMESTAMP→TIMESTAMPTZ, no-op, narrowing/incompatible
   rejected), `TestDuckDbSelectSqlBuilder` (CAST rendering); `alter` corpus dir green. README flipped.
 - [x] `ALTER TABLE ADD/DROP FIELD` (nested struct field manipulation) — DONE (parquet self-heals;
-  non-parquet via per-file struct_pack reshaping; e2e on duckdb + vortex). See § F9/nested in
-  TODO-jayson-special-list.md and DESIGN-nested-field-evolution.md.
+  non-parquet via per-file struct_pack reshaping; e2e on duckdb + vortex). See § F1 in the archived
+  driving list (archive/TODO-jayson-special-list-COMPLETED-2026-07.md) and DESIGN-nested-field-evolution.md.
 
 ## `default_value_dialect = 'trino'` for User-Defined DEFAULTs
 

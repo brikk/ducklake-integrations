@@ -209,6 +209,13 @@ data file's scan.
   bounding-box stats use). Wants integration with a Trino spatial library. See
   [archive/DUCKLAKE_1_0_IMPACT.md § Geometry Type](archive/DUCKLAKE_1_0_IMPACT.md#4-geometry-type).
 
+- [ ] **Other degraded types — `json` / `interval` / `uint128`** (driving-list F8 sweep). Data
+  round-trips today as its degraded representation (json/interval → VARCHAR, uint128 → VARCHAR);
+  what's missing is *typed* support. Plausible upgrades: JSON accessor/path functions over the
+  VARCHAR (pairs with the Variant item above), and native INTERVAL once Trino's mapping is worth
+  it. `uint128` is likely a permanent VARCHAR trade (no native Trino unsigned-128 type). All are
+  engine-level type work, not connector plumbing — do only when a workload pushes.
+
 ## Virtual Columns
 
 - [x] **DuckDB-equivalent virtual columns** — DONE. Ships **five** `$`-prefixed
@@ -232,7 +239,7 @@ data file's scan.
   inline file-position deletes). Update pairing (`update_preimage`/`update_postimage`) works via the
   embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers — DuckDB
   AND, since 2026-07-06 (F7), Trino's own UPDATE/MERGE under `write_row_lineage = true` (default off
-  keeps the delete+insert shape). See README § Change Feed and TODO-jayson-special-list.md § F9.
+  keeps the delete+insert shape). See README § Change Feed and archive/TODO-jayson-special-list-COMPLETED-2026-07.md § F9.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
 
