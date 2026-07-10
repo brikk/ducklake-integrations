@@ -2,12 +2,8 @@ package dev.brikk.ducklake.doris.plugin
 
 import java.lang.reflect.Proxy
 import java.time.Instant
-import java.util.UUID
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
-import dev.brikk.ducklake.catalog.DucklakeFilePathRef
-import dev.brikk.ducklake.catalog.DucklakeSchema
-import dev.brikk.ducklake.catalog.DucklakeTable
 
 import org.apache.doris.connector.api.DorisConnectorException
 import org.assertj.core.api.Assertions.assertThat
@@ -90,43 +86,57 @@ internal class DuckLakeRemoveOrphanFilesTest {
         assertThat(OrphanFiles.find(listed, known, now, parquet)).containsExactly("s3://b/t/data.parquet")
     }
 
-    // ---- orchestration ----
+    // ---- orchestration (catalog-wide, models upstream) ----
 
     @Test
-    fun requiresATargetTableHandle() {
-        val ops = DuckLakeProcedureOps(FakeCatalog(), warehouseProps()) { FakeBlobStore() }
-        assertThatThrownBy {
-            ops.execute(null, null, "remove_orphan_files", mapOf("retention_threshold" to "30d"), null, emptyList())
-        }.isInstanceOf(DorisConnectorException::class.java).hasMessageContaining("requires a target table")
-    }
-
-    @Test
-    fun deletesOrphansUnderTableDataPathAndKeepsReferencedFiles() {
+    fun deletesWarehouseOrphansAndKeepsReferencedFiles() {
+        // Catalog-wide: globs the warehouse root, diffs against listAllReferencedFilePaths (all
+        // tables), keeps referenced + young + foreign files, deletes only old unreferenced .parquet.
         val cat = FakeCatalog(
-            referenced = listOf(DucklakeFilePathRef("live.parquet", true)), // relative → under table path
+            allReferenced = listOf(
+                "s3://ducklake/data/sales/orders/live.parquet",
+                "s3://ducklake/data/analytics/events/live2.parquet",
+            ),
         )
         val store = FakeBlobStore(
             listing = listOf(
                 BlobEntry("s3://ducklake/data/sales/orders/live.parquet", old), // referenced → keep
+                BlobEntry("s3://ducklake/data/analytics/events/live2.parquet", old), // referenced (other table) → keep
                 BlobEntry("s3://ducklake/data/sales/orders/orphan.parquet", old), // orphan → delete
+                BlobEntry("s3://ducklake/data/dropped_table/residue.parquet", old), // dropped-table orphan → delete
                 BlobEntry("s3://ducklake/data/sales/orders/fresh.parquet", recent), // young → keep
-                BlobEntry("s3://ducklake/data/sales/orders/_SUCCESS", old), // foreign → keep (not .parquet)
+                BlobEntry("s3://ducklake/data/sales/orders/_SUCCESS", old), // foreign → keep
             ),
         )
         val res = ops(cat, store).execute(
             null, handle(), "remove_orphan_files", mapOf("retention_threshold" to "7d"), null, emptyList(),
         )
 
-        assertThat(store.listedPrefix).isEqualTo("s3://ducklake/data/sales/orders")
-        assertThat(store.deleteRequested).containsExactly("s3://ducklake/data/sales/orders/orphan.parquet")
+        // Globs the warehouse ROOT (not a single table dir) — catches cross-table + dropped-table orphans.
+        assertThat(store.listedPrefix).isEqualTo("s3://ducklake/data")
+        assertThat(store.deleteRequested).containsExactlyInAnyOrder(
+            "s3://ducklake/data/sales/orders/orphan.parquet",
+            "s3://ducklake/data/dropped_table/residue.parquet",
+        )
         assertThat(res.resultSchema.map { it.name })
             .containsExactly("dry_run", "retention_threshold", "deleted_file_count", "failed_file_count")
+        assertThat(res.rows.single()).containsExactly("false", "7d", "2", "0")
+    }
+
+    @Test
+    fun ignoresTheNamedTableAndWorksWithoutAHandle() {
+        // Catalog-wide like expire_snapshots: the ALTER TABLE <t> handle is not used for selection,
+        // and a null handle works too.
+        val cat = FakeCatalog(allReferenced = emptyList())
+        val store = FakeBlobStore(listing = listOf(BlobEntry("s3://ducklake/data/x/o.parquet", old)))
+        val res = ops(cat, store).execute(null, null, "remove_orphan_files", mapOf("retention_threshold" to "7d"), null, emptyList())
+        assertThat(store.listedPrefix).isEqualTo("s3://ducklake/data")
         assertThat(res.rows.single()).containsExactly("false", "7d", "1", "0")
     }
 
     @Test
     fun dryRunListsButDeletesNothing() {
-        val cat = FakeCatalog(referenced = emptyList())
+        val cat = FakeCatalog(allReferenced = emptyList())
         val store = FakeBlobStore(listing = listOf(BlobEntry("s3://ducklake/data/sales/orders/o.parquet", old)))
         val res = ops(cat, store).execute(
             null, handle(), "remove_orphan_files",
@@ -191,19 +201,13 @@ internal class DuckLakeRemoveOrphanFilesTest {
     }
 
     private class FakeCatalog(
-        private val referenced: List<DucklakeFilePathRef> = emptyList(),
+        private val allReferenced: List<String> = emptyList(),
     ) : DucklakeCatalog by throwingDelegate() {
 
-        // null → DuckLakePathResolver falls back to the configured storage.warehouse.
-        override fun getDataPath(): String? = null
+        // The connector globs this root; must match the resolved known paths' base.
+        override fun getDataPath(): String = "s3://ducklake/data"
 
-        override fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema =
-            DucklakeSchema(10L, UUID.randomUUID(), 1L, null, schemaName, "sales", pathIsRelative = true)
-
-        override fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable =
-            DucklakeTable(20L, UUID.randomUUID(), 1L, null, 10L, tableName, "orders", pathIsRelative = true)
-
-        override fun listReferencedFilePaths(tableId: Long): List<DucklakeFilePathRef> = referenced
+        override fun listAllReferencedFilePaths(): List<String> = allReferenced
 
         companion object {
             private fun throwingDelegate(): DucklakeCatalog =

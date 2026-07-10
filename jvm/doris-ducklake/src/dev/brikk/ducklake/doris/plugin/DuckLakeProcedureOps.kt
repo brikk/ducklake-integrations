@@ -27,10 +27,10 @@ import org.apache.doris.connector.api.pushdown.ConnectorPredicate
  *  - `cleanup_old_files` — the second phase: physically deletes the blobs `expire_snapshots`
  *    scheduled, once older than a grace period, via the connector's own S3 client
  *    ([WarehouseBlobStore]); then drops their schedule rows.
- *  - `remove_orphan_files` — deletes objects under a table's data path that NO catalog row
- *    references (residue of aborted commits) and are older than a grace period. Unlike the
- *    catalog-wide procedures above, this one is inherently **table-scoped** (it diffs one table's
- *    storage against `listReferencedFilePaths`), so it uses the named table and REQUIRES a handle.
+ *  - `remove_orphan_files` — deletes `.parquet` objects under the warehouse that NO catalog row
+ *    references (residue of aborted commits) and are older than a grace period. Catalog-wide
+ *    (models upstream `ducklake_delete_orphaned_files`): globs the whole `data_path`, diffs against
+ *    `listAllReferencedFilePaths` (all tables), and — like the two above — IGNORES the named table.
  *
  * ## Why one ops class per connector (not one per procedure)
  * Doris routes every `ALTER TABLE EXECUTE` for a connector through this one
@@ -82,11 +82,6 @@ internal class DuckLakeProcedureOps(
     // provider returning a fake [WarehouseBlobStore]; prod defaults to the S3/MinIO client.
     private val blobStore: WarehouseBlobStore by lazy {
         (blobStoreProvider ?: { S3WarehouseBlobStore.fromProperties(properties) })()
-    }
-
-    // Resolves a table's data path (for remove_orphan_files). Lazy so only that procedure builds it.
-    private val pathResolver: DuckLakePathResolver by lazy {
-        DuckLakePathResolver(catalog, properties[DuckLakeConnectorProperties.STORAGE_WAREHOUSE])
     }
 
     override fun getSupportedProcedures(): List<String> =
@@ -260,24 +255,23 @@ internal class DuckLakeProcedureOps(
     }
 
     /**
-     * Core body of `remove_orphan_files` — deletes objects under the target table's data path that
-     * NO catalog row references (residue of aborted commits) and that are older than the grace
-     * period (`retention_threshold`, floored by [minRetentionMillis] to protect files an in-flight,
-     * possibly cross-engine, writer produced but hasn't yet committed). Storage-only: touches no
-     * catalog state (orphans have no rows). `dry_run = true` reports without deleting.
+     * Core body of `remove_orphan_files` — deletes objects under the warehouse that NO catalog row
+     * references (residue of aborted commits) and are older than the grace period
+     * (`retention_threshold`, floored by [minRetentionMillis] to protect files an in-flight, possibly
+     * cross-engine, writer produced but hasn't yet committed). Storage-only: touches no catalog
+     * state (orphans have no rows). `dry_run = true` reports without deleting.
      *
-     * Table-scoped (unlike expire_snapshots/cleanup_old_files): it diffs ONE table's storage against
-     * [DucklakeCatalog.listReferencedFilePaths], so a target table handle is REQUIRED. The known set
-     * and the storage listing are resolved to the SAME absolute-URI form so the diff can't
-     * misclassify a live file as an orphan (see [OrphanFiles.find]).
+     * **Catalog-wide, modeling upstream `ducklake_delete_orphaned_files` exactly:** it recursively
+     * lists the whole `data_path` and diffs against [DucklakeCatalog.listAllReferencedFilePaths] (all
+     * tables' files + scheduled), keeping only `.parquet` candidates ([OrphanFiles.find]) — the same
+     * scheme, root, and extension filter (`suffix(filename, '.parquet')`) as upstream. Like
+     * expire_snapshots/cleanup_old_files this is catalog-wide, so the named table (Doris routes us
+     * one via `ALTER TABLE <t> EXECUTE`) is IGNORED for selection; the result says so. The known set
+     * and listing are resolved to the SAME absolute-URI form so the diff can't misclassify a live
+     * file as an orphan.
      */
     @Suppress("ThrowsCount")
-    private fun removeOrphanFiles(table: ConnectorTableHandle?, properties: Map<String, String>): ConnectorProcedureResult {
-        val handle = table?.asDuckLakeHandle<DuckLakeTableHandle>()
-            ?: throw DorisConnectorException(
-                "remove_orphan_files requires a target table; run " +
-                    "ALTER TABLE <table> EXECUTE remove_orphan_files(...)",
-            )
+    private fun removeOrphanFiles(@Suppress("UNUSED_PARAMETER") table: ConnectorTableHandle?, properties: Map<String, String>): ConnectorProcedureResult {
         val args = CaseInsensitiveArgs(properties)
         val dryRun = parseBoolean(args[DRY_RUN], DRY_RUN)
         val retention = args[RETENTION_THRESHOLD]?.takeIf { it.isNotBlank() } ?: DEFAULT_RETENTION
@@ -289,21 +283,16 @@ internal class DuckLakeProcedureOps(
                     "(${minRetentionMillis}ms); refusing to delete recently-written files.",
             )
         }
+        val root = warehouseRoot
+            ?: throw DorisConnectorException(
+                "remove_orphan_files needs a warehouse root ('storage.warehouse') to scan for orphans",
+            )
 
-        val schema = catalog.getSchema(handle.database, handle.snapshotId)
-            ?: throw DorisConnectorException("schema not found: ${handle.database}")
-        val tbl = catalog.getTable(handle.database, handle.table, handle.snapshotId)
-            ?: throw DorisConnectorException("table not found: ${handle.database}.${handle.table}")
-        val tableDataPath = pathResolver.resolveTableDataPath(schema, tbl)
-
-        // Known set: every path the catalog references for this table (live + end-snapshotted +
-        // already-scheduled), resolved to the same absolute-URI form the listing produces.
-        val knownPaths = catalog.listReferencedFilePaths(handle.tableId)
-            .map { pathResolver.resolveFilePath(it.path, it.pathIsRelative, tableDataPath) }
-            .toSet()
-
+        // Known set: every path the catalog references across ALL tables (live + end-snapshotted +
+        // scheduled), resolved to the same absolute-URI form the listing produces.
+        val knownPaths = catalog.listAllReferencedFilePaths().toSet()
         val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
-        val orphans = OrphanFiles.find(blobStore.list(tableDataPath), knownPaths, cutoff, ORPHAN_CANDIDATE_SUFFIXES)
+        val orphans = OrphanFiles.find(blobStore.list(root), knownPaths, cutoff, ORPHAN_CANDIDATE_SUFFIXES)
 
         if (orphans.isEmpty() || dryRun) {
             return fileGcResult(dryRun, retention, deleted = 0, wouldDelete = orphans.size, failed = 0)
