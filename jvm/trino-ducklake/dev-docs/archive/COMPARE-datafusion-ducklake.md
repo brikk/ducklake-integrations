@@ -91,8 +91,8 @@ is per-file (spec-correct), but the doc phrasing is loose. Read source before co
    equivalent in `TestDucklakeCrossEngineCompatibility`, but the idea of reusing DuckDB's
    own test suite as an interop oracle is clever and cheap.
 4. **Per-backend metadata-provider unit tests** (postgres / mysql / sqlite), each ~1k LOC
-   against Testcontainers. We only exercise Postgres today; when the SQLite/DuckDB
-   backends land, this is the pattern.
+   against Testcontainers. We exercise Postgres + MySQL (`TestJdbcDucklakeCatalogOnMySqlSmoke`,
+   landed 2026-07) + local DuckDB; SQLite/Turso follow this same pattern when they land.
 5. **Encryption tests** (Parquet Modular Encryption). Our README does not list PME yet; if
    we target S3-enterprise deployments it's worth tracking.
 6. **`src/maintenance.rs` as a reference for our M8 work.** Their `ExpireCriteria` /
@@ -137,7 +137,7 @@ is per-file (spec-correct), but the doc phrasing is loose. Read source before co
 | Integration test LOC | ~13,425 across 26 files (was ~9,231 / 19 in v0.2.1; +4,200 from multicatalog + maintenance + row-id suites this refresh) | ~10,215 across 24 files |
 | Unit tests in source files | 11 files with `#[cfg(test)]` | N/A — separated out |
 | sqllogictest suite | 248 `.test` files / 46 categories / ~18,740 LOC / ~3,699 cases (replays a subset of the upstream `ducklake/` corpus, which has 422 files / 49 categories / ~7,274 cases) | none |
-| Per-backend metadata-provider tests | Postgres / MySQL / SQLite, Testcontainers | Postgres only (Testcontainers) |
+| Per-backend metadata-provider tests | Postgres / MySQL / SQLite, Testcontainers | Postgres + MySQL (Testcontainers) + local-DuckDB; SQLite/Turso planned _(update 2026-07: MySQL backend landed — `TestJdbcDucklakeCatalogOnMySqlSmoke`; cross-engine MySQL deferred on an upstream DuckDB `mysql`-extension bug, see [../CATALOG-BACKENDS.md](../CATALOG-BACKENDS.md))_ |
 | Concurrent-access tests | `concurrent_tests.rs` + `concurrent_write_tests.rs` (~877 LOC) | Implicit via Trino runtime; no dedicated suite |
 | Write/DDL lifecycle | Insert path + DROP TABLE + multicatalog Phase 1 + three official maintenance ops | Full (DDL, DML, MERGE — ~2.4k LOC across 3 classes). M8 maintenance ops still open. |
 | Partition pruning tests | None | `TestDucklakePartitionPruning` + matcher tests (~1.4k LOC) |

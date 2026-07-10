@@ -180,7 +180,11 @@ the catalog data we read.
   backend.
 - The DuckDB extension name changed from `postgresql` to `postgres`.
 
-No connector impact: we already use PostgreSQL exclusively.
+No connector impact at the time. _(Update 2026-07: the Trino connector now also
+supports a MySQL 8+ catalog for its own read/write — `TestJdbcDucklakeCatalogOnMySqlSmoke`.
+Upstream's MySQL de-recommendation above is exactly why cross-engine MySQL is deferred:
+DuckDB's `mysql` extension is neglected/unstable reading a DuckLake-on-MySQL catalog. PostgreSQL
+remains the recommendation for catalogs shared with DuckDB. See ../CATALOG-BACKENDS.md.)_
 
 ## Spec Clarifications (No Code Impact)
 

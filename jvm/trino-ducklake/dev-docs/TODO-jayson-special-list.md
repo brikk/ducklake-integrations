@@ -62,5 +62,5 @@ writes, **F6** all maintenance ops, **F7** puffin-delete writes + **sorted write
 | F8 degraded types (json / interval / uint128) + F10 Variant | [TODO-READ-MODE.md § Type-Support Improvements](TODO-READ-MODE.md#type-support-improvements) |
 | F11 lance/vortex extension canaries (ROW/MAP/FTS gates, `record_count` scan cost) | [TODO-uhoh.md § Upstream lance/vortex extension canaries](TODO-uhoh.md) |
 | F11 pushdown Step 5 (DuckDB-exclusive fns), arithmetic/concat/position translation | [TODO-pushdown-duckdb.md](TODO-pushdown-duckdb.md) |
-| F11 SQLite catalog backend, vortex scalar+ type audit | TODO-WRITE-MODE / TODO-vortex |
+| F11 catalog backends (MySQL landed; SQLite/Turso deferred), vortex scalar+ type audit | [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md) / TODO-vortex |
 | F11 cross-dialect view transpilation, `rowid`/`snapshot_id` virtual aliases | [TODO-READ-MODE.md](TODO-READ-MODE.md) |

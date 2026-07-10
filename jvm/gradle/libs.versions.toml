@@ -11,6 +11,7 @@ junit = "5.12.2"
 assertj = "3.27.3"
 trino = "481"
 postgres = "42.7.8"
+mysql = "9.7.0"
 minio = "8.6.0"
 hikari = "7.0.2"
 containers = "2.0.5"
@@ -43,9 +44,11 @@ lance-core = { module = "org.lance:lance-core", version.ref = "lance-core" }
 trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
 trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }
 postgres-jdbc = { module = "org.postgresql:postgresql", version.ref = "postgres" }
+mysql-jdbc = { module = "com.mysql:mysql-connector-j", version.ref = "mysql" }
 
 testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "containers" }
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "containers" }
+testcontainers-mysql = { module = "org.testcontainers:testcontainers-mysql", version.ref = "containers" }
 
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 jackson-jdk8 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jdk8", version.ref = "jackson" }

@@ -864,7 +864,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.DATA_FILE_ID, f.fileId)
             .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH, absolute)
             .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.PATH_IS_RELATIVE, false)
-            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.SCHEDULE_START, DSL.currentOffsetDateTime()))
+            .set(DUCKLAKE_FILES_SCHEDULED_FOR_DELETION.SCHEDULE_START, nowUtc()))
         return true
     }
 
@@ -1995,12 +1995,23 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    /**
+     * The commit wall-clock, bound as an `OffsetDateTime` value (a `?` parameter). We deliberately
+     * do NOT use `DSL.currentOffsetDateTime()`: jOOQ renders that as `cast(current_timestamp() as
+     * timestamp with time zone)`, which PostgreSQL/DuckDB accept but MySQL rejects (no `TIMESTAMP
+     * WITH TIME ZONE`). Binding the app-clock UTC value is dialect-portable and semantically fine
+     * for a catalog commit timestamp — the connector owns the commit, and the driver coerces the
+     * value to whatever physical type the backend gave `snapshot_time` (timestamptz on PG, text/
+     * timestamp on DuckDB/MySQL).
+     */
+    private fun nowUtc(): OffsetDateTime = OffsetDateTime.now(ZoneOffset.UTC)
+
     private fun insertSnapshotRow(ctx: DSLContext, tx: DucklakeWriteTransaction, operationDescription: String) {
         val snap = DUCKLAKE_SNAPSHOT.`as`("snap")
         try {
             ctx.insertInto(snap)
                 .set(snap.SNAPSHOT_ID, tx.getNewSnapshotId())
-                .set(snap.SNAPSHOT_TIME, DSL.currentOffsetDateTime())
+                .set(snap.SNAPSHOT_TIME, nowUtc())
                 .set(snap.SCHEMA_VERSION, tx.getSchemaVersion())
                 .set(snap.NEXT_CATALOG_ID, tx.getFinalNextCatalogId())
                 .set(snap.NEXT_FILE_ID, tx.getFinalNextFileId())
@@ -3977,17 +3988,28 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         private fun isDuplicateKeyViolation(exception: SQLException): Boolean {
             val sqlState = exception.sqlState
             if ("23505" == sqlState) {
+                // PostgreSQL unique_violation.
                 return true
             }
 
             if (exception.errorCode == 19) {
+                // SQLite SQLITE_CONSTRAINT.
+                return true
+            }
+
+            // MySQL/MariaDB duplicate entry. SQLState 23000 is the generic integrity-constraint
+            // class (too broad on its own), so pair it with vendor error code 1062 (ER_DUP_ENTRY).
+            // This gates the optimistic-concurrency retry: a PK collision on ducklake_snapshot
+            // must be recognized as a retryable conflict, not a raw failure.
+            if ("23000" == sqlState && exception.errorCode == 1062) {
                 return true
             }
 
             val message = exception.message
             return message != null && (
                 message.contains("duplicate key value violates unique constraint") ||
-                    message.contains("UNIQUE constraint failed")
+                    message.contains("UNIQUE constraint failed") ||
+                    message.contains("Duplicate entry")
                 )
         }
 
