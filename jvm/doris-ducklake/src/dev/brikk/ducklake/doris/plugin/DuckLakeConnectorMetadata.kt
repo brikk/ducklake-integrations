@@ -108,7 +108,7 @@ internal class DuckLakeConnectorMetadata(
                     DuckLakeTypeMapping.fromDucklakeType(col.columnType, enableTimestampTz),
                     "", // comment — DuckLake doesn't track per-column comments yet
                     col.nullsAllowed,
-                    null, // defaultValue — DuckLake doesn't surface column defaults yet
+                    backfillDefaultValue(col),
                 ),
             )
         }
@@ -119,6 +119,27 @@ internal class DuckLakeConnectorMetadata(
             emptyMap<String, String>(),
         )
     }
+
+    /**
+     * The `initial-default` a column projects for rows in data files written BEFORE the column
+     * existed (`ALTER TABLE ADD COLUMN b INT DEFAULT 42` → old rows read 42, not NULL). DuckLake
+     * stores it in `ducklake_column.initial_default` ([DucklakeColumn.initialDefault]).
+     *
+     * Doris backfills this end-to-end for plugin catalogs: the value rides `ConnectorColumn`'s
+     * `defaultValue` → `Column.defaultValue` → (via `FileQueryScanNode`/`FileScanNode.setDefaultValueExprs`,
+     * inherited by `PluginDrivenScanNode`) → `TFileScanSlotInfo.default_value_expr` → the BE parquet
+     * reader's missing-column fill. The FE re-parses `Column.getDefaultValueSql()` (numeric raw, else
+     * single-quoted) and **casts to the column type**, EAGERLY at scan-plan time — so an unparseable
+     * value would break the whole table scan, not just that column.
+     *
+     * We therefore surface the default **only for scalar types** whose DuckLake `initial_default`
+     * string is a safe Doris literal, and skip complex (`list`/`struct`/`map`) and binary/spatial
+     * (`blob`/`uuid`/`geometry`) types — DuckDB renders those in forms Doris can't cast. A skipped
+     * default degrades to NULL on old rows (today's behavior; not a new correctness bug), whereas a
+     * mis-parsed one could break reads — same conservative stance as the write-side stat decode.
+     * `null` initial_default (the common case: column present since creation) → no default.
+     */
+
 
     override fun getColumnHandles(
         session: ConnectorSession?,
@@ -472,5 +493,38 @@ internal class DuckLakeConnectorMetadata(
         }
         top.sortWith { a, b -> a.columnOrder.compareTo(b.columnOrder) }
         return top
+    }
+
+    internal companion object {
+        // DuckLake scalar types whose value maps to a Doris VARBINARY/bytes column: a stored
+        // initial_default for these has no Doris-castable literal form, so we don't surface it as a
+        // backfill default (see [backfillDefaultValue]).
+        private val BINARY_SPATIAL_TYPES = setOf("blob", "uuid", "geometry", "geography")
+
+        /**
+         * The `initial-default` value a column projects for rows in data files written BEFORE the
+         * column existed, or `null` for no backfill default. Pure: takes the DuckLake column's
+         * `initial_default` string ([DucklakeColumn.initialDefault]) and its type; surfaces the raw
+         * value only for scalar types (see [isBackfillDefaultSafe]) so the FE's eager
+         * parse-and-cast of `Column.getDefaultValueSql()` at scan-plan time can't break the whole
+         * table scan on an uncastable complex/binary rendering. `null` initial_default → `null`.
+         */
+        internal fun backfillDefaultValue(col: DucklakeColumn): String? {
+            val raw = col.initialDefault ?: return null
+            return if (isBackfillDefaultSafe(col.columnType)) raw else null
+        }
+
+        /**
+         * Whether a DuckLake type's stored `initial_default` is a safe Doris literal to surface as a
+         * backfill default. Scalars yes; complex (`list`/`struct`/`map`) and binary/spatial
+         * (`blob`/`uuid`/`geometry`/`geography`) no — DuckDB renders those in forms Doris can't cast.
+         */
+        internal fun isBackfillDefaultSafe(ducklakeType: String): Boolean {
+            val t = ducklakeType.trim().lowercase()
+            if (t.startsWith("list<") || t.startsWith("struct<") || t.startsWith("map<")) {
+                return false // complex types: no castable literal rendering
+            }
+            return t !in BINARY_SPATIAL_TYPES
+        }
     }
 }

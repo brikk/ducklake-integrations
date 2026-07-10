@@ -89,16 +89,30 @@ a loud documented-gap error at plan time (`failOnLiveInlinedState`).
     can't express per-file maps. Needs per-range schema info in the SPI (or a
     BE per-file name→field-id hook) — see the friction log entry
     "Schema dictionary is scan-node-level; can't express per-FILE column mapping".
-- [ ] **Column DEFAULT values** (corpus `issues/issue_1135`). `ALTER TABLE
-  ADD COLUMN b INT DEFAULT 42` must backfill rows written before the column
-  existed with the default (`WHERE b = 42` should match old rows). DuckLake
-  stores the default in `ducklake_column`, but our `DuckLakeColumn` doesn't
-  carry it and `getTableSchema` passes `defaultValue = null`, so old rows read
-  NULL. Two parts: (a) catalog surfaces the default (shared module change), and
-  (b) the read path applies it for rows in files predating the column — likely
-  the iceberg "generated/default column" BE seam (check whether the BE backfills
-  a not-in-file column from a default, or if it always NULL-fills). May be
-  partly BE-gated; investigate the iceberg default-column path first.
+ - [x] **Column DEFAULT values — DONE (2026-07-08)** (corpus `issues/issue_1135`:
+   `ALTER TABLE ADD COLUMN b INT DEFAULT 42` → old rows read 42, not NULL).
+   - **(a) catalog** — resolved by the main merge: `DucklakeColumn.initialDefault` now reads
+     `ducklake_column.initial_default` (the Iceberg-style backfill value; distinct from
+     `default_value`, the insert-time default).
+   - **(b) read path — NOT BE-gated for plugin catalogs (verified end-to-end).** The full chain
+     works: `ConnectorColumn.defaultValue` → `ConnectorColumnConverter` → `Column.defaultValue` →
+     `FileScanNode.setDefaultValueExprs` (inherited by `PluginDrivenScanNode` via
+     `FileQueryScanNode`) → thrift `TFileScanSlotInfo.default_value_expr` → BE parquet/orc
+     missing-column fill (`vparquet_group_reader::_fill_missing_columns`). Only the *native*
+     iceberg reader hardcodes `defaultValue=null` — irrelevant to us.
+   - **Fix:** `getTableSchema` now passes `backfillDefaultValue(col)` instead of `null`. Conservative
+     gate (`isBackfillDefaultSafe`, both `internal` on the metadata companion): surface the raw
+     `initial_default` only for scalar types; skip complex (`list`/`struct`/`map`) and binary/spatial
+     (`blob`/`uuid`/`geometry`/`geography`) whose DuckDB value rendering Doris can't cast — the FE
+     parses+casts `getDefaultValueSql()` EAGERLY at scan-plan time, so an uncastable value would break
+     the whole table scan; a skipped default degrades to NULL (today's behavior, not a new bug).
+   - **Tests:** +5 headless (`DuckLakeBackfillDefaultTest`) — scalar pass-through, null→none, complex
+     skip, binary/spatial skip, case/whitespace. Full suite + detekt + checkAbi green.
+   - **⚠️ Live backfill not yet compose-smoked** — the BE fill path is verified by source
+     inspection; a `smoke.sh` step (CREATE → INSERT → flush → ADD COLUMN … DEFAULT →
+     `SELECT count(*) WHERE b = <default>`) would confirm end-to-end. Also unverified: exact
+     value-format round-trip for booleans/dates (DuckDB rendering vs Doris cast) — INT is proven by
+     the corpus case; others rely on Doris's cast. Add the smoke step when convenient.
  - [~] **Serve inlined data rows — Stage 1 (2026-07-07): OFF BY DEFAULT,
    COMPOSE/DEV ONLY.** HARD-BLOCKED unless the catalog property
    `experimental.inlined.reads=true` is set (so it can't be used by accident);
