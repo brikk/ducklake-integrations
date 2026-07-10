@@ -28,6 +28,8 @@ internal class DuckLakeRemoveOrphanFilesTest {
 
     // ---- OrphanFiles.find (pure) ----
 
+    private val parquet = setOf(".parquet")
+
     @Test
     fun findsUnknownOldFilesOnly() {
         val listed = listOf(
@@ -38,30 +40,46 @@ internal class DuckLakeRemoveOrphanFilesTest {
         val known = setOf("s3://b/t/known.parquet")
         val cutoff = now.minusSeconds(7L * 24 * 3600) // 7d grace
 
-        assertThat(OrphanFiles.find(listed, known, cutoff))
+        assertThat(OrphanFiles.find(listed, known, cutoff, parquet))
             .containsExactly("s3://b/t/orphan.parquet") // known kept, too-young kept
     }
 
     @Test
-    fun keepsMembersOfKnownDatasetDirectories() {
-        // A known path that is a directory (lance/vortex dataset): its member files must survive even
-        // though only the directory has a catalog row.
+    fun onlyDeletesSupportedExtensions() {
+        // The critical safety gate: foreign files under the table path are NEVER deleted, even if
+        // unreferenced and old. Only DuckLake data-file extensions (.parquet for Doris) are candidates.
         val listed = listOf(
-            BlobEntry("s3://b/t/ds.lance/part-0.lance", old),
-            BlobEntry("s3://b/t/ds.lance/part-1.lance", old),
+            BlobEntry("s3://b/t/orphan.parquet", old), // orphan → delete
+            BlobEntry("s3://b/t/_SUCCESS", old), // Hive marker → keep
+            BlobEntry("s3://b/t/orphan.parquet.crc", old), // checksum sidecar → keep
+            BlobEntry("s3://b/t/notes.txt", old), // stray file → keep
+            BlobEntry("s3://b/t/data.orc", old), // another engine's format → keep
+            BlobEntry("s3://b/t/delete.puffin", old), // puffin (upstream globs .parquet only) → keep
+        )
+        assertThat(OrphanFiles.find(listed, emptySet(), now, parquet))
+            .containsExactly("s3://b/t/orphan.parquet")
+    }
+
+    @Test
+    fun keepsMembersOfKnownDatasetDirectories() {
+        // A known path that is a directory (dataset dir): its member files must survive even though
+        // only the directory has a catalog row. (Members here are .parquet to isolate the dir guard.)
+        val listed = listOf(
+            BlobEntry("s3://b/t/ds.dir/part-0.parquet", old),
+            BlobEntry("s3://b/t/ds.dir/part-1.parquet", old),
             BlobEntry("s3://b/t/stray.parquet", old),
         )
-        val known = setOf("s3://b/t/ds.lance")
+        val known = setOf("s3://b/t/ds.dir")
         val cutoff = now
 
-        assertThat(OrphanFiles.find(listed, known, cutoff))
+        assertThat(OrphanFiles.find(listed, known, cutoff, parquet))
             .containsExactly("s3://b/t/stray.parquet")
     }
 
     @Test
     fun keepsEverythingWhenAllYoungerThanCutoff() {
         val listed = listOf(BlobEntry("s3://b/t/a.parquet", recent), BlobEntry("s3://b/t/b.parquet", recent))
-        assertThat(OrphanFiles.find(listed, emptySet(), now.minusSeconds(7L * 24 * 3600))).isEmpty()
+        assertThat(OrphanFiles.find(listed, emptySet(), now.minusSeconds(7L * 24 * 3600), parquet)).isEmpty()
     }
 
     @Test
@@ -69,7 +87,7 @@ internal class DuckLakeRemoveOrphanFilesTest {
         // A near-miss (different key) must NOT shield the listed file — exact identity only.
         val listed = listOf(BlobEntry("s3://b/t/data.parquet", old))
         val known = setOf("s3://b/t/data.parquet.bak", "s3://b/t/DATA.parquet")
-        assertThat(OrphanFiles.find(listed, known, now)).containsExactly("s3://b/t/data.parquet")
+        assertThat(OrphanFiles.find(listed, known, now, parquet)).containsExactly("s3://b/t/data.parquet")
     }
 
     // ---- orchestration ----
@@ -92,6 +110,7 @@ internal class DuckLakeRemoveOrphanFilesTest {
                 BlobEntry("s3://ducklake/data/sales/orders/live.parquet", old), // referenced → keep
                 BlobEntry("s3://ducklake/data/sales/orders/orphan.parquet", old), // orphan → delete
                 BlobEntry("s3://ducklake/data/sales/orders/fresh.parquet", recent), // young → keep
+                BlobEntry("s3://ducklake/data/sales/orders/_SUCCESS", old), // foreign → keep (not .parquet)
             ),
         )
         val res = ops(cat, store).execute(

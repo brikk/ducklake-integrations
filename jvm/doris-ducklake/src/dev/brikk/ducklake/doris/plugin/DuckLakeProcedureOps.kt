@@ -303,7 +303,7 @@ internal class DuckLakeProcedureOps(
             .toSet()
 
         val cutoff: Instant = Instant.now().minusMillis(retentionMillis)
-        val orphans = OrphanFiles.find(blobStore.list(tableDataPath), knownPaths, cutoff)
+        val orphans = OrphanFiles.find(blobStore.list(tableDataPath), knownPaths, cutoff, ORPHAN_CANDIDATE_SUFFIXES)
 
         if (orphans.isEmpty() || dryRun) {
             return fileGcResult(dryRun, retention, deleted = 0, wouldDelete = orphans.size, failed = 0)
@@ -391,6 +391,12 @@ internal class DuckLakeProcedureOps(
         internal const val DRY_RUN = "dry_run"
 
         internal const val DEFAULT_RETENTION = "7d"
+
+        // File suffixes remove_orphan_files will consider — mirrors upstream DuckLake's
+        // `suffix(filename, '.parquet')` orphan glob. Doris reads parquet only, so this is the exact
+        // set; foreign files (_SUCCESS, .crc, other engines' files) are never touched. (Our Trino
+        // plugin, which also manages lance/vortex, would extend this set.)
+        internal val ORPHAN_CANDIDATE_SUFFIXES: Set<String> = setOf(".parquet")
 
         private const val CATALOG_WIDE_SCOPE = "catalog-wide (ignores the named table)"
 
