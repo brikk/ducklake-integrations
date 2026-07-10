@@ -146,6 +146,13 @@ val pluginZip by tasks.registering(Zip::class) {
         exclude("fe-extension-spi-*.jar")
         exclude("fe-filesystem-api-*.jar")
         exclude("fe-thrift-*.jar")
+        // Host thrift wins. We rely on the FE's fe-thrift (excluded above → parent/host-provided)
+        // for the generated TIceberg* types; its runtime uses the host's org.apache.thrift classes.
+        // If a future transitive dep pulled libthrift into our runtime it would bundle here and load
+        // child-first, giving our code a different org.apache.thrift.TBase than the host's fe-thrift
+        // classes use → LinkageError across the SPI boundary. libthrift isn't on our classpath today,
+        // so this is defensive (matches fe-connector-iceberg / fe-connector-hive plugin-zip.xml).
+        exclude("libthrift-*.jar")
         exclude("log4j-api-*.jar")
         exclude("log4j-core-*.jar")
         exclude("log4j-slf4j2-impl-*.jar")

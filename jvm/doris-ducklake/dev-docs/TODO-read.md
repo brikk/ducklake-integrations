@@ -400,8 +400,25 @@ genuinely wired upstream (unlike plugin DELETE).
     plugin-loaded drivers when `DirectoryPluginRuntimeManager.closeClassLoader` tears down a plugin
     loader on reload — a small upstream ask. Our connector-side fix is sufficient and self-contained
     for now.
-- [ ] **HikariCP version skew** (FE pins 6.0.0; our plugin zip ships 7.0.2). Verify 6↔7 wire compat or downgrade ours. Sanity-check §3.2.
-- [ ] **Plugin-zip exclusion audit** — once a quarter, diff our `pluginZip` task's exclude list against `fe-connector-iceberg/src/main/assembly/plugin-zip.xml` in the worktree. Drift introduces silent runtime conflicts.
+ - [x] **HikariCP version skew — NO CONFLICT, no action (verified 2026-07-08).** FE ships
+   `HikariCP-6.0.0`, our plugin bundles `7.0.2`. No clash: `com.zaxxer.hikari.*` is NOT in the
+   plugin classloader's parent-first set (`ChildFirstClassLoader.DEFAULT_PARENT_FIRST_PACKAGES` =
+   java./javax./sun./com.sun./org.slf4j./org.apache.logging./org.apache.doris.extension.spi./
+   org.apache.doris.connector.api., plus the connector business prefixes org.apache.doris.connector./
+   org.apache.doris.filesystem.), so HikariCP loads **child-first from our own bundled 7.0.2**,
+   isolated from the FE's 6.0.0. And it never crosses the SPI boundary — HikariCP is purely internal
+   to `JdbcDucklakeCatalog` (our own PG pool); the SPI surface is `org.apache.doris.connector.api.*`
+   only. Two separate class instances in two loaders that never interact ⇒ no wire-compat question.
+ - [x] **Plugin-zip exclusion audit — done (2026-07-08).** Diffed our `pluginZip` excludes against
+   `fe-connector-iceberg/src/main/assembly/plugin-zip.xml`. All host-provided (parent-first) packages
+   that appear on our runtime classpath are excluded (fe-connector-api/spi, fe-extension-spi,
+   fe-filesystem-api, fe-thrift, log4j*, slf4j). Full zip audited: everything else bundled (HikariCP,
+   jOOQ, jackson, kotlin-stdlib, postgresql, r2dbc, uuid-gen, annotations, checker-qual) is genuinely
+   child-first/isolated — nothing host-provided leaks in. **One gap closed:** added a defensive
+   `exclude("libthrift-*.jar")` (iceberg + fe-connector-hive have it). It's a no-op today (libthrift
+   isn't on our classpath), but if a future transitive dep pulled it in it would bundle child-first
+   and give our code a different `org.apache.thrift.TBase` than the host's fe-thrift uses →
+   LinkageError across the SPI boundary. Keep the quarterly re-audit cadence.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
 
 ## Upstream coordination (blockers for production, not for dev)
@@ -411,7 +428,12 @@ hardcoded list should be open / discoverable"):
 
 - [ ] **`SPI_READY_TYPES` whitelist removal**. `CatalogFactory.java` silently ignores any `ConnectorProvider` whose `getType()` is not in `{"jdbc","es","iceberg"}`. Until upstream parameterizes, we carry a one-line patch (`+ "ducklake"`) on every Doris release we deploy. Sanity-check §3.5.
 - [ ] **Option B BE dispatch ask**. 5-line PR to `be/src/exec/scan/file_scanner.cpp:1252` and `:1343` adding `|| table_format_type == "ducklake"` to the iceberg branch. Unblocks honest table-format-string reporting in EXPLAIN/profile. Sanity-check §2.1.
-- [ ] **`connector_plugin_root` discoverability** — surface the hardcoded default at `Config.java:3541` as a commented-out line in `conf/fe.conf`. Zero behavior change.
+- [~] **`connector_plugin_root` discoverability** — done on OUR side (2026-07-08); upstream half
+  still an ask. Surfaced the commented default in `compose/fe.conf` next to the existing
+  `# filesystem_plugin_root` (`# connector_plugin_root = ${DORIS_HOME}/plugins/connector`), noting
+  the compose mount point — a file we own, zero behavior change. The upstream ask remains: Doris's
+  own `conf/fe.conf` should carry the same commented line (Config default is
+  `EnvUtils.getDorisHome() + "/plugins/connector"`); not in our patch (cosmetic, non-essential).
 - [ ] **API-surface churn on PR #62767**. Diff `fe-connector-api/` and `fe-connector-spi/` against the head of PR #62767 whenever we re-pull; flag breaking changes.
 - [ ] **Avoid binlog/CCR table-create paths** in our smoke loop — PR-branch FE removed `TBinlogFormat` etc. from the FE↔BE thrift; stock 4.1.0 BE talks to PR FE fine for everything we care about, but `CREATE TABLE … PROPERTIES("binlog.enable"="true")` would deadlock. Document in the smoke recipe (done) and keep out of regression tests.
 - [ ] **DuckLake delete-file parquet nullability**. Upstream ask to DuckDB/DuckLake: write `file_path` + `pos` as `REQUIRED` in position-delete parquet, matching Iceberg's spec. Or, to the Doris BE: fall through to the nullable column reader path when an Iceberg-spec'd delete-file column reports OPTIONAL. Friction log 2026-05-19 has the full repro.
