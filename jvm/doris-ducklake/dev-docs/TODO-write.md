@@ -370,14 +370,37 @@ Two FE-route gaps surfaced and were fixed to get here (both in
     cross-verify via the catalog's snapshot tables). Also note `expireSnapshots` is
     "not supported on the Quack backend yet" per the catalog contract — irrelevant to
     Doris (we use `JdbcDucklakeCatalog`/Postgres), but keep in mind for any Quack path.
+- [x] **`cleanup_old_files` — DONE (2026-07-10).** The physical-deletion phase pairing with
+  `expire_snapshots`: deletes warehouse blobs in `ducklake_files_scheduled_for_deletion` older than
+  a grace period (`retention_threshold`, floored by `maintenance.min-retention`), then
+  `removeScheduledFileRows` for the files actually deleted (failures keep their row for retry).
+  `dry_run` reports without touching storage. In `DuckLakeProcedureOps` (`SINGLE_CALL`).
+  - **Storage abstraction (the key decision, resolved):** an out-of-tree connector has NO usable
+    Doris `FileSystem` handle and must NOT assume local-drive access (warehouse is blob storage).
+    Sanctioned path = the connector talks to blob storage itself. Introduced `WarehouseBlobStore`
+    (interface) + `S3WarehouseBlobStore` (MinIO client — speaks S3 to MinIO/AWS/OSS/COS) built from
+    the catalog's `s3.*` creds, bundled child-first in the plugin zip. See
+    `dev-docs` storage-abstraction research + `RESEARCH-hive-cross-call.md` for the SPI-context
+    storage helpers surveyed. Non-S3 warehouses (HDFS/Azure) would need their own impl (future).
+  - **Tests:** +11 headless (`DuckLakeCleanupOldFilesTest`) via a fake `WarehouseBlobStore` + fake
+    catalog — delete+row-removal, dry-run, partial-failure keeps rows, empty schedule, retention
+    floor, relative-vs-absolute path resolution, no-root-fails-loud, WHERE/PARTITION reject; plus
+    the S3-URI parser directly. Full suite + detekt + `:ducklake-catalog:checkAbi` green; verified
+    the bundled minio/okhttp are ≤ Java-17 bytecode (safe in the FE).
+  - **⚠️ NOT yet compose-smoked** — the real `S3WarehouseBlobStore` delete against MinIO is verified
+    only by source; add a `smoke.sh` step (INSERT → expire_snapshots → cleanup_old_files → assert the
+    blob is gone from MinIO + the schedule row cleared). The compose warehouse is already MinIO/S3,
+    so this is straightforward.
+- [ ] **`remove_orphan_files`** — the riskier sibling: LIST warehouse blobs, diff against
+  `catalog.listReferencedFilePaths`, delete orphans older than a grace period. Needs a LIST op added
+  to `WarehouseBlobStore` (`S3WarehouseBlobStore` via MinIO `listObjects`), a conservative dry-run
+  default, and care (it deletes files never in the catalog). Trino template
+  (`DucklakeRemoveOrphanFilesProcedure`).
 - [ ] **`rewrite_data_files` (compaction) procedure** — the DISTRIBUTED counterpart
   (uses P6's free `ConnectorRewriteDriver` + `planRewrite`/`ConnectorRewriteGroup`).
   Bigger: needs the rewrite sink + partial-compaction back-dating
   (`rewriteDataFilesPartial`/`PartialMergedFile`). Trino template exists
   (`DucklakeRewriteDataFilesProcedure`).
-- [ ] **`cleanup_old_files` / `remove_orphan_files`** — physical GC of the files
-  `expire_snapshots` scheduled (`listFilesScheduledForDeletion` + `removeScheduledFileRows`)
-  and orphan detection (`listReferencedFilePaths`). Needs BE/FS file deletion wiring.
 
 ## Reference
 

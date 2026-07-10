@@ -85,6 +85,14 @@ dependencies {
 
     implementation(project(":ducklake-catalog"))
 
+    // S3-compatible object-store client for FE-side warehouse blob ops (cleanup_old_files:
+    // physically delete files that expire_snapshots scheduled). The connector talks to blob
+    // storage itself using the vended s3.* credentials — the sanctioned path, since the FE has no
+    // usable Doris FileSystem handle and must NOT assume local-drive access across nodes (the
+    // warehouse is S3/MinIO). Bundled child-first in the plugin zip; MinIO's client also drives
+    // AWS S3 / OSS / COS / OBS. See dev-docs research on the connector storage abstraction.
+    implementation(libs.minio.client)
+
     // Bundled in the plugin zip; FE classloader has no Postgres driver of its own.
     runtimeOnly(libs.postgres.jdbc)
 
