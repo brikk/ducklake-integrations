@@ -64,6 +64,8 @@ dependencies {
     // consumers shouldn't need to redeclare them.
     testFixturesApi(libs.testcontainers.core)
     testFixturesApi(libs.testcontainers.postgresql)
+    // TestingDucklakeMySqlCatalogServer wraps MySQLContainer on its public API.
+    testFixturesApi(libs.testcontainers.mysql)
     // jOOQ types (DSLContext, Condition, Field) appear on the public API of CatalogQueries
     // and CatalogPredicates, so consumers (e.g. trino-ducklake test classpath) get them
     // transitively. Main src declares jOOQ as `implementation`, which doesn't expose it
@@ -72,6 +74,9 @@ dependencies {
 
     testImplementation(libs.duckdb.jdbc)
     testRuntimeOnly(libs.postgres.jdbc)
+    // MySQL Connector/J for the MySQL-backend smoke test. Test-only: the main artifact
+    // never names a driver — HikariCP resolves it from the JDBC URL at runtime.
+    testRuntimeOnly(libs.mysql.jdbc)
 
     // Golden wire-format test (TestJacksonWireFormat) exercises the SAME airlift
     // JsonCodec that the production Trino fragment paths use, so the catalog's own

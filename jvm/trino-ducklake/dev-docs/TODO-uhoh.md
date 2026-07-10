@@ -90,3 +90,16 @@ the gate when an extension bump fixes the underlying issue.
 - [ ] **lance arrow-scan NULL-row morph** — watched.
 - [ ] **`add_files` lance `record_count`** — full dataset scan to count rows; costly on huge
   datasets (perf, not correctness).
+
+## Upstream DuckDB `mysql` extension — cross-engine MySQL blocker (retest on DuckDB bumps)
+
+- [ ] **DuckDB's `mysql` extension crashes/flakes reading a DuckLake-on-MySQL catalog.** Verified
+  2026-07 on DuckDB 1.5.4 (latest): clean single-shot round-trips fail 5/5 with `Server has gone
+  away` / `Got packets out of order`, and it SIGSEGVs the JVM at `ssl3_write_bytes` inside
+  `mysql_scanner.duckdb_extension`. Reproduced on MySQL 8.0 + 8.4, with/without `ssl_mode=disabled`.
+  DuckLake's MySQL metadata backend itself is fine (a one-shot `ATTACH` reliably bootstraps the
+  schema), and OUR connector reads/writes MySQL directly via JDBC (unaffected, shipped + tested —
+  see [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md)). But cross-engine (DuckDB reading a MySQL-backed
+  catalog) is DEFERRED until this stabilizes. Trip-wire: re-run the standalone MySQL probe on DuckDB
+  version bumps; when green, wire MySQL into the cross-engine fixtures. **TODO: file upstream at
+  duckdb/ducklake** (sibling to the data-file `file_format` dispatch gap, duckdb/ducklake#1289).

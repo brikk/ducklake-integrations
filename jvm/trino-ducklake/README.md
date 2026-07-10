@@ -1,11 +1,13 @@
 # Trino DuckLake Connector — Feature Support
 
 Connector for the [DuckLake](https://ducklake.select) open table format (spec v1.0).
-Supports PostgreSQL (shared, multi-process) and a local DuckDB `.db` file
-(single-process; ideal for dev, local interactive use, and single-node Trino
-deployments) as catalog metadata backends. SQLite, and a remote-DuckDB backend
+Supports PostgreSQL and MySQL 8+ (shared, multi-process) and a local DuckDB `.db`
+file (single-process; ideal for dev, local interactive use, and single-node Trino
+deployments) as catalog metadata backends. SQLite/Turso, and a remote-DuckDB backend
 over [Quack RPC](https://duckdb.org/2026/05/12/quack-remote-protocol) for shared
-DuckDB-as-catalog without filesystem mounting, are planned next.
+DuckDB-as-catalog without filesystem mounting, are planned next. (For a catalog
+shared with DuckDB itself, use PostgreSQL — DuckDB's own MySQL reader is not yet
+stable; see [dev-docs/CATALOG-BACKENDS.md](dev-docs/CATALOG-BACKENDS.md).)
 
 Tested with DuckDB 1.5.4 for cross-engine compatibility.
 
@@ -120,6 +122,41 @@ ducklake.data-path=s3://<bucket>/<prefix>/
 # Optional tuning
 ducklake.catalog.max-connections=10
 ```
+
+**MySQL 8+** — shared multi-process deployment, same shape as PostgreSQL (the
+connector talks to the catalog directly over JDBC; the backend dialect is
+inferred from the URL scheme):
+
+```properties
+connector.name=ducklake
+
+# DuckLake metadata catalog database (MySQL 8+)
+ducklake.catalog.database-url=jdbc:mysql://<host>:3306/ducklake
+ducklake.catalog.database-user=ducklake
+ducklake.catalog.database-password=<password>
+
+# Base location for data files (local path or S3)
+ducklake.data-path=s3://<bucket>/<prefix>/
+```
+
+The MySQL Connector/J driver ships with the connector, so no extra jar is
+needed. The MySQL database must already contain a DuckLake metadata schema
+before Trino connects — initialize it once from a DuckDB session (the DuckDB
+`mysql` extension bootstraps the `ducklake_*` tables on ATTACH):
+
+```bash
+duckdb -c "INSTALL ducklake; LOAD ducklake; INSTALL mysql; LOAD mysql; \
+  ATTACH 'ducklake:mysql:db=ducklake host=<host> port=3306 user=ducklake password=<password>' AS lake \
+    (DATA_PATH 's3://<bucket>/<prefix>/'); \
+  DETACH lake;"
+```
+
+> **Cross-engine note.** Trino read/write against a MySQL-backed catalog is
+> supported and tested. However, *DuckDB itself* currently cannot reliably read
+> a DuckLake-on-MySQL catalog — DuckDB 1.5.4's `mysql` extension is unstable on
+> that path (upstream issue, not this connector). If you need DuckDB and Trino to
+> share one catalog today, use PostgreSQL. See
+> [dev-docs/CATALOG-BACKENDS.md](dev-docs/CATALOG-BACKENDS.md).
 
 **Local DuckDB `.db` file** — single-process deployment (one Trino coordinator,
 zero or one workers on the same host), dev/test, or interactive single-user use:
@@ -636,9 +673,9 @@ release, so conformance coverage compounds for free:
 
 | Property | Required | Default | Description |
 |----------|:--------:|---------|-------------|
-| `ducklake.catalog.database-url` | Yes | — | JDBC URL for the catalog metadata DB. PostgreSQL: `jdbc:postgresql://host:port/db`. Local DuckDB: `jdbc:duckdb:/abs/path/to/lake.db` |
-| `ducklake.catalog.database-user` | Conditional | — | Catalog database username. Required for PostgreSQL; omit for local DuckDB |
-| `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL; omit for local DuckDB |
+| `ducklake.catalog.database-url` | Yes | — | JDBC URL for the catalog metadata DB; the backend dialect is inferred from the scheme. PostgreSQL: `jdbc:postgresql://host:port/db`. MySQL 8+: `jdbc:mysql://host:3306/db`. Local DuckDB: `jdbc:duckdb:/abs/path/to/lake.db` |
+| `ducklake.catalog.database-user` | Conditional | — | Catalog database username. Required for PostgreSQL and MySQL; omit for local DuckDB |
+| `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL and MySQL; omit for local DuckDB |
 | `ducklake.data-path` | Yes | — | Base path for data files |
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
@@ -698,9 +735,11 @@ research item.
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| PostgreSQL | Supported | Multi-process; preferred for shared / clustered deployments |
+| PostgreSQL | Supported | Multi-process; preferred for shared / clustered deployments (incl. sharing with DuckDB) |
+| MySQL 8+ | Supported (Trino) | Multi-process. Connector read/write is tested; **cross-engine with DuckDB is deferred** — DuckDB 1.5.4's `mysql` extension is unstable reading a DuckLake-on-MySQL catalog (upstream). See `dev-docs/CATALOG-BACKENDS.md` |
 | Local DuckDB `.db` file | Supported | Single-process; dev, single-node Trino, interactive use |
 | SQLite | Planned | Single-process; lighter-weight alternative to local DuckDB |
+| Turso (libSQL) | Planned | Distributed SQLite-wire; blocked on a formal JDBC driver in Maven Central |
 | Remote DuckDB over Quack RPC | Planned | Shared DuckDB-as-catalog without filesystem mounting; landed experimentally upstream 2026-05-12 (`duckdb/ducklake#1151`) and gated here on the Quack RPC layer adding multi-table-query and UPDATE/DELETE support. Fixture and URL plumbing are in tree behind `-Dducklake.test.catalog-backend=DUCKDB_QUACK`; see `dev-docs/TODO-WRITE-MODE.md § DuckDB-as-Catalog Backend` |
 
 ## Known Limitations

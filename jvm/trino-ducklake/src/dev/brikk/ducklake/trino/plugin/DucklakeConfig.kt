@@ -61,7 +61,9 @@ class DucklakeConfig {
     }
 
     @Config("ducklake.catalog.database-url")
-    @ConfigDescription("JDBC URL for the Ducklake catalog database (e.g., jdbc:postgresql://host/db)")
+    @ConfigDescription("JDBC URL for the Ducklake catalog database " +
+            "(e.g., jdbc:postgresql://host/db or jdbc:mysql://host:3306/db); the backend dialect " +
+            "is inferred from the URL scheme")
     fun setCatalogDatabaseUrl(catalogDatabaseUrl: String?): DucklakeConfig {
         this.catalogDatabaseUrl = catalogDatabaseUrl
         return this
@@ -72,7 +74,7 @@ class DucklakeConfig {
     }
 
     @Config("ducklake.catalog.database-user")
-    @ConfigDescription("Username for the catalog database (required for PostgreSQL)")
+    @ConfigDescription("Username for the catalog database (required for PostgreSQL and MySQL)")
     fun setCatalogDatabaseUser(catalogDatabaseUser: String?): DucklakeConfig {
         this.catalogDatabaseUser = catalogDatabaseUser
         return this
@@ -83,7 +85,7 @@ class DucklakeConfig {
     }
 
     @Config("ducklake.catalog.database-password")
-    @ConfigDescription("Password for the catalog database (required for PostgreSQL)")
+    @ConfigDescription("Password for the catalog database (required for PostgreSQL and MySQL)")
     fun setCatalogDatabasePassword(catalogDatabasePassword: String?): DucklakeConfig {
         this.catalogDatabasePassword = catalogDatabasePassword
         return this

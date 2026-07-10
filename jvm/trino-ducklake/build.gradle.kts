@@ -71,6 +71,9 @@ dependencies {
     // Runtime-only dependencies
     runtimeOnly("io.airlift:log-manager")
     runtimeOnly("org.postgresql:postgresql")
+    // MySQL 8+ catalog backend: the driver on the deployed connector's classpath lets a user
+    // point ducklake.catalog.database-url at jdbc:mysql://... HikariCP resolves it from the URL.
+    runtimeOnly(libs.mysql.jdbc)
 
     // Test dependencies
     testImplementation("io.airlift:testing")
@@ -84,6 +87,7 @@ dependencies {
 
     testImplementation(libs.testcontainers.core)
     testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.testcontainers.mysql)
 
     // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
     // bundles per-platform natives (incl. darwin-aarch64). Arrow transitives resolve through the
