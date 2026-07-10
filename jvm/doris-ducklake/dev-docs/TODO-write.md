@@ -114,9 +114,17 @@ DuckLake snapshot → **read back 3 rows through Doris AND through DuckDB+DuckLa
   now relativizes it against the table data dir (fixed the "doubled path" failure).
 - [x] **compression** — set `ZSTD` (the BE rejects `UNKNOWN`).
 - [x] **sink-prep caps** — `SUPPORTS_INSERT` alone sufficed; no schema-order issue.
-- [ ] **min/max stat decode** — still `int8/16/32/64` + `varchar` only; extend to
-  `date`/`float64`/`decimal`/`timestamp` once each type's DuckLake stat-string form
-  is pinned (only affects write-side *pruning* coverage, not correctness).
+- [x] **min/max stat decode** — `int8/16/32/64`, `float32/float64`, `date`, `varchar`,
+  and `decimal(p,s)` (Iceberg big-endian two's-complement unscaled int + scale from the
+  type string) now decode. `decimal` with no `(p,s)` stays null (scale unknown).
+  Only affects write-side *pruning* coverage, not correctness.
+- [ ] **`timestamp*` min/max stat decode** — deferred (needs a CONSULT). The Iceberg
+  bound is int64 micros-from-epoch, but the exact *textual* form DuckDB stores in
+  `ducklake_file_column_stats` is not pinned, and our write-side stat is lexically
+  min/max-*merged* against DuckDB-written files' stats — a mismatched form (fractional-
+  second trimming, `T` vs space, `+00`) would pick a wrong table-level bound and
+  silently mis-prune (drop rows). Null (no pruning) is the safe default until the form
+  is pinned from a real DuckDB-written catalog (not guessed).
 
 **Standing the remote smoke up** (an Apple-Silicon dev box differs): see the
 `doris-compose-smoke-remote` memory — FE built from P-series + `SPI_READY_TYPES +=

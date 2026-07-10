@@ -3,6 +3,8 @@ package dev.brikk.ducklake.doris.plugin
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import org.apache.doris.thrift.TIcebergCommitData
+import java.math.BigDecimal
+import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
@@ -36,12 +38,18 @@ import java.time.LocalDate
  *  - `float64` → Iceberg double (8-byte LE IEEE-754) → `BigDecimal`-parseable string.
  *  - `date` → Iceberg date (4-byte LE int, days-from-epoch) → ISO-8601 `yyyy-MM-dd`
  *    (`DucklakeStatTypes` orders dates lexically, and ISO dates sort chronologically).
+ *  - `decimal(p,s)` → Iceberg decimal (big-endian, two's-complement unscaled int,
+ *    minimum-length) → plain `BigDecimal` string using the scale `s` parsed from the
+ *    DuckLake type (`DucklakeStatTypes` treats `decimal*` as numeric → `BigDecimal`).
  *  - `varchar` → UTF-8.
  *
- * Still `null` (unsafe to decode without more context): `decimal(...)` (big-endian
- * two's-complement unscaled int + a scale we don't carry here), `timestamp*`,
- * unsigned ints, `int128`, `blob`, `uuid`, `boolean`, nested. A non-finite float
- * (`NaN`/±Inf) would not round-trip through `BigDecimal`, so those are dropped too.
+ * Still `null` (unsafe to decode without more context): `timestamp*` — the exact
+ * textual form DuckDB stores is not pinned here, and our write-side stat is
+ * lexically min/max-merged against DuckDB-written files' stats, so a mismatched
+ * form (e.g. fractional-second trimming) would pick a wrong table-level bound and
+ * silently mis-prune; unsigned ints, `int128`, `blob`, `uuid`, `boolean`, nested.
+ * A non-finite float (`NaN`/±Inf) would not round-trip through `BigDecimal`, so
+ * those are dropped too. A `decimal` with no `(p,s)` (scale unknown) stays `null`.
  *
  * ## Known BE-coupled gaps (validate against a live BE before un-gating writes)
  * - **footer_size**: `TIcebergCommitData` carries no Parquet footer length, so we
@@ -183,8 +191,41 @@ internal object DuckLakeIcebergCommitMapper {
             type == "float32" && width == Float.SIZE_BYTES -> decodeFinite(bytes.float.toDouble())
             type == "float64" && width == Double.SIZE_BYTES -> decodeFinite(bytes.double)
             type == "date" && width == Int.SIZE_BYTES -> LocalDate.ofEpochDay(bytes.int.toLong()).toString()
+            type.startsWith("decimal") -> decodeDecimal(type, buffer)
             type == "varchar" -> StandardCharsets.UTF_8.decode(bytes).toString()
-            else -> null // decimal/timestamp/unsigned/int128/blob/uuid/boolean — not decoded (safe: no pruning)
+            else -> null // timestamp/unsigned/int128/blob/uuid/boolean — not decoded (safe: no pruning)
+        }
+    }
+
+    /**
+     * Decode an Iceberg decimal single-value bound. Iceberg stores the unscaled
+     * value as a minimum-length **big-endian** two's-complement integer (unlike the
+     * little-endian fixed-width primitives above), and the scale lives only in the
+     * DuckLake type string (`decimal(p,s)`). Returns `null` when the scale is absent
+     * or the payload is empty (safe: no pruning).
+     */
+    private fun decodeDecimal(ducklakeType: String, buffer: ByteBuffer): String? {
+        val scale = decimalScale(ducklakeType) ?: return null
+        val raw = ByteArray(buffer.remaining())
+        buffer.duplicate().get(raw) // raw stored order is big-endian, regardless of ByteBuffer order()
+        if (raw.isEmpty()) {
+            return null
+        }
+        return BigDecimal(BigInteger(raw), scale).toPlainString()
+    }
+
+    /** Scale `s` from `decimal(p,s)`; `0` from `decimal(p)`; `null` if unparseable/absent. */
+    private fun decimalScale(ducklakeType: String): Int? {
+        val open = ducklakeType.indexOf('(')
+        val close = ducklakeType.indexOf(')', open + 1)
+        if (open < 0 || close < 0) {
+            return null
+        }
+        val args = ducklakeType.substring(open + 1, close).split(',')
+        return when (args.size) {
+            1 -> 0
+            2 -> args[1].trim().toIntOrNull()
+            else -> null
         }
     }
 
