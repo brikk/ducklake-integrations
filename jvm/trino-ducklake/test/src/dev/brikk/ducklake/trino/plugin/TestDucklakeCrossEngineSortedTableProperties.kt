@@ -23,6 +23,8 @@ import io.trino.spi.connector.SortingProperty
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.Execution
+import org.junit.jupiter.api.parallel.ExecutionMode
 import java.util.UUID
 
 /**
@@ -38,7 +40,12 @@ import java.util.UUID
  * output formatting changes, and the unit tests in
  * [TestDucklakeSortPropertyMapper] already cover the translation
  * permutations.
+ *
+ * SAME_THREAD (like every sibling cross-engine test): methods write to ONE shared per-class
+ * catalog via cross-engine DuckDB CREATE/ALTER; serialize so concurrent commits can't race the
+ * snapshot lineage under the suite's default concurrent execution.
  */
+@Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeCrossEngineSortedTableProperties
         : AbstractDucklakeCrossEngineTest() {
     override fun isolatedCatalogName(): String {

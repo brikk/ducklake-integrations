@@ -18,6 +18,8 @@ import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMA
 import io.trino.Session
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.Execution
+import org.junit.jupiter.api.parallel.ExecutionMode
 import java.util.UUID
 
 /**
@@ -37,7 +39,13 @@ import java.util.UUID
  * The regression tests pin the gate: an unsorted table, a sorted+partitioned table, and a
  * sorted duckdb-format table must all keep working (the last two silently fall back to the
  * existing unsorted path) and return correct data.
+ *
+ * SAME_THREAD (like every sibling cross-engine test): the suite runs JUnit methods concurrently
+ * by default, but all methods here write to ONE shared per-class catalog. Without serialization,
+ * concurrent INSERT commits + the cross-engine DuckDB CREATE/ALTER commits race the snapshot
+ * lineage and can surface a TRANSACTION_CONFLICT as a QueryFailedException under full-suite load.
  */
+@Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
     override fun isolatedCatalogName(): String {
         return "sorted-writes"
