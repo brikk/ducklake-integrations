@@ -709,6 +709,55 @@ else
     " 2>&1 | tail -1
 fi
 
+# 12b. Read-correctness: schema-evolution column-DEFAULT backfill (issue_1135).
+# A column ADDed with a DEFAULT after rows exist is absent from the old Parquet
+# files; DuckLake records `initial_default` in ducklake_column, and the Doris
+# read path (DuckLakeConnectorMetadata.backfillDefaultValue / isBackfillDefaultSafe,
+# surfaced via getTableSchema) must fill it for those old rows while returning the
+# explicit value for rows written after the ADD. Proven here end-to-end against a
+# real BE scan — the headless tests can only cover the mapping in isolation.
+log "§12b column-DEFAULT backfill: DuckDB seeds pre-ADD rows, ADD COLUMN b DEFAULT 42, one explicit row…"
+docker run --rm \
+    --network trino-ducklake-dev_default \
+    -v "${HERE}/step-default.py:/script.py:ro" \
+    -e PG_HOST=trino-ducklake-postgres \
+    -e PG_DB=ducklake \
+    -e PG_USER=ducklake \
+    -e PG_PASSWORD=ducklake \
+    -e S3_ENDPOINT=trino-ducklake-minio:9000 \
+    -e S3_KEY_ID=minioadmin \
+    -e S3_SECRET=minioadmin \
+    -e DATA_PATH=s3://ducklake/data/ \
+    python:3.12-slim sh -c '
+        set -e
+        pip install --quiet --no-cache-dir "duckdb==1.5.2"
+        python /script.py
+    ' 2>&1 | sed "s/^/  [duckdb] /"
+
+log "§12b refreshing Doris catalog so the evolved schema is visible…"
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "REFRESH CATALOG dl;" 2>&1 | tail -1
+
+log "§12b reading tpch.default_probe via Doris (old rows must backfill b=42; new row keeps b=99)…"
+# Old rows (a∈{1,2,3}) predate b → expect b=42 backfilled; new row (a=4) → b=99.
+default_backfill=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+    SELECT COUNT(*) FROM dl.tpch.default_probe WHERE a IN (1,2,3) AND b = 42;
+" 2>/dev/null | tail -1)
+default_explicit=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+    SELECT b FROM dl.tpch.default_probe WHERE a = 4;
+" 2>/dev/null | tail -1)
+default_nulls=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "
+    SELECT COUNT(*) FROM dl.tpch.default_probe WHERE b IS NULL;
+" 2>/dev/null | tail -1)
+log "  old rows with b=42: ${default_backfill:-?}/3  |  new row a=4 b=${default_explicit:-?} (exp 99)  |  NULL b: ${default_nulls:-?} (exp 0)"
+if [[ "${default_backfill:-0}" -eq 3 && "${default_explicit:-0}" -eq 99 && "${default_nulls:-1}" -eq 0 ]]; then
+    log "§12b DEFAULT-BACKFILL GREEN: pre-ADD rows read the DEFAULT (42), post-ADD row reads its explicit value (99). 🎉"
+else
+    log "§12b DEFAULT-BACKFILL CHECK: b=42 rows=${default_backfill:-?} (exp 3), a=4 b=${default_explicit:-?} (exp 99), NULL b=${default_nulls:-?} (exp 0) — inspect above."
+fi
+docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    SWITCH dl; DROP TABLE IF EXISTS tpch.default_probe;
+" 2>&1 | tail -1
+
 # 13. Maintenance-GC procedures (F6 / getProcedureOps): expire_snapshots,
 # cleanup_old_files, remove_orphan_files. These are the only procedures whose
 # FE-side S3 blob ops (S3WarehouseBlobStore.list/delete) can't be proven by the
@@ -717,28 +766,60 @@ fi
 # The catalog sets maintenance.min-retention=1s (§7) so the tiny retentions below
 # clear the floor; a `sleep 2` ages fixtures past the 1s grace window.
 #
-# The assertive test is remove_orphan_files: drop a recognizable ducklake- orphan
-# plus foreign files (_SUCCESS, a user's own data.parquet) at the warehouse root,
-# sweep scope=catalog, and prove ONLY the ducklake- orphan is deleted (exercises
-# list + delete end-to-end). expire_snapshots (metadata) + cleanup_old_files (the
-# schedule→delete drain) are run for real too, proving routing + the shared delete
-# path; they operate on whatever churn the earlier steps produced.
+# All three procedures return a structured result set over the `ALTER TABLE …
+# EXECUTE` wire, so each is asserted on its own returned counters (parsed from the
+# `mysql -N` tab-delimited row), and cross-checked against real MinIO / Postgres:
+#  - expire_snapshots  → expired_snapshot_count ≥ 1 (the smoke's write steps left
+#    many snapshots; all but the latest age past the 1s retention) + snapshot count
+#    in ducklake_snapshot actually drops.
+#  - cleanup_old_files → deletes a SEEDED aged schedule row (deterministic, not
+#    dependent on churn): the blob disappears from MinIO and the row drains from
+#    ducklake_files_scheduled_for_deletion; failed_file_count == 0.
+#  - remove_orphan_files → deleted_file_count == 1 (only the ducklake- orphan) and
+#    ONLY that orphan is gone; foreign files (_SUCCESS, a user's data.parquet) stay.
 GC_ANCHOR="dl.tpch.orders" # any real table; expire/cleanup ignore it, orphan uses it only for the handle
 mc_run() { # run an mc script against the substrate MinIO
     docker run --rm --network trino-ducklake-dev_default --entrypoint sh minio/mc:latest -c "
         mc alias set m http://trino-ducklake-minio:9000 minioadmin minioadmin >/dev/null 2>&1
         $1"
 }
+psql_c() { docker exec trino-ducklake-postgres psql -U ducklake -d ducklake -tA -c "$1" 2>/dev/null | tail -1; }
+fe_proc() { # run an ALTER TABLE … EXECUTE proc; echo the last (result) row, tab-delimited
+    docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "$1" 2>/dev/null | tail -1
+}
+field() { echo "$1" | awk -F'\t' -v c="$2" '{print $c}'; } # c-th tab field of a result row
 
 log "§13 expire_snapshots (catalog-wide, retention_threshold=1s)…"
-docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
-    ALTER TABLE ${GC_ANCHOR} EXECUTE expire_snapshots('retention_threshold' = '1s');
-" 2>&1 | tail -5 || log "§13 expire_snapshots: non-zero exit (see above)"
+snaps_before=$(psql_c "SELECT COUNT(*) FROM ducklake_snapshot;")
+sleep 2 # age the smoke's earlier snapshots past the 1s retention
+expire_row=$(fe_proc "ALTER TABLE ${GC_ANCHOR} EXECUTE expire_snapshots('retention_threshold' = '1s');")
+expired_count=$(field "$expire_row" 3)
+snaps_after=$(psql_c "SELECT COUNT(*) FROM ducklake_snapshot;")
+log "  returned expired_snapshot_count=${expired_count:-?}; ducklake_snapshot ${snaps_before:-?} → ${snaps_after:-?}"
+if [[ "${expired_count:-0}" -ge 1 && "${snaps_after:-0}" -lt "${snaps_before:-0}" ]]; then
+    log "§13 expire_snapshots GREEN: expired ${expired_count} snapshot(s); metadata count dropped."
+else
+    log "§13 expire_snapshots CHECK: expired=${expired_count:-?} (exp ≥1), snapshots ${snaps_before:-?}→${snaps_after:-?} (exp drop) — inspect above."
+fi
 
 log "§13 cleanup_old_files (drains the schedule → deletes blobs, retention_threshold=1s)…"
-docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
-    ALTER TABLE ${GC_ANCHOR} EXECUTE cleanup_old_files('retention_threshold' = '1s');
-" 2>&1 | tail -5 || log "§13 cleanup_old_files: non-zero exit (see above)"
+# Deterministic fixture: a recognizable blob + an already-aged schedule row pointing at
+# it (schedule_start 1h ago clears the 1s retention with no wait). Proves the
+# list-schedule → delete-blob → drain-row path end-to-end, independent of write churn.
+mc_run "printf 'cleanup-fixture' | mc pipe m/ducklake/data/ducklake-smoke-cleanup.parquet" 2>&1 | tail -1
+psql_c "INSERT INTO ducklake_files_scheduled_for_deletion (data_file_id, path, path_is_relative, schedule_start)
+        VALUES (900001, 's3://ducklake/data/ducklake-smoke-cleanup.parquet', false, now() - interval '1 hour');" >/dev/null
+cleanup_row=$(fe_proc "ALTER TABLE ${GC_ANCHOR} EXECUTE cleanup_old_files('retention_threshold' = '1s');")
+cleanup_deleted=$(field "$cleanup_row" 3)
+cleanup_failed=$(field "$cleanup_row" 4)
+cleanup_blob=$(mc_run "mc stat m/ducklake/data/ducklake-smoke-cleanup.parquet >/dev/null 2>&1 && echo present || echo gone" 2>/dev/null | tail -1)
+cleanup_sched=$(psql_c "SELECT COUNT(*) FROM ducklake_files_scheduled_for_deletion WHERE data_file_id = 900001;")
+log "  returned deleted=${cleanup_deleted:-?} failed=${cleanup_failed:-?}; fixture blob=${cleanup_blob:-?}; fixture schedule rows left=${cleanup_sched:-?}"
+if [[ "${cleanup_deleted:-0}" -ge 1 && "${cleanup_failed:-1}" -eq 0 && "${cleanup_blob}" == "gone" && "${cleanup_sched:-1}" -eq 0 ]]; then
+    log "§13 cleanup_old_files GREEN: drained the aged schedule row, deleted its MinIO blob (0 failures)."
+else
+    log "§13 cleanup_old_files CHECK: deleted=${cleanup_deleted:-?} (exp ≥1), failed=${cleanup_failed:-?} (exp 0), blob=${cleanup_blob:-?} (exp gone), rows_left=${cleanup_sched:-?} (exp 0) — inspect above."
+fi
 
 log "§13 remove_orphan_files: seeding orphan + foreign files at the warehouse root…"
 # ducklake-*.parquet = recognizable residue (delete); _SUCCESS + data.parquet = foreign (keep).
@@ -750,9 +831,10 @@ mc_run "
 sleep 2 # age the fixtures past the 1s retention grace
 
 log "§13 remove_orphan_files (scope=catalog, retention_threshold=1s)…"
-docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
-    ALTER TABLE ${GC_ANCHOR} EXECUTE remove_orphan_files('scope' = 'catalog', 'retention_threshold' = '1s');
-" 2>&1 | tail -5 || log "§13 remove_orphan_files: non-zero exit (see above)"
+orphan_row=$(fe_proc "ALTER TABLE ${GC_ANCHOR} EXECUTE remove_orphan_files('scope' = 'catalog', 'retention_threshold' = '1s');")
+orphan_deleted=$(field "$orphan_row" 3)
+orphan_failed=$(field "$orphan_row" 4)
+log "  returned deleted=${orphan_deleted:-?} failed=${orphan_failed:-?}"
 
 log "§13 verifying storage state (orphan gone; foreign files survive)…"
 # `mc stat` returns non-zero when the object is absent (unlike `mc ls <object>`, which exits 0 on a
@@ -768,11 +850,14 @@ gc_readback=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -
     SELECT COUNT(*) FROM dl.tpch.doris_w;
 " 2>/dev/null | tail -1)
 
-if [[ "${orphan_state}" == "gone" && "${success_state}" == "present" && "${foreign_state}" == "present" ]]; then
-    log "§13 GC GREEN: remove_orphan_files deleted the ducklake- orphan and left foreign files intact"
+# deleted ≥ 1 (our orphan, plus any real churn residue — deleting that is also correct);
+# selectivity is proven by the foreign files surviving, not by an exact count.
+if [[ "${orphan_state}" == "gone" && "${success_state}" == "present" && "${foreign_state}" == "present" \
+      && "${orphan_deleted:-0}" -ge 1 && "${orphan_failed:-1}" -eq 0 ]]; then
+    log "§13 GC GREEN: remove_orphan_files reported deleted=${orphan_deleted}/failed=0, removed the ducklake- orphan and left foreign files intact"
     log "  (real MinIO list+delete via S3WarehouseBlobStore); referenced doris_w still reads ${gc_readback:-?} rows. 🎉"
 else
-    log "§13 GC CHECK: orphan=${orphan_state} (exp gone), _SUCCESS=${success_state} (exp present), data.parquet=${foreign_state} (exp present) — inspect above."
+    log "§13 GC CHECK: deleted=${orphan_deleted:-?} (exp ≥1), failed=${orphan_failed:-?} (exp 0), orphan=${orphan_state} (exp gone), _SUCCESS=${success_state} (exp present), data.parquet=${foreign_state} (exp present) — inspect above."
 fi
 
 # Clean up the foreign test fixtures we parked at the warehouse root (the orphan is deleted by the
