@@ -46,6 +46,10 @@ internal class DuckLakeIcebergCommitMapperTest {
     private fun utf8(value: String): ByteBuffer =
         ByteBuffer.wrap(value.toByteArray(StandardCharsets.UTF_8))
 
+    // Iceberg decimal single-value: minimum-length big-endian two's-complement unscaled int.
+    private fun beBytes(unscaled: Long): ByteBuffer =
+        ByteBuffer.wrap(java.math.BigInteger.valueOf(unscaled).toByteArray())
+
     @Test
     fun mapsFileMetadataAndDecodesIntAndStringBounds() {
         val stats = TIcebergColumnStats().apply {
@@ -146,7 +150,7 @@ internal class DuckLakeIcebergCommitMapperTest {
         val stats = TIcebergColumnStats().apply {
             valueCounts = mapOf(1 to 3L, 2 to 3L)
             nullValueCounts = mapOf(1 to 0L, 2 to 0L)
-            // A NaN double bound has no ordering; decimal we don't decode at all.
+            // A NaN double bound has no ordering; timestamp we deliberately don't decode.
             lowerBounds = mapOf(1 to leDouble(Double.NaN), 2 to leLong(1))
             upperBounds = mapOf(1 to leDouble(Double.POSITIVE_INFINITY), 2 to leLong(9))
         }
@@ -157,7 +161,7 @@ internal class DuckLakeIcebergCommitMapperTest {
         }
 
         val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
-            data, mapOf(1L to "float64", 2L to "decimal(10,2)"),
+            data, mapOf(1L to "float64", 2L to "timestamp"),
         )
         val byId = fragment.columnStats.associateBy { it.columnId }
 
@@ -165,9 +169,57 @@ internal class DuckLakeIcebergCommitMapperTest {
         assertThat(byId.getValue(1L).minValue).isNull()
         assertThat(byId.getValue(1L).maxValue).isNull()
         assertThat(byId.getValue(1L).valueCount).isEqualTo(3)
-        // decimal is deliberately not decoded → null bounds.
+        // timestamp is deliberately not decoded (unpinned stat form) → null bounds.
         assertThat(byId.getValue(2L).minValue).isNull()
         assertThat(byId.getValue(2L).maxValue).isNull()
+    }
+
+    @Test
+    fun decodesDecimalBoundsUsingTypeScale() {
+        val stats = TIcebergColumnStats().apply {
+            valueCounts = mapOf(1 to 4L, 2 to 4L)
+            nullValueCounts = mapOf(1 to 0L, 2 to 0L)
+            // Iceberg decimal: minimum-length big-endian two's-complement unscaled int.
+            // decimal(10,2): unscaled 12345 → 123.45 ; unscaled -1 → -0.01.
+            lowerBounds = mapOf(1 to beBytes(-1), 2 to beBytes(12_345))
+            upperBounds = mapOf(1 to beBytes(9_999), 2 to beBytes(100_000))
+        }
+        val data = TIcebergCommitData().apply {
+            filePath = "t/f.parquet"
+            rowCount = 4
+            columnStats = stats
+        }
+
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(
+            data, mapOf(1L to "decimal(10,2)", 2L to "decimal(18,2)"),
+        )
+        val byId = fragment.columnStats.associateBy { it.columnId }
+
+        assertThat(byId.getValue(1L).minValue).isEqualTo("-0.01")
+        assertThat(byId.getValue(1L).maxValue).isEqualTo("99.99")
+        assertThat(byId.getValue(2L).minValue).isEqualTo("123.45")
+        assertThat(byId.getValue(2L).maxValue).isEqualTo("1000.00")
+    }
+
+    @Test
+    fun leavesDecimalWithoutScaleUndecoded() {
+        val stats = TIcebergColumnStats().apply {
+            valueCounts = mapOf(1 to 1L)
+            nullValueCounts = mapOf(1 to 0L)
+            lowerBounds = mapOf(1 to beBytes(5))
+            upperBounds = mapOf(1 to beBytes(5))
+        }
+        val data = TIcebergCommitData().apply {
+            filePath = "t/f.parquet"
+            rowCount = 1
+            columnStats = stats
+        }
+
+        // No (p,s) → scale unknown → null (safe: no pruning).
+        val fragment = DuckLakeIcebergCommitMapper.toWriteFragment(data, mapOf(1L to "decimal"))
+        val stat = fragment.columnStats.single()
+        assertThat(stat.minValue).isNull()
+        assertThat(stat.maxValue).isNull()
     }
 
     @Test
