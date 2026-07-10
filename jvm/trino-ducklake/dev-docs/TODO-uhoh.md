@@ -74,3 +74,19 @@ Seeded 2026-07-05 from the upstream-risk conversation.
   research tax — working so far. At some point we need a direct conversation
   with the DuckLake team; they can't call it a standard and ignore outside
   implementors forever.
+
+## Upstream lance/vortex extension canaries (retest on extension bumps)
+
+Collapsed here from the completed driving list (F11). These are extension-side limitations we
+gate around; `TestLanceExtensionCanary` (+ the vortex probes) is the trip-wire — retest and lift
+the gate when an extension bump fixes the underlying issue.
+
+- [ ] **lance ROW writes** — gated at schema time (null-struct handling upstream). Lift when the
+  upstream null-struct fix lands.
+- [ ] **lance MAP writes** — need lance format 2.2; currently gated with a clean upfront error
+  (`TestDucklakeLanceFormat.mapColumnIsRejectedForLanceWrites`).
+- [ ] **vortex MAP COPY** — native crash upstream; MAP writes gated.
+- [ ] **lance FTS `k`** — best-effort top-k only.
+- [ ] **lance arrow-scan NULL-row morph** — watched.
+- [ ] **`add_files` lance `record_count`** — full dataset scan to count rows; costly on huge
+  datasets (perf, not correctness).

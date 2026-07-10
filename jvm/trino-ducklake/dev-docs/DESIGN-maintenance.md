@@ -1,7 +1,7 @@
 # DESIGN: Maintenance operations (F6)
 
 **Status:** design note + first procedure (`remove_orphan_files`) — the rest is roadmap.
-**Scope:** trino-ducklake connector. **Companion to:** TODO-WRITE-MODE.md § M8, TODO-jayson-special-list.md § F6.
+**Scope:** trino-ducklake connector. **Companion to:** TODO-WRITE-MODE.md § M8, archive/TODO-jayson-special-list-COMPLETED-2026-07.md § F6.
 
 F6 is the biggest single hole on the driving list: `optimize` / `rewrite_data_files` /
 `expire_snapshots` / `cleanup_old_files` / `remove_orphan_files` / stats-recalc are all absent, so
