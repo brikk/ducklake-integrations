@@ -282,6 +282,12 @@ constructor(
                 return
             }
         }
+        // JSON is a UTF-8-Slice type (io.trino.type.JsonType, not on the compile classpath); the
+        // column was created as DuckDB JSON, and the Appender coerces the JSON text string into it.
+        if (DucklakeJsonSupport.isJson(type)) {
+            appender.append(type.getSlice(block, position).toStringUtf8())
+            return
+        }
         throw TrinoException(NOT_SUPPORTED, "DuckDB-format writer does not yet support type: $type")
     }
 
@@ -465,8 +471,9 @@ constructor(
         }
 
         private fun supportsMinMax(type: Type): Boolean {
-            return !(type.equals(VARBINARY) || type.equals(UUID))
-            // Nested types are already rejected at write time.
+            // JSON is not an orderable type in DuckDB — MIN/MAX(json) errors — so skip stats
+            // for it, same as VARBINARY/UUID. Nested types are already rejected at write time.
+            return !(type.equals(VARBINARY) || type.equals(UUID) || DucklakeJsonSupport.isJson(type))
         }
 
         /**

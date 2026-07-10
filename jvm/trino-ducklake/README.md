@@ -191,7 +191,7 @@ Restart Trino for the new plugin and catalog to take effect.
 | `list<T>` | ARRAY(T) | Yes | Yes | Full nesting supported |
 | `struct<...>` | ROW(...) | Yes | Yes | Full nesting supported |
 | `map<K,V>` | MAP(K,V) | Yes | Yes | Full nesting supported |
-| `json` | VARCHAR | Yes | Yes | Degraded — stored as string, no JSON functions |
+| `json` | JSON | Yes | Yes | Native Trino JSON type — JSON path/accessor functions work (`json_extract`, `json_format`, `->`). Physically a UTF-8 string; nested JSON inside ARRAY/MAP/ROW not yet supported |
 | `variant` | VARCHAR | Yes | Yes | Degraded — no shredding or field access |
 | `interval` | VARCHAR | Yes | Yes | Degraded — stored as string |
 | `geometry` | VARBINARY | Yes | Yes | Degraded — no spatial functions |

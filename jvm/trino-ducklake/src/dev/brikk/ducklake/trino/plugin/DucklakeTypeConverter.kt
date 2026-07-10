@@ -140,7 +140,10 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             // - No type-specific operators or functions
             // - No validation or type safety
             // - Data is accessible but with reduced functionality
-            "json" -> VarcharType.VARCHAR  // DEGRADED: No JSON operators/functions, stored as string
+            // Native Trino JSON type (io.trino.type.JsonType, resolved via TypeManager since it is
+            // not on the trino-spi compile classpath). Physically a UTF-8 string in parquet — the
+            // same shape DuckDB writes — so reads/writes reuse the VARCHAR value paths.
+            "json" -> typeManager.getType(TypeSignature(StandardTypes.JSON))
             "variant" -> VarcharType.VARCHAR  // DEGRADED: No variant support, needs shredding implementation
             "interval" -> VarcharType.VARCHAR  // DEGRADED: Interval not supported in Trino, stored as string
 
@@ -225,6 +228,9 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
         }
         if (trinoType == UuidType.UUID) {
             return "uuid"
+        }
+        if (DucklakeJsonSupport.isJson(trinoType)) {
+            return "json"
         }
 
         // Nested types: DuckLake stores these as parent column type strings;
