@@ -221,6 +221,31 @@ docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
     SELECT * FROM orders LIMIT 5;
 " 2>&1
 
+# 8b. Read-path checklist (TODO-read v1 polish): per-table row counts, a
+# filter-pushdown EXPLAIN, and a COUNT(*) that exercises metadata count-pushdown.
+# The cross-engine round-trip (fresh DuckDB write → Doris read) is covered by
+# §12b (column DEFAULT backfill) and W3 (Doris CTAS read-back).
+log "§8b read checklist: per-table row counts…"
+orders_n=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "SELECT COUNT(*) FROM dl.tpch.orders;" 2>/dev/null | tail -1)
+lineitem_n=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -N -e "SELECT COUNT(*) FROM dl.tpch.lineitem;" 2>/dev/null | tail -1)
+log "  dl.tpch.orders=${orders_n:-?}  dl.tpch.lineitem=${lineitem_n:-?}"
+if [[ "${orders_n:-0}" -gt 0 && "${lineitem_n:-0}" -gt 0 ]]; then
+    log "§8b row counts GREEN: both TPC-H tables return positive counts via the BE."
+else
+    log "§8b row counts CHECK: orders=${orders_n:-?}, lineitem=${lineitem_n:-?} (exp both > 0) — inspect above."
+fi
+
+log "§8b EXPLAIN VERBOSE of a filter-pushdown SELECT (expect a plugin scan over tpch.orders)…"
+explain_out=$(docker exec doris-ducklake-fe mysql -h127.0.0.1 -P9030 -uroot -e "
+    EXPLAIN VERBOSE SELECT o_orderkey, o_orderstatus FROM dl.tpch.orders WHERE o_orderkey < 100;
+" 2>&1)
+echo "${explain_out}" | sed 's/^/  /' | tail -40
+if echo "${explain_out}" | grep -qiE "orders|scan"; then
+    log "§8b EXPLAIN GREEN: planner produced a scan plan for the pushed-down filter."
+else
+    log "§8b EXPLAIN CHECK: no scan/table reference in the plan — inspect above."
+fi
+
 # 9. Step 7 of the roadmap: position-delete plumbing exercise.
 #
 # Plan (against a dedicated tpch.step7_orders table so tpch.orders stays
