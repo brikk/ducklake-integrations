@@ -75,9 +75,15 @@ object DuckLakeTestCatalogBootstrap {
                 statement.execute("CREATE SCHEMA dl.analytics")
                 statement.execute("CREATE TABLE dl.analytics.events (ts TIMESTAMP, kind VARCHAR)")
 
-                // Seed two data files on sales.orders so scan-plan tests have files to
-                // enumerate. Each INSERT into DuckLake creates a separate parquet file
-                // — the second insert hands us a second DucklakeDataFile to assert against.
+                // Seed sales.orders so the unpartitioned scan-plan tests have files to
+                // enumerate. Two INSERTs, but DO NOT assume two data files: DuckDB 1.5.4's
+                // CHECKPOINT (line 119) can consolidate multiple small INSERTs into ONE
+                // parquet file, and the writer may coalesce regardless. The tests that use
+                // sales.orders assert stability-at-pin — `isNotEmpty()`, or a size relative
+                // to another plan, or the count-pushdown collapse-to-one — never an exact
+                // per-INSERT file count. Only partition-based fixtures (by_region,
+                // by_name_bucket) assert a floor of ≥N files, and only because CHECKPOINT
+                // cannot compact ACROSS partitions.
                 statement.execute("INSERT INTO dl.sales.orders VALUES (1, 9.99), (2, 19.50)")
                 statement.execute("INSERT INTO dl.sales.orders VALUES (3, 5.25)")
 
