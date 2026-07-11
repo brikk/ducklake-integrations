@@ -207,33 +207,32 @@ classified as engine-skip.
   (each widening = more mirrored records). Full-corpus run is a
   later/CI concern, not an interactive gate.
 
-**NEXT read feature — hive-layout `add_files` path partition fill** (teed up
-2026-07-06; corpus `add_files/add_files_hive*.test`, skip-listed as
-`GAP_HIVE_PARTITION_FILL`). When files are registered from a hive directory
-layout (`part_key=1/part_key2=10/f.parquet`), the parquet BODY contains only
-the non-partition columns; partition columns live in the path and in
-`ducklake_file_partition_value`. Oracle constant-fills them; our scan returns
-NULL/omits → divergence. Fix shape:
-  1. Detect hive-layout files: partition columns absent from the file schema
-     but present as `DucklakeFilePartitionValue`s (distinguish from
-     iceberg-style where the body carries them).
-  2. Emit `path_partition_keys` + per-range `columns_from_path` values into
-     `TFileScanRangeParams`/`TFileRangeDesc` so the BE constant-fills — the
-     native hive/iceberg reader path. `DuckLakeScanRange` already carries the
-     partition-value map; today it deliberately does NOT emit
-     `columns_from_path` (see the class doc) — this feature flips that ONLY
-     for hive-layout files.
-  3. Re-pin `DuckLakeScanRangeThriftParityTest` for the new range shape.
-  Model: iceberg connector's `columns_from_path` handling; trino side
-  constant-fills from partition values in `DucklakeSplitManager`.
-  Verify: `corpusReplayTest -Dducklake.corpus.dirs=add_files` + un-skip the
-  three `add_files_hive*` entries.
-
-Follow-ups from the sweep (not yet done):
-- [ ] `add_files`-registered hive-layout files may lack partition columns in
-  the parquet body; trino constant-fills from partition values. Doris path
-  would need `path_partition_keys` + `columns_from_path` (iceberg-style) —
-  coordinate with the pinned thrift shape before attempting.
+- [x] **hive-layout `add_files` path partition fill** (was `GAP_HIVE_PARTITION_FILL`;
+  shipped 2026-07-11). Files registered from a hive directory layout
+  (`part_key=1/part_key2=10/f.parquet`) carry partition columns in the PATH, not
+  the parquet body (`is_partition` name-map entries via `getPartitionNameMaps`).
+  `DuckLakeScanPlanProvider` now: (1) detects hive-layout files per-file by
+  `mappingId` + partition name map; (2) parses the values from the path
+  (`HivePartitionPath`, mirroring trino) and emits them as `columns_from_path`
+  on the range PLUS a scan-node `path_partition_keys` declaration
+  (`PluginDrivenScanNode.getPathPartitionKeys` → `classifyColumn` excludes them
+  from the file/decode set) — WITHOUT the latter the BE reads the body-absent
+  column and fails "name_mapping must be set"; (3) excludes those columns from
+  the field-id schema dictionary. Verified live: `add_files_hive.test` +
+  `add_files_hive_many_columns.test` GREEN (`corpusReplayTest -Dducklake.corpus.dirs=add_files`,
+  456 passed).
+  - **Known BE-side limits** (cast test stays skipped, root-caused): the BE's
+    `columns_from_path` on the iceberg-dispatched reader (a) cannot represent a
+    NULL hive partition value (the `__HIVE_DEFAULT_PARTITION__` sentinel / is-null
+    flag are NOT converted to SQL NULL, and a NULL predicate over it crashes the
+    reader) — the connector FAILS LOUD on these (`DorisConnectorException`,
+    engine-skip); and (b) does not type a BOOLEAN path-partition column for
+    boolean ops. Non-null int/string/date/decimal/timestamp/float/special-char
+    path partitions all read correctly. Upstream: needs the BE fill to honor
+    `columns_from_path_is_null` + hive sentinel, and boolean cast-from-path.
+  - **Mixed-layout guard:** a table mixing hive-layout add_files files with
+    natively-written partitioned files (same columns in the body) throws
+    (`path_partition_keys` is scan-node-wide) rather than silently wrong-fill.
 - [ ] Count pushdown never nets out deletes (conservative permanent fallback
   to BE-side counting when any delete exists) — revisit only if COUNT(*) on
   deleted-from tables shows up hot.

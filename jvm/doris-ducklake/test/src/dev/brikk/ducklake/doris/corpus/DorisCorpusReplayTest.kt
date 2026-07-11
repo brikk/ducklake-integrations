@@ -91,9 +91,19 @@ internal class DorisCorpusReplayTest {
                 "fault-injection harness test (deliberately corrupts the catalog / expects DuckDB-specific " +
                 "error text) — not mirrorable against an external engine",
             // ---- REAL GAPS the mirror found on full-corpus contact (TODO-read items; un-skip when fixed) ----
-            "add_files/add_files_hive.test" to GAP_HIVE_PARTITION_FILL,
-            "add_files/add_files_hive_many_columns.test" to GAP_HIVE_PARTITION_FILL,
-            "add_files/add_files_hive_partition_cast.test" to GAP_HIVE_PARTITION_FILL,
+            // hive-layout add_files partition fill (GAP_HIVE_PARTITION_FILL) is now
+            // served for the common case: body-absent partition columns are
+            // constant-filled from the path via columns_from_path + a scan-node
+            // path_partition_keys declaration (DuckLakeScanPlanProvider). add_files_hive.test
+            // and add_files_hive_many_columns.test pass. The cast test stays skipped
+            // for two ROOT-CAUSED BE-side limits of columns_from_path on the
+            // iceberg-dispatched reader (not FE-fixable here):
+            "add_files/add_files_hive_partition_cast.test" to
+                "BE columns_from_path limits: (1) a NULL hive partition value cannot be represented " +
+                    "(the sentinel/is-null flag are not converted to SQL NULL and a NULL predicate over " +
+                    "it crashes the reader — the connector fails loud on these), and (2) a BOOLEAN path " +
+                    "partition column is not typed for boolean ops (NOT/AND) — the file's own body-absent " +
+                    "cases (int/string/date/decimal/timestamp/float/special-char) DO read correctly",
             // Renamed columns + simple add_files legacy files read correctly via the
             // field-id schema dictionary (DuckLakeSchemaDictionary). These two remain
             // UNSOLVABLE with a table-level dictionary: they register id-less parquet
@@ -222,9 +232,6 @@ internal class DorisCorpusReplayTest {
     companion object {
         private const val CHUNK_SIZE = 30
         private const val MAX_FAILURES_SHOWN = 40
-        private const val GAP_HIVE_PARTITION_FILL =
-            "KNOWN GAP: hive-layout add_files partition columns are not constant-filled from partition " +
-                "values on the Doris scan (parquet body lacks them; TODO-read item)"
         private const val GAP_NAME_MAPPING =
             "KNOWN GAP: ducklake_name_mapping (add_files field-id mapping / renamed columns over legacy " +
                 "files) not applied on the Doris scan (TODO-read item)"
