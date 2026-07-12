@@ -1,5 +1,6 @@
 plugins {
     id("buildlogic.kotlin.library")
+    id("buildlogic.kotlin.brikk")
     java
     alias(libs.plugins.detekt)
 }
@@ -15,29 +16,10 @@ detekt {
     source.setFrom("src", "test")
 }
 
-// brikk-sql (dev.brikk.house) is a TEST-ONLY SQL transpiler used by the corpus-replay dialect gate.
-// Published to brikk's public GitHub Packages Maven registry (repo: brikk/public-maven). NOTE:
-// GitHub Packages Maven requires a token EVEN FOR PUBLIC packages (anonymous reads return 401 — a
-// GitHub limitation, not a brikk setting), so credentials are still needed: they come from
-// ~/.gradle/gradle.properties (brikk.gpr.user / brikk.gpr.key) or CI env (GITHUB_ACTOR /
-// GITHUB_TOKEN). Any GitHub token with read:packages works — the package itself is public.
-// exclusiveContent pins this authed repo to that one group so it can never shadow — nor gate the
-// auth of — any other (Trino/airlift/…) dependency, which all still come unauthed from mavenCentral.
-// The transpiler must never enter the plugin jar — it's testImplementation only.
+// The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from brikk's public GitHub Packages
+// Maven registry, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above) —
+// see that plugin for the token/credentials note. Only mavenCentral is module-local here.
 repositories {
-    exclusiveContent {
-        forRepository {
-            maven {
-                name = "brikkPublicMaven"
-                url = uri("https://maven.pkg.github.com/brikk/public-maven")
-                credentials {
-                    username = providers.gradleProperty("brikk.gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-                    password = providers.gradleProperty("brikk.gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
-                }
-            }
-        }
-        filter { includeGroup("dev.brikk.house") }
-    }
     mavenCentral()
 }
 

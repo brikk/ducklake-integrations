@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("buildlogic.kotlin.library")
+    id("buildlogic.kotlin.brikk")
     alias(libs.plugins.detekt)
 }
 
@@ -49,34 +50,13 @@ kotlin {
 // scope mavenLocal to org.apache.doris coordinates via exclusiveContent so it
 // can't shadow other dependencies for this module, and so it stays off the
 // resolution path for every other module in the build.
+// dev.brikk.house (brikk-sql transpiler) resolves from brikk's public GitHub Packages Maven
+// registry, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above).
 repositories {
     // org.apache.doris: FE SPI from the PR #62767 branch, installed into ~/.m2.
     exclusiveContent {
         forRepository { mavenLocal() }
         filter { includeGroup("org.apache.doris") }
-    }
-    // dev.brikk.house: brikk-sql (SQL transpiler) — TEST-ONLY, used by the
-    // corpus-replay dialect gate. Public packages on the brikk/public-maven
-    // GitHub Packages registry. NOTE: GitHub's Maven registry requires a token
-    // even for PUBLIC packages (only ghcr.io containers allow anonymous), so a
-    // read-only credential is mandatory — sourced from gradle properties
-    // (brikk.gpr.user / brikk.gpr.key in ~/.gradle/gradle.properties) or the
-    // GITHUB_ACTOR / GITHUB_TOKEN env vars (CI); no secret lives in this repo.
-    // Scoped so it's only ever hit for the dev.brikk.house group.
-    exclusiveContent {
-        forRepository {
-            maven {
-                name = "brikkPublicMaven"
-                url = uri("https://maven.pkg.github.com/brikk/public-maven")
-                credentials {
-                    username = providers.gradleProperty("brikk.gpr.user").orNull
-                        ?: System.getenv("GITHUB_ACTOR")
-                    password = providers.gradleProperty("brikk.gpr.key").orNull
-                        ?: System.getenv("GITHUB_TOKEN")
-                }
-            }
-        }
-        filter { includeGroup("dev.brikk.house") }
     }
     mavenCentral()
 }
@@ -123,8 +103,10 @@ dependencies {
     // brikk-sql: DuckDB→Doris SQL transpiler for the corpus-replay dialect gate
     // (transpile-first: run what transpiles + is mappable, engine-skip the rest).
     // TEST-ONLY — the production plugin never sees raw SQL (Doris parses it).
-    // The `-jvm` KMP artifact; pulls brikk-sql-metadata-jvm transitively.
+    // The `-jvm` KMP artifact; brikk-sql-metadata-jvm declared explicitly (matching :trino-ducklake)
+    // rather than relying on transitive resolution of the KMP metadata artifact.
     testImplementation("dev.brikk.house:brikk-sql-jvm:0.1.0-SNAPSHOT")
+    testImplementation("dev.brikk.house:brikk-sql-metadata-jvm:0.1.0-SNAPSHOT")
 
     // SPI types are compileOnly above; tests instantiate the plugin so they need them too.
     // (junit/assertj/kotlin-test come from buildlogic.kotlin.common.)
