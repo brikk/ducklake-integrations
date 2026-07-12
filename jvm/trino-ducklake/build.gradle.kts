@@ -15,6 +15,18 @@ detekt {
     source.setFrom("src", "test")
 }
 
+// brikk-sql (dev.brikk.house) is a TEST-ONLY SQL transpiler used by the corpus-replay dialect
+// gate; its 0.1.0-SNAPSHOT lives only in mavenLocal. exclusiveContent pins mavenLocal to that one
+// group so it can't shadow any other (Trino/airlift/…) dependency, which all still come from
+// mavenCentral. The transpiler must never enter the plugin jar — it's testImplementation only.
+repositories {
+    exclusiveContent {
+        forRepository { mavenLocal() }
+        filter { includeGroup("dev.brikk.house") }
+    }
+    mavenCentral()
+}
+
 // Use Trino BOM for all managed dependency versions
 dependencies {
     // BOM import — controls versions for io.trino, io.airlift, jackson, opentelemetry, etc.
@@ -88,6 +100,13 @@ dependencies {
     testImplementation(libs.testcontainers.core)
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.mysql)
+
+    // brikk-sql: DuckDB→Trino SQL transpiler powering the corpus-replay dialect gate
+    // (transpile-first — run what transpiles + is mappable, engine-skip the rest). TEST-ONLY:
+    // the production connector never sees raw SQL (Trino parses it). brikk-sql-verify's
+    // TrinoVerifier re-parses transpiled SQL under Trino's real grammar as an extra gate signal.
+    testImplementation("dev.brikk.house:brikk-sql:0.1.0-SNAPSHOT")
+    testImplementation("dev.brikk.house:brikk-sql-verify:0.1.0-SNAPSHOT")
 
     // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
     // bundles per-platform natives (incl. darwin-aarch64). Arrow transitives resolve through the

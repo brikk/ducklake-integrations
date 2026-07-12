@@ -34,10 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * (`ducklake.catalog.database-url`) and the oracle's data path, so oracle and
  * engine read the exact same lake, including intermediate states.
  *
- * v1 `accepts` gate: only alias-qualified reads (`<alias>.<table>` or
- * `<alias>.main.<table>`). Bare table names may reference the oracle's
- * in-memory temp tables (not the lake) and DuckDB-specific surfaces
- * (functions, PRAGMA, time-travel `AT (...)`, `::` casts) are engine-skips.
+ * `accepts` gate: alias-qualified reads only (`<alias>.<table>` — bare names may be the oracle's
+ * in-memory temp tables, not the lake) AND [TrinoCorpusDialect] returns a `Run`. The dialect is
+ * transpile-first (brikk-sql translates DuckDB→Trino and keys off the transpiler's own
+ * unmappable/unsupported/verify signals), replacing the former hand-maintained DuckDB-ism token
+ * deny-list + hand-rolled rewrites. [executeQuery] runs the transpiled SQL (after the
+ * corpus-specific alias→catalog rewrite).
  */
 class TrinoReplayEngine : ReplayReadEngine {
 
@@ -102,50 +104,44 @@ class TrinoReplayEngine : ReplayReadEngine {
                 .build()
     }
 
+    /** Cache the last gate decision so accepts() + executeQuery() transpile once. */
+    private var lastGate: Pair<String, TrinoCorpusDialect.Gate>? = null
+
+    private fun gateFor(sql: String): TrinoCorpusDialect.Gate {
+        lastGate?.let { (cachedSql, gate) -> if (cachedSql == sql) return gate }
+        val gate = TrinoCorpusDialect.gate(sql)
+        lastGate = sql to gate
+        return gate
+    }
+
     override fun accepts(sql: String): Boolean {
         val alias = currentAlias ?: return false
         val s = sql.trim()
-        val upper = s.uppercase()
-        if (!upper.startsWith("SELECT ") && !upper.startsWith("FROM ")) return false
-        // DuckDB's `FROM t SELECT cols` form can't be mechanically prefixed.
-        if (upper.startsWith("FROM ") && upper.contains(" SELECT ")) return false
-        // Must reference the lake by alias — bare names may be oracle-local temp tables.
-        if (!Regex("\\b$alias\\.").containsMatchIn(s)) return false
-        // Catalog-scoped table functions (`<alias>.snapshots()`, …) have no
-        // 1:1 rewrite; our equivalents are $-tables/PTFs with different names.
-        if (Regex("\\b$alias\\.\\w+\\s*\\(").containsMatchIn(s)) return false
-        // DuckDB allows an unquoted interval literal (`INTERVAL 1 DAY`); Trino requires the
-        // quoted SQL-standard form (`INTERVAL '1' DAY`) and cannot parse the bare-number shape.
-        // Pure dialect gap (not a connector bug) — decline it; the mirror only compares results
-        // for queries both engines can run. A quoted `INTERVAL '1'` is unaffected.
-        if (Regex("\\bINTERVAL\\s+\\d", RegexOption.IGNORE_CASE).containsMatchIn(s)) return false
-        // DuckDB-specific surfaces we don't attempt in v1. `rowid` is DuckDB's
-        // virtual column (ours is `$row_id` — a candidate mapping upgrade).
-        val blocked =
-            listOf(
-                "ducklake_", "__ducklake", "PRAGMA", " AT ", "AT(", "GLOB(", "::",
-                "DUCKDB_", "SQLITE_", "INFORMATION_SCHEMA", "CURRENT SETTING", "SETTINGS",
-                "ROWID", "POSITIONAL JOIN", "ASOF ", "STATS(", "TYPEOF(", "FILENAME",
-                "FILE_ROW_NUMBER", "SNAPSHOT_ID", "FILE_INDEX",
-            )
-        return blocked.none { upper.contains(it) }
+        // Must reference the lake by alias — bare names may be oracle-local temp tables (harness
+        // concern, not dialect, so it stays here rather than in the transpile gate).
+        if (!Regex("\\b${Regex.escape(alias)}\\.").containsMatchIn(s)) return false
+        // Catalog-scoped table functions (`<alias>.snapshots()`, …) have no 1:1 rewrite; our
+        // equivalents are $-tables/PTFs with different names.
+        if (Regex("\\b${Regex.escape(alias)}\\.\\w+\\s*\\(").containsMatchIn(s)) return false
+        // Transpile-first gate: runnable only if brikk-sql faithfully translates duckdb→trino
+        // (replaces the former token deny-list + INTERVAL/`::`/… heuristics — see TrinoCorpusDialect).
+        return gateFor(sql) is TrinoCorpusDialect.Run
     }
 
     override fun executeQuery(sql: String): List<List<String?>> {
         val session = currentSession ?: error("connect() was not called")
         val catalog = currentCatalog!!
         val alias = currentAlias!!
-        var s = sql.trim().removeSuffix(";").trim()
-        if (s.uppercase().startsWith("FROM ")) {
-            s = "SELECT * $s"
-        }
-        // The mirror compares sorted rows, so DuckDB's ORDER BY ALL is
-        // droppable rather than untranslatable.
-        s = s.replace(Regex("\\bORDER\\s+BY\\s+ALL\\s*$", RegexOption.IGNORE_CASE), "")
-        // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; then <alias>.<t> (no
-        // further dot) → <catalog>.main.<t>.
-        s = s.replace(Regex("\\b$alias\\.(\\w+)\\.(\\w+)"), "$catalog.$1.$2")
-        s = s.replace(Regex("\\b$alias\\.(\\w+)\\b(?!\\.)"), "$catalog.main.$1")
+        // The transpiled Trino SQL (DuckDB-isms translated, time travel mapped, ORDER BY ALL
+        // handled) — accepts() already confirmed this is a Run. The only rewrite left is the
+        // corpus alias→catalog step (brikk-sql passes table identifiers through unquoted):
+        // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; then <alias>.<t> (no further dot) →
+        // <catalog>.main.<t>.
+        val run = gateFor(sql) as? TrinoCorpusDialect.Run
+            ?: error("executeQuery on a non-runnable query: ${gateFor(sql)}")
+        var s = run.trinoSql
+        s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\.(\\w+)"), "$catalog.$1.$2")
+        s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\b(?!\\.)"), "$catalog.main.$1")
         val result =
             try {
                 runner.execute(session, s)

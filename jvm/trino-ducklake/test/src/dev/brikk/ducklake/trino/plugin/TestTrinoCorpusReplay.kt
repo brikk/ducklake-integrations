@@ -54,6 +54,9 @@ class TestTrinoCorpusReplay {
         dev.brikk.ducklake.corpus.PostgresAxisSkips.SKIPS + mapOf(
             "metadata/appender_variant_stats.test" to
                 "VARIANT-typed parquet not readable by the Trino parquet reader (F10 territory)",
+            "stats/variant_mixed_type_stats.test" to
+                "VARIANT-typed parquet not readable by the Trino parquet reader (F10; same class as " +
+                "metadata/appender_variant_stats.test — the transpile-first gate now admits these reads)",
             "add_files/add_files_type_check_timestamp.test" to
                 "duckdb-jdbc truncates TIMESTAMP_NS to micros (oracle-side limitation; also " +
                 "a ms/us rendering ordering nuance under investigation)",
