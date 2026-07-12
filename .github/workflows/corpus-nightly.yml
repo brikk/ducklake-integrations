@@ -26,6 +26,16 @@ jobs:
     runs-on: ubuntu-latest
     # The full corpus is large; give it a generous ceiling.
     timeout-minutes: 180
+    # `packages: read` + GITHUB_TOKEN: this job compiles :trino-ducklake's test sources,
+    # which depend on the test-only brikk-sql transpiler served from brikk's GitHub Packages
+    # Maven registry — and GitHub's Maven registry needs a token even for PUBLIC packages.
+    # See the buildlogic.kotlin.brikk convention plugin.
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GITHUB_ACTOR: ${{ github.actor }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v7

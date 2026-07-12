@@ -149,6 +149,21 @@ jobs:
     # detekt + the full test suite (incl. Testcontainers PostgreSQL and the corpus
     # replay starter set) fit comfortably, but give headroom for extension downloads.
     timeout-minutes: 60
+    # `packages: read` lets the auto-injected GITHUB_TOKEN pull the test-only brikk-sql
+    # transpiler from brikk's GitHub Packages Maven registry (repo: brikk/public-maven).
+    # GitHub's Maven registry requires a token EVEN FOR PUBLIC packages — anonymous reads
+    # 401. Same org, so GITHUB_TOKEN suffices (no PAT). `contents: read` is the checkout
+    # default we must restate once permissions is declared (declaring it drops the rest).
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # The buildlogic.kotlin.brikk convention reads these for the brikkPublicMaven repo
+      # credentials (falling back to brikk.gpr.user/key gradle props for local dev).
+      # GITHUB_ACTOR is a default runner env var; GITHUB_TOKEN is NOT exported unless set
+      # here, so wire it through explicitly.
+      GITHUB_ACTOR: ${{ github.actor }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v7
