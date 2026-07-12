@@ -54,6 +54,37 @@ internal class DuckLakeScanRangeThriftParityTest {
     }
 
     @Test
+    @Throws(Exception::class)
+    fun rangeDescCarriesColumnsFromPathForHiveLayoutRange() {
+        // Hive-layout add_files files carry partition columns in the PATH, not
+        // the parquet body — so populateRangeParams emits the BE native reader's
+        // constant-fill triple (keys / values / is-null). Fill order is preserved;
+        // values are always non-null (NULL hive partitions are rejected FE-side),
+        // so is-null is uniformly false.
+        val columnsFromPath = LinkedHashMap<String, String>()
+        columnsFromPath["part_key"] = "1"
+        columnsFromPath["region"] = "us east" // decoded value with a space
+        val range = DuckLakeScanRange.Builder()
+            .path(PATH).start(START).length(LENGTH).fileSize(FILE_SIZE).fileFormat(FILE_FORMAT)
+            .columnsFromPath(columnsFromPath)
+            .build()
+
+        val formatDesc = TTableFormatFileDesc()
+        val rangeDesc = TFileRangeDesc()
+        range.populateRangeParams(formatDesc, rangeDesc)
+
+        assertThat(rangeDesc.columnsFromPathKeys)
+            .containsExactly("part_key", "region")
+        assertThat(rangeDesc.columnsFromPath)
+            .containsExactly("1", "us east")
+        assertThat(rangeDesc.columnsFromPathIsNull)
+            .containsExactly(false, false)
+        // iceberg_params still emitted unchanged (data files still dispatch to
+        // the iceberg reader; columns_from_path is orthogonal path-fill).
+        assertThat(formatDesc.isSetIcebergParams).isTrue()
+    }
+
+    @Test
     fun tableFormatTypeIsIcebergUntilOptionB() {
         // The discriminator string is the only field the Option-A → Option-B
         // flip changes. Keep this assertion in lockstep with

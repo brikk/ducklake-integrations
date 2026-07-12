@@ -62,6 +62,13 @@ internal class DuckLakeScanRange private constructor(builder: Builder) :
         java.util.Map.copyOf(Objects.requireNonNull(builder.partitionValues, "partitionValues"))
     // -1 = "no precomputed count" sentinel (the ConnectorScanRange default).
     private val pushDownRowCount: Long = builder.pushDownRowCount
+    // Body-ABSENT partition columns to constant-fill from the file path, in
+    // fill order (see [columnsFromPath] KDoc + [populateRangeParams]). Values are
+    // always non-null: NULL hive partition values are rejected FE-side (the BE's
+    // columns_from_path fill cannot represent NULL — see DuckLakeScanPlanProvider).
+    // Empty for every native DuckLake file (partition columns in the body).
+    private val columnsFromPath: Map<String, String> =
+        java.util.LinkedHashMap(Objects.requireNonNull(builder.columnsFromPath, "columnsFromPath"))
 
     constructor(path: String, start: Long, length: Long, fileSize: Long, fileFormat: String) :
         this(path, start, length, fileSize, fileFormat, listOf())
@@ -107,9 +114,11 @@ internal class DuckLakeScanRange private constructor(builder: Builder) :
      * column name in active-spec field order (mirrors iceberg's
      * `getIdentityPartitionInfoMap` keying). Consumed FE-side only:
      * `PluginDrivenSplit.buildPartitionValues` copies `values()` onto the
-     * split. Never written to thrift here — DuckLake's writer stores partition
-     * columns in the parquet body, so the BE decodes them from the file
-     * (we deliberately emit no `path_partition_keys`, unlike iceberg).
+     * split. For NATIVE DuckLake files this is not written to thrift — the
+     * writer stores partition columns in the parquet body, so the BE decodes
+     * them from the file. Hive-layout `add_files` files are the exception: their
+     * body lacks the partition columns, so those are emitted as
+     * `columns_from_path` on the wire — see [columnsFromPath] / [populateRangeParams].
      */
     override fun getPartitionValues(): Map<String, String> = partitionValues
 
@@ -167,9 +176,39 @@ internal class DuckLakeScanRange private constructor(builder: Builder) :
         if (pushDownRowCount >= 0) {
             formatDesc.tableLevelRowCount = pushDownRowCount
         }
-        // Partition values / columns_from_path stay unset — DuckLake data
-        // files carry partition columns in the parquet body, so the BE reads
-        // them from the file; [getPartitionValues] is FE-plan-level only.
+        populateColumnsFromPath(rangeDesc)
+    }
+
+    /**
+     * Constant-fill for body-ABSENT partition columns (hive-layout `add_files`
+     * files). For a native DuckLake file [columnsFromPath] is empty and the
+     * three `columns_from_path*` fields stay UNSET — keeping the wire bytes
+     * byte-identical to the body-carried shape pinned by
+     * `DuckLakeScanRangeThriftParityTest` (the BE reads those partition columns
+     * from the parquet body). For a hive-layout file we emit the iceberg/hive
+     * native reader's path-fill triple: `columns_from_path_keys` (column names),
+     * `columns_from_path` (values), and `columns_from_path_is_null` (all `false`
+     * — NULL hive partition values are rejected FE-side because the BE's fill
+     * cannot represent them). The scan node must ALSO declare these columns as
+     * `path_partition_keys` (see `DuckLakeScanPlanProvider.getScanNodeProperties`)
+     * so the BE excludes them from the file/decode column set — without that the
+     * BE tries to read the body-absent column and fails "name_mapping must be set".
+     */
+    private fun populateColumnsFromPath(rangeDesc: TFileRangeDesc) {
+        if (columnsFromPath.isEmpty()) {
+            return
+        }
+        val keys = ArrayList<String>(columnsFromPath.size)
+        val values = ArrayList<String>(columnsFromPath.size)
+        val isNull = ArrayList<Boolean>(columnsFromPath.size)
+        for ((name, value) in columnsFromPath) {
+            keys.add(name)
+            values.add(value)
+            isNull.add(false)
+        }
+        rangeDesc.columnsFromPathKeys = keys
+        rangeDesc.columnsFromPath = values
+        rangeDesc.columnsFromPathIsNull = isNull
     }
 
     /**
@@ -197,6 +236,8 @@ internal class DuckLakeScanRange private constructor(builder: Builder) :
             private set
         var pushDownRowCount: Long = -1L
             private set
+        var columnsFromPath: Map<String, String> = mapOf()
+            private set
 
         fun path(path: String): Builder = apply { this.path = path }
 
@@ -219,6 +260,9 @@ internal class DuckLakeScanRange private constructor(builder: Builder) :
 
         fun pushDownRowCount(pushDownRowCount: Long): Builder =
             apply { this.pushDownRowCount = pushDownRowCount }
+
+        fun columnsFromPath(columnsFromPath: Map<String, String>): Builder =
+            apply { this.columnsFromPath = columnsFromPath }
 
         fun build(): DuckLakeScanRange = DuckLakeScanRange(this)
     }

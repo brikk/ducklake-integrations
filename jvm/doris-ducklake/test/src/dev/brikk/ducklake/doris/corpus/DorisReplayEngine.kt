@@ -29,8 +29,9 @@ import dev.brikk.ducklake.corpus.ReplayReadEngine
  *    into FE+BE at the SAME absolute path — host-side oracle and
  *    containerized BE read identical file paths.
  *
- * v1 `accepts` gate: [DorisCorpusDialect] (SELECT-only + DuckDB-ism deny
- * tiers) AND alias-qualified reads only — bare table names may reference the
+ * `accepts` gate: [DorisCorpusDialect] (transpile-first — brikk-sql translates
+ * DuckDB→Doris and the gate keys off the transpiler's own unmappable/unsupported
+ * signals) AND alias-qualified reads only — bare table names may reference the
  * oracle's in-memory temp tables, not the lake.
  */
 internal class DorisReplayEngine(
@@ -116,6 +117,16 @@ internal class DorisReplayEngine(
         currentAlias = attachment.catalogAlias
     }
 
+    /** Cache the last gate decision so accepts() + executeQuery() transpile once. */
+    private var lastGate: Pair<String, DorisCorpusDialect.Gate>? = null
+
+    private fun gateFor(sql: String): DorisCorpusDialect.Gate {
+        lastGate?.let { (cachedSql, gate) -> if (cachedSql == sql) return gate }
+        val gate = DorisCorpusDialect.gate(sql)
+        lastGate = sql to gate
+        return gate
+    }
+
     override fun accepts(sql: String): Boolean {
         val alias = currentAlias ?: return false
         val s = sql.trim()
@@ -129,21 +140,19 @@ internal class DorisReplayEngine(
         if (Regex("\\b${Regex.escape(alias)}\\.\\w+\\s*\\(").containsMatchIn(s)) {
             return false
         }
-        return DorisCorpusDialect.accepts(s)
+        // Transpile-first gate: runnable only if brikk-sql can faithfully
+        // translate the DuckDB query to Doris (see DorisCorpusDialect).
+        return gateFor(sql) is DorisCorpusDialect.Run
     }
 
     override fun executeQuery(sql: String): List<List<String?>> {
         val catalog = currentCatalog ?: error("connect() was not called")
         val alias = currentAlias ?: error("connect() was not called")
-        var s = sql.trim().removeSuffix(";").trim()
-        // DuckDB inline time travel `t AT (VERSION => n)` → Doris
-        // `t FOR VERSION AS OF n` (accepts() already gated to the literal
-        // form). Done BEFORE the alias rewrite so the clause stays attached to
-        // its (still-alias-qualified) table reference.
-        s = DorisCorpusDialect.rewriteInlineTimeTravel(s)
-        // The mirror compares sorted rows, so DuckDB's ORDER BY ALL is
-        // droppable rather than untranslatable.
-        s = s.replace(Regex("\\bORDER\\s+BY\\s+ALL\\s*$", RegexOption.IGNORE_CASE), "")
+        // The transpiled Doris SQL (DuckDB-isms rewritten, time travel mapped,
+        // ORDER BY ALL handled) — accepts() already confirmed this is a Run.
+        val run = gateFor(sql) as? DorisCorpusDialect.Run
+            ?: error("executeQuery on a non-runnable query: ${gateFor(sql)}")
+        var s = run.dorisSql
         // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; then <alias>.<t>
         // (no further dot) → <catalog>.main.<t> (DuckLake's default schema).
         s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\.(\\w+)"), "$catalog.$1.$2")
@@ -189,6 +198,12 @@ internal class DorisReplayEngine(
             // nested v1 limits, inlined-state guard, …) fail cleanly by design.
             message.contains("not supported") || message.contains("Unsupported") ->
                 ReplayEngineSkip("connector documented gap: " + firstLine(message))
+            // Inlined-DELETE guard (Stage 2): the connector fails loud on a table
+            // whose deletes live in ducklake_inlined_delete_* rather than a delete
+            // file — a documented gap (its message predates the "not supported"
+            // wording the branch above keys on), so classify it as an engine-skip.
+            message.contains("inlined DELETEs in the metadata catalog") ->
+                ReplayEngineSkip("connector documented gap (inlined deletes, Stage 2): " + firstLine(message))
             // DuckDB functions with no Doris equivalent (typeof,
             // uuid_extract_version, …): dialect gap, not a correctness signal —
             // the generic classification beats an ever-growing deny-list.

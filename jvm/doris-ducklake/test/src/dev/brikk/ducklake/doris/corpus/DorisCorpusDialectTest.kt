@@ -1,140 +1,120 @@
 package dev.brikk.ducklake.doris.corpus
 
+import dev.brikk.ducklake.doris.corpus.DorisCorpusDialect.Run
+import dev.brikk.ducklake.doris.corpus.DorisCorpusDialect.Skip
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
-import org.assertj.core.api.Assertions.assertThat
-
 /**
- * Pins the v1 `accepts()` gate of the (backend-axis-gated) corpus adapter:
- * conservative SELECT-only admission with a deny-list of DuckDB-isms. Every
- * rejection is an engine-SKIP in the runner's report, so false negatives are
- * cheap and false positives (admitting SQL Doris then fails on) are the only
- * real bug class — hence the bias in these pins.
+ * Pins the transpile-first [DorisCorpusDialect.gate]: brikk-sql translates the
+ * DuckDB corpus query to Doris and the gate runs it only when the transpiler
+ * can do so faithfully, else engine-skips with a specific reason. These tests
+ * exercise the DECISION + the emitted Doris SQL (not the live cluster).
  */
 internal class DorisCorpusDialectTest {
 
-    // ---- admission: plain SELECTs, however they're dressed ----
+    private fun run(sql: String): Run =
+        DorisCorpusDialect.gate(sql).let {
+            assertThat(it).`as`("expected Run for: $sql").isInstanceOf(Run::class.java)
+            it as Run
+        }
+
+    private fun skip(sql: String): Skip =
+        DorisCorpusDialect.gate(sql).let {
+            assertThat(it).`as`("expected Skip for: $sql").isInstanceOf(Skip::class.java)
+            it as Skip
+        }
+
+    // ---- Runs: transpiled to Doris ----
 
     @Test
-    fun acceptsPlainSelects() {
-        assertThat(DorisCorpusDialect.accepts("SELECT 1")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("select a, b from t where a > 3")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("  \n\tSELECT count(*) FROM s.t")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("(SELECT 1)")).isTrue()
+    fun transpilesPlainSelect() {
+        assertThat(run("SELECT a, b FROM lake.s.t WHERE a > 3").dorisSql)
+            .contains("SELECT").contains("lake.s.t")
     }
 
     @Test
-    fun acceptsSelectsBehindLeadingComments() {
-        assertThat(DorisCorpusDialect.accepts("-- comment\nSELECT 1")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("/* block */ SELECT 1")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("-- a\n-- b\nSELECT 1")).isTrue()
-    }
-
-    // ---- tier 1: only reads are mirrored (the oracle owns everything else) ----
-
-    @Test
-    fun rejectsNonSelectStatements() {
-        assertThat(DorisCorpusDialect.accepts("INSERT INTO t VALUES (1)")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("UPDATE t SET a = 1")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("DELETE FROM t")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("CREATE TABLE t (a INT)")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("DROP TABLE t")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("PRAGMA version")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("-- only a comment")).isFalse()
+    fun rewritesCastShorthand() {
+        // `::` is not Doris syntax; the transpiler must emit CAST(...).
+        assertThat(run("SELECT o_orderkey::BIGINT FROM lake.s.orders").dorisSql)
+            .contains("CAST(o_orderkey AS BIGINT)")
+            .doesNotContain("::")
     }
 
     @Test
-    fun acceptsWithCtes() {
-        // WITH…SELECT: Doris supports CTEs; deny-tiers still guard the body.
-        assertThat(DorisCorpusDialect.accepts("WITH x AS (SELECT 1) SELECT * FROM x")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("with cte as (select a from t) select * from cte")).isTrue()
-        // "WITHIN" is not the WITH keyword.
-        assertThat(DorisCorpusDialect.accepts("WITHIN GROUP stuff")).isFalse()
-    }
-
-    // ---- tier 2: DuckDB-only syntax Doris's parser refuses ----
-
-    @Test
-    fun rejectsDuckDbSyntaxShorthands() {
-        assertThat(DorisCorpusDialect.accepts("SELECT 1::BIGINT")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT [1, 2, 3]")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT {'a': 1}")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT list_transform(l, x -> x + 1) FROM t")).isFalse()
-    }
-
-    // ---- tier 3: DuckDB-internal state ----
-
-    @Test
-    fun rejectsDuckDbCatalogAndFileFunctions() {
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM duckdb_tables()")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM read_parquet('f.parquet')")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM range(10)")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT current_setting('threads')")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM ducklake_snapshots('lake')")).isFalse()
-    }
-
-    // ---- tier 4: families the v1 type surface can't compare ----
-
-    @Test
-    fun rejectsDegradedTypeFamilies() {
-        assertThat(DorisCorpusDialect.accepts("SELECT INTERVAL 1 DAY")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT unnest(l) FROM t")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT t.* FROM t USING SAMPLE 10%")).isFalse()
+    fun rewritesFilterWhereToCase() {
+        // Doris has no `agg(...) FILTER (WHERE …)` — must become CASE.
+        val sql = run("SELECT COUNT(*) FILTER (WHERE id % 2 = 0) FROM lake.s.t").dorisSql
+        assertThat(sql).containsIgnoringCase("CASE WHEN").doesNotContainIgnoringCase("FILTER")
     }
 
     @Test
-    fun rewritesLiteralInlineTimeTravelToForVersionAsOf() {
-        // Literal `AT (VERSION => n)` → `FOR VERSION AS OF n` (DuckLake
-        // version == snapshot id). Accepted, and the rewrite is exact.
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => 2)")).isTrue()
-        assertThat(DorisCorpusDialect.rewriteInlineTimeTravel("SELECT * FROM lake.tbl AT (VERSION => 2)"))
-            .isEqualTo("SELECT * FROM lake.tbl FOR VERSION AS OF 2")
-        assertThat(DorisCorpusDialect.rewriteInlineTimeTravel("select * from lake.t at(version=>10)"))
-            .isEqualTo("select * from lake.t FOR VERSION AS OF 10")
+    fun acceptsCtes() {
+        assertThat(run("WITH x AS (SELECT a FROM lake.s.t) SELECT * FROM x").dorisSql)
+            .containsIgnoringCase("WITH")
     }
 
     @Test
-    fun rejectsFilterWhereAggregateClause() {
-        // Doris's parser rejects SQL-standard `agg(...) FILTER (WHERE …)`.
-        assertThat(
-            DorisCorpusDialect.accepts("SELECT COUNT(*) FILTER(WHERE id%2=0) FROM lake.t"),
-        ).isFalse()
-        assertThat(
-            DorisCorpusDialect.accepts("SELECT sum(x) FILTER (WHERE y > 0) FROM lake.t"),
-        ).isFalse()
+    fun rewritesLiteralInlineTimeTravel() {
+        // brikk-sql passes `AT (VERSION => n)` through; the gate maps the literal
+        // form to Doris FOR VERSION AS OF n.
+        assertThat(run("SELECT * FROM lake.s.t AT (VERSION => 2)").dorisSql)
+            .contains("FOR VERSION AS OF 2")
+            .doesNotContainIgnoringCase("AT (")
     }
 
     @Test
-    fun rejectsInfinityTemporalLiterals() {
-        // Doris folds `ts = 'infinity'` to constant-false and prunes the scan
-        // to 0 rows, bypassing the connector — a silent wrong answer, so deny.
-        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts='infinity'")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts>'-infinity'")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT COUNT(*) FROM lake.t WHERE ts=\"infinity\"")).isFalse()
-        // "infinity" as a plain identifier/column is fine.
-        assertThat(DorisCorpusDialect.accepts("SELECT infinity FROM lake.t")).isTrue()
+    fun dropsTrailingOrderByAll() {
+        // The mirror compares sorted rows, so a trailing ORDER BY ALL is dropped
+        // (brikk-sql would otherwise mis-parse ALL as a column).
+        val sql = run("SELECT a FROM lake.s.t ORDER BY ALL").dorisSql
+        assertThat(sql).doesNotContainIgnoringCase("ORDER BY")
+    }
+
+    // ---- Skips: transpiler signals / residual divergences ----
+
+    @Test
+    fun skipsNonReads() {
+        assertThat(skip("INSERT INTO lake.s.t VALUES (1)").reason).contains("read")
+        assertThat(skip("DROP TABLE lake.s.t").reason).contains("read")
     }
 
     @Test
-    fun rejectsNonLiteralInlineTimeTravel() {
-        // TIMESTAMP / non-literal version expressions have no mechanical
-        // rewrite → still denied after the literal rewrite pass.
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT(TIMESTAMP => NOW())")).isFalse()
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM lake.tbl AT (VERSION => v+1)")).isFalse()
-        // ... but the bare word AT stays admissible (aliases, column names).
-        assertThat(DorisCorpusDialect.accepts("SELECT at FROM lake.tbl")).isTrue()
+    fun skipsClass3FunctionHoles() {
+        // Functions absent from Doris's catalog → unmappable.
+        assertThat(skip("SELECT * FROM read_parquet('f.parquet')").reason)
+            .contains("no Doris mapping")
+        assertThat(skip("SELECT * FROM ducklake_snapshots('lake')").reason)
+            .contains("no Doris mapping")
     }
 
-    // ---- deny-list precision: word boundaries, not substrings ----
+    @Test
+    fun skipsPragmaPassthrough() {
+        assertThat(skip("PRAGMA database_size").reason).containsIgnoringCase("read")
+        // (PRAGMA isn't a SELECT/WITH, so it's rejected at the read gate before transpile.)
+    }
 
     @Test
-    fun denyListMatchesWholeWordsOnly() {
-        // RANGE is denied; a column called "oranges" or "range_x" is not.
-        assertThat(DorisCorpusDialect.accepts("SELECT oranges FROM t")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("SELECT range_x FROM t")).isTrue()
-        assertThat(DorisCorpusDialect.accepts("SELECT * FROM range(5)")).isFalse()
-        // INTERVAL denied even mid-query, any case.
-        assertThat(DorisCorpusDialect.accepts("SELECT a + interval 1 day FROM t")).isFalse()
+    fun skipsScalarUnnestViaUnsupportedMessage() {
+        assertThat(skip("SELECT unnest([1, 2, 3])").reason).contains("unsupported")
+    }
+
+    @Test
+    fun skipsInformationSchemaContentDivergence() {
+        assertThat(skip("SELECT * FROM information_schema.columns").reason)
+            .contains("information_schema")
+    }
+
+    @Test
+    fun skipsNonLiteralInlineTimeTravel() {
+        assertThat(skip("SELECT * FROM lake.s.t AT (TIMESTAMP => now())").reason)
+            .contains("time travel")
+    }
+
+    @Test
+    fun skipsOrderByAllGoverningLimit() {
+        // Dropping ORDER BY ALL before a LIMIT would change which rows survive.
+        assertThat(skip("SELECT a FROM lake.s.t ORDER BY ALL LIMIT 5").reason)
+            .contains("LIMIT")
     }
 }

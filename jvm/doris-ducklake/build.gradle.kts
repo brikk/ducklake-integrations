@@ -52,7 +52,13 @@ kotlin {
 repositories {
     exclusiveContent {
         forRepository { mavenLocal() }
-        filter { includeGroup("org.apache.doris") }
+        // org.apache.doris: FE SPI from the PR #62767 branch. dev.brikk.house:
+        // brikk-sql (SQL transpiler) — TEST-ONLY, used by the corpus-replay
+        // dialect gate; 0.1.0-SNAPSHOT lives only in mavenLocal.
+        filter {
+            includeGroup("org.apache.doris")
+            includeGroup("dev.brikk.house")
+        }
     }
     mavenCentral()
 }
@@ -95,6 +101,11 @@ dependencies {
 
     // Bundled in the plugin zip; FE classloader has no Postgres driver of its own.
     runtimeOnly(libs.postgres.jdbc)
+
+    // brikk-sql: DuckDB→Doris SQL transpiler for the corpus-replay dialect gate
+    // (transpile-first: run what transpiles + is mappable, engine-skip the rest).
+    // TEST-ONLY — the production plugin never sees raw SQL (Doris parses it).
+    testImplementation("dev.brikk.house:brikk-sql:0.1.0-SNAPSHOT")
 
     // SPI types are compileOnly above; tests instantiate the plugin so they need them too.
     // (junit/assertj/kotlin-test come from buildlogic.kotlin.common.)

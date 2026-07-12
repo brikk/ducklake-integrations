@@ -123,7 +123,7 @@ internal class DuckLakeScanPlanProvider(
         // loudly until the BE can snapshot-filter partial files.
         failOnUnfilterablePartialFile(dlHandle, dataFiles)
 
-        val partitions = resolvePartitionContext(dlHandle)
+        val partitions = resolvePartitionContext(dlHandle, dataFiles)
 
         // COUNT(*) pushdown: when the count is exactly servable from file
         // metadata, collapse the scan to a single range carrying the total
@@ -477,6 +477,14 @@ internal class DuckLakeScanPlanProvider(
         val absolutePath = pathResolver.resolveFilePath(
             file.path, file.pathIsRelative, tableDataPath,
         )
+        // Body-absent partition columns to constant-fill from the path (empty
+        // for native DuckLake files). The FE-plan-level partition values merge
+        // the IDENTITY values (body-carried, case B) with the non-null hive
+        // values so a partition-bearing range always reports its values.
+        val hiveColumns = hivePartitionValues(file, partitions, absolutePath)
+        val fePartitionValues = LinkedHashMap<String, String>()
+        fePartitionValues.putAll(identityPartitionValues(file, partitions))
+        fePartitionValues.putAll(hiveColumns)
         return DuckLakeScanRange.Builder()
             .path(absolutePath)
             .start(0L)
@@ -485,9 +493,56 @@ internal class DuckLakeScanPlanProvider(
             .fileFormat(normalizeFileFormat(file.fileFormat))
             .positionDeletes(resolvePositionDeletes(file, tableDataPath))
             .partitionBearing(partitions.partitionBearing)
-            .partitionValues(identityPartitionValues(file, partitions))
+            .partitionValues(fePartitionValues)
+            .columnsFromPath(hiveColumns)
             .pushDownRowCount(pushDownRowCount)
             .build()
+    }
+
+    /**
+     * Body-ABSENT partition columns for a hive-layout `add_files` file, as an
+     * ordered `currentColumnName -> value` map (always non-null). Empty for a
+     * native DuckLake file (no `mapping_id`, or no `is_partition` name-map
+     * entries). The value is parsed from the file PATH (mirrors the trino
+     * side's `parseHivePartitionColumnValues`): the name map keys by the ORIGINAL
+     * hive dir key (`pathKey`, pre-rename), while the emitted key is the CURRENT
+     * column name the BE matches against the table schema.
+     *
+     * FAIL LOUD on a NULL hive partition value (a `__HIVE_DEFAULT_PARTITION__`
+     * segment, or a key missing from the path): the BE's `columns_from_path`
+     * fill on the iceberg-dispatched reader cannot represent SQL NULL — it fills
+     * the literal string (silently wrong) and a NULL predicate over such a column
+     * crashes the reader. Throwing here keeps the query off the BE entirely (a
+     * clean engine-skip), never silently wrong. Non-null hive partitions are
+     * emitted as `columns_from_path` and read correctly.
+     */
+    private fun hivePartitionValues(
+        file: DucklakeDataFile,
+        partitions: PartitionContext,
+        absolutePath: String,
+    ): Map<String, String> {
+        val mappingId = file.mappingId ?: return emptyMap()
+        val pathKeysByColumnId = partitions.partitionNameMapsByMappingId[mappingId] ?: return emptyMap()
+        if (pathKeysByColumnId.isEmpty()) {
+            return emptyMap()
+        }
+        val pathValues = HivePartitionPath.parse(absolutePath)
+        val out = LinkedHashMap<String, String>(pathKeysByColumnId.size)
+        for ((columnId, pathKey) in pathKeysByColumnId) {
+            val columnName = partitions.columnNamesById[columnId] ?: continue
+            val raw = pathValues[pathKey.lowercase(Locale.ROOT)]
+            if (raw == null || raw == HivePartitionPath.HIVE_DEFAULT_PARTITION) {
+                throw DorisConnectorException(
+                    "reading a hive-layout add_files file with a NULL partition value (column " +
+                        "'$columnName', file '$absolutePath') is not supported yet by the Doris connector: " +
+                        "the BE's columns_from_path fill cannot represent SQL NULL for a path partition " +
+                        "(it would return the literal sentinel, and a NULL predicate over it crashes the " +
+                        "reader). Rewrite the table so partition values are non-null, or read via DuckDB.",
+                )
+            }
+            out[columnName] = HivePartitionPath.urlDecode(raw)
+        }
+        return out
     }
 
     /**
@@ -502,21 +557,53 @@ internal class DuckLakeScanPlanProvider(
      * `IcebergPartitionUtils.getIdentityPartitionInfoMap` skips non-identity
      * transforms; we mirror that exactly), so there is nothing to fetch.
      */
-    private fun resolvePartitionContext(dlHandle: DuckLakeTableHandle): PartitionContext {
+    private fun resolvePartitionContext(
+        dlHandle: DuckLakeTableHandle,
+        dataFiles: List<DucklakeDataFile>,
+    ): PartitionContext {
         val specs = catalog.getPartitionSpecs(dlHandle.tableId, dlHandle.snapshotId)
-        val activeSpec = specs.lastOrNull() ?: return PartitionContext.UNPARTITIONED
+        val activeSpec = specs.lastOrNull()
+
+        // Hive-layout add_files files carry their partition columns in the PATH,
+        // not the parquet body, flagged by `is_partition` name-map entries
+        // (mappingId → columnId → pathKey). This is the ONLY per-file signal
+        // that distinguishes them from native DuckLake files (which have no
+        // mapping_id and carry partition columns in the body). Fetch once.
+        val mappingIds = dataFiles.mapNotNull { it.mappingId }.toSet()
+        val partitionNameMaps =
+            if (mappingIds.isEmpty()) {
+                emptyMap()
+            } else {
+                catalog.getPartitionNameMaps(mappingIds)
+            }
+        val hasHiveLayout = partitionNameMaps.values.any { it.isNotEmpty() }
         val hasIdentityField =
-            activeSpec.fields.any { it.transform == DucklakePartitionTransform.IDENTITY }
-        if (!hasIdentityField) {
-            return PartitionContext(activeSpec, mapOf(), mapOf())
+            activeSpec?.fields?.any { it.transform == DucklakePartitionTransform.IDENTITY } == true
+
+        // Neither an active spec nor a hive-layout file → nothing partitioned.
+        if (activeSpec == null && !hasHiveLayout) {
+            return PartitionContext.UNPARTITIONED
         }
+
+        // Column names are needed to surface IDENTITY values AND to name the
+        // hive path-fill columns. Lowercased to match Doris's identifier
+        // convention (and iceberg's getIdentityPartitionInfoMap keying).
+        val columnNamesById =
+            if (hasIdentityField || hasHiveLayout) {
+                catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
+                    .associate { it.columnId to it.columnName.lowercase(Locale.ROOT) }
+            } else {
+                mapOf()
+            }
+        // File partition-value rows only matter for IDENTITY-spec fill (case B);
+        // pure-hive add_files (case A) has none.
         val valuesByFileId =
-            catalog.getFilePartitionValues(dlHandle.tableId, dlHandle.snapshotId)
-        // Lowercased to match Doris's identifier convention (and iceberg's
-        // identity-map keying via getIdentityPartitionInfoMap).
-        val columnNamesById = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
-            .associate { it.columnId to it.columnName.lowercase(Locale.ROOT) }
-        return PartitionContext(activeSpec, valuesByFileId, columnNamesById)
+            if (hasIdentityField) {
+                catalog.getFilePartitionValues(dlHandle.tableId, dlHandle.snapshotId)
+            } else {
+                mapOf()
+            }
+        return PartitionContext(activeSpec, valuesByFileId, columnNamesById, partitionNameMaps)
     }
 
     /**
@@ -574,12 +661,19 @@ internal class DuckLakeScanPlanProvider(
         val activeSpec: DucklakePartitionSpec?,
         val valuesByFileId: Map<Long, List<DucklakeFilePartitionValue>>,
         val columnNamesById: Map<Long, String>,
+        // mappingId → (columnId → hive path key) for body-ABSENT partition
+        // columns of hive-layout add_files files. Empty for native tables.
+        val partitionNameMapsByMappingId: Map<Long, Map<Long, String>> = mapOf(),
     ) {
+        // A table is partition-bearing when it has an active spec OR any file is
+        // hive-layout (case A pure-hive add_files has NO spec but still carries
+        // partition columns in the path — the engine must not path-parse
+        // DuckLake's own non-key=value layout for it either).
         val partitionBearing: Boolean
-            get() = activeSpec != null
+            get() = activeSpec != null || partitionNameMapsByMappingId.values.any { it.isNotEmpty() }
 
         companion object {
-            val UNPARTITIONED = PartitionContext(null, mapOf(), mapOf())
+            val UNPARTITIONED = PartitionContext(null, mapOf(), mapOf(), mapOf())
         }
     }
 
@@ -639,13 +733,37 @@ internal class DuckLakeScanPlanProvider(
                 out[PROP_LOCATION_PREFIX + key] = value
             }
         }
+
+        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
+        val dataFiles = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
+        val mappingIds = dataFiles.mapNotNull { it.mappingId }.toSet()
+        // Body-ABSENT partition columns of hive-layout add_files files, keyed by
+        // columnId. Empty for a native DuckLake table.
+        val hivePartitionColumnIds =
+            if (mappingIds.isEmpty()) {
+                emptySet()
+            } else {
+                catalog.getPartitionNameMaps(mappingIds).values.flatMapTo(HashSet()) { it.keys }
+            }
+
         // Schema dictionary: make the BE match file↔table columns by field id
         // (renamed/reordered columns read correctly instead of NULL), plus the
         // per-file name_mapping fallback for add_files/legacy files. Built from
         // the requested column handles + the active files' name maps; decoded
         // back onto the params in populateScanLevelParams. See
         // DuckLakeSchemaDictionary.
-        schemaDictionaryProp(handle, columns)?.let { out[PROP_SCHEMA_DICTIONARY] = it }
+        schemaDictionaryProp(columns, mappingIds, hivePartitionColumnIds)
+            ?.let { out[PROP_SCHEMA_DICTIONARY] = it }
+
+        // Path partition keys: declare the hive-layout partition columns at the
+        // scan-node level so PluginDrivenScanNode.getPathPartitionKeys →
+        // FileQueryScanNode.classifyColumn marks them PARTITION_KEY and EXCLUDES
+        // them from the file/decode column set. The per-range columns_from_path
+        // then fills them. Without this the BE tries to read the body-absent
+        // column and fails "name_mapping must be set when read missing field id
+        // data file". Mirrors the Paimon connector's path_partition_keys.
+        pathPartitionKeysProp(dlHandle, dataFiles, hivePartitionColumnIds)
+            ?.let { out[PROP_PATH_PARTITION_KEYS] = it }
         return out
     }
 
@@ -653,21 +771,60 @@ internal class DuckLakeScanPlanProvider(
      * Base64 schema dictionary for the requested columns, carrying the union of
      * the active data files' `ducklake_name_mapping` alternate names. Returns
      * null when there are no DuckLake column handles to describe.
+     *
+     * Hive-layout add_files partition columns ([hivePartitionColumnIds]) are
+     * EXCLUDED: they are body-absent and constant-filled from the path
+     * (columns_from_path), and carry no `getNameMaps` entry, so leaving them in
+     * makes the BE's field-id reader fail "name_mapping must be set when read
+     * missing field id data file" on the partition slot.
      */
     private fun schemaDictionaryProp(
-        handle: ConnectorTableHandle,
         columns: List<ConnectorColumnHandle>,
+        mappingIds: Set<Long>,
+        hivePartitionColumnIds: Set<Long>,
     ): String? {
         val dlColumns = columns.mapNotNull { it as? DuckLakeColumnHandle }
         if (dlColumns.isEmpty()) {
             return null
         }
-        val dlHandle = handle.asDuckLakeHandle<DuckLakeTableHandle>()
-        val mappingIds = catalog.getDataFiles(dlHandle.tableId, dlHandle.snapshotId)
-            .mapNotNull { it.mappingId }
-            .toSet()
+        val bodyColumns = dlColumns.filter { it.columnId !in hivePartitionColumnIds }
         val nameMaps = if (mappingIds.isEmpty()) emptyList() else catalog.getNameMaps(mappingIds).values
-        return DuckLakeSchemaDictionary.encode(dlColumns, nameMaps)
+        return DuckLakeSchemaDictionary.encode(bodyColumns, nameMaps)
+    }
+
+    /**
+     * Comma-joined, lowercased hive-layout partition column names to declare as
+     * `path_partition_keys`, or null when the table has no hive-layout files.
+     *
+     * Fail-loud guard (never silently wrong): `path_partition_keys` is a
+     * scan-node-wide declaration, so a table that MIXES hive-layout add_files
+     * files (partition columns in the path) with natively-written partitioned
+     * files (partition columns in the parquet body — `partitionId` set, no
+     * add_files `mappingId`) cannot be served — the BE would wrongly exclude the
+     * body-carried column from decode for the native files too. Throw rather
+     * than return wrong values for those.
+     */
+    private fun pathPartitionKeysProp(
+        dlHandle: DuckLakeTableHandle,
+        dataFiles: List<DucklakeDataFile>,
+        hivePartitionColumnIds: Set<Long>,
+    ): String? {
+        if (hivePartitionColumnIds.isEmpty()) {
+            return null
+        }
+        if (dataFiles.any { it.partitionId != null && it.mappingId == null }) {
+            throw DorisConnectorException(
+                "DuckLake table mixes hive-layout add_files partition files (partition columns in the " +
+                    "path) with natively-written partitioned files (partition columns in the parquet " +
+                    "body); the Doris connector cannot serve both in one scan yet, because the " +
+                    "scan-node path_partition_keys declaration is table-wide. Rewrite the table " +
+                    "(e.g. INSERT ... SELECT into a fresh table) so all files share one layout.",
+            )
+        }
+        val names = catalog.getTableColumns(dlHandle.tableId, dlHandle.snapshotId)
+            .filter { it.columnId in hivePartitionColumnIds }
+            .map { it.columnName.lowercase(Locale.ROOT) }
+        return if (names.isEmpty()) null else names.joinToString(",")
     }
 
     override fun populateScanLevelParams(
@@ -716,6 +873,12 @@ internal class DuckLakeScanPlanProvider(
         // to populateScanLevelParams (the two SPI methods share no instance
         // state), mirroring iceberg's "iceberg.schema_evolution" prop.
         const val PROP_SCHEMA_DICTIONARY: String = "ducklake.schema_dictionary"
+
+        // Scan-node declaration of hive-layout partition column names (lowercased,
+        // comma-joined). PluginDrivenScanNode.getPathPartitionKeys reads this key
+        // verbatim to classify those columns as PARTITION_KEY (excluded from file
+        // decode, filled from columns_from_path). Mirrors the Paimon connector.
+        const val PROP_PATH_PARTITION_KEYS: String = "path_partition_keys"
 
         // Opt-in for the EXPERIMENTAL, dev/compose-only inlined-data read path.
         // Off by default — the synthesis writes a temp file to shared warehouse
