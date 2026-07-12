@@ -15,13 +15,27 @@ detekt {
     source.setFrom("src", "test")
 }
 
-// brikk-sql (dev.brikk.house) is a TEST-ONLY SQL transpiler used by the corpus-replay dialect
-// gate; its 0.1.0-SNAPSHOT lives only in mavenLocal. exclusiveContent pins mavenLocal to that one
-// group so it can't shadow any other (Trino/airlift/…) dependency, which all still come from
-// mavenCentral. The transpiler must never enter the plugin jar — it's testImplementation only.
+// brikk-sql (dev.brikk.house) is a TEST-ONLY SQL transpiler used by the corpus-replay dialect gate.
+// Published to brikk's public GitHub Packages Maven registry (repo: brikk/public-maven). NOTE:
+// GitHub Packages Maven requires a token EVEN FOR PUBLIC packages (anonymous reads return 401 — a
+// GitHub limitation, not a brikk setting), so credentials are still needed: they come from
+// ~/.gradle/gradle.properties (brikk.gpr.user / brikk.gpr.key) or CI env (GITHUB_ACTOR /
+// GITHUB_TOKEN). Any GitHub token with read:packages works — the package itself is public.
+// exclusiveContent pins this authed repo to that one group so it can never shadow — nor gate the
+// auth of — any other (Trino/airlift/…) dependency, which all still come unauthed from mavenCentral.
+// The transpiler must never enter the plugin jar — it's testImplementation only.
 repositories {
     exclusiveContent {
-        forRepository { mavenLocal() }
+        forRepository {
+            maven {
+                name = "brikkPublicMaven"
+                url = uri("https://maven.pkg.github.com/brikk/public-maven")
+                credentials {
+                    username = providers.gradleProperty("brikk.gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+                    password = providers.gradleProperty("brikk.gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+                }
+            }
+        }
         filter { includeGroup("dev.brikk.house") }
     }
     mavenCentral()
@@ -103,9 +117,11 @@ dependencies {
 
     // brikk-sql: DuckDB→Trino SQL transpiler powering the corpus-replay dialect gate
     // (transpile-first — run what transpiles + is mappable, engine-skip the rest). TEST-ONLY:
-    // the production connector never sees raw SQL (Trino parses it). brikk-sql-verify's
-    // TrinoVerifier re-parses transpiled SQL under Trino's real grammar as an extra gate signal.
-    testImplementation("dev.brikk.house:brikk-sql:0.1.0-SNAPSHOT")
+    // the production connector never sees raw SQL (Trino parses it). The -jvm artifacts are the
+    // JVM target of the Kotlin-Multiplatform library; brikk-sql-verify's TrinoVerifier re-parses
+    // transpiled SQL under Trino's real grammar as an extra gate signal.
+    testImplementation("dev.brikk.house:brikk-sql-jvm:0.1.0-SNAPSHOT")
+    testImplementation("dev.brikk.house:brikk-sql-metadata-jvm:0.1.0-SNAPSHOT")
     testImplementation("dev.brikk.house:brikk-sql-verify:0.1.0-SNAPSHOT")
 
     // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
