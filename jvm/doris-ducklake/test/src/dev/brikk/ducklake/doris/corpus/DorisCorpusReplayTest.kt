@@ -123,6 +123,9 @@ internal class DorisCorpusReplayTest {
             "delete/delete_legacy_missing_mapping_after_rename_add_files.test" to
                 "per-file mapping unsolvable table-level: legacy id-less file after rename+add_files (same " +
                 "root cause as add_files.test)",
+            "stats/variant_mixed_type_stats.test" to
+                "VARIANT-typed columns: the BE parquet reader cannot read DuckLake's variant encoding " +
+                "([INTERNAL_ERROR] on read). Variant read support is a separate gap, not a dialect/mirror issue",
             "stats/filter_stress.test" to
                 "oracle-local cross-check: compares the lake against a non-lake DuckDB reference table " +
                 "(events_ref) via EXCEPT ALL; the reference table only exists oracle-side, so it can't be " +
