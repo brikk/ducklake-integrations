@@ -291,6 +291,16 @@ storage move.
 >   preserved … Mirrors upstream DuckLake's flush_inlined_data" — the code
 >   contradicts that, so this is a genuine defect, not an accepted v1 limitation.
 > Copied to [TODO-WRITE-MODE.md § flush_inlined_data row identity](TODO-WRITE-MODE.md#flush_inlined_data-must-preserve-row-identity--count--review-2026-07-13).
+>
+> **✅ FIXED 2026-07-13.** The flush now embeds each row's original global row_id as
+> `_ducklake_internal_row_id` (field id 2147483540 — new `readInlinedRowIds` +
+> the F7 lineage-column write layout in `writeParquetFile`) and registers the file
+> via a count-neutral path: `flushInlinedData(…, preservedRowIdStart)` sets
+> `row_id_start` to the original min and `applyInsertFragments(flushRowIdStart=…)`
+> leaves `record_count` / `next_row_id` unchanged (only `file_size_bytes` grows).
+> Pinned by `TestDucklakeFlushInlinedData.flushPreservesRowIdentityAndDoesNotDoubleCount`
+> (DuckDB `rowid`s identical before/after; record_count + next_row_id unchanged).
+> Corpus data_inlining/insert/general/update/delete/compaction 1699p/0f.
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to

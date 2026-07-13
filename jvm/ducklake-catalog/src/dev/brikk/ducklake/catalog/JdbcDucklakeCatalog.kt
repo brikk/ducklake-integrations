@@ -1747,6 +1747,33 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
+    override fun readInlinedRowIds(
+        tableId: Long,
+        schemaVersion: Long,
+        snapshotId: Long,
+    ): List<Long> {
+        val inlined = InlinedDataTable.of(tableId, schemaVersion)
+        val rowId: Field<Long> = DSL.field(DSL.name("row_id"), Long::class.java)
+        return try {
+            // Same filter + row_id ordering as readInlinedData, so the returned ids line up
+            // positionally with that method's rows.
+            dsl.select(rowId)
+                .from(inlined.table)
+                .where(inlined.activeAt(snapshotId))
+                .orderBy(rowId)
+                .fetch()
+                .map { it.get(rowId) }
+        }
+        catch (e: DataAccessException) {
+            log.log(
+                System.Logger.Level.DEBUG,
+                "Could not read inlined row_ids from {0} (table may not exist): {1}",
+                inlined.name, e.message,
+            )
+            emptyList()
+        }
+    }
+
     private fun getSnapshotIdForSchemaVersion(tableId: Long, schemaVersion: Long, snapshotId: Long): Long? {
         // Prefer table-scoped schema version rows when available.
         // Some catalogs include ducklake_schema_versions.table_id (DuckDB behavior),
@@ -2557,7 +2584,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    override fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>) {
+    override fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>, preservedRowIdStart: Long) {
         executeWriteTransaction("flush inlined data for table $tableId") { tx ->
             val ctx = tx.dsl()
             val newSnapshotId = tx.getNewSnapshotId()
@@ -2566,8 +2593,12 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             // end-snapshot the live inlined rows — atomically. The conflict matrix
             // (checkFlushedInlinedData) aborts if an intervening commit changed this table's
             // inlined data or schema, so the read-then-write can't duplicate or drop rows.
+            //
+            // flushRowIdStart makes this an identity-preserving move: the file is registered at the
+            // original min row-id (the per-row ids are embedded in the file), and record_count /
+            // next_row_id are NOT advanced (the rows were already counted + allocated when inlined).
             if (fragments.isNotEmpty()) {
-                applyInsertFragments(tx, tableId, fragments)
+                applyInsertFragments(tx, tableId, fragments, flushRowIdStart = preservedRowIdStart)
             }
             endSnapshotLiveInlinedRows(ctx, tableId, newSnapshotId, "flush")
 
@@ -3180,7 +3211,14 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         }
     }
 
-    private fun applyInsertFragments(tx: DucklakeWriteTransaction, tableId: Long, fragments: List<DucklakeWriteFragment>) {
+    private fun applyInsertFragments(
+        tx: DucklakeWriteTransaction,
+        tableId: Long,
+        fragments: List<DucklakeWriteFragment>,
+        // Non-null => this is a flush_inlined_data move: register the (single) file at this
+        // original row-id start and leave record_count / next_row_id unchanged.
+        flushRowIdStart: Long? = null,
+    ) {
         val ctx = tx.dsl()
         val tabstats = DUCKLAKE_TABLE_STATS.`as`("tabstats")
         val file = DUCKLAKE_DATA_FILE.`as`("file")
@@ -3195,7 +3233,7 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             .where(tabstats.TABLE_ID.eq(tableId))
             .fetchOne()
 
-        var runningRowId: Long = if (existingStats == null) 0L else orZero(existingStats.nextRowId)
+        var runningRowId: Long = flushRowIdStart ?: (if (existingStats == null) 0L else orZero(existingStats.nextRowId))
         var totalRecords: Long = 0
         var totalFileSize: Long = 0
         val partitionValueRecords: MutableList<DucklakeFilePartitionValueRecord> = mutableListOf()
@@ -3295,20 +3333,28 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
             ctx.batchInsert(fileColumnStatsRecords).execute()
         }
 
-        // Insert or update ducklake_table_stats (no PK/UNIQUE → can't use ON CONFLICT)
+        // Insert or update ducklake_table_stats (no PK/UNIQUE → can't use ON CONFLICT).
+        // A flush is a storage move: it grows file_size_bytes (a real file now exists) but must
+        // NOT advance record_count or next_row_id — the rows were already counted and their ids
+        // already allocated when the data was inlined.
+        val isFlush = flushRowIdStart != null
         if (existingStats != null) {
-            ctx.update(tabstats)
-                .set(tabstats.RECORD_COUNT, orZero(existingStats.recordCount) + totalRecords)
-                .set(tabstats.NEXT_ROW_ID, orZero(existingStats.nextRowId) + totalRecords)
+            var upd = ctx.update(tabstats)
                 .set(tabstats.FILE_SIZE_BYTES, orZero(existingStats.fileSizeBytes) + totalFileSize)
-                .where(tabstats.TABLE_ID.eq(tableId))
-                .execute()
+            if (!isFlush) {
+                upd = upd
+                    .set(tabstats.RECORD_COUNT, orZero(existingStats.recordCount) + totalRecords)
+                    .set(tabstats.NEXT_ROW_ID, orZero(existingStats.nextRowId) + totalRecords)
+            }
+            upd.where(tabstats.TABLE_ID.eq(tableId)).execute()
         }
         else {
+            // No prior stats. For a flush this is unexpected (inlined rows imply stats exist), but
+            // stay safe: record the moved rows once and set the allocator past their ids.
             ctx.insertInto(tabstats)
                 .set(tabstats.TABLE_ID, tableId)
                 .set(tabstats.RECORD_COUNT, totalRecords)
-                .set(tabstats.NEXT_ROW_ID, totalRecords)
+                .set(tabstats.NEXT_ROW_ID, if (isFlush) flushRowIdStart!! + totalRecords else totalRecords)
                 .set(tabstats.FILE_SIZE_BYTES, totalFileSize)
                 .execute()
         }

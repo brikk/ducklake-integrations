@@ -37,6 +37,7 @@ import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.InMemoryRecordSet
 import io.trino.spi.connector.RecordPageSource
 import io.trino.spi.procedure.Procedure
+import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
@@ -160,13 +161,25 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val columnTypes: List<Type> = columnHandles.map { it.columnType }
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
 
-        // Read + convert every live inlined row across schema versions. readInlinedData resolves
-        // by column_id at each version's schema and NULL-fills current columns the version lacks.
+        // Read + convert every live inlined row across schema versions, carrying each row's
+        // original DuckLake global row_id (readInlinedData and readInlinedRowIds both order by
+        // row_id, so they align positionally). The row_ids are embedded in the flushed file as
+        // _ducklake_internal_row_id so the flush preserves row identity (a storage move, not a
+        // re-insert) — matching upstream flush_row_id_start.
         val rows: MutableList<List<Any?>> = mutableListOf()
+        val rowIds: MutableList<Long> = mutableListOf()
         for (info in liveInfos) {
             val rawRows: List<List<Any?>> = catalog.readInlinedData(tableId, info.schemaVersion, snapshotId, topLevelColumns)
-            for (raw in rawRows) {
-                rows.add(raw.indices.map { i -> DucklakeInlinedValueConverter.convertJdbcValue(raw[i], columnTypes[i]) })
+            val ids: List<Long> = catalog.readInlinedRowIds(tableId, info.schemaVersion, snapshotId)
+            if (ids.size != rawRows.size) {
+                throw TrinoException(NOT_SUPPORTED,
+                        "Inlined row/row_id count mismatch for ${schema.schemaName}.${table.tableName} " +
+                                "(schema version ${info.schemaVersion}): ${rawRows.size} rows vs ${ids.size} row_ids")
+            }
+            for (i in rawRows.indices) {
+                val raw = rawRows[i]
+                rows.add(raw.indices.map { j -> DucklakeInlinedValueConverter.convertJdbcValue(raw[j], columnTypes[j]) })
+                rowIds.add(ids[i])
             }
         }
         if (rows.isEmpty()) {
@@ -176,10 +189,12 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
         val fragment: DucklakeWriteFragment = writeParquetFile(
-                fileSystem, tableDataPath, columnHandles, allCatalogColumns, columnTypes, rows)
+                fileSystem, tableDataPath, columnHandles, allCatalogColumns, columnTypes, rows, rowIds)
 
         try {
-            catalog.flushInlinedData(tableId, ImmutableList.of(fragment))
+            // Register at the ORIGINAL min row-id (the per-row ids ride in the file's embedded
+            // lineage column); record_count / next_row_id stay unchanged (see flushInlinedData).
+            catalog.flushInlinedData(tableId, ImmutableList.of(fragment), rowIds.min())
         }
         catch (e: TransactionConflictException) {
             throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
@@ -195,20 +210,32 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         return schema to table
     }
 
-    /** Materialize [rows] into one Parquet data file and return its registration fragment. */
+    /**
+     * Materialize [rows] into one Parquet data file and return its registration fragment. The
+     * file carries a trailing synthetic `_ducklake_internal_row_id` (field id 2147483540) column
+     * holding each row's original [rowIds] value, so the flush preserves row identity across
+     * gaps/deletes (mirrors the F7 lineage-preserving write path). The lineage column is appended
+     * LAST so the catalog-derived leaf-stat indices stay valid, and it is excluded from stats.
+     */
     private fun writeParquetFile(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             columnHandles: List<DucklakeColumnHandle>,
             allCatalogColumns: List<DucklakeColumn>,
             columnTypes: List<Type>,
-            rows: List<List<Any?>>): DucklakeWriteFragment {
+            rows: List<List<Any?>>,
+            rowIds: List<Long>): DucklakeWriteFragment {
         val columnNames: List<String> = columnHandles.map { it.columnName }
+        // Physical write layout = catalog columns + a trailing BIGINT lineage column.
         // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
+        val writeNames: List<String> = columnNames + DucklakePageSink.LINEAGE_COLUMN_NAME
+        val writeTypes: List<Type> = columnTypes + BIGINT
         val schemaConverter = ParquetSchemaConverter(
-                columnTypes.map { DucklakeJsonSupport.toParquetWriteType(it) }, columnNames, false, false)
+                writeTypes.map { DucklakeJsonSupport.toParquetWriteType(it) }, writeNames, false, false)
         val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                columnHandles, allCatalogColumns, schemaConverter.messageType)
+                columnHandles, allCatalogColumns, schemaConverter.messageType,
+                mapOf(DucklakePageSink.LINEAGE_COLUMN_NAME
+                        to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong()))
 
         val fileName = "ducklake-${UUID.randomUUID()}.parquet"
         val filePath: Location = Location.of(tableDataPath).appendPath(fileName)
@@ -227,11 +254,14 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val writer = ParquetFileWriter(
                 parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns)
 
+        // Append each row's original global row_id as the trailing lineage column value.
+        val rowsWithLineage: List<List<Any?>> = rows.mapIndexed { i, row -> row + rowIds[i] }
+
         var fragment: DucklakeWriteFragment? = null
         try {
             // Reuse the in-memory record-set → page path (the same machinery the inlined READ
             // path uses) to turn rows into Pages, then stream them through the Parquet writer.
-            RecordPageSource(InMemoryRecordSet(columnTypes, rows)).use { source ->
+            RecordPageSource(InMemoryRecordSet(writeTypes, rowsWithLineage)).use { source ->
                 while (!source.isFinished) {
                     val sourcePage = source.nextSourcePage ?: continue
                     writer.write(sourcePage.page)

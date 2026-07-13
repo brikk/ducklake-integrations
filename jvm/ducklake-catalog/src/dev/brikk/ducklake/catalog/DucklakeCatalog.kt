@@ -377,6 +377,16 @@ interface DucklakeCatalog {
     fun readInlinedBeginSnapshots(tableId: Long, schemaVersion: Long, snapshotId: Long): List<Long>
 
     /**
+     * Per-row DuckLake global `row_id` for the inlined rows live at [snapshotId], ordered by
+     * `row_id` — the SAME order [readInlinedData] returns, so the lists align positionally. Used by
+     * `flush_inlined_data` to preserve row identity: the materialized Parquet file embeds each
+     * row's original id as `_ducklake_internal_row_id` and is registered at the original row-id
+     * start (so a flush is an identity-preserving storage move, not a re-insert). Returns empty
+     * when the inlined table is absent (never created / already flushed).
+     */
+    fun readInlinedRowIds(tableId: Long, schemaVersion: Long, snapshotId: Long): List<Long>
+
+    /**
      * Get the base data path from ducklake_metadata
      */
     fun getDataPath(): String?
@@ -446,8 +456,15 @@ interface DucklakeCatalog {
      * `flushed_inlined`. Conflicts (via the conflict matrix) with any intervening commit that
      * dropped/altered the table or changed its inlined data, so a concurrent change aborts
      * rather than duplicating or dropping rows.
+     *
+     * A flush is an identity-preserving STORAGE MOVE, not a re-insert: [preservedRowIdStart] is
+     * the minimum original DuckLake `row_id` of the flushed rows (from [readInlinedRowIds]) and
+     * becomes the registered file's `row_id_start`; the per-row original ids are carried in the
+     * file's embedded `_ducklake_internal_row_id` column by the caller. The table's
+     * `record_count` and `next_row_id` are left UNCHANGED (the rows were already counted and their
+     * ids already allocated when inlined). Mirrors upstream `flush_row_id_start`.
      */
-    fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>)
+    fun flushInlinedData(tableId: Long, fragments: List<DucklakeWriteFragment>, preservedRowIdStart: Long)
 
     /**
      * Rename a table within its schema. End-snapshots the current `ducklake_table` row and

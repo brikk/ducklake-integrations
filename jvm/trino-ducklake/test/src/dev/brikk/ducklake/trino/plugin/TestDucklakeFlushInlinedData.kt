@@ -18,6 +18,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
+import java.sql.DriverManager
 
 /**
  * `CALL system.flush_inlined_data(schema, table)` — materializes a table's inlined rows (written
@@ -70,6 +71,77 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(0) as Number).toLong() })
                     .containsExactly(1L, 3L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    /** DuckLake global `rowid`s for a table, in id order, read through DuckDB. */
+    private fun duckdbRowIds(fqTable: String): List<Long> {
+        createDuckdbConnection().use { duck ->
+            duck.createStatement().use { stmt ->
+                stmt.executeQuery("SELECT rowid FROM ducklake_db.$fqTable ORDER BY rowid").use { rs ->
+                    val ids = mutableListOf<Long>()
+                    while (rs.next()) ids.add(rs.getLong(1))
+                    return ids
+                }
+            }
+        }
+    }
+
+    /** (record_count, next_row_id) from ducklake_table_stats for the active table. */
+    private fun tableStats(bare: String): Pair<Long, Long> {
+        val catalog = getIsolatedCatalog()
+        DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { conn ->
+            conn.prepareStatement(
+                    "SELECT ts.record_count, ts.next_row_id FROM ducklake_table_stats ts "
+                            + "JOIN ducklake_table t ON t.table_id = ts.table_id "
+                            + "WHERE t.table_name = ? AND t.end_snapshot IS NULL").use { ps ->
+                ps.setString(1, bare)
+                ps.executeQuery().use { rs ->
+                    check(rs.next()) { "no table_stats for $bare" }
+                    return rs.getLong(1) to rs.getLong(2)
+                }
+            }
+        }
+    }
+
+    /**
+     * Regression (terra P1): a flush is an identity-preserving storage MOVE. The materialized file
+     * must keep each row's original `rowid` (carried via the embedded `_ducklake_internal_row_id`)
+     * and must NOT inflate `record_count` / `next_row_id` (the rows were already counted and their
+     * ids already allocated when inlined). Previously the flush re-inserted the file: new rowids +
+     * doubled record_count + advanced allocator.
+     */
+    @Test
+    fun flushPreservesRowIdentityAndDoesNotDoubleCount() {
+        val table = "test_schema.flush_identity"
+        val bare = "flush_identity"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, name VARCHAR)")
+            writeInlinedRows(bare, "(1, 'a')", "(2, 'b')")
+            assertRowsStayedInlined(bare, 2L)
+
+            val beforeRowIds = duckdbRowIds(table)
+            assertThat(beforeRowIds).hasSize(2)
+            val (beforeCount, beforeNextRowId) = tableStats(bare)
+            assertThat(beforeCount).`as`("inlined rows are counted pre-flush").isEqualTo(2L)
+
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+            assertRowsWrittenToParquet(bare)
+
+            // Identity preserved: same rowids for the same logical rows.
+            assertThat(duckdbRowIds(table)).`as`("rowids unchanged by the flush move").isEqualTo(beforeRowIds)
+            // Count-neutral: a move must not inflate the live count or the allocator.
+            val (afterCount, afterNextRowId) = tableStats(bare)
+            assertThat(afterCount).`as`("record_count unchanged (no double-count)").isEqualTo(beforeCount)
+            assertThat(afterNextRowId).`as`("next_row_id unchanged (no allocator gap)").isEqualTo(beforeNextRowId)
+
+            // Values still read correctly on both engines.
+            assertThat(computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
+                    .map { (it.getField(0) as Number).toLong() to (it.getField(1) as String) })
+                    .containsExactly(1L to "a", 2L to "b")
         }
         finally {
             tryDropTable(table)
