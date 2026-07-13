@@ -1,25 +1,34 @@
 package dev.brikk.ducklake.doris.corpus
 
+import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
+import dev.brikk.house.sql.shape.certify
 
 /**
  * Transpile-first corpus dialect gate for the DuckLake corpus-replay adapter
  * (TEST-ONLY — the production connector never sees raw SQL; Doris parses it).
  *
- * Replaces the old hand-maintained DuckDB-ism deny-list with brikk-sql: every
- * corpus query is transpiled `duckdb -> doris`, and the gate keys off the
- * transpiler's own signals rather than a token blocklist. A query is
- * [Run]nable iff it transpiles AND none of these fire (else [Skip], counted as
- * an engine-skip, never a failure):
- *  - `unmappableFunctions("doris")` non-empty — Class-3 holes: functions absent
- *    from Doris's function catalog (`read_parquet`, `duckdb_tables`,
- *    `ducklake_snapshots`, …). Uses the engine's own registry, not a blocklist.
- *  - `isRawPassthroughStatement` — statement-shaped passthrough (`PRAGMA`, raw
- *    Command) with no Doris form.
- *  - `unsupportedMessages` non-empty — known-untranslatable constructs the
- *    transpiler still emits at WARN (e.g. scalar `UNNEST`/`EXPLODE`).
- *  - explicit residual skips the transpiler can't detect: `information_schema`
- *    (catalog CONTENT differs DuckDB-vs-Doris, not a syntax problem).
+ * Replaces the old hand-maintained DuckDB-ism deny-list with brikk-sql's
+ * `certify("doris")` (0.2.0): every corpus query is transpiled `duckdb -> doris`
+ * and certified in ONE call. A query is [Run]nable iff `report.ok` (no
+ * REFUSAL-severity findings) AND none of the explicit residuals below fire
+ * (else [Skip], counted as an engine-skip, never a failure).
+ *
+ * `certify` subsumes everything the gate used to assemble by hand — catalog
+ * capability (`UNMAPPABLE_FUNCTION`), generator flags (`UNSUPPORTED_TRANSLATION`),
+ * `Command`/`Pragma` roots (`RAW_PASSTHROUGH_STATEMENT`), uncertifiable targets
+ * (`NO_TARGET_CATALOG`) — plus `SEMANTIC_HAZARD` (probe-verified divergence even
+ * where syntax maps). WARNING findings do NOT block `ok` (result-identical under
+ * common conditions); only REFUSAL does. NB: hazard coverage is trino↔duckdb
+ * today — doris hazard pairs are still being probed, so for now `certify`'s doris
+ * verdict matches the old hand-assembled one plus `NO_TARGET_CATALOG`.
+ *
+ * Explicit residuals `certify` can't detect (kept):
+ *  - `information_schema` — the catalog CONTENT differs DuckDB-vs-Doris (not a
+ *    syntax/function problem, so no finding).
+ *  - DuckDB virtual/pseudo columns (`rowid`, `filename`, `file_row_number`,
+ *    `file_index`) — valid identifiers, not functions, so no finding; they have
+ *    no Doris column.
  *
  * Two corpus-specific rewrites brikk-sql doesn't own are handled here:
  *  - `ORDER BY ALL` (a DuckDB stable-sort idiom brikk-sql mis-parses as a
@@ -86,29 +95,26 @@ object DorisCorpusDialect {
             return Skip("parse under duckdb failed: ${firstLine(e)}")
         }
 
-        // Class-3 holes: functions with no Doris renderer AND absent from Doris's
-        // function catalog (the engine's own registry, not a token list).
-        val unmappable = fragment.unmappableFunctions(DORIS)
-        if (unmappable.isNotEmpty()) {
-            return Skip("functions with no Doris mapping: $unmappable")
-        }
-
-        val result = try {
-            fragment.transpileTo(DORIS)
+        // ONE call covers the whole capability/hazard predicate: UNMAPPABLE_FUNCTION,
+        // UNSUPPORTED_TRANSLATION, RAW_PASSTHROUGH_STATEMENT, NO_TARGET_CATALOG,
+        // SEMANTIC_HAZARD. desugarPipes=true so pipe fragments auto-desugar. Never
+        // throws — the SQL is always produced; ok=false ⇔ a REFUSAL finding exists.
+        val report = try {
+            fragment.certify(DORIS, desugarPipes = true)
         } catch (e: Exception) {
-            return Skip("transpile to doris failed: ${firstLine(e)}")
+            return Skip("certify to doris failed: ${firstLine(e)}")
         }
-        if (result.isRawPassthroughStatement) {
-            return Skip("raw passthrough statement (${result.rootKind}) — no Doris form")
-        }
-        if (result.unsupportedMessages.isNotEmpty()) {
-            return Skip("unsupported by doris: ${result.unsupportedMessages}")
+        if (!report.ok) {
+            val refusals = report.findings
+                .filter { it.severity == Severity.REFUSAL }
+                .joinToString("; ") { "${it.kind}: ${it.detail}" }
+            return Skip("certify refused: $refusals")
         }
 
         // Inline time travel: brikk-sql passes `AT (VERSION => n)` through verbatim.
         // Rewrite the literal form to Doris `FOR VERSION AS OF n`; a residual
         // `AT (…)` (timestamp / non-literal) has no Doris equivalent.
-        val sql = rewriteInlineTimeTravel(result.sql)
+        val sql = rewriteInlineTimeTravel(report.result.sql)
         if (AT_PAREN.containsMatchIn(sql)) {
             return Skip("non-literal inline time travel has no Doris form")
         }
