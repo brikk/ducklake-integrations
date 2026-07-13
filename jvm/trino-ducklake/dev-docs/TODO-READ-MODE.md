@@ -164,6 +164,18 @@ data file's scan.
       `write_deletion_vectors=true`, deletes some rows, Trino reads back
       only the survivors; also covers the no-op delete case where
       DuckDB writes nothing).
+- [ ] **Follow-up (perf/heap, review 2026-07-12): keep Roaring, don't explode to
+  `HashSet<Long>`.** `decodeBitmaps` (`DucklakePuffinDeleteReader.kt:293-318`)
+  materializes every deleted position as a boxed `Long` in a `HashSet` (`:306-307`),
+  then those sets are merged (`DucklakePageSourceProvider.kt:989-1022`) and copied
+  again in the delete transform (`:1857-1864`). A dense multi-million-position
+  vector then costs far more heap than its on-disk Roaring form, with per-split
+  allocation churn. Not a correctness bug (size guard at `:121-122`; corruption
+  fails loud) — an optimization: retain `RoaringBitmap` (or a primitive
+  `long`/bitset membership structure) through the filter path, drop the duplicate
+  copies, and consider an explicit resource cap for pathological delete files.
+  Profile a dense vector under concurrent scans first. Source:
+  [TODO-possible-terra-issues.md § P2 Puffin](TODO-possible-terra-issues.md).
 
 ## Sorted-Table Awareness (Read)
 
@@ -264,6 +276,19 @@ data file's scan.
   keeps the delete+insert shape). See README § Change Feed and archive/TODO-jayson-special-list-COMPLETED-2026-07.md § F9.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
+- [ ] **Follow-up (perf/latency, review 2026-07-12): change-feed setup is fully
+  eager.** `createChangeFeedPageSource` (`DucklakePageSourceProvider.kt:560-618`)
+  resolves ALL insert files + deletions, reads each file's entire lineage column
+  into a `LongArray` (`readInsertLineage`; collection at
+  `DucklakeDeleteFileReader.kt:201-216`), and builds whole-window
+  `deletedRowidsBySnapshot` + update-pairing before the first output page — so
+  time-to-first-row and retained heap scale with the history window, not the page,
+  and input may be re-read (once for lineage, once for output). Correct, just
+  eager. **Caveat for any fix:** update-pairing (delete + re-insert on the same
+  rowid) inherently needs cross-window state, so a lazy/bounded-batch rewrite may
+  need compact keyed/on-disk pairing state — do NOT drop pair semantics to stream.
+  Measure a large update/delete window (time-to-first-row + retained heap) first.
+  Source: [TODO-possible-terra-issues.md § P2 change-feed](TODO-possible-terra-issues.md).
 
 ## R7: Cross-Backend View Tests
 
@@ -607,3 +632,44 @@ to read-only via the JDBC code path):
 | `FOR VERSION AS OF` | Required | Required | Required (validate snapshot exists/readable in DuckDB) |
 | `FOR TIMESTAMP AS OF` | Required | Required | Required |
 | `$files` and snapshot metadata tables | Required | Required | N/A |
+
+## Robustness / Performance Follow-ups (review 2026-07-12)
+
+Triaged from [TODO-possible-terra-issues.md](TODO-possible-terra-issues.md); the
+verdicts there hold the counter-evidence for the items that were refuted. The
+CONFIRMED read-path items that don't already have a home section:
+
+- [ ] **Fail loud on an unparseable stored partition/default value** (robustness,
+  P1 site 2). `buildMissingColumnBlock` (`DucklakePageSourceProvider.kt:1780-1789`)
+  catches a parse failure of a `ducklake_file_partition_value` /
+  `initial_default` and returns NULL. Unlike the *pruning* path (whose parse
+  tolerance safely keeps a file), projecting NULL here emits a **wrong value** and
+  the caller can't tell it from a genuine SQL NULL — violates AGENTS.md "fail loud
+  over silently wrong". Fix: throw a clear `TrinoException` when a *present*
+  catalog value can't be decoded to the column type; keep NULL only for a
+  demonstrably absent column. (Note: the sibling concern — a present *primitive*
+  parquet column turning into NULL — was REFUTED: `constructField` always builds a
+  Field for present primitives and real type mismatches fail loud in
+  `ParquetReader`; only malformed nested map/list/row schemas hit the empty path.)
+- [ ] **Batch file-stat pruning into one query per plan, not per column** (perf,
+  P2). `DucklakeSplitManager.pruneDataFiles` (`:261-291`) calls
+  `findDataFileIdsInRange` once per predicate column, and each call
+  (`JdbcDucklakeCatalog.kt:960-1014`) fetches ALL active files (LEFT JOIN stats)
+  and filters `isWithinBounds` in the JVM — so C prunable columns ≈ C full
+  active-file scans + materializations before split construction. The JVM-side
+  compare is deliberate (text-stored MIN/MAX need type-aware `parseStatValue`,
+  hard to push into generic cross-backend SQL), so keep it; the win is to fetch
+  the stats for all predicate columns in a single query and pivot in the JVM
+  (C→1). Preserve the "unknown stats → keep the file" LEFT-JOIN semantics.
+- [ ] **Process-unique `.partial` name in the DuckDB read cache** (robustness,
+  latent). `DucklakeMaterializedFileCache.materialize`
+  (`DucklakeMaterializedFileCache.kt:79-108`) writes to `<key>.partial` where
+  `key = hash(remotePath, fileSize)` — shared, not process-unique — under
+  `${java.io.tmpdir}/ducklake-read/`, and its locks are JVM-local (`:53`). Two
+  co-located workers sharing that tmpdir can interleave writes to the same
+  `.partial`; the `downloaded != fileSize` guard (`:95-103`) catches truncation
+  but not two full-size interleaved writers, so a corrupt full-size `.db` could be
+  atomically moved into place and handed to DuckDB `ATTACH`. Cheap fix: name the
+  partial `<key>.<pid>-<uuid>.partial` before the atomic move (still one final
+  `<key>.db`). (The cache's *no-eviction / disk-growth* behavior is a separately
+  documented Phase-1 deferral — `:37-49` — not tracked here.)

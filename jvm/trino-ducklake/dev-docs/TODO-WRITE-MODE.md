@@ -1182,3 +1182,25 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   notice` on main: DuckLake is dropping its "experimental" label in the next
   release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
    the full feature set — re-survey ducklake-web when v1.1 tags.
+
+## Hive Partition Path Encoding on Writes — review 2026-07-12
+
+- [ ] **URL-encode IDENTITY partition path segments on write** (correctness,
+  P1). `DucklakePageSink.buildRelativePath` (`DucklakePageSink.kt:540-554`)
+  appends the raw partition value into the `key=value/` directory name, and
+  `DucklakePartitionComputer.computeIdentityValue` returns VARCHAR as raw
+  `getSlice(...).toStringUtf8()` — no escaping. The **read** side URL-*decodes*
+  (`DucklakeSplitManager.hiveUrlDecode`, `:797-819`) and maps
+  `__HIVE_DEFAULT_PARTITION__` → NULL (`:761`). Consequences of the asymmetry:
+  - a value containing `%` round-trips wrong (`a%20b` read back as `a b`);
+  - a value containing `/` creates extra path segments → parsed as a different
+    layout (value effectively lost);
+  - a literal `__HIVE_DEFAULT_PARTITION__` collides with the NULL sentinel;
+  - it diverges from DuckDB, which URL-encodes these segments — so cross-engine
+    reads of Trino-written partitions disagree.
+  - **Fix direction:** encode the path *segment* with the DuckDB/Hive-compatible
+    escaping rule (the inverse of `hiveUrlDecode`) while keeping the raw value in
+    `ducklake_file_partition_value` catalog metadata. **Proof first:** insert
+    identity-partition values containing `/`, `%`, space, Unicode, and the
+    literal `__HIVE_DEFAULT_PARTITION__`; verify on-disk layout + Trino AND DuckDB
+    reads before implementing. Source: [TODO-possible-terra-issues.md § P1](TODO-possible-terra-issues.md).
