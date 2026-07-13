@@ -206,16 +206,16 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `7a15d31` | 2026-07-05 |
-| `ducklake/` | `v1.5-variegata` | `c23aca43` (unchanged; confirmed via ls-remote — real upstream tip, 2026-06-17) | 2026-07-05 |
-| `ducklake/` | `main` | `6e90e9d3` | 2026-07-05 |
-| `ducklake-web/` | `main` | `82231c20` (unchanged) | 2026-07-05 |
-| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-07-05 |
-| `pg_ducklake/` | `main` | `f1a3475` (PG19 support; mostly PG glue) | 2026-07-05 |
-| `pg_ducklake/` | `v1.0` | `d538bf8` (two portable commit-protocol fixes #216/#217) | 2026-07-05 |
-| `duckdb-quack/` | `main` | `b9f841c` (async insert stream; protocol bump) | 2026-07-05 |
-| `duckdb-quack/` | `v1.5-variegata` | `29fc039` (bump to v1.5.4) | 2026-07-05 |
-| `duckdb-web/` | `main` | (see archive entry 2026-05-22; not refreshed this run) | 2026-05-22 |
+| `datafusion-ducklake/` | `main` | `cf7e58f` (v0.4.0: atomic append-with-deletes; SQL UPDATE/DELETE) | 2026-07-12 |
+| `ducklake/` | `v1.5-variegata` | `84ef2d14` (partition-id retry metadata fix) | 2026-07-12 |
+| `ducklake/` | `main` | `34db89b2` (write rotation + cache-lifetime fixes) | 2026-07-12 |
+| `ducklake-web/` | `main` | `d65193cf` (no behavioral docs change) | 2026-07-12 |
+| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-07-12 |
+| `pg_ducklake/` | `main` | `6c1748f` (inlined-flush ordering fix; PG-specific) | 2026-07-12 |
+| `pg_ducklake/` | `v1.0` | `d538bf8` (unchanged; portable commit-protocol fixes #216/#217) | 2026-07-12 |
+| `duckdb-quack/` | `main` | `fd268d8` (multi-fetch projection fix; connection-pool changes) | 2026-07-12 |
+| `duckdb-quack/` | `v1.5-variegata` | `29fc039` (unchanged; v1.5.4) | 2026-07-12 |
+| `duckdb-web/` | `main` | `a48a99fb` (Quack remains beta; no DuckLake behavior change) | 2026-07-12 |
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The

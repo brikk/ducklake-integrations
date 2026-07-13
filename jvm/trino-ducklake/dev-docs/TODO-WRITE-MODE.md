@@ -1060,12 +1060,14 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   (`2f00f057`/`5e8f73d7`/`4cfc3ca8`). Cross-check our `flush_inlined_data` +
   T2-B inlined-DELETE gate against the new commit vocabulary so a Trino-written
   inlined table round-trips. ~½-day verify spike; bug-shaped if commit fields drift.
-- **upstream-commit-retry-partition-ids** (ducklake `main`) — a cluster of
-  commit-retry correctness fixes around transaction-local partition ids
-  (`4f658a2f`/`6d078382`/`c6a20e92`/`a5a6be4d`) and "preserve externally added
-  transaction-local files" (`fcf8e5e8`). Directly relevant to our concurrent-conflict
-  / commit-retry path (`DuckDbCatalogWriteRetry`) — verify our partition-id handling
-  on retry doesn't have the same off-by-one they fixed. Bug-shaped; ~1-day spike.
+- **upstream-commit-retry-partition-ids** — ✅ VERIFIED NOT APPLICABLE 2026-07-12.
+  DuckLake's release backport `17ced711` fixes its C++ same-transaction case:
+  retry remaps a transaction-local partition id while retaining files that were
+  attached to it before the failed commit. Our `JdbcDucklakeCatalog` retries a
+  fresh transaction and re-allocates catalog ids from the new snapshot; a Trino
+  file fragment can only reference an already-committed table partition spec
+  (DDL and file publication are separate connector operations), so no
+  transaction-local partition id can cross a retry and require remapping.
 - **upstream-stats-on-delete** (ducklake `main` + release) — "Decrement stats when
   deletes drop data files" (`3be1c235`), "Keep column stats accurate on drop-to-empty
   + same-txn insert" (`8f51c142`), MIN/MAX answered from catalog when exact
