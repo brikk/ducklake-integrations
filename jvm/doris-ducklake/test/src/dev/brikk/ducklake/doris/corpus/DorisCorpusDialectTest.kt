@@ -81,11 +81,11 @@ internal class DorisCorpusDialectTest {
 
     @Test
     fun skipsClass3FunctionHoles() {
-        // Functions absent from Doris's catalog → unmappable.
+        // Functions absent from Doris's catalog → certify UNMAPPABLE_FUNCTION.
         assertThat(skip("SELECT * FROM read_parquet('f.parquet')").reason)
-            .contains("no Doris mapping")
+            .contains("UNMAPPABLE_FUNCTION")
         assertThat(skip("SELECT * FROM ducklake_snapshots('lake')").reason)
-            .contains("no Doris mapping")
+            .contains("UNMAPPABLE_FUNCTION")
     }
 
     @Test
@@ -95,8 +95,9 @@ internal class DorisCorpusDialectTest {
     }
 
     @Test
-    fun skipsScalarUnnestViaUnsupportedMessage() {
-        assertThat(skip("SELECT unnest([1, 2, 3])").reason).contains("unsupported")
+    fun skipsScalarUnnestViaUnsupportedTranslation() {
+        // certify REFUSAL: scalar UNNEST/EXPLODE has no Doris equivalent.
+        assertThat(skip("SELECT unnest([1, 2, 3])").reason).contains("UNSUPPORTED_TRANSLATION")
     }
 
     @Test

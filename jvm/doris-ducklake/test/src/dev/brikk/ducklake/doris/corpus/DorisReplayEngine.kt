@@ -29,9 +29,9 @@ import dev.brikk.ducklake.corpus.ReplayReadEngine
  *    into FE+BE at the SAME absolute path — host-side oracle and
  *    containerized BE read identical file paths.
  *
- * `accepts` gate: [DorisCorpusDialect] (transpile-first — brikk-sql translates
- * DuckDB→Doris and the gate keys off the transpiler's own unmappable/unsupported
- * signals) AND alias-qualified reads only — bare table names may reference the
+ * `accepts` gate: [DorisCorpusDialect] (transpile-first — brikk-sql's
+ * `certify("doris")` translates DuckDB→Doris and returns the runnable verdict in
+ * one call) AND alias-qualified reads only — bare table names may reference the
  * oracle's in-memory temp tables, not the lake.
  */
 internal class DorisReplayEngine(

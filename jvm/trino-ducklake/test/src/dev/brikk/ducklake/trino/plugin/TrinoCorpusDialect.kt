@@ -13,7 +13,9 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
+import dev.brikk.house.sql.shape.certify
 import dev.brikk.house.sql.verify.TrinoVerifier
 
 /**
@@ -21,26 +23,24 @@ import dev.brikk.house.sql.verify.TrinoVerifier
  * (TEST-ONLY — the production connector never sees raw SQL; Trino parses it).
  *
  * Replaces the former hand-maintained DuckDB-ism token deny-list (`::`, `INTERVAL \d`,
- * `ROWID`, `PRAGMA`, `DUCKDB_`, …) + hand-rolled `executeQuery` rewrites with `brikk-sql`:
- * every corpus query is transpiled `duckdb -> trino` and the gate keys off the transpiler's
- * own signals rather than a token list. A query is [Run]nable iff it transpiles AND none of
- * these fire (else [Skip], an engine-skip — never a failure):
- *  - `unmappableFunctions("trino")` non-empty — functions absent from Trino's function catalog
- *    (`read_parquet`, `duckdb_tables`, `ducklake_snapshots`, …). The engine's own registry, not
- *    a blocklist.
- *  - `isRawPassthroughStatement` — `PRAGMA` / raw Command with no Trino form.
- *  - `unsupportedMessages` non-empty — constructs the transpiler can't translate to Trino and
- *    still emits at WARN. NB Trino keeps native `FILTER (WHERE)` and `UNNEST`, so brikk-sql's
- *    Trino renderer emits FEWER of these than the Doris one — that's expected.
- *  - the transpiled SQL fails to re-parse under Trino's real grammar ([TrinoVerifier]) — catches
- *    brikk-sql emission bugs and turns them into clean skips (report to the brikk-sql agent)
- *    instead of runtime failures. (Doris couldn't do this — no fe-doris grammar on classpath.)
- *  - explicit residuals the transpiler can't self-detect (tuned per engine):
- *    - `information_schema` — catalog CONTENT differs DuckDB-vs-Trino (not a syntax problem).
- *    - DuckDB virtual columns (`rowid`, `filename`, `file_row_number`, `file_index`) — valid
- *      identifiers with no Trino column. (Trino's are `$`-prefixed with different semantics;
- *      mapping `rowid`→`$row_id` is a candidate upgrade, but the values aren't guaranteed equal,
- *      so skip rather than risk a false divergence.)
+ * `ROWID`, `PRAGMA`, `DUCKDB_`, …) + hand-rolled `executeQuery` rewrites with `brikk-sql`'s
+ * single `certify()` gate (brikk-sql 0.2.0). A query is [Run]nable iff `certify` returns
+ * `ok` (no REFUSAL-severity findings) AND none of the explicit residuals fire (else [Skip], an
+ * engine-skip — never a failure). `certify("trino")` in ONE call covers what we used to assemble
+ * by hand PLUS a new class we couldn't check before:
+ *  - UNMAPPABLE_FUNCTION — functions absent from Trino's catalog (`read_parquet`, `duckdb_tables`, …).
+ *  - RAW_PASSTHROUGH_STATEMENT — `PRAGMA` / raw Command with no Trino form.
+ *  - UNSUPPORTED_TRANSLATION — no faithful Trino rendering (e.g. scalar `UNNEST`/`EXPLODE`). NB
+ *    Trino keeps native `FILTER (WHERE)` and `UNNEST`, so this fires less than for Doris.
+ *  - NO_TARGET_CATALOG — uncertifiable target.
+ *  - SEMANTIC_HAZARD — probe-verified divergence even where syntax maps: certify now REFUSES
+ *    `typeof()` (engine-specific type-name spellings) and `lower()`/`upper()` (Turkish-İ Unicode
+ *    case-folding), which the old deny-list couldn't reason about.
+ * `certify` never throws and always produces `result.sql`; then the transpiled SQL is re-parsed
+ * under Trino's real grammar ([TrinoVerifier], which `certify` does NOT run) as a belt-and-braces
+ * signal — a parse failure is a brikk-sql emission bug, skipped + reportable rather than a runtime
+ * failure. Finally, explicit residuals `certify` can't self-detect (see [explicitResidualSkip]):
+ * `information_schema`, DuckDB virtual columns, and the unquoted-INTERVAL date-arithmetic hazard.
  *
  * Two corpus-specific rewrites brikk-sql doesn't own are handled here:
  *  - `ORDER BY ALL` (a DuckDB stable-sort idiom brikk-sql mis-parses as a column named `ALL`):
@@ -77,30 +77,23 @@ object TrinoCorpusDialect {
         if (preSkip != null) return preSkip
         checkNotNull(pre)
 
-        val fragment = try {
-            SqlFragment(pre, DUCKDB)
+        // One call replaces the former unmappable-functions + transpile + raw-passthrough +
+        // unsupported-messages assembly, and ADDS probe-verified SEMANTIC_HAZARD detection
+        // (e.g. typeof() type-name spellings, lower() Turkish-İ case-folding) that we couldn't
+        // check before. `ok` is true iff there are no REFUSAL-severity findings; certify never
+        // throws and always produces `result.sql`. (SqlFragment construction can still throw on a
+        // hard parse failure, so guard the whole thing.)
+        val report = try {
+            SqlFragment(pre, DUCKDB).certify(TRINO, desugarPipes = true)
         } catch (e: Exception) {
-            return Skip("parse under duckdb failed: ${firstLine(e)}")
+            return Skip("certify duckdb->trino threw: ${firstLine(e)}")
+        }
+        if (!report.ok) {
+            val refusals = report.findings.filter { it.severity == Severity.REFUSAL }
+            return Skip("not trino-certified: " + refusals.joinToString("; ") { "${it.kind}: ${it.detail}" })
         }
 
-        val unmappable = fragment.unmappableFunctions(TRINO)
-        if (unmappable.isNotEmpty()) {
-            return Skip("functions with no Trino mapping: $unmappable")
-        }
-
-        val result = try {
-            fragment.transpileTo(TRINO)
-        } catch (e: Exception) {
-            return Skip("transpile to trino failed: ${firstLine(e)}")
-        }
-        if (result.isRawPassthroughStatement) {
-            return Skip("raw passthrough statement (${result.rootKind}) — no Trino form")
-        }
-        if (result.unsupportedMessages.isNotEmpty()) {
-            return Skip("unsupported by trino: ${result.unsupportedMessages}")
-        }
-
-        val sql = rewriteInlineTimeTravel(result.sql)
+        val sql = rewriteInlineTimeTravel(report.result.sql)
         if (AT_PAREN.containsMatchIn(sql)) {
             return Skip("non-literal inline time travel has no Trino form")
         }
@@ -139,23 +132,24 @@ object TrinoCorpusDialect {
     }
 
     /**
-     * Explicit residuals the transpiler can't self-detect — checked on the ORIGINAL DuckDB SQL
+     * Explicit residuals `certify()` can't self-detect — checked on the ORIGINAL DuckDB SQL
      * (pre-transpile). Each is a genuine DuckDB-vs-Trino divergence with a TRUE, specific reason,
-     * not a token blocklist:
-     *  - `information_schema` — catalog CONTENT differs (not syntax).
-     *  - DuckDB virtual columns (`rowid`/`filename`/`file_row_number`/`file_index`) — no Trino column.
-     *  - `typeof()` — Trino has it, but returns engine-specific type spellings (`integer` vs
-     *    `INTEGER`, `real` vs `FLOAT`, …) so the frozen DuckDB golden diverges.
-     *  - unquoted DuckDB INTERVAL literal — date/timestamp+interval arithmetic promotes to TIMESTAMP
-     *    in DuckDB but stays DATE in Trino, so the rendered result diverges.
+     * verified against certify's own findings (see TmpCertifySmoke probe, 2026-07-12):
+     *  - `information_schema` — valid syntax, certify says ok=true; but the catalog CONTENT differs
+     *    DuckDB-vs-Trino, which the transpiler can't know.
+     *  - DuckDB virtual columns (`rowid`/`filename`/`file_row_number`/`file_index`) — valid
+     *    identifiers, certify ok=true; no Trino column, so they'd resolve differently.
+     *  - unquoted DuckDB INTERVAL literal — certify ok=true (it just quotes `INTERVAL 1 DAY` →
+     *    `INTERVAL '1' DAY`), but DuckDB date/timestamp+interval arithmetic promotes to TIMESTAMP
+     *    while Trino keeps DATE, so the rendered result diverges. FEEDBACK filed to brikk-sql: this
+     *    is a SEMANTIC_HAZARD candidate certify does not yet flag (unlike typeof()/lower(), which it
+     *    now REFUSES — those residuals were removed as redundant).
      */
     private fun explicitResidualSkip(pre: String): Skip? = when {
         INFORMATION_SCHEMA.containsMatchIn(pre) ->
             Skip("information_schema: catalog content differs DuckDB-vs-Trino")
         DUCKDB_VIRTUAL_COLUMN.find(pre) != null ->
             Skip("DuckDB virtual column '${DUCKDB_VIRTUAL_COLUMN.find(pre)!!.value}' has no Trino equivalent")
-        TYPEOF.containsMatchIn(pre) ->
-            Skip("typeof(): engine-specific type-name spelling diverges DuckDB-vs-Trino")
         UNQUOTED_INTERVAL.containsMatchIn(pre) ->
             Skip("unquoted DuckDB INTERVAL literal: date/timestamp arithmetic promotion diverges (DuckDB→TIMESTAMP vs Trino→DATE)")
         else -> null
@@ -202,6 +196,5 @@ object TrinoCorpusDialect {
     private val INFORMATION_SCHEMA = Regex("\\binformation_schema\\b", RegexOption.IGNORE_CASE)
     private val DUCKDB_VIRTUAL_COLUMN =
         Regex("\\b(rowid|filename|file_row_number|file_index)\\b", RegexOption.IGNORE_CASE)
-    private val TYPEOF = Regex("\\btypeof\\s*\\(", RegexOption.IGNORE_CASE)
     private val UNQUOTED_INTERVAL = Regex("\\bINTERVAL\\s+\\d", RegexOption.IGNORE_CASE)
 }
