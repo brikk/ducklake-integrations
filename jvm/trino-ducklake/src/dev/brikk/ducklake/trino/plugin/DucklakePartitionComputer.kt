@@ -16,13 +16,17 @@ package dev.brikk.ducklake.trino.plugin
 import com.google.common.hash.Hashing.murmur3_32_fixed
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import io.airlift.slice.Slice
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.DateTimeEncoding.unpackMillisUtc
 import io.trino.spi.type.DateType
 import io.trino.spi.type.DateType.DATE
+import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
+import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
@@ -38,11 +42,14 @@ import io.trino.spi.type.VarbinaryType
 import io.trino.spi.type.VarcharType
 import java.lang.Math.floorDiv
 import java.lang.Math.floorMod
+import java.math.BigDecimal
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatterBuilder
+import java.time.temporal.ChronoField
 import java.util.OptionalInt
 
 /**
@@ -90,6 +97,15 @@ object DucklakePartitionComputer {
         return computeTemporalValue(columnType, block, position, transform, encoding)
     }
 
+    // `yyyy-MM-dd HH:mm:ss` with an optional fractional part (0-9 digits, dot only when non-zero).
+    // Matches the form DucklakePartitionValueParser accepts and DuckDB's hive-path convention.
+    private val IDENTITY_TIMESTAMP_FORMAT = DateTimeFormatterBuilder()
+            .appendPattern("yyyy-MM-dd HH:mm:ss")
+            .optionalStart()
+            .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)
+            .optionalEnd()
+            .toFormatter()
+
     private fun computeIdentityValue(type: Type, block: Block, position: Int): String {
         when (type) {
             is DateType -> {
@@ -104,8 +120,36 @@ object DucklakePartitionComputer {
             REAL -> return REAL.getFloat(block, position).toString()
             DOUBLE -> return DOUBLE.getDouble(block, position).toString()
         }
-        // VARCHAR and other string-like types
-        return type.getSlice(block, position).toStringUtf8()
+        // Wide identity types whose canonical text mirrors DucklakePartitionValueParser (the read
+        // side): DECIMAL and the timestamp family. These are long/Int128/object-backed, so the old
+        // `getSlice()` fallback threw UnsupportedOperationException at INSERT time — encode them
+        // properly instead.
+        return when (type) {
+            is DecimalType -> encodeDecimal(type, block, position)
+            is TimestampType, is TimestampWithTimeZoneType ->
+                // extractLocalDateTime normalizes all four short/long timestamp[tz] forms to a UTC
+                // LocalDateTime; render `yyyy-MM-dd HH:mm:ss[.fraction]`, which the parser accepts
+                // (it swaps the space for 'T' before LocalDateTime/OffsetDateTime.parse).
+                extractLocalDateTime(type, block, position).format(IDENTITY_TIMESTAMP_FORMAT)
+            // VARCHAR round-trips as its raw UTF-8 text.
+            is VarcharType -> type.getSlice(block, position).toStringUtf8()
+            // Everything else (VARBINARY, UUID, CHAR, TIME, …) has no canonical identity-partition
+            // text the read side can parse back — fail loud rather than write a value that reads
+            // wrong (raw bytes as invalid UTF-8) or crash opaquely in getSlice().
+            else -> throw TrinoException(
+                    NOT_SUPPORTED, "Identity partitioning is not supported for column type $type")
+        }
+    }
+
+    private fun encodeDecimal(type: DecimalType, block: Block, position: Int): String {
+        val decimal: BigDecimal = if (type.isShort) {
+            BigDecimal.valueOf(type.getLong(block, position), type.scale)
+        }
+        else {
+            BigDecimal((type.getObject(block, position) as Int128).toBigInteger(), type.scale)
+        }
+        // Plain (non-scientific) so the parser's BigDecimal(value).setScale(scale) round-trips.
+        return decimal.toPlainString()
     }
 
     private fun computeTemporalValue(

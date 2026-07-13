@@ -205,6 +205,38 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         }
     }
 
+    /**
+     * An explicit EMPTY snapshot_ids array means "expire nothing" — it must NOT fall through to
+     * retention-threshold expiry. Regression: the procedure used to key off the *filtered* set
+     * being non-empty, so `ARRAY[]` collapsed into the retention branch and (with a short/zero
+     * threshold) expired every non-latest snapshot.
+     */
+    @Test
+    fun emptyExplicitSnapshotIdsIsNoOpNotRetentionExpiry() {
+        val table = "test_schema.expire_empty_array"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT 1 AS id")
+            computeActual("INSERT INTO $table VALUES (2)")
+            computeActual("INSERT INTO $table VALUES (3)")
+            val before = computeScalar("SELECT count(*) FROM \"expire_empty_array\$snapshots\"") as Long
+            assertThat(before).`as`("several non-latest snapshots exist").isGreaterThanOrEqualTo(3L)
+
+            // Empty explicit list + a 0s threshold that WOULD drop every non-latest snapshot if the
+            // retention branch were (wrongly) taken. Correct behavior: no-op.
+            computeActual("CALL system.expire_snapshots("
+                    + "snapshot_ids => CAST(ARRAY[] AS ARRAY(BIGINT)), "
+                    + "retention_threshold => '0s', dry_run => false)")
+
+            assertThat(computeScalar("SELECT count(*) FROM \"expire_empty_array\$snapshots\"") as Long)
+                    .`as`("empty explicit snapshot_ids expires nothing").isEqualTo(before)
+            assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(1, 2, 3)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
     @Test
     fun neverExpiresLatestSnapshot() {
         val table = "test_schema.expire_latest"

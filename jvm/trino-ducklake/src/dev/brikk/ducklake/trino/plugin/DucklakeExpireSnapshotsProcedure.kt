@@ -79,10 +79,21 @@ class DucklakeExpireSnapshotsProcedure @Inject constructor(
             snapshotIds: List<Long>?,
             dryRun: Boolean,
     ) {
-        val explicit: Set<Long> = snapshotIds?.filterNotNull()?.toSet().orEmpty()
-        val expirable: List<Long> = if (explicit.isNotEmpty()) {
+        // Selection is chosen by whether the caller PASSED snapshot_ids at all, not by whether the
+        // resulting set is non-empty: an explicit empty array means "expire nothing", and must NOT
+        // silently widen into retention-threshold expiry (which would drop every old non-latest
+        // snapshot). NULL members are rejected rather than discarded.
+        val expirable: List<Long> = if (snapshotIds != null) {
+            val explicit: List<Long> = snapshotIds.filterNotNull()
+            if (explicit.size != snapshotIds.size) {
+                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "snapshot_ids must not contain NULL")
+            }
+            if (explicit.isEmpty()) {
+                log.info("expire_snapshots: explicit snapshot_ids is empty; nothing to expire")
+                return
+            }
             // Explicit ids: intersected with non-latest inside the catalog (the latest is dropped).
-            catalog.listExpirableSnapshots(null, explicit)
+            catalog.listExpirableSnapshots(null, explicit.toSet())
         }
         else {
             val cutoff: Instant = Instant.now().minusMillis(parseRetention(retentionThreshold).toMillis())

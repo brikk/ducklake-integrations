@@ -262,6 +262,40 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
+    fun testIdentityPartitionOnTimestampAndDecimal() {
+        // Regression: identity partitioning on TIMESTAMP/DECIMAL used to crash the first INSERT
+        // (computeIdentityValue fell to Type.getSlice() -> UnsupportedOperationException). Verify
+        // the full write+read round-trip, predicate pruning, and the canonical on-disk path (which
+        // also exercises the hive-path encoder composing on top of the identity encoder).
+        computeActual("CREATE TABLE test_schema.part_ts_dec (id INTEGER, ts TIMESTAMP(6), amt DECIMAL(10,2)) " +
+                "WITH (partitioned_by = ARRAY['ts', 'amt'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_ts_dec VALUES " +
+                    "(1, TIMESTAMP '2024-01-03 10:30:15', DECIMAL '123.45'), " +
+                    "(2, TIMESTAMP '2024-06-01 00:00:00', DECIMAL '0.10')")
+
+            assertThat(computeActual("SELECT count(*) FROM test_schema.part_ts_dec")
+                    .materializedRows[0].getField(0)).isEqualTo(2L)
+
+            // Values round-trip and equality pruning on the exact partition values finds the row.
+            val r = computeActual("SELECT id FROM test_schema.part_ts_dec " +
+                    "WHERE ts = TIMESTAMP '2024-01-03 10:30:15' AND amt = DECIMAL '123.45'")
+            assertThat(r.rowCount).isEqualTo(1)
+            assertThat(r.materializedRows[0].getField(0)).isEqualTo(1)
+
+            // On-disk path: identity value "2024-01-03 10:30:15" then hive-encoded (':'->%3A, ' '->%20);
+            // decimal "123.45" is all-unreserved so it stays literal.
+            val path = computeActual("SELECT \"\$path\" FROM test_schema.part_ts_dec WHERE id = 1")
+                    .materializedRows[0].getField(0) as String
+            assertThat(path).contains("/ts=2024-01-03%2010%3A30%3A15/")
+            assertThat(path).contains("/amt=123.45/")
+        }
+        finally {
+            tryDropTable("test_schema.part_ts_dec")
+        }
+    }
+
+    @Test
     fun testBucketPartitionedInsertAndRead() {
         // Round-trip: create bucket-partitioned table, insert, read all rows back.
         computeActual("CREATE TABLE test_schema.part_bucket (id INTEGER, name VARCHAR, amount DOUBLE) " +

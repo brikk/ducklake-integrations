@@ -32,6 +32,7 @@ import io.trino.parquet.reader.ParquetReader
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetPageSource
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
@@ -221,8 +222,14 @@ object DucklakeDeleteFileReader {
      * DATA file and returns the FILE-LOCAL row positions whose origin snapshot id exceeds
      * [snapshotFilterMax] — i.e. rows written by a snapshot NEWER than the read, which a
      * time-travel read at that snapshot must drop. Positions are physical row indices in file
-     * order, matching the file-local-offset vocabulary [DeleteRowFilterTransform] applies. Returns
-     * empty if the column is absent (file isn't actually partial).
+     * order, matching the file-local-offset vocabulary [DeleteRowFilterTransform] applies.
+     *
+     * This is invoked ONLY when the split carries a `snapshotFilterMax` (from the catalog's
+     * `partial_max`), i.e. the file is KNOWN to hold rows newer than the read — so the marker
+     * column MUST be present. If it is absent we THROW rather than return an empty set: an empty
+     * set would silently include every newer row in the historical read (fail-open). The normal
+     * DuckDB partial-file writer always emits the column, so a missing marker is a data/metadata
+     * integrity failure, not a normal path.
      */
     @Throws(IOException::class)
     fun readSnapshotDropPositions(
@@ -242,13 +249,24 @@ object DucklakeDeleteFileReader {
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
             val schema = parquetMetadata.fileMetaData.schema
             val messageColumnIO = getColumnIO(schema, schema)
-            val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN) ?: return emptySet()
+            val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)
+                    ?: throw TrinoException(
+                            GENERIC_INTERNAL_ERROR,
+                            "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column, which is " +
+                                    "required to drop rows newer than the read snapshot ($snapshotFilterMax): " +
+                                    dataFilePath)
             val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
                     .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
             return collectPositionsAbove(ParquetPageSource(parquetReader), snapshotFilterMax)
+        }
+        catch (e: TrinoException) {
+            // Already specific (missing marker / unconstructable field). Close the data source and
+            // rethrow AS-IS so the precise error code + message aren't buried by the generic wrap.
+            dataSource?.let { runCatching { it.close() } }
+            throw e
         }
         catch (e: IOException) {
             throw closeAndWrap(dataSource, dataFilePath, e)

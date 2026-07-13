@@ -62,6 +62,7 @@ class TestTrinoCorpusReplay {
                 "a ms/us rendering ordering nuance under investigation)",
             "data_inlining/data_inlining_encryption.test" to ENCRYPTED_LAKE,
             "encryption/encryption.test" to ENCRYPTED_LAKE,
+            "compaction/compaction_encrypted.test" to ENCRYPTED_LAKE,
             "geo/ducklake_geometry.test" to GEO_WKB,
             "geo/ducklake_geometry_add_files.test" to GEO_WKB,
             "geo/ducklake_geometry_inlining.test" to GEO_WKB,

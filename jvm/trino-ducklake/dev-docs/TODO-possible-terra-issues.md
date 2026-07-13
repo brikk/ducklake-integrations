@@ -31,8 +31,10 @@ threshold.
 > — `explicit` is the *filtered* set (`snapshotIds?.filterNotNull()?.toSet().orEmpty()`);
 > `ARRAY[]` and `ARRAY[NULL]` both collapse to empty → `explicit.isNotEmpty()` false →
 > the `else` retention branch runs (default threshold `7d`, line 69), expiring every
-> non-latest snapshot past the cutoff. Fail-dangerous. **→ FIXING now** (branch on the
-> null-ness of the argument; empty explicit list = no-op).
+> non-latest snapshot past the cutoff. Fail-dangerous. **✅ FIXED 2026-07-13** —
+> `DucklakeExpireSnapshotsProcedure` now branches on `snapshotIds != null` (empty
+> explicit list = no-op; NULL members rejected). Pinned by
+> `TestDucklakeExpireSnapshots.emptyExplicitSnapshotIdsIsNoOpNotRetentionExpiry`.
 
 ## P1 — Partial-file time travel fails open when its required marker is absent
 
@@ -62,7 +64,10 @@ read include every row in the file.
 > This path only runs when `snapshotFilterMax` is set (`DucklakeSplitManager.kt:637`
 > from `partial_max`), i.e. the file is KNOWN to contain filterable rows — so a
 > missing marker is an integrity failure, not a normal path. Violates AGENTS.md
-> "fail loud over silently wrong". **→ FIXING now** (throw when the marker is absent).
+> "fail loud over silently wrong". **✅ FIXED 2026-07-13** — `readSnapshotDropPositions`
+> now throws a clear `TrinoException` (GENERIC_INTERNAL_ERROR) when the marker is
+> absent, and rethrows specific TrinoExceptions unwrapped. Pinned by
+> `TestDucklakePartialFileFilter.partialFileMissingSnapshotMarkerFailsLoud`.
 
 ## P2 — Opaque-format `add_files` registers unreadable schemas
 
@@ -145,9 +150,14 @@ and its first INSERT fails.
 > not slices) that hits `AbstractType.getSlice`, which throws
 > `UnsupportedOperationException`. CREATE TABLE succeeds; the first INSERT crashes
 > (not even a clean error). Adjacent to the hive-path encoding just fixed (same
-> method). **→ FIXING now** (canonical encode + matching parse in
-> `DucklakePartitionValueParser` for the identity-partitionable types; reject the
-> genuinely unencodable ones at CREATE TABLE).
+> method). **✅ FIXED 2026-07-13** — `computeIdentityValue` now canonically encodes
+> DECIMAL (short/long) and the TIMESTAMP family (mirroring the read-side
+> `DucklakePartitionValueParser`, which already parsed them), and throws a clear
+> NOT_SUPPORTED for genuinely unencodable types (VARBINARY/UUID/CHAR) instead of
+> the opaque `getSlice` crash. Pinned by `TestDucklakePartitionComputer` (encode +
+> parser round-trip) and `TestDucklakePartitionedWrite
+> .testIdentityPartitionOnTimestampAndDecimal`. NOTE: rejecting the unencodable
+> types at CREATE TABLE (vs first INSERT) remains a smaller follow-up.
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to

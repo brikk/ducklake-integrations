@@ -133,4 +133,31 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
         // AS OF partial_max: every row's snapshot id <= S → no row dropped.
         assertThat(computeScalar("SELECT count(*) FROM t FOR VERSION AS OF $partialMax")).isEqualTo(200L)
     }
+
+    /**
+     * Integrity boundary: a data file the catalog marks partial (partial_max set) MUST physically
+     * carry `_ducklake_internal_snapshot_id`. If it does not, the read must FAIL LOUD — returning an
+     * empty drop-set (the old behavior) would silently include rows newer than the requested
+     * snapshot. We simulate the corruption by setting partial_max on a plain (marker-less) file, per
+     * the reviewer's suggested proof.
+     */
+    @Test
+    fun partialFileMissingSnapshotMarkerFailsLoud() {
+        // Create the marker-less file + its catalog rows through Trino (a plain write emits no
+        // _ducklake_internal_snapshot_id column), then poke ONLY the raw ducklake_data_file row to
+        // set partial_max above every snapshot id so the partial-file filter engages on a normal read.
+        computeActual("CREATE TABLE test_schema.plain_no_marker (id INTEGER)")
+        computeActual("INSERT INTO test_schema.plain_no_marker VALUES (1), (2), (3)")
+        DriverManager.getConnection("jdbc:duckdb:${rootDir.resolve("lake.db").toAbsolutePath()}").use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("UPDATE ducklake_data_file SET partial_max = 999999999 "
+                        + "WHERE table_id = (SELECT table_id FROM ducklake_table "
+                        + "WHERE table_name = 'plain_no_marker' AND end_snapshot IS NULL)")
+            }
+        }
+        org.assertj.core.api.Assertions.assertThatThrownBy {
+            computeActual("SELECT * FROM plain_no_marker")
+        }
+                .hasStackTraceContaining("Partial data file is missing its _ducklake_internal_snapshot_id")
+    }
 }

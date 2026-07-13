@@ -56,6 +56,70 @@ internal class TestDucklakePartitionComputer {
     }
 
     @Test
+    fun testIdentityTimestampShortRoundTrips() {
+        val epochMicros = LocalDate.of(2024, 1, 3).atTime(10, 30, 15)
+                .toEpochSecond(java.time.ZoneOffset.UTC) * 1_000_000L
+        val value = DucklakePartitionComputer.computePartitionValue(
+                TIMESTAMP_MICROS, buildTimestampMicrosBlock(epochMicros), 0,
+                DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        assertThat(value).isEqualTo("2024-01-03 10:30:15")
+        // Encoder output must round-trip through the read-side parser (same micros back).
+        assertThat(DucklakePartitionValueParser.parseIdentity(TIMESTAMP_MICROS, value!!)).isEqualTo(epochMicros)
+    }
+
+    @Test
+    fun testIdentityTimestampWithSubsecondRoundTrips() {
+        val epochMicros = LocalDate.of(2024, 1, 3).atTime(10, 30, 15)
+                .toEpochSecond(java.time.ZoneOffset.UTC) * 1_000_000L + 123_456L
+        val value = DucklakePartitionComputer.computePartitionValue(
+                TIMESTAMP_MICROS, buildTimestampMicrosBlock(epochMicros), 0,
+                DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        assertThat(value).isEqualTo("2024-01-03 10:30:15.123456")
+        assertThat(DucklakePartitionValueParser.parseIdentity(TIMESTAMP_MICROS, value!!)).isEqualTo(epochMicros)
+    }
+
+    @Test
+    fun testIdentityShortDecimalRoundTrips() {
+        val type = io.trino.spi.type.DecimalType.createDecimalType(10, 2) // short (<=18 digits)
+        val builder = type.createBlockBuilder(null, 1)
+        type.writeLong(builder, 12345L) // unscaled 12345, scale 2 -> 123.45
+        val value = DucklakePartitionComputer.computePartitionValue(
+                type, builder.build(), 0,
+                DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        assertThat(value).isEqualTo("123.45")
+        assertThat(DucklakePartitionValueParser.parseIdentity(type, value!!)).isEqualTo(12345L)
+    }
+
+    @Test
+    fun testIdentityLongDecimalRoundTrips() {
+        val type = io.trino.spi.type.DecimalType.createDecimalType(38, 4) // long (>18 digits)
+        val unscaled = java.math.BigInteger("123456789012345678901234")
+        val builder = type.createBlockBuilder(null, 1)
+        type.writeObject(builder, io.trino.spi.type.Int128.valueOf(unscaled))
+        val value = DucklakePartitionComputer.computePartitionValue(
+                type, builder.build(), 0,
+                DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        assertThat(value).isEqualTo(java.math.BigDecimal(unscaled, 4).toPlainString())
+        assertThat(DucklakePartitionValueParser.parseIdentity(type, value!!))
+                .isEqualTo(io.trino.spi.type.Int128.valueOf(unscaled))
+    }
+
+    @Test
+    fun testIdentityRejectsUnencodableType() {
+        // VARBINARY has no canonical identity-partition text the read side can parse; the writer
+        // must fail loud (NOT_SUPPORTED) rather than emit invalid-UTF-8 bytes or crash in getSlice().
+        val builder = io.trino.spi.type.VarbinaryType.VARBINARY.createBlockBuilder(null, 1)
+        io.trino.spi.type.VarbinaryType.VARBINARY.writeSlice(builder, io.airlift.slice.Slices.wrappedBuffer(1, 2, 3))
+        org.assertj.core.api.Assertions.assertThatThrownBy {
+            DucklakePartitionComputer.computePartitionValue(
+                    io.trino.spi.type.VarbinaryType.VARBINARY, builder.build(), 0,
+                    DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        }
+                .isInstanceOf(io.trino.spi.TrinoException::class.java)
+                .hasMessageContaining("Identity partitioning is not supported")
+    }
+
+    @Test
     fun testIdentityNull() {
         val builder = VARCHAR.createBlockBuilder(null, 1)
         builder.appendNull()
