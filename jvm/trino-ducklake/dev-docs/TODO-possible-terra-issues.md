@@ -192,6 +192,22 @@ can therefore prune a connector-written file that holds qualifying rows.
 > values. All connector write formats currently serialize false/NULL, so a file
 > containing NaN can be eliminated before DuckDB reads it. Fail-dangerous;
 > open for a focused cross-engine regression test and per-writer stats fix.
+>
+> **Trino re-verification (2026-07-13):** confirmed, with a correction to the
+> mechanism/location (the cited `metadata_manager.cpp:1100-1121` is
+> `GetFileSelectList`, not the filter generator). The real chain is:
+> (1) `ducklake_transaction_state.cpp:775-777` sets `has_contains_nan = true`
+> UNCONDITIONALLY for a float/double column and reads a SQL-NULL `contains_nan`
+> as `false`; (2) `ducklake_stats.cpp:322-336` `ToStats()` then takes the
+> `has_contains_nan && !contains_nan` branch → `CreateNumericStats()`, i.e. it
+> builds min/max pruning stats believing the file has no NaN. Because our writers
+> exclude NaN from min/max, a NaN-bearing file records e.g. `[1.0, 3.0]` and gets
+> pruned for `x > 5` (NaN sorts above all finite values) → too few rows. Had
+> `contains_nan` been TRUE, `ToStats()` returns EMPTY stats → no pruning → correct.
+> The connector's own range pruning (`JdbcDucklakeCatalog.findDataFileIdsInRange`)
+> is a lesser concern (it keeps files on unknown stats), but the same
+> false-negative applies to a Trino read of a Trino-written NaN file. Copied to
+> [TODO-WRITE-MODE.md § Floating-point `contains_nan`](TODO-WRITE-MODE.md#floating-point-contains_nan-stats--review-2026-07-13).
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to
