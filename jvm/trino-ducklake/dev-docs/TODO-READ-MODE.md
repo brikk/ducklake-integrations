@@ -661,15 +661,15 @@ CONFIRMED read-path items that don't already have a home section:
   hard to push into generic cross-backend SQL), so keep it; the win is to fetch
   the stats for all predicate columns in a single query and pivot in the JVM
   (C→1). Preserve the "unknown stats → keep the file" LEFT-JOIN semantics.
-- [ ] **Process-unique `.partial` name in the DuckDB read cache** (robustness,
-  latent). `DucklakeMaterializedFileCache.materialize`
-  (`DucklakeMaterializedFileCache.kt:79-108`) writes to `<key>.partial` where
-  `key = hash(remotePath, fileSize)` — shared, not process-unique — under
-  `${java.io.tmpdir}/ducklake-read/`, and its locks are JVM-local (`:53`). Two
-  co-located workers sharing that tmpdir can interleave writes to the same
-  `.partial`; the `downloaded != fileSize` guard (`:95-103`) catches truncation
-  but not two full-size interleaved writers, so a corrupt full-size `.db` could be
-  atomically moved into place and handed to DuckDB `ATTACH`. Cheap fix: name the
-  partial `<key>.<pid>-<uuid>.partial` before the atomic move (still one final
-  `<key>.db`). (The cache's *no-eviction / disk-growth* behavior is a separately
-  documented Phase-1 deferral — `:37-49` — not tracked here.)
+- [x] **Process-unique `.partial` name in the DuckDB read cache** — ✅ DONE
+  2026-07-13. `DucklakeMaterializedFileCache.materialize` now stages each
+  download to `<key>.<pid>-<uuid>.partial` (via `uniqueSuffix()`) and cleans it
+  up in a `finally`, so two co-located JVMs sharing `${java.io.tmpdir}/
+  ducklake-read/` can never write to the same partial file — the worst case is a
+  duplicate download, not a corrupt `.db` handed to DuckDB `ATTACH`. The per-key
+  lock still serializes downloads within a JVM (avoids redundant fetches). Pinned
+  by `TestDucklakeMaterializedFileCache.testTwoJvmsSharingCacheDirDoNotClobber
+  EachOther` (two independent cache instances race the same dir+key; both get
+  correct bytes, one `.db` remains, no partials leak). (The cache's *no-eviction
+  / disk-growth* behavior remains a documented Phase-1 deferral — not tracked
+  here.)

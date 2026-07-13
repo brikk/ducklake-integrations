@@ -40,8 +40,9 @@ for `/`, structurally different path.
 > NOT round-trip safe: a value with `%` decodes wrong, a `/` splits into extra
 > path segments (parsed as a different layout), and a literal
 > `__HIVE_DEFAULT_PARTITION__` collides with the NULL sentinel — plus it
-> diverges from DuckDB, which URL-encodes. Copied to
-> [TODO-WRITE-MODE.md § Hive Partition Path Encoding](TODO-WRITE-MODE.md#hive-partition-path-encoding-on-writes--review-2026-07-12).
+> diverges from DuckDB, which URL-encodes. **✅ FIXED 2026-07-13** —
+> `DucklakeHivePartitionCodec` (encode+decode, key & value), see
+> [TODO-WRITE-MODE.md § Hive Partition Path Encoding](TODO-WRITE-MODE.md#hive-partition-path-encoding-on-writes--done-2026-07-13).
 
 ## P1 — Do not turn present-but-unreadable data into NULL
 
@@ -221,5 +222,5 @@ name directly under the OS temp directory. Its locks are JVM-local.
 > catches truncation but not two full-size interleaved writers, so a corrupt
 > full-size `.db` could be moved into place and handed to DuckDB `ATTACH`. Cheap
 > fix: process-unique partial name (`<key>.<pid>-<uuid>.partial`) before the
-> atomic move. Copied to
+> atomic move. **✅ FIXED 2026-07-13** (eviction still a documented deferral), see
 > [TODO-READ-MODE.md § Robustness Follow-ups](TODO-READ-MODE.md#robustness--performance-follow-ups-review-2026-07-12).

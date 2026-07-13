@@ -735,7 +735,7 @@ class DucklakeSplitManager @Inject constructor(
             DucklakePartitionValueParser.parseIdentity(type, value)
 
         // DuckDB's sentinel for a NULL hive partition value (`col=__HIVE_DEFAULT_PARTITION__/`).
-        private const val HIVE_DEFAULT_PARTITION: String = "__HIVE_DEFAULT_PARTITION__"
+        private const val HIVE_DEFAULT_PARTITION: String = DucklakeHivePartitionCodec.HIVE_DEFAULT_PARTITION
 
         /**
          * Extract this file's hive-partition column values from its PATH. [partitionKeysByColumnId]
@@ -762,15 +762,17 @@ class DucklakeSplitManager @Inject constructor(
                     // NULL partition — leave unset so the read path yields NULL.
                     continue
                 }
-                out[columnId] = hiveUrlDecode(raw)
+                out[columnId] = DucklakeHivePartitionCodec.decode(raw)
             }
             return out
         }
 
         /**
          * Parse `key=value` segments out of a file path (hive-style `key=value/` layout). Keys are
-         * lower-cased for case-insensitive matching; values are returned raw (URL-decoded lazily by
-         * the caller). The filename is stripped so a stray `=` in the basename is not split on.
+         * URL-decoded (DuckDB/DuckLake escape the key too — see [DucklakeHivePartitionCodec]) and
+         * lower-cased for case-insensitive matching; values are returned still-encoded (decoded
+         * lazily by the caller). The filename is stripped so a stray `=` in the basename is not
+         * split on.
          */
         private fun parseHivePartitionsFromPath(path: String): Map<String, String> {
             val normalized: String = path.replace('\\', '/')
@@ -782,40 +784,10 @@ class DucklakeSplitManager @Inject constructor(
                 if (eq > 0 && eq < segment.length - 1) {
                     val key: String = segment.substring(0, eq)
                     val value: String = segment.substring(eq + 1)
-                    out[key.lowercase(Locale.ROOT)] = value
+                    out[DucklakeHivePartitionCodec.decode(key).lowercase(Locale.ROOT)] = value
                 }
             }
             return out
-        }
-
-        /**
-         * Hive/DuckDB URL-decode a partition path value: `%XX` byte escapes are decoded as UTF-8
-         * (spaces are written `%20`, `=` as `%3D`, etc.). Unlike `java.net.URLDecoder`, a literal
-         * `+` is left as-is — hive does not use `+` for space. Malformed escapes pass through
-         * verbatim.
-         */
-        private fun hiveUrlDecode(value: String): String {
-            if (value.indexOf('%') < 0) {
-                return value
-            }
-            val bytes = java.io.ByteArrayOutputStream(value.length)
-            var i = 0
-            while (i < value.length) {
-                val c: Char = value[i]
-                if (c == '%' && i + 2 < value.length) {
-                    val hi: Int = Character.digit(value[i + 1], 16)
-                    val lo: Int = Character.digit(value[i + 2], 16)
-                    if (hi >= 0 && lo >= 0) {
-                        bytes.write((hi shl 4) + lo)
-                        i += 3
-                        continue
-                    }
-                }
-                // Literal character: emit its UTF-8 bytes verbatim (leaves `+` untouched).
-                bytes.write(c.toString().toByteArray(Charsets.UTF_8))
-                i++
-            }
-            return String(bytes.toByteArray(), Charsets.UTF_8)
         }
 
         /**

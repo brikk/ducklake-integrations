@@ -546,8 +546,19 @@ class DucklakePageSink(
                 .sorted(java.util.Map.Entry.comparingByKey())
                 .forEach { entry ->
                     val colName = partitioner!!.getPartitionColumnName(entry.key)
-                    val value: String = if (entry.value != null) entry.value!! else "__HIVE_DEFAULT_PARTITION__"
-                    pathBuilder.append(colName).append("=").append(value).append("/")
+                    // Percent-encode key AND value the same way DuckDB/DuckLake do
+                    // (HivePartitioning::Escape), so the path round-trips through our own read side
+                    // and matches cross-engine. A NULL projects the raw sentinel (its chars are all
+                    // unreserved, so it is byte-identical whether encoded or not). See
+                    // DucklakeHivePartitionCodec.
+                    val encodedKey = DucklakeHivePartitionCodec.encode(colName)
+                    val encodedValue: String = if (entry.value != null) {
+                        DucklakeHivePartitionCodec.encode(entry.value!!)
+                    }
+                    else {
+                        DucklakeHivePartitionCodec.HIVE_DEFAULT_PARTITION
+                    }
+                    pathBuilder.append(encodedKey).append("=").append(encodedValue).append("/")
                 }
         pathBuilder.append(fileName)
         return pathBuilder.toString()
