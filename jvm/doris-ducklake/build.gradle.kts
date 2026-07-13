@@ -107,6 +107,15 @@ dependencies {
     // rather than relying on transitive resolution of the KMP metadata artifact.
     testImplementation(libs.brikk.sql)
     testImplementation(libs.brikk.sql.metadata)
+    // Native-grammar verifier (belt-and-braces after certify): re-parses the
+    // transpiled SQL under Doris's real grammar so a brikk-sql emission bug is a
+    // skip+report, not a runtime failure. DorisVerifier.createOrNull() reflects
+    // into the Doris parser and returns null when it's absent — so this is INERT
+    // until doris-fe.jar (the FE fat jar, not on Central) is on the test
+    // classpath. Not forced today: the corpus already re-validates grammar by
+    // executing on the live FE, and the fat jar risks shadowing the module's
+    // carefully-ordered fe-thrift/parquet test classpath. See DorisCorpusDialect.
+    testImplementation(libs.brikk.sql.verify)
 
     // SPI types are compileOnly above; tests instantiate the plugin so they need them too.
     // (junit/assertj/kotlin-test come from buildlogic.kotlin.common.)
