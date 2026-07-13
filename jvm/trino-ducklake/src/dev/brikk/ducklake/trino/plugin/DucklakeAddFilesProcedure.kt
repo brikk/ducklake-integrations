@@ -189,6 +189,19 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
+        // Opaque-format (lance/vortex/duckdb) registration is validated by PROJECTING the table's
+        // data columns out of the source and converting one batch — this fails loudly here on a
+        // missing/renamed/incompatibly-typed column instead of committing an unreadable catalog
+        // entry that only errors at first SELECT. Partition columns live in the hive path, not the
+        // file, so they are excluded from the projection.
+        val partitionColumnIds: Set<Long> = activePartitionSpec
+                .map { spec -> spec.fields.filter { it.transform == DucklakePartitionTransform.IDENTITY }
+                        .map { it.columnId }.toSet() }
+                .orElse(emptySet())
+        val dataColumnHandles: List<DucklakeColumnHandle> = topLevelColumns
+                .filter { it.columnId !in partitionColumnIds }
+                .map { DucklakeColumnHandle(it.columnId, it.columnName, typeConverter.toTrinoType(it.columnType), it.nullsAllowed) }
+
         val processed: MutableSet<String> = mutableSetOf()
         val fragments: MutableList<dev.brikk.ducklake.catalog.DucklakeWriteFragment> = mutableListOf()
 
@@ -203,15 +216,15 @@ class DucklakeAddFilesProcedure @Inject constructor(
             fragments.add(when (format) {
                 DucklakeSessionProperties.FORMAT_LANCE -> {
                     val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildLanceFragment(fileSystem, filePath, pv, pid)
+                    buildLanceFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
                 }
                 DucklakeSessionProperties.FORMAT_VORTEX -> {
                     val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildVortexFragment(fileSystem, filePath, pv, pid)
+                    buildVortexFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
                 }
                 DucklakeSessionProperties.FORMAT_DUCKDB -> {
                     val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildDuckDbFragment(fileSystem, filePath, pv, pid)
+                    buildDuckDbFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
                 }
                 else -> buildFragment(
                         fileSystem,
@@ -405,8 +418,9 @@ class DucklakeAddFilesProcedure @Inject constructor(
             filePath: String,
             partitionValues: Map<Int, String?>,
             partitionId: Long?,
+            dataColumnHandles: List<DucklakeColumnHandle>,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
-        val recordCount: Long = countRowsViaFileScan(filePath, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE)
+        val recordCount: Long = countRowsViaFileScan(filePath, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE, dataColumnHandles)
         val fileSize: Long = bestEffortDirectorySize(fileSystem, filePath)
         return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
                 filePath,
@@ -434,6 +448,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             filePath: String,
             partitionValues: Map<Int, String?>,
             partitionId: Long?,
+            dataColumnHandles: List<DucklakeColumnHandle>,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
         val fileSize: Long
         try {
@@ -446,7 +461,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
         }
-        val recordCount: Long = countRowsViaFileScan(filePath, "read_vortex", DucklakeSessionProperties.FORMAT_VORTEX)
+        val recordCount: Long = countRowsViaFileScan(filePath, "read_vortex", DucklakeSessionProperties.FORMAT_VORTEX, dataColumnHandles)
         return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
                 filePath,
                 /* pathIsRelative */ false,
@@ -473,6 +488,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             filePath: String,
             partitionValues: Map<Int, String?>,
             partitionId: Long?,
+            dataColumnHandles: List<DucklakeColumnHandle>,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
         val fileSize: Long
         try {
@@ -485,7 +501,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
         }
-        val recordCount: Long = countRowsViaAttach(filePath)
+        val recordCount: Long = countRowsViaAttach(filePath, dataColumnHandles)
         return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
                 filePath,
                 /* pathIsRelative */ false,
@@ -505,12 +521,17 @@ class DucklakeAddFilesProcedure @Inject constructor(
      * source. Doubles as a readability/existence check — a missing or unreadable dataset
      * surfaces as an error here.
      */
-    private fun countRowsViaFileScan(url: String, scanFunction: String, extension: String): Long {
+    private fun countRowsViaFileScan(
+            url: String,
+            scanFunction: String,
+            extension: String,
+            projection: List<DucklakeColumnHandle>,
+    ): Long {
         // No DuckDbS3Config even for s3:// — both extensions bind object_store credentials from
         // process AWS_* env, never DuckDB secrets (HANDOFF O1), so the httpfs + secret setup the
         // config triggers is pure overhead (and a concurrent-CREATE race on the Quack engine).
         val target = DuckDbAttachTarget.FileScan(url, scanFunction, extension, null)
-        return countRows(target, extension, url)
+        return countRows(target, extension, url, projection)
     }
 
     /**
@@ -521,38 +542,63 @@ class DucklakeAddFilesProcedure @Inject constructor(
      * filesystem layer, which DOES honor the secret — see [DuckDbAttachTarget]). Doubles as a
      * readability/existence check.
      */
-    private fun countRowsViaAttach(url: String): Long {
+    private fun countRowsViaAttach(url: String, projection: List<DucklakeColumnHandle>): Long {
         val target: DuckDbAttachTarget = if (isS3(url)) {
             DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config)
         }
         else {
             DuckDbAttachTarget.LocalPath(java.nio.file.Path.of(stripFileScheme(url)))
         }
-        return countRows(target, DucklakeSessionProperties.FORMAT_DUCKDB, url)
+        return countRows(target, DucklakeSessionProperties.FORMAT_DUCKDB, url, projection)
     }
 
     /**
-     * Scans [target] through the DuckDB executor with an empty projection (`SELECT 1 FROM
-     * <source>`, one row per file/dataset row) and returns the total row count. Shared by the
-     * FileScan (lance/vortex) and ATTACH (duckdb) registration paths.
+     * Scans [target] through the DuckDB executor and returns the total row count — AND validates
+     * the source schema against the table by [projection]. Projecting the table's data columns by
+     * name makes a missing/renamed column fail (DuckDB "column not found"); converting the first
+     * batch through the read path's Arrow→page converter makes an incompatibly-typed column fail.
+     * Both surface here as a clear `INVALID_PROCEDURE_ARGUMENT` BEFORE `commitAddFiles`, instead of
+     * committing a catalog entry that only errors at first SELECT. An empty [projection] (a table
+     * with only partition columns) falls back to a count-only `SELECT 1` scan.
      */
-    private fun countRows(target: DuckDbAttachTarget, label: String, url: String): Long {
+    private fun countRows(
+            target: DuckDbAttachTarget,
+            label: String,
+            url: String,
+            projection: List<DucklakeColumnHandle>,
+    ): Long {
         val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                target, emptyList<DucklakeColumnHandle>(), TupleDomain.all<DucklakeColumnHandle>())
+                target, projection, TupleDomain.all<DucklakeColumnHandle>())
+        // Reuse the read path's converter to type-check the projected columns (positional, by the
+        // requested types). Only the first batch is converted — the Arrow schema is fixed per scan.
+        val converter: DucklakeArrowToPageConverter? =
+                if (projection.isEmpty()) null else DucklakeArrowToPageConverter(projection.map { it.columnType })
         var count = 0L
         try {
             executorFactory.create().execute(request).use { ctx ->
                 val reader = ctx.arrowReader()
+                var validated = false
                 while (reader.loadNextBatch()) {
-                    count += reader.vectorSchemaRoot.rowCount.toLong()
+                    val root = reader.vectorSchemaRoot
+                    count += root.rowCount.toLong()
+                    if (!validated) {
+                        converter?.convert(root)
+                        validated = true
+                    }
                 }
             }
         }
         catch (e: SQLException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $label dataset: $url", e)
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "Failed to read $label dataset (does its schema match the table?): $url", e)
         }
         catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $label dataset: $url", e)
+        }
+        catch (e: RuntimeException) {
+            // Arrow→page conversion of a present-but-incompatibly-typed column throws here.
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "$label dataset schema is incompatible with the table (column type mismatch): $url", e)
         }
         return count
     }

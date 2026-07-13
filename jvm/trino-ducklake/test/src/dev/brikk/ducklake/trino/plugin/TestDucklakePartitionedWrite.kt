@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.MaterializedRow
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
@@ -293,6 +294,21 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
         finally {
             tryDropTable("test_schema.part_ts_dec")
         }
+    }
+
+    @Test
+    fun testIdentityPartitionOnUnsupportedTypeRejectedAtCreate() {
+        // VARBINARY has no canonical identity-partition encoding — this must fail at CREATE TABLE,
+        // not silently create a table whose first INSERT crashes.
+        assertThatThrownBy {
+            computeActual("CREATE TABLE test_schema.part_bad_type (id INTEGER, b VARBINARY) " +
+                    "WITH (partitioned_by = ARRAY['b'])")
+        }.hasMessageContaining("Identity partitioning is not supported")
+        // The table must not have been created.
+        assertThat(computeScalar(
+                "SELECT count(*) FROM information_schema.tables " +
+                        "WHERE table_schema = 'test_schema' AND table_name = 'part_bad_type'"))
+                .isEqualTo(0L)
     }
 
     @Test

@@ -100,6 +100,7 @@ import java.util.OptionalLong
 import com.google.common.collect.ImmutableList.toImmutableList
 import com.google.common.collect.ImmutableMap.toImmutableMap
 import io.trino.spi.StandardErrorCode.ALREADY_EXISTS
+import io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.type.BigintType.BIGINT
@@ -850,6 +851,7 @@ class DucklakeMetadata(
 
         // Parse partition spec from table properties
         val partitionFields: List<PartitionFieldSpec> = DucklakeTableProperties.getPartitionFields(tableMetadata.properties)
+        validateIdentityPartitionTypes(tableMetadata.columns, partitionFields)
         val partitionSpec: List<PartitionFieldSpec>? = partitionFields.ifEmpty { null }
 
         val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
@@ -863,6 +865,32 @@ class DucklakeMetadata(
                 location,
                 DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
             )
+        }
+    }
+
+    /**
+     * Reject an IDENTITY partition over a type the connector can't encode to a partition-value
+     * string, at CREATE TABLE time — otherwise the table is created and its first INSERT fails
+     * (DucklakePartitionComputer.computeIdentityValue would throw). Only identity fields are
+     * checked here; bucket/temporal transforms have their own column-type expectations.
+     */
+    private fun validateIdentityPartitionTypes(
+            columns: List<ColumnMetadata>,
+            partitionFields: List<PartitionFieldSpec>) {
+        if (partitionFields.isEmpty()) {
+            return
+        }
+        val typeByName: Map<String, Type> = columns.associate { it.name.lowercase(java.util.Locale.ROOT) to it.type }
+        for (field in partitionFields) {
+            if (field.transform != dev.brikk.ducklake.catalog.DucklakePartitionTransform.IDENTITY) {
+                continue
+            }
+            // Unknown column: leave it to the catalog's own validation to report.
+            val type: Type = typeByName[field.columnName.lowercase(java.util.Locale.ROOT)] ?: continue
+            if (!DucklakePartitionComputer.isIdentityPartitionable(type)) {
+                throw TrinoException(INVALID_TABLE_PROPERTY,
+                        "Identity partitioning is not supported for column '${field.columnName}' of type $type")
+            }
         }
     }
 
@@ -1185,6 +1213,7 @@ class DucklakeMetadata(
                 .collect(toImmutableList())
 
         val partitionFields: List<PartitionFieldSpec> = DucklakeTableProperties.getPartitionFields(tableMetadata.properties)
+        validateIdentityPartitionTypes(tableMetadata.columns, partitionFields)
         val partitionSpec: List<PartitionFieldSpec>? = partitionFields.ifEmpty { null }
 
         val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
