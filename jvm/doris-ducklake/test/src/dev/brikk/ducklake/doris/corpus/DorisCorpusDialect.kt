@@ -1,5 +1,6 @@
 package dev.brikk.ducklake.doris.corpus
 
+import dev.brikk.house.sql.shape.FindingKind
 import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
 import dev.brikk.house.sql.shape.certify
@@ -9,19 +10,28 @@ import dev.brikk.house.sql.shape.certify
  * (TEST-ONLY — the production connector never sees raw SQL; Doris parses it).
  *
  * Replaces the old hand-maintained DuckDB-ism deny-list with brikk-sql's
- * `certify("doris")` (0.2.0): every corpus query is transpiled `duckdb -> doris`
- * and certified in ONE call. A query is [Run]nable iff `report.ok` (no
- * REFUSAL-severity findings) AND none of the explicit residuals below fire
- * (else [Skip], counted as an engine-skip, never a failure).
+ * `certify("doris")` (0.3.0): every corpus query is transpiled `duckdb -> doris`
+ * and certified in ONE call. `certify` subsumes everything the gate used to
+ * assemble by hand — catalog capability (`UNMAPPABLE_FUNCTION`), generator flags
+ * (`UNSUPPORTED_TRANSLATION`), `Command`/`Pragma` roots (`RAW_PASSTHROUGH_STATEMENT`),
+ * uncertifiable targets (`NO_TARGET_CATALOG`) — plus `SEMANTIC_HAZARD` (probe-
+ * verified divergence even where syntax maps).
  *
- * `certify` subsumes everything the gate used to assemble by hand — catalog
- * capability (`UNMAPPABLE_FUNCTION`), generator flags (`UNSUPPORTED_TRANSLATION`),
- * `Command`/`Pragma` roots (`RAW_PASSTHROUGH_STATEMENT`), uncertifiable targets
- * (`NO_TARGET_CATALOG`) — plus `SEMANTIC_HAZARD` (probe-verified divergence even
- * where syntax maps). WARNING findings do NOT block `ok` (result-identical under
- * common conditions); only REFUSAL does. NB: hazard coverage is trino↔duckdb
- * today — doris hazard pairs are still being probed, so for now `certify`'s doris
- * verdict matches the old hand-assembled one plus `NO_TARGET_CATALOG`.
+ * A query is [Run]nable iff it passes a TWO-TIER gate (proven on Trino, 0.3.0)
+ * AND none of the explicit residuals below fire (else [Skip], never a failure).
+ * `report.ok` alone is NOT sufficient for an exact-output replay:
+ *  - Tier 1 (`okAccepting { "unicode" in areas }`): accept ONLY unicode-scoped
+ *    REFUSALs (lower()/upper() Turkish-İ / ß case folding) — an ASCII-dominant
+ *    corpus never hits them and the verdict stays honestly divergent. Any other
+ *    REFUSAL still blocks.
+ *  - Tier 2: skip any remaining non-unicode `SEMANTIC_HAZARD` of ANY severity —
+ *    certify only WARNs (doesn't block `ok`) when it can't prove an operand type
+ *    without schema (e.g. bare-column `DATE + INTERVAL 1 DAY`, which DuckDB
+ *    promotes to TIMESTAMP but Doris keeps DATE), and an exact diff can't tolerate
+ *    that. This is MORE precise than a token residual — `CAST(x AS TIMESTAMP) +
+ *    INTERVAL …` is proven safe and runs.
+ * Doris's divergence surface is wider than Trino's (no native `FILTER (WHERE)` /
+ * `UNNEST`), so expect more `UNSUPPORTED_TRANSLATION` REFUSALs — correctly blocking.
  *
  * Explicit residuals `certify` can't detect (kept):
  *  - `information_schema` — the catalog CONTENT differs DuckDB-vs-Doris (not a
@@ -98,18 +108,14 @@ object DorisCorpusDialect {
         // ONE call covers the whole capability/hazard predicate: UNMAPPABLE_FUNCTION,
         // UNSUPPORTED_TRANSLATION, RAW_PASSTHROUGH_STATEMENT, NO_TARGET_CATALOG,
         // SEMANTIC_HAZARD. desugarPipes=true so pipe fragments auto-desugar. Never
-        // throws — the SQL is always produced; ok=false ⇔ a REFUSAL finding exists.
+        // throws — the SQL is always produced.
         val report = try {
             fragment.certify(DORIS, desugarPipes = true)
         } catch (e: Exception) {
             return Skip("certify to doris failed: ${firstLine(e)}")
         }
-        if (!report.ok) {
-            val refusals = report.findings
-                .filter { it.severity == Severity.REFUSAL }
-                .joinToString("; ") { "${it.kind}: ${it.detail}" }
-            return Skip("certify refused: $refusals")
-        }
+
+        certifyRefusalReason(report)?.let { return Skip(it) }
 
         // Inline time travel: brikk-sql passes `AT (VERSION => n)` through verbatim.
         // Rewrite the literal form to Doris `FOR VERSION AS OF n`; a residual
@@ -119,6 +125,35 @@ object DorisCorpusDialect {
             return Skip("non-literal inline time travel has no Doris form")
         }
         return Run(sql)
+    }
+
+    /**
+     * The two-tier certify verdict (proven on the Trino side, 0.3.0). `report.ok`
+     * alone is NOT sufficient for an exact-output replay. Returns a skip reason,
+     * or null when the query is safe to run.
+     *
+     * Tier 1 — accept ONLY unicode-scoped REFUSALs (lower()/upper() Turkish-İ / ß
+     * case folding, areas contain "unicode"): an ASCII-dominant corpus never hits
+     * them and the verdict stays honestly divergent. Any OTHER REFUSAL (typeof,
+     * unmappable, unsupported translation, …) still blocks.
+     *
+     * Tier 2 — skip any remaining non-unicode SEMANTIC_HAZARD of ANY severity:
+     * certify only WARNs (doesn't block `ok`) when it can't prove an operand type
+     * without schema (e.g. bare-column `DATE + INTERVAL 1 DAY`, which DuckDB
+     * promotes to TIMESTAMP but Doris keeps DATE), and an exact diff can't tolerate
+     * that. More precise than a token residual — `CAST(x AS TIMESTAMP) + INTERVAL …`
+     * is proven safe and runs.
+     */
+    private fun certifyRefusalReason(report: dev.brikk.house.sql.shape.TranspileReport): String? {
+        if (!report.okAccepting { "unicode" in it.areas }) {
+            val blocking = report.findings
+                .filter { it.severity == Severity.REFUSAL && "unicode" !in it.areas }
+                .joinToString("; ") { "${it.kind}(${it.subject}): ${it.detail}" }
+            return "certify refused: $blocking"
+        }
+        return report.findings
+            .firstOrNull { it.kind == FindingKind.SEMANTIC_HAZARD && "unicode" !in it.areas }
+            ?.let { "semantic hazard (${it.subject}): ${it.detail}" }
     }
 
     /**
