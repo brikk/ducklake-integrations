@@ -20,6 +20,10 @@ roaring-bitmap = "1.3.0"
 detekt = "2.0.0-alpha.3"
 # Route B (lance-core JNI) — benchmark-only test dependency; the RESEARCH-verified version.
 lance-core = "6.0.0"
+# brikk-sql: TEST-ONLY SQL transpiler (corpus-replay dialect gate). Release 0.1.0 is on Maven
+# Central; 0.1.0-SNAPSHOT lives in the Central Portal snapshots repo (still wired in the
+# buildlogic.kotlin.brikk convention). Flip this ONE value to -SNAPSHOT to go back to snapshots.
+brikk-sql = "0.1.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -72,6 +76,11 @@ jooq-core = { module = "org.jooq:jooq", version.ref = "jooq" }
 jooq-kotlin = { module = "org.jooq:jooq-kotlin", version.ref = "jooq" }
 jooq-codegen = { module = "org.jooq:jooq-codegen", version.ref = "jooq" }
 jooq-meta = { module = "org.jooq:jooq-meta-extensions", version.ref = "jooq" }
+
+# brikk-sql (dev.brikk.house) — TEST-ONLY. KMP JVM artifacts; see buildlogic.kotlin.brikk.
+brikk-sql = { module = "dev.brikk.house:brikk-sql-jvm", version.ref = "brikk-sql" }
+brikk-sql-metadata = { module = "dev.brikk.house:brikk-sql-metadata-jvm", version.ref = "brikk-sql" }
+brikk-sql-verify = { module = "dev.brikk.house:brikk-sql-verify", version.ref = "brikk-sql" }
 
 [bundles]
 jooq = [

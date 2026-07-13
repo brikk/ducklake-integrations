@@ -105,8 +105,8 @@ dependencies {
     // TEST-ONLY — the production plugin never sees raw SQL (Doris parses it).
     // The `-jvm` KMP artifact; brikk-sql-metadata-jvm declared explicitly (matching :trino-ducklake)
     // rather than relying on transitive resolution of the KMP metadata artifact.
-    testImplementation("dev.brikk.house:brikk-sql-jvm:0.1.0-SNAPSHOT")
-    testImplementation("dev.brikk.house:brikk-sql-metadata-jvm:0.1.0-SNAPSHOT")
+    testImplementation(libs.brikk.sql)
+    testImplementation(libs.brikk.sql.metadata)
 
     // SPI types are compileOnly above; tests instantiate the plugin so they need them too.
     // (junit/assertj/kotlin-test come from buildlogic.kotlin.common.)

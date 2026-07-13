@@ -102,9 +102,9 @@ dependencies {
     // the production connector never sees raw SQL (Trino parses it). The -jvm artifacts are the
     // JVM target of the Kotlin-Multiplatform library; brikk-sql-verify's TrinoVerifier re-parses
     // transpiled SQL under Trino's real grammar as an extra gate signal.
-    testImplementation("dev.brikk.house:brikk-sql-jvm:0.1.0-SNAPSHOT")
-    testImplementation("dev.brikk.house:brikk-sql-metadata-jvm:0.1.0-SNAPSHOT")
-    testImplementation("dev.brikk.house:brikk-sql-verify:0.1.0-SNAPSHOT")
+    testImplementation(libs.brikk.sql)
+    testImplementation(libs.brikk.sql.metadata)
+    testImplementation(libs.brikk.sql.verify)
 
     // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
     // bundles per-platform natives (incl. darwin-aarch64). Arrow transitives resolve through the
