@@ -4,6 +4,8 @@ import dev.brikk.house.sql.shape.FindingKind
 import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
 import dev.brikk.house.sql.shape.certify
+import dev.brikk.house.sql.verify.DorisVerifier
+import dev.brikk.house.sql.verify.SqlVerifier
 
 /**
  * Transpile-first corpus dialect gate for the DuckLake corpus-replay adapter
@@ -52,6 +54,14 @@ object DorisCorpusDialect {
 
     private const val DUCKDB = "duckdb"
     private const val DORIS = "doris"
+
+    /**
+     * Native Doris-grammar verifier, or null when the Doris parser isn't on the
+     * test classpath (`DorisVerifier.createOrNull()` reflects into it). Inert
+     * today — see build.gradle.kts; the live-FE corpus execution is the grammar
+     * check. Constructed once.
+     */
+    private val VERIFIER: SqlVerifier? = runCatching { DorisVerifier.createOrNull() }.getOrNull()
 
     /** Gate outcome. */
     sealed interface Gate
@@ -123,6 +133,19 @@ object DorisCorpusDialect {
         val sql = rewriteInlineTimeTravel(report.result.sql)
         if (AT_PAREN.containsMatchIn(sql)) {
             return Skip("non-literal inline time travel has no Doris form")
+        }
+
+        // Belt-and-braces (trino agent's endorsed pattern): the transpiled SQL
+        // must re-parse under Doris's real grammar. A rejection is a brikk-sql
+        // emission bug → skip + report upstream, not a runtime failure. No-op when
+        // [VERIFIER] is null (grammar not on the classpath).
+        VERIFIER?.verify(sql)?.let { v ->
+            if (!v.accepted) {
+                return Skip(
+                    "transpiled SQL not parseable by Doris grammar: " +
+                        v.error?.lineSequence()?.firstOrNull().orEmpty(),
+                )
+            }
         }
         return Run(sql)
     }
