@@ -193,6 +193,53 @@ can therefore prune a connector-written file that holds qualifying rows.
 > containing NaN can be eliminated before DuckDB reads it. Fail-dangerous;
 > open for a focused cross-engine regression test and per-writer stats fix.
 
+## P1 — `flush_inlined_data` changes row identity and double-counts the table
+
+Flushing data that DuckDB/pg_ducklake originally stored inline registers the
+materialized Parquet file as a brand-new insert.  It assigns a new
+`row_id_start` from the allocator high-water mark and adds the already-live rows
+to `ducklake_table_stats` again.  The flush therefore changes stable row IDs
+and inflates both `record_count` and `next_row_id`, even though it is only a
+storage move.
+
+- Evidence: `DucklakeFlushInlinedDataProcedure.kt:163-176` reads only user
+  columns via `readInlinedData`; it never reads `row_id`, and `:206-244` writes
+  no `_ducklake_internal_row_id` lineage column.  `DucklakeWriteFragment` has
+  no preserved-row-id/flush flag.  Consequently `JdbcDucklakeCatalog.kt:3183-
+  3278` assigns `row_id_start = runningRowId` and advances both record count
+  and `next_row_id` by the fragment's row count before it end-snapshots the
+  inlined rows (`:2560-2575`).
+- Reference contract: the bundled upstream extension detects the embedded
+  `_ducklake_internal_row_id` during a flush (`vendor/pg_ducklake/third_party/
+  ducklake/src/storage/ducklake_insert.cpp:142-151`), registers the file at
+  that original row-id start, and deliberately does **not** advance record
+  count or `next_row_id` for an inline flush (`ducklake_transaction.cpp:1991-
+  2004`).  This is portable DuckLake behavior, not Postgres glue.
+- Why this matters: after a DuckDB write of two inline rows, a Trino flush turns
+  row IDs `[0,1]` into (for example) `[2,3]`, while `record_count` becomes four
+  although only two rows are live.  A later update/change-feed then cannot pair
+  pre-flush and post-flush versions by lineage; allocator gaps and wrong table
+  statistics persist.  DuckDB reads the values successfully, so this is easy
+  to miss as a metadata-only maintenance operation.
+- Suggested proof: make DuckDB write an inlined two-row table, record
+  `ducklake_table_stats` and DuckDB's `rowid`, invoke Trino
+  `system.flush_inlined_data`, and check that the same two logical rows now
+  have a new `rowid` range while `record_count` / `next_row_id` increased by
+  two.  Follow with an UPDATE and inspect `table_changes` to demonstrate the
+  lost update pairing.
+- Real fix direction: carry each inline `row_id` into a Parquet
+  `_ducklake_internal_row_id` column (field id `2147483540`), register the
+  flushed file with its original row-id start, and add a flush-specific catalog
+  registration path that updates file bytes/stats but does not increment the
+  live-row count or allocator.  Deleted/gapped rows need the embedded lineage;
+  using only the minimum start is insufficient.
+
+> **VERDICT: CONFIRMED (trino ↔ DuckDB/pg_ducklake, 2026-07-13).** The current
+> implementation lacks both pieces the reference uses to preserve a flush's
+> identity: it neither writes original row IDs nor marks the fragment as a
+> no-new-rows registration. This is a cross-engine correctness gap in a shipped
+> maintenance procedure; fail-dangerous for row-lineage/change-feed consumers.
+
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to
 > the durable backlog (`TODO-WRITE-MODE.md` / `TODO-READ-MODE.md`); KNOWN items
