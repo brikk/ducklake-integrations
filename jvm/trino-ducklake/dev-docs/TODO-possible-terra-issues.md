@@ -271,6 +271,26 @@ storage move.
 > identity: it neither writes original row IDs nor marks the fragment as a
 > no-new-rows registration. This is a cross-engine correctness gap in a shipped
 > maintenance procedure; fail-dangerous for row-lineage/change-feed consumers.
+>
+> **Trino re-verification (2026-07-13): CONFIRMED — agree.** Traced against our
+> code + `vendor/ducklake`:
+> - `DucklakeFlushInlinedDataProcedure` reads only top-level user columns
+>   (`readInlinedData`, `:167`) and materializes them through `ParquetFileWriter`
+>   with NO `_ducklake_internal_row_id` column (`writeParquetFile`, `:199-249`).
+> - `flushInlinedData` routes the fragment through `applyInsertFragments` — the
+>   ORDINARY insert path (`JdbcDucklakeCatalog.kt:2570`), which sets
+>   `rowIdStart = existingStats.nextRowId` (high-water mark, `:3232`) and bumps
+>   BOTH `record_count` and `next_row_id` by the flushed row count (`:3301-3302`);
+>   `endSnapshotLiveInlinedRows` (`:2572`) then retires the inline rows WITHOUT a
+>   compensating decrement → new row-id range + inflated count/allocator.
+> - Upstream preserves identity on flush: `ducklake_insert.cpp:162-167` reads the
+>   embedded `_ducklake_internal_row_id` and sets `data_file.flush_row_id_start`
+>   to the original min row-id, and the flush is a distinct `flushed_inline_data`
+>   commit path (`ducklake_transaction.cpp:980-993`), not a plain insert.
+> - Note our own docstring claims this procedure "Row count and values are
+>   preserved … Mirrors upstream DuckLake's flush_inlined_data" — the code
+>   contradicts that, so this is a genuine defect, not an accepted v1 limitation.
+> Copied to [TODO-WRITE-MODE.md § flush_inlined_data row identity](TODO-WRITE-MODE.md#flush_inlined_data-must-preserve-row-identity--count--review-2026-07-13).
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to

@@ -1185,6 +1185,41 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
    the full feature set — re-survey ducklake-web when v1.1 tags.
 
+## `flush_inlined_data` must preserve row identity + count — review 2026-07-13
+
+- [ ] **Flush must be an identity-preserving, count-neutral storage move**
+  (correctness, P1, cross-engine). `system.flush_inlined_data` currently
+  registers the materialized Parquet file as a brand-new insert:
+  `DucklakeFlushInlinedDataProcedure` reads only user columns and writes NO
+  `_ducklake_internal_row_id` (`:167`,`:199-249`); `flushInlinedData` routes it
+  through the ordinary `applyInsertFragments` (`JdbcDucklakeCatalog.kt:2570`),
+  which sets `rowIdStart = nextRowId` (high-water mark, `:3232`) and bumps
+  `record_count` + `next_row_id` by the flushed count (`:3301-3302`), while
+  `endSnapshotLiveInlinedRows` (`:2572`) retires the inline rows with no
+  compensating decrement. Net: stable row IDs change (breaking change-feed /
+  row-lineage pairing across the flush) and the table double-counts + leaves
+  allocator gaps. Contradicts the procedure's own docstring ("row count …
+  preserved … mirrors upstream").
+  - **Reference (verified `vendor/ducklake`):** `ducklake_insert.cpp:162-167`
+    reads the embedded `_ducklake_internal_row_id` and sets
+    `flush_row_id_start` to the original min row-id; the flush is a distinct
+    `flushed_inline_data` commit path (`ducklake_transaction.cpp:980-993`), not
+    a plain insert — so it neither reallocates row-ids nor advances the live
+    count/allocator.
+  - **Fix direction:** (1) carry each inline `row_id` into a parquet
+    `_ducklake_internal_row_id` column (field id 2147483540) when flushing —
+    `readInlinedData` must project row_id, and the writer must emit the lineage
+    column (mirrors the F7 lineage-preserving write path); (2) add a
+    flush-specific catalog registration that sets `row_id_start` from the
+    embedded/original ids and updates file bytes+stats WITHOUT incrementing
+    `record_count` / `next_row_id`. Deleted/gapped inline rows need the embedded
+    lineage — a single min-start is insufficient.
+  - **Proof first:** DuckDB writes a 2-row inlined table; record `rowid` +
+    `ducklake_table_stats`; Trino `flush_inlined_data`; assert the same logical
+    rows keep their `rowid` range and `record_count`/`next_row_id` are unchanged;
+    then UPDATE + inspect `table_changes` for preserved update pairing. Source:
+    [TODO-possible-terra-issues.md § flush_inlined_data](TODO-possible-terra-issues.md).
+
 ## Floating-point `contains_nan` stats — ✅ DONE 2026-07-13 (write side)
 
 - [x] **Record `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN.**
