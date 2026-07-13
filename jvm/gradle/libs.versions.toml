@@ -23,7 +23,7 @@ lance-core = "6.0.0"
 # brikk-sql: TEST-ONLY SQL transpiler (corpus-replay dialect gate). Release 0.1.0 is on Maven
 # Central; 0.1.0-SNAPSHOT lives in the Central Portal snapshots repo (still wired in the
 # buildlogic.kotlin.brikk convention). Flip this ONE value to -SNAPSHOT to go back to snapshots.
-brikk-sql = "0.1.0"
+brikk-sql = "0.2.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
