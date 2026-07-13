@@ -1196,8 +1196,10 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   `next_row_id` unchanged (only `file_size_bytes` grows). Pinned by
   `TestDucklakeFlushInlinedData.flushPreservesRowIdentityAndDoesNotDoubleCount`;
   regular inserts unaffected (corpus insert/update/delete/general/data_inlining/
-  compaction 1699p/0f). Follow-up (open): a change-feed test that pairs an UPDATE
-  across a flush via the preserved lineage.
+  compaction 1699p/0f). Change-feed pairing across a flush is pinned too:
+  `TestDucklakeFlushInlinedData.updateAfterFlushPairsOnThePreservedRowId` (a
+  lineage-preserving UPDATE after the flush pairs update_preimage/update_postimage
+  on the ORIGINAL pre-flush rowid).
 
 
 ## Floating-point `contains_nan` stats — ✅ DONE 2026-07-13 (write side)

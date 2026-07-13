@@ -148,6 +148,61 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
         }
     }
 
+    /** DuckLake global rowid of the row with the given id, read through DuckDB. */
+    private fun duckdbRowIdOf(fqTable: String, id: Int): Long {
+        createDuckdbConnection().use { duck ->
+            duck.createStatement().use { stmt ->
+                stmt.executeQuery("SELECT rowid FROM ducklake_db.$fqTable WHERE id = $id").use { rs ->
+                    check(rs.next()) { "no row id=$id in $fqTable" }
+                    return rs.getLong(1)
+                }
+            }
+        }
+    }
+
+    /**
+     * Regression (terra P1 follow-up): because the flush now preserves each row's rowid via the
+     * embedded lineage column, a lineage-preserving UPDATE across the flush pairs into
+     * update_preimage/update_postimage ON THE ORIGINAL rowid — the change feed sees a stable
+     * identity, not a delete+re-insert under a fresh id. Before the fix the flushed row got a new
+     * rowid, so the update would carry that new id instead of the pre-flush one.
+     */
+    @Test
+    fun updateAfterFlushPairsOnThePreservedRowId() {
+        val table = "test_schema.flush_cf"
+        val bare = "flush_cf"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, val VARCHAR)")
+            writeInlinedRows(bare, "(1, 'a')", "(2, 'b')")
+            val originalRowId = duckdbRowIdOf(table, 2)
+
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+            assertThat(duckdbRowIdOf(table, 2)).`as`("rowid preserved by the flush").isEqualTo(originalRowId)
+
+            // write_row_lineage is ON by default, so the UPDATE pairs rather than delete+insert.
+            computeActual("UPDATE $table SET val = 'b2' WHERE id = 2")
+            val s = computeScalar("SELECT max(snapshot_id) FROM \"flush_cf\$snapshots\"") as Long
+
+            val changes = computeActual(
+                    "SELECT change_type, rowid, id, val FROM " +
+                            "TABLE(ducklake.system.table_changes('test_schema', '$bare', $s, $s)) " +
+                            "ORDER BY change_type").materializedRows
+            assertThat(changes.map { it.getField(0) as String })
+                    .`as`("UPDATE across the flush pairs (not delete+insert)")
+                    .containsExactly("update_postimage", "update_preimage")
+            val pre = changes.first { it.getField(0) == "update_preimage" }
+            val post = changes.first { it.getField(0) == "update_postimage" }
+            // Both images carry the ORIGINAL pre-flush rowid — lineage survived the flush.
+            assertThat(pre.getField(1) as Long).`as`("pre-image on preserved rowid").isEqualTo(originalRowId)
+            assertThat(post.getField(1) as Long).`as`("post-image on preserved rowid").isEqualTo(originalRowId)
+            assertThat(pre.getField(3) as String).isEqualTo("b")
+            assertThat(post.getField(3) as String).isEqualTo("b2")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     @Test
     fun catalogWideFlushMovesEveryInlinedTable() {
         val a = "flush_cw_a"

@@ -166,8 +166,11 @@ and its first INSERT fails.
 > NOT_SUPPORTED for genuinely unencodable types (VARBINARY/UUID/CHAR) instead of
 > the opaque `getSlice` crash. Pinned by `TestDucklakePartitionComputer` (encode +
 > parser round-trip) and `TestDucklakePartitionedWrite
-> .testIdentityPartitionOnTimestampAndDecimal`. NOTE: rejecting the unencodable
-> types at CREATE TABLE (vs first INSERT) remains a smaller follow-up.
+> .testIdentityPartitionOnTimestampAndDecimal`. Unencodable identity types
+> (VARBINARY/UUID/CHAR/…) are now ALSO rejected at CREATE TABLE (not just first
+> INSERT) via `DucklakeMetadata.validateIdentityPartitionTypes` +
+> `DucklakePartitionComputer.isIdentityPartitionable` — pinned by
+> `TestDucklakePartitionedWrite.testIdentityPartitionOnUnsupportedTypeRejectedAtCreate`.
 
 ## P1 — Connector-written floating-point files omit `contains_nan`
 
