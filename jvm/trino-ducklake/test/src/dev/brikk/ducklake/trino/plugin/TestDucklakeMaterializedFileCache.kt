@@ -116,6 +116,44 @@ class TestDucklakeMaterializedFileCache {
         assertThat(tracker.maxConcurrent.get()).isEqualTo(1)
     }
 
+    @Test
+    fun testTwoJvmsSharingCacheDirDoNotClobberEachOther(@TempDir cacheDir: Path) {
+        // Simulate two co-located workers (separate JVMs) by using two cache instances with
+        // independent per-key locks pointed at the SAME dir + key. Their JVM-local locks do
+        // NOT coordinate, so both may download at once; the process-unique `.partial` staging
+        // name is what keeps them from corrupting each other's file. Each must end up with the
+        // correct bytes, and the dir must contain exactly the one shared `.db` and no partials.
+        val payload = ByteArray(4096) { (it * 31).toByte() }
+        val tracker = DownloadTracker()
+        val fs = FakeFileSystem(payload, tracker, sleepMillis = 5)
+        val jvmA = DucklakeMaterializedFileCache(cacheDir)
+        val jvmB = DucklakeMaterializedFileCache(cacheDir)
+
+        val barrier = CyclicBarrier(2)
+        val results = java.util.concurrent.ConcurrentLinkedQueue<Path>()
+        val errors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val workers = listOf(jvmA, jvmB).map { cache ->
+            Thread {
+                try {
+                    barrier.await()
+                    results.add(cache.materialize(fs, REMOTE, payload.size.toLong()))
+                }
+                catch (t: Throwable) {
+                    errors.add(t)
+                }
+            }
+        }
+        workers.forEach { it.start() }
+        workers.forEach { it.join() }
+
+        assertThat(errors).isEmpty()
+        results.forEach { assertThat(Files.readAllBytes(it)).isEqualTo(payload) }
+        // Exactly one shared `.db` remains; every `.partial` staging file was cleaned up.
+        val remaining = Files.list(cacheDir).use { s -> s.toList() }.map { it.fileName.toString() }
+        assertThat(remaining).hasSize(1)
+        assertThat(remaining[0]).endsWith(".db")
+    }
+
     private companion object {
         private val REMOTE: Location = Location.of("memory://bucket/data/file.db")
     }

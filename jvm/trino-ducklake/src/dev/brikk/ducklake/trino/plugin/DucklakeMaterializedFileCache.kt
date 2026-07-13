@@ -37,9 +37,11 @@ import java.util.concurrent.ConcurrentMap
  * Phase 1 semantics — brutal and basic:
  *
  *  * One copy per key under `${java.io.tmpdir}/ducklake-read/`.
- *  * Atomic write: download to `<name>.partial`, then atomic rename.
+ *  * Atomic write: download to a process-unique `<key>.<pid>-<uuid>.partial`, then atomic
+ * rename to the shared `<key>.db`. The staging name is per-process so two co-located JVMs
+ * sharing the tmpdir can never write to the same partial file.
  *  * Concurrent `materialize` calls for the same key serialize on a per-key lock,
- * so only one downloader runs at a time and the others wait for the rename.
+ * so only one downloader per JVM runs at a time and the others wait for the rename.
  *  * No eviction. Files persist for the JVM (and survive past it, since they live in
  * tmpdir). Capacity caps and TTL come in a later step if measurements show they're
  * needed.
@@ -71,10 +73,11 @@ class DucklakeMaterializedFileCache(private val cacheDir: Path) {
      * [keyLocks]. Removing it inside the `synchronized` block (as an earlier version did in
      * a `finally`) could hand a stale monitor to an already-waiting thread: thread A clears
      * the mapping and exits while B is parked on the old monitor, then C `computeIfAbsent`s a
-     * fresh monitor and enters — so B and C run the critical section under different locks at
-     * once and race on the shared `.partial` file. The unbounded map is cheap: keys are bounded
-     * by the set of distinct `(remotePath, fileSize)` pairs, which already matches the no-eviction
-     * design of the cache itself.
+     * fresh monitor and enters — so B and C would run the critical section concurrently and
+     * redundantly re-download. (Cross-JVM safety no longer depends on this lock: the staging
+     * file is process-unique, so the worst case for two JVMs is a duplicate download, not a
+     * corrupt file.) The unbounded map is cheap: keys are bounded by the set of distinct
+     * `(remotePath, fileSize)` pairs, which already matches the no-eviction design of the cache.
      */
     fun materialize(fileSystem: TrinoFileSystem, remotePath: Location, fileSize: Long): Path {
         val key = cacheKey(remotePath, fileSize)
@@ -89,21 +92,31 @@ class DucklakeMaterializedFileCache(private val cacheDir: Path) {
                 local
             }
             else {
-                val partial = cacheDir.resolve("$key.partial")
-                Files.deleteIfExists(partial)
-                val downloaded = downloadTo(fileSystem, remotePath, partial)
-                if (downloaded != fileSize) {
-                    // Truncated/short download (interrupted stream, or stale catalog fileSize):
-                    // fail loudly here rather than moving a corrupt .db into place and handing it
-                    // to DuckDB ATTACH. isReady() only catches this on the *next* call for the key.
-                    Files.deleteIfExists(partial)
-                    throw IOException(
-                        "Truncated download for $remotePath: expected $fileSize bytes but read $downloaded",
-                    )
+                // Process-unique staging name: the per-key lock only serializes writers WITHIN
+                // this JVM, so two co-located workers sharing the tmpdir must not download into the
+                // same `<key>.partial` (interleaved full-size writes could pass the size check and
+                // hand a corrupt .db to DuckDB ATTACH). Each attempt gets its own file and only the
+                // final atomic rename to `<key>.db` is shared.
+                val partial = cacheDir.resolve("$key.${uniqueSuffix()}.partial")
+                try {
+                    val downloaded = downloadTo(fileSystem, remotePath, partial)
+                    if (downloaded != fileSize) {
+                        // Truncated/short download (interrupted stream, or stale catalog fileSize):
+                        // fail loudly here rather than moving a corrupt .db into place and handing it
+                        // to DuckDB ATTACH. isReady() only catches this on the *next* call for the key.
+                        throw IOException(
+                            "Truncated download for $remotePath: expected $fileSize bytes but read $downloaded",
+                        )
+                    }
+                    Files.move(partial, local, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                    log.debug("Materialized %s (%d bytes) -> %s", remotePath, fileSize, local)
+                    local
                 }
-                Files.move(partial, local, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                log.debug("Materialized %s (%d bytes) -> %s", remotePath, fileSize, local)
-                local
+                finally {
+                    // No-op after a successful ATOMIC_MOVE (partial no longer exists); on any
+                    // failure this removes our own staging file so it can't leak.
+                    Files.deleteIfExists(partial)
+                }
             }
         }
     }
@@ -136,6 +149,11 @@ class DucklakeMaterializedFileCache(private val cacheDir: Path) {
                     return `in`.transferTo(out)
                 }
             }
+        }
+
+        /** Per-attempt staging suffix, unique across processes AND threads sharing the tmpdir. */
+        private fun uniqueSuffix(): String {
+            return "${ProcessHandle.current().pid()}-${java.util.UUID.randomUUID()}"
         }
 
         private fun cacheKey(remotePath: Location, fileSize: Long): String {

@@ -20,10 +20,13 @@ roaring-bitmap = "1.3.0"
 detekt = "2.0.0-alpha.3"
 # Route B (lance-core JNI) — benchmark-only test dependency; the RESEARCH-verified version.
 lance-core = "6.0.0"
-# brikk-sql: TEST-ONLY SQL transpiler (corpus-replay dialect gate). Release 0.1.0 is on Maven
-# Central; 0.1.0-SNAPSHOT lives in the Central Portal snapshots repo (still wired in the
-# buildlogic.kotlin.brikk convention). Flip this ONE value to -SNAPSHOT to go back to snapshots.
-brikk-sql = "0.2.0"
+# brikk-sql: TEST-ONLY SQL transpiler (corpus-replay dialect gate). Releases (e.g. 0.2.0) are on
+# Maven Central; -SNAPSHOTs live in the Central Portal snapshots repo (wired in the
+# buildlogic.kotlin.brikk convention). Flip this ONE value between a release and a -SNAPSHOT.
+# On 0.3.0-SNAPSHOT pending release: adds Finding.areas + TranspileReport.okAccepting {} and tiers
+# the DATE+INTERVAL hazard (provably-DATE→REFUSAL, bare-column→WARNING). See the gate policy in
+# TrinoCorpusDialect + the 0.3.0 migration note in dev-docs/NOTE-transpile-first-corpus-gate.md.
+brikk-sql = "0.3.0-SNAPSHOT"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }

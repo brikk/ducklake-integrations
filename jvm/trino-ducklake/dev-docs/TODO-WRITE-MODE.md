@@ -1184,3 +1184,26 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   notice` on main: DuckLake is dropping its "experimental" label in the next
   release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
    the full feature set — re-survey ducklake-web when v1.1 tags.
+
+## Hive Partition Path Encoding on Writes — ✅ DONE 2026-07-13
+
+- [x] **URL-encode hive partition path segments on write** (correctness, P1).
+  Shipped `DucklakeHivePartitionCodec` — the single source of truth mirroring
+  DuckDB's `StringUtil::URLEncode(encode_slash=true)` / `URLDecode(plus_to_space
+  =false)` (which DuckLake's `HivePartitioning::Escape`/`Unescape` use in
+  `BuildHivePartitionPath`; verified against `vendor/duckdb` +
+  `vendor/ducklake`). `DucklakePageSink.buildRelativePath` now encodes BOTH the
+  key and the value (NULL still projects the raw `__HIVE_DEFAULT_PARTITION__`
+  sentinel, whose chars are all unreserved so it is byte-identical either way);
+  the raw value is untouched in the write fragment, so `ducklake_file_partition
+  _value` still stores raw text. The read side (`DucklakeSplitManager`) now
+  decodes the key too (in `parseHivePartitionsFromPath`) in addition to the
+  value, so Trino-written paths round-trip AND DuckDB-written escaped
+  keys/values parse correctly. Kept the inherent hive ambiguity (a genuine value
+  equal to the sentinel reads back as NULL) — matches DuckDB. Pinned by
+  `TestDucklakeHivePartitionCodec` (encode/decode byte-for-byte + inverse
+  round-trip) and `TestDucklakePartitionedWrite.testIdentityPartitionValues
+  WithSpecialCharsRoundTrip` (`/`, `%`, space, Unicode, NULL — asserts SELECT
+  round-trip AND `$path` = `region=a%2Fb` / `50%25%20off` / `caf%C3%A9` /
+  `__HIVE_DEFAULT_PARTITION__`). Corpus partitioning+add_files 963p/0f, default
+  453p/0f. Source: [TODO-possible-terra-issues.md § P1](TODO-possible-terra-issues.md).

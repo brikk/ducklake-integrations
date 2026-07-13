@@ -217,6 +217,51 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
+    fun testIdentityPartitionValuesWithSpecialCharsRoundTrip() {
+        // Regression: identity partition path segments must be percent-encoded the way
+        // DuckDB/DuckLake do (HivePartitioning::Escape). A raw '/' would split into extra
+        // path segments, and a raw '%'/space would not round-trip through our URL-decoding
+        // read side. See DucklakeHivePartitionCodec.
+        computeActual("CREATE TABLE test_schema.part_special (id INTEGER, region VARCHAR, amount DOUBLE) " +
+                "WITH (partitioned_by = ARRAY['region'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_special VALUES " +
+                    "(1, 'a/b', 10.0), " +          // slash -> %2F (must not create a subdir)
+                    "(2, '50% off', 20.0), " +      // percent + space -> %25 %20
+                    "(3, 'two words', 30.0), " +    // space -> %20
+                    "(4, 'café', 40.0), " +         // non-ASCII -> %C3%A9
+                    "(5, NULL, 50.0)")              // NULL sentinel
+
+            assertThat(computeActual("SELECT count(*) FROM test_schema.part_special")
+                    .materializedRows[0].getField(0)).isEqualTo(5L)
+
+            // Each special value round-trips: the exact string comes back and is addressable
+            // by an equality predicate (partition pruning parses the raw catalog value).
+            for ((id, region) in listOf(1 to "a/b", 2 to "50% off", 3 to "two words", 4 to "café")) {
+                val r = computeActual(
+                        "SELECT id FROM test_schema.part_special WHERE region = '" +
+                                region.replace("'", "''") + "'")
+                assertThat(r.rowCount).`as`("equality on %s", region).isEqualTo(1)
+                assertThat(r.materializedRows[0].getField(0)).isEqualTo(id)
+            }
+            assertThat(computeActual("SELECT id FROM test_schema.part_special WHERE region IS NULL")
+                    .materializedRows[0].getField(0)).isEqualTo(5)
+
+            // On-disk path segments are percent-encoded exactly like DuckDB/DuckLake.
+            val paths = computeActual("SELECT id, \"\$path\" FROM test_schema.part_special ORDER BY id")
+                    .materializedRows.associate { it.getField(0) as Int to it.getField(1) as String }
+            assertThat(paths[1]).`as`("slash encoded, no extra dir").contains("/region=a%2Fb/")
+            assertThat(paths[2]).contains("/region=50%25%20off/")
+            assertThat(paths[3]).contains("/region=two%20words/")
+            assertThat(paths[4]).contains("/region=caf%C3%A9/")
+            assertThat(paths[5]).`as`("NULL uses the sentinel").contains("/region=__HIVE_DEFAULT_PARTITION__/")
+        }
+        finally {
+            tryDropTable("test_schema.part_special")
+        }
+    }
+
+    @Test
     fun testBucketPartitionedInsertAndRead() {
         // Round-trip: create bucket-partitioned table, insert, read all rows back.
         computeActual("CREATE TABLE test_schema.part_bucket (id INTEGER, name VARCHAR, amount DOUBLE) " +
