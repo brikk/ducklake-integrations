@@ -97,6 +97,19 @@ object DucklakePartitionComputer {
         return computeTemporalValue(columnType, block, position, transform, encoding)
     }
 
+    /**
+     * True iff an IDENTITY partition over [type] can be canonically encoded to (and parsed back
+     * from) a DuckLake partition-value string — i.e. exactly the set [computeIdentityValue] handles
+     * and [DucklakePartitionValueParser] round-trips. Callers reject the rest at CREATE TABLE time
+     * (the runtime encoder's `else` throw is the belt-and-braces guard). NOT partitionable:
+     * VARBINARY, UUID, CHAR, TIME, and the complex types.
+     */
+    fun isIdentityPartitionable(type: Type): Boolean = when (type) {
+        BOOLEAN, TINYINT, SMALLINT, INTEGER, BIGINT, REAL, DOUBLE -> true
+        is DateType, is DecimalType, is TimestampType, is TimestampWithTimeZoneType, is VarcharType -> true
+        else -> false
+    }
+
     // `yyyy-MM-dd HH:mm:ss` with an optional fractional part (0-9 digits, dot only when non-zero).
     // Matches the form DucklakePartitionValueParser accepts and DuckDB's hive-path convention.
     private val IDENTITY_TIMESTAMP_FORMAT = DateTimeFormatterBuilder()
