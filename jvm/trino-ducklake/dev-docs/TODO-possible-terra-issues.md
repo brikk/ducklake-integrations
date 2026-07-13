@@ -159,6 +159,40 @@ and its first INSERT fails.
 > .testIdentityPartitionOnTimestampAndDecimal`. NOTE: rejecting the unencodable
 > types at CREATE TABLE (vs first INSERT) remains a smaller follow-up.
 
+## P1 — Connector-written floating-point files omit `contains_nan`
+
+Every connector writer records `contains_nan = false` for a REAL/DOUBLE column,
+even if the file contains NaN. The catalog persists false as SQL NULL. DuckLake
+uses this flag to decide whether a data file can contain a match for `x = NaN`
+and to retain NaN-containing files for `x > <non-NaN>`; an upstream DuckDB reader
+can therefore prune a connector-written file that holds qualifying rows.
+
+- Evidence: `DucklakeStatsExtractor.kt:70,118-125` hard-codes false for Parquet;
+  `DucklakeColumnStatsAccumulator.kt:115-123` does the same for Vortex/Lance;
+  `DuckDbFileWriter.kt:404-411` and `DuckDbArrowStreamFileWriter.kt:472` do it
+  for `.db` writers. `DuckDbWriterSupport.formatStatValue` deliberately omits NaN
+  from min/max (`:102-117`), so min/max cannot compensate for the missing flag.
+- Why this matters: upstream `GenerateConstantFilterDouble`
+  (`vendor/ducklake/src/storage/ducklake_metadata_manager.cpp:1100-1121`)
+  produces `contains_nan` for equality with NaN and adds `OR contains_nan` to
+  greater-than filters. SQL NULL/false makes that pruning predicate reject the
+  whole file, returning too few rows in cross-engine reads.
+- Suggested proof: write a Trino-owned Parquet (and one non-Parquet) file with
+  `[1.0, NaN]`, then read the table through DuckDB with `WHERE x = 'NaN'::DOUBLE`
+  and `WHERE x > 0`; inspect `ducklake_file_column_stats.contains_nan` alongside
+  the result.
+- Real fix direction: track a per-column NaN bit while each writer consumes
+  pages (the Vortex/Lance accumulator already walks every value), or derive it
+  reliably during the `.db` stats query. Persist TRUE when observed; leave the
+  value unknown rather than falsely asserting no NaN when it cannot be known.
+
+> **VERDICT: CONFIRMED (trino ↔ DuckDB, 2026-07-13).** This is not merely
+> imprecise optimizer metadata: DuckLake's own filter generator relies on
+> `contains_nan` for correctness because NaN sorts above ordinary floating-point
+> values. All connector write formats currently serialize false/NULL, so a file
+> containing NaN can be eliminated before DuckDB reads it. Fail-dangerous;
+> open for a focused cross-engine regression test and per-writer stats fix.
+
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to
 > the durable backlog (`TODO-WRITE-MODE.md` / `TODO-READ-MODE.md`); KNOWN items
