@@ -151,6 +151,53 @@ class TestDucklakeDuckDbAddFiles : AbstractDucklakeIntegrationTest() {
         }
     }
 
+    /**
+     * Regression (terra P2): opaque add_files must validate the dataset schema against the table
+     * BEFORE committing — a missing/renamed column or an incompatibly-typed column has to fail the
+     * procedure, not commit an unreadable catalog entry that only errors at first SELECT.
+     */
+    @Test
+    fun addFilesRejectsSchemaMismatchBeforeCommit() {
+        val table = "duckdb_schema_mismatch"
+        val dir = Files.createTempDirectory("duckdb-add-mismatch")
+        val missingCol = dir.resolve("missing.db")
+        writeDuckDbFile(missingCol, "SELECT * FROM (VALUES (1), (2)) v(id)")           // lacks 'name'
+        val wrongType = dir.resolve("wrongtype.db")
+        writeDuckDbFile(wrongType, "SELECT * FROM (VALUES (1, 10), (2, 20)) v(id, name)") // name INT, not VARCHAR
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, name VARCHAR)")
+
+            assertThatThrownBy {
+                computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', "
+                        + "table_name => '$table', files => ARRAY['${missingCol.toAbsolutePath()}'], "
+                        + "file_format => 'duckdb')")
+            }.hasStackTraceContaining("schema")
+            assertThat(computeScalar("SELECT count(*) FROM \"$table\$files\"") as Long)
+                    .`as`("missing-column dataset must not be registered").isEqualTo(0L)
+
+            assertThatThrownBy {
+                computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', "
+                        + "table_name => '$table', files => ARRAY['${wrongType.toAbsolutePath()}'], "
+                        + "file_format => 'duckdb')")
+            }.hasStackTraceContaining("schema")
+            assertThat(computeScalar("SELECT count(*) FROM \"$table\$files\"") as Long)
+                    .`as`("wrong-type dataset must not be registered").isEqualTo(0L)
+
+            // A matching dataset still registers fine (the guard isn't over-eager).
+            val ok = dir.resolve("ok.db")
+            writeDuckDbFile(ok, "SELECT * FROM (VALUES (1, 'a')) v(id, name)")
+            computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', "
+                    + "table_name => '$table', files => ARRAY['${ok.toAbsolutePath()}'], "
+                    + "file_format => 'duckdb')")
+            assertThat(computeActual("SELECT id, name FROM $table").materializedRows
+                    .map { (it.getField(0) as Number).toLong() to it.getField(1) as String })
+                    .containsExactly(1L to "a")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     @Test
     fun addFilesRejectsUnknownFormat() {
         val table = "duckdb_bad_format"

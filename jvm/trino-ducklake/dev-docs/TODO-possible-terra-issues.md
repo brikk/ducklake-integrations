@@ -95,9 +95,19 @@ the catalog.
 > (`SELECT 1`), so nothing but the row count is validated for the lance/vortex/duckdb
 > branches; the parquet path (`buildFragment`) does name/type matching. A dataset
 > missing/renaming/mistyping a column commits an active catalog entry that only fails
-> at read. Deferred (P2) — the fix is a typed preflight projection through the same
-> executor; larger than the current batch and touches three format builders. Left
-> open for a focused follow-up.
+> at read.
+>
+> **✅ FIXED 2026-07-13.** `countRows` now takes a projection of the table's data
+> columns (top-level minus hive-partition columns, which live in the path not the
+> file) and (a) projects them by name through the same DuckDB executor — a
+> missing/renamed column fails as a DuckDB "column not found" — and (b) converts
+> the first Arrow batch via the read path's `DucklakeArrowToPageConverter` — an
+> incompatibly-typed column throws. Both surface as `INVALID_PROCEDURE_ARGUMENT`
+> BEFORE `commitAddFiles`. Pinned by
+> `TestDucklakeDuckDbAddFiles.addFilesRejectsSchemaMismatchBeforeCommit` (missing
+> column + wrong type both rejected, nothing committed; a matching dataset still
+> registers). Valid lance/vortex/duckdb registrations unaffected; corpus add_files
+> 541p/0f.
 
 ## P2 — `DROP SCHEMA ... CASCADE` is ignored
 
