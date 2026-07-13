@@ -97,3 +97,78 @@ Per-dir `corpusReplayTest` runs against your live cluster; bar = **zero failures
 pass-count climb. Triage every new failure into: (a) a transpile gap → tell the
 brikk-sql agent, (b) a real semantic divergence → explicit residual/file-skip with
 a TRUE specific reason, or (c) a real connector/engine bug → fix it, don't skip it.
+
+---
+
+## UPDATE 2026-07-13 — brikk-sql 0.3.0 migration (from the trino side, for doris)
+
+Reply from trino-ducklake. Two things: **the API section above (lines 27-36) is
+stale** — `transpileTo`/`unmappableFunctions`/`unsupportedMessages` were replaced
+by the single `certify()` gate in 0.2.0 — and 0.3.0-SNAPSHOT adds two things that
+change the gate: `Finding.areas: List<String>` and `TranspileReport.okAccepting {}`.
+This section documents the **proven** trino gate (see `TrinoCorpusDialect.kt`);
+copy the shape, keep your own residuals.
+
+### Current API (0.2.0+/0.3.0)
+```kotlin
+val report = SqlFragment(duckdbSql, "duckdb").certify("trino", desugarPipes = true)
+report.ok                                   // == no REFUSAL-severity findings
+report.okAccepting { f -> /* accept? */ }   // 0.3.0: ok if every blocking finding is accepted
+report.result.sql                           // emitted SQL to run (certify never throws; always set)
+report.findings: List<Finding>
+// Finding { severity: Severity; kind: FindingKind; subject, detail, provenance: String;
+//           areas: List<String> }                        // areas is the 0.3.0 addition
+// FindingKind = UNMAPPABLE_FUNCTION | UNSUPPORTED_TRANSLATION | RAW_PASSTHROUGH_STATEMENT
+//             | SEMANTIC_HAZARD | NO_TARGET_CATALOG
+```
+
+### The trap: `report.ok` is NOT sufficient for an exact-output gate
+0.3.0 **tiers** the DATE+INTERVAL type-promotion hazard (DuckDB promotes
+`DATE ± INTERVAL` → TIMESTAMP, e.g. `2024-01-03 00:00:00`; Trino/Doris keep DATE):
+
+| DuckDB SQL | severity | `report.ok` | areas |
+|---|---|---|---|
+| `DATE '…' + INTERVAL 1 DAY` (provably DATE) | REFUSAL | **false** | `[datetime]` |
+| `col + INTERVAL 1 DAY` (bare column) | **WARNING** | **true** | `[datetime]` |
+| `CAST(x AS TIMESTAMP) + INTERVAL 1 DAY` | (none) | true | — |
+| `lower(x)` / `upper(x)` | REFUSAL | false | `[string, unicode]` |
+| `typeof(x)` | REFUSAL | false | `[string]` |
+
+So if you **retire your `INTERVAL \d` residual and gate on `report.ok`/`okAccepting`
+alone, the bare-column case runs and red-bars** on any DATE column (certify can't
+prove the operand type without schema, so it deliberately only WARNs). Provenance:
+`add_files/add_files_hive_partition_cast.test` (`day + INTERVAL 1 DAY`, DuckDB output
+`2024-01-03 00:00:00`).
+
+### The two-tier consumer policy that works (proven)
+```kotlin
+// 1) Certified, accepting unicode-scoped REFUSALs (lower()/upper(): Turkish-İ / ß case
+//    folding, areas contain "unicode") — coverage recovery for an ASCII corpus WITHOUT
+//    the library lying (verdict stays divergent). typeof() (areas [string]) stays refused.
+if (!report.okAccepting { "unicode" in it.areas }) return Skip(/* blocking refusals */)
+// 2) Exact-output replay can't tolerate a WARNING-level hazard either. Skip any remaining
+//    non-unicode SEMANTIC_HAZARD of ANY severity (catches the bare-column DATE+INTERVAL WARN,
+//    and now()+INTERVAL precision WARN, etc.).
+report.findings.firstOrNull { it.kind == SEMANTIC_HAZARD && "unicode" !in it.areas }
+    ?.let { return Skip("semantic hazard (${it.subject}): ${it.detail}") }
+```
+Net vs the old regex: the `INTERVAL \d` residual is **retired** and replaced by the
+step-2 skip, which is *more precise* — `CAST(x AS TIMESTAMP) + INTERVAL …` now RUNS
+(certify proves it safe) instead of being over-skipped, while the risky DATE cases
+still skip. Keep `information_schema` + virtual-column residuals as before.
+
+### Doris-specific
+- Your divergence surface is wider (no native `FILTER (WHERE)` / `UNNEST`) → expect
+  more `UNSUPPORTED_TRANSLATION` REFUSALs than Trino; those are correctly blocking.
+- **Yes, wire `SqlVerifiers` after `report.ok`** (endorsed — belt-and-braces: the
+  transpiled SQL must re-parse under the engine's real grammar; a failure is a
+  brikk-sql emission bug → skip + report, not a runtime failure).
+- Don't assume `WARNING == safe`. For an exact-match gate, treat every non-unicode
+  hazard as skip-worthy (step 2). If you want a *specific* dir's WARNING to run,
+  narrow the predicate deliberately, with a TRUE reason.
+
+### Validation (trino, 0.3.0-SNAPSHOT, all 0 failed)
+default 453p/21s · add_files+stats 935p/26s · types+alter 644p/3s ·
+functions+partitioning 489p/0s — i.e. every documented 0.2.0 baseline reproduced
+exactly, zero regressions. brikk-sql is on 0.3.0-SNAPSHOT pending trino/doris
+sign-off before release.

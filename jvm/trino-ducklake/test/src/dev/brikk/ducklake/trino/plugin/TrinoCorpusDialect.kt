@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.house.sql.shape.Finding
+import dev.brikk.house.sql.shape.FindingKind
 import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
 import dev.brikk.house.sql.shape.certify
@@ -24,23 +26,35 @@ import dev.brikk.house.sql.verify.TrinoVerifier
  *
  * Replaces the former hand-maintained DuckDB-ism token deny-list (`::`, `INTERVAL \d`,
  * `ROWID`, `PRAGMA`, `DUCKDB_`, …) + hand-rolled `executeQuery` rewrites with `brikk-sql`'s
- * single `certify()` gate (brikk-sql 0.2.0). A query is [Run]nable iff `certify` returns
- * `ok` (no REFUSAL-severity findings) AND none of the explicit residuals fire (else [Skip], an
- * engine-skip — never a failure). `certify("trino")` in ONE call covers what we used to assemble
- * by hand PLUS a new class we couldn't check before:
+ * single `certify()` gate (brikk-sql 0.3.0). `certify("trino")` in ONE call covers what we used
+ * to assemble by hand PLUS a new class we couldn't check before:
  *  - UNMAPPABLE_FUNCTION — functions absent from Trino's catalog (`read_parquet`, `duckdb_tables`, …).
  *  - RAW_PASSTHROUGH_STATEMENT — `PRAGMA` / raw Command with no Trino form.
  *  - UNSUPPORTED_TRANSLATION — no faithful Trino rendering (e.g. scalar `UNNEST`/`EXPLODE`). NB
  *    Trino keeps native `FILTER (WHERE)` and `UNNEST`, so this fires less than for Doris.
  *  - NO_TARGET_CATALOG — uncertifiable target.
- *  - SEMANTIC_HAZARD — probe-verified divergence even where syntax maps: certify now REFUSES
- *    `typeof()` (engine-specific type-name spellings) and `lower()`/`upper()` (Turkish-İ Unicode
- *    case-folding), which the old deny-list couldn't reason about.
+ *  - SEMANTIC_HAZARD — probe-verified divergence even where syntax maps: `typeof()` (engine-specific
+ *    type-name spellings), `lower()`/`upper()` (Turkish-İ / ß Unicode case-folding), and the
+ *    DATE+INTERVAL type-promotion hazard (DuckDB promotes DATE±INTERVAL to TIMESTAMP; Trino keeps
+ *    DATE) — none of which the old deny-list could reason about.
+ *
+ * Gate policy — this is an EXACT-OUTPUT replay, so "might diverge" is as bad as "does diverge":
+ *  1. [Run]nable iff the transpile is certified AND no non-tolerable hazard remains. We use
+ *     `report.okAccepting { it.isUnicodeScoped }` rather than plain `report.ok`: `lower()`/`upper()`
+ *     REFUSE with areas `[string, unicode]`, but their ONLY divergence is Turkish-İ / ß case
+ *     folding, which our ASCII corpus never exercises — so we accept those and recover the coverage
+ *     WITHOUT the library lying about the verdict (`typeof`, areas `[string]`, stays refused).
+ *  2. Then skip any remaining non-unicode `SEMANTIC_HAZARD` of ANY severity. brikk-sql 0.3.0 tiers
+ *     DATE+INTERVAL: a provably-DATE operand REFUSES (caught by step 1) but a bare column only
+ *     WARNS (certify can't prove the column type without schema, so `ok` stays true). Our corpus
+ *     DOES have DATE columns (e.g. `add_files_hive_partition_cast`), so we must skip the WARNING
+ *     too — this replaces the former `INTERVAL \d` regex residual with a precise, provenance-backed
+ *     skip that no longer over-skips `CAST(x AS TIMESTAMP) + INTERVAL …` (certify proves that safe).
  * `certify` never throws and always produces `result.sql`; then the transpiled SQL is re-parsed
  * under Trino's real grammar ([TrinoVerifier], which `certify` does NOT run) as a belt-and-braces
  * signal — a parse failure is a brikk-sql emission bug, skipped + reportable rather than a runtime
  * failure. Finally, explicit residuals `certify` can't self-detect (see [explicitResidualSkip]):
- * `information_schema`, DuckDB virtual columns, and the unquoted-INTERVAL date-arithmetic hazard.
+ * `information_schema` and DuckDB virtual columns.
  *
  * Two corpus-specific rewrites brikk-sql doesn't own are handled here:
  *  - `ORDER BY ALL` (a DuckDB stable-sort idiom brikk-sql mis-parses as a column named `ALL`):
@@ -79,18 +93,26 @@ object TrinoCorpusDialect {
 
         // One call replaces the former unmappable-functions + transpile + raw-passthrough +
         // unsupported-messages assembly, and ADDS probe-verified SEMANTIC_HAZARD detection
-        // (e.g. typeof() type-name spellings, lower() Turkish-İ case-folding) that we couldn't
-        // check before. `ok` is true iff there are no REFUSAL-severity findings; certify never
-        // throws and always produces `result.sql`. (SqlFragment construction can still throw on a
-        // hard parse failure, so guard the whole thing.)
+        // (typeof() type-name spellings, lower()/upper() case-folding, DATE+INTERVAL promotion)
+        // that we couldn't check before. certify never throws and always produces `result.sql`.
+        // (SqlFragment construction can still throw on a hard parse failure, so guard the whole thing.)
         val report = try {
             SqlFragment(pre, DUCKDB).certify(TRINO, desugarPipes = true)
         } catch (e: Exception) {
             return Skip("certify duckdb->trino threw: ${firstLine(e)}")
         }
-        if (!report.ok) {
-            val refusals = report.findings.filter { it.severity == Severity.REFUSAL }
+        // Step 1: certified, accepting unicode-only REFUSALs (lower()/upper() — ASCII corpus). This
+        // is coverage recovery, NOT a semantics lie: the library's verdict stays "divergent"; we
+        // just own the context that our data is ASCII (see gate-policy note above).
+        if (!report.okAccepting { it.isUnicodeScoped }) {
+            val refusals = report.findings.filter { it.severity == Severity.REFUSAL && !it.isUnicodeScoped }
             return Skip("not trino-certified: " + refusals.joinToString("; ") { "${it.kind}: ${it.detail}" })
+        }
+        // Step 2: exact-output replay can't tolerate a WARNING-level hazard either. Skip any
+        // remaining non-unicode SEMANTIC_HAZARD (e.g. the bare-column DATE+INTERVAL promotion that
+        // certify WARNs on because it can't prove the operand type without schema).
+        report.findings.firstOrNull { it.kind == FindingKind.SEMANTIC_HAZARD && !it.isUnicodeScoped }?.let {
+            return Skip("semantic hazard (${it.subject}): ${it.detail}")
         }
 
         val sql = rewriteInlineTimeTravel(report.result.sql)
@@ -133,27 +155,32 @@ object TrinoCorpusDialect {
 
     /**
      * Explicit residuals `certify()` can't self-detect — checked on the ORIGINAL DuckDB SQL
-     * (pre-transpile). Each is a genuine DuckDB-vs-Trino divergence with a TRUE, specific reason,
-     * verified against certify's own findings (see TmpCertifySmoke probe, 2026-07-12):
+     * (pre-transpile). Each is a genuine DuckDB-vs-Trino divergence with a TRUE, specific reason:
      *  - `information_schema` — valid syntax, certify says ok=true; but the catalog CONTENT differs
      *    DuckDB-vs-Trino, which the transpiler can't know.
      *  - DuckDB virtual columns (`rowid`/`filename`/`file_row_number`/`file_index`) — valid
      *    identifiers, certify ok=true; no Trino column, so they'd resolve differently.
-     *  - unquoted DuckDB INTERVAL literal — certify ok=true (it just quotes `INTERVAL 1 DAY` →
-     *    `INTERVAL '1' DAY`), but DuckDB date/timestamp+interval arithmetic promotes to TIMESTAMP
-     *    while Trino keeps DATE, so the rendered result diverges. FEEDBACK filed to brikk-sql: this
-     *    is a SEMANTIC_HAZARD candidate certify does not yet flag (unlike typeof()/lower(), which it
-     *    now REFUSES — those residuals were removed as redundant).
+     *
+     * The former unquoted-INTERVAL residual is RETIRED as of brikk-sql 0.3.0: certify now tiers the
+     * DATE+INTERVAL type-promotion hazard (provably-DATE → REFUSAL, bare column → WARNING), which
+     * the two-tier certify check in [gate] handles precisely (and without over-skipping a proven
+     * `CAST(x AS TIMESTAMP) + INTERVAL …`).
      */
     private fun explicitResidualSkip(pre: String): Skip? = when {
         INFORMATION_SCHEMA.containsMatchIn(pre) ->
             Skip("information_schema: catalog content differs DuckDB-vs-Trino")
         DUCKDB_VIRTUAL_COLUMN.find(pre) != null ->
             Skip("DuckDB virtual column '${DUCKDB_VIRTUAL_COLUMN.find(pre)!!.value}' has no Trino equivalent")
-        UNQUOTED_INTERVAL.containsMatchIn(pre) ->
-            Skip("unquoted DuckDB INTERVAL literal: date/timestamp arithmetic promotion diverges (DuckDB→TIMESTAMP vs Trino→DATE)")
         else -> null
     }
+
+    /**
+     * A finding whose divergence requires non-ASCII input — its [Finding.areas] include `unicode`
+     * (today: `lower()`/`upper()` Turkish-İ / ß case folding). Safe to accept for our ASCII-only
+     * corpus. `typeof()` (areas `[string]`) and DATE+INTERVAL (areas `[datetime]`) are NOT unicode-
+     * scoped and stay blocking.
+     */
+    private val Finding.isUnicodeScoped: Boolean get() = UNICODE_AREA in areas
 
     /**
      * `t AT (VERSION => 3)` → Trino `t FOR VERSION AS OF 3` (DuckLake version == snapshot id, so
@@ -196,5 +223,7 @@ object TrinoCorpusDialect {
     private val INFORMATION_SCHEMA = Regex("\\binformation_schema\\b", RegexOption.IGNORE_CASE)
     private val DUCKDB_VIRTUAL_COLUMN =
         Regex("\\b(rowid|filename|file_row_number|file_index)\\b", RegexOption.IGNORE_CASE)
-    private val UNQUOTED_INTERVAL = Regex("\\bINTERVAL\\s+\\d", RegexOption.IGNORE_CASE)
+
+    /** `Finding.areas` tag marking a divergence that only manifests on non-ASCII input. */
+    private const val UNICODE_AREA = "unicode"
 }
