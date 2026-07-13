@@ -98,6 +98,9 @@ internal object DuckDbWriterSupport {
         throw TrinoException(NOT_SUPPORTED, "$writerLabel does not yet support type: $type")
     }
 
+    /** REAL/DOUBLE — the only types that can hold NaN (for the `contains_nan` stat). */
+    fun isFloatType(type: Type): Boolean = type == REAL || type == DOUBLE
+
     /** Format a column min/max stat value for persistence, or null when not representable. */
     fun formatStatValue(type: Type, value: Any?): String? {
         if (value == null) {

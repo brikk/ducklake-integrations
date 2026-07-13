@@ -50,17 +50,29 @@ class TestDucklakeColumnStatsAccumulator {
         assertThat(stats[0].nullCount).isEqualTo(1L)
         assertThat(stats[0].minValue).isEqualTo("1")
         assertThat(stats[0].maxValue).isEqualTo("3")
+        assertThat(stats[0].containsNan).isFalse()
 
         assertThat(stats[1].valueCount).isEqualTo(3L)
         assertThat(stats[1].nullCount).isEqualTo(1L)
         assertThat(stats[1].minValue).isEqualTo("apple")
         assertThat(stats[1].maxValue).isEqualTo("cherry")
+        assertThat(stats[1].containsNan).isFalse()
 
-        // NaN is a non-null value (counted) but must not enter min/max.
+        // NaN is a non-null value (counted) but must not enter min/max — AND contains_nan must be
+        // set so DuckLake does not prune this file by min/max (NaN sorts above finite values there).
         assertThat(stats[2].valueCount).isEqualTo(3L)
         assertThat(stats[2].nullCount).isEqualTo(1L)
         assertThat(stats[2].minValue).isEqualTo("1.0")
         assertThat(stats[2].maxValue).isEqualTo("2.0")
+        assertThat(stats[2].containsNan).isTrue()
+    }
+
+    @Test
+    fun floatColumnWithoutNaNReportsContainsNanFalse() {
+        val columns = listOf(DucklakeColumnHandle(1L, "amt", DOUBLE, true))
+        val acc = DucklakeColumnStatsAccumulator(columns)
+        acc.add(Page(doubleBlock(1.0, 2.0, null)))
+        assertThat(acc.build()[0].containsNan).isFalse()
     }
 
     @Test

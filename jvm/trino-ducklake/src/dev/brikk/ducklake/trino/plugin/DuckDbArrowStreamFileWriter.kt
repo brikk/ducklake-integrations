@@ -427,14 +427,21 @@ constructor(
             return emptyList()
         }
         val sql = StringBuilder("SELECT COUNT(*)")
-        val minMaxColumns = mutableListOf<Int>()
+        val minMaxColumns = BooleanArray(columns.size)
+        val floatColumns = BooleanArray(columns.size)
         for (i in columns.indices) {
             val col: DucklakeColumnHandle = columns[i]
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
             sql.append(", COUNT(").append(name).append(")")
             if (statsMinMaxSupported(col.columnType)) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
-                minMaxColumns.add(i)
+                minMaxColumns[i] = true
+            }
+            if (DuckDbWriterSupport.isFloatType(col.columnType)) {
+                // contains_nan (see DuckDbFileWriter): MIN/MAX drop NaN, so DuckLake needs this
+                // flag or it would prune a NaN-bearing file. BOOL_OR ignores NULLs; NULL -> false.
+                sql.append(", BOOL_OR(isnan(").append(name).append("))")
+                floatColumns[i] = true
             }
         }
         sql.append(" FROM ").append(ATTACHED_DB).append('.').append(ATTACHED_SCHEMA).append('.').append(ATTACHED_TABLE)
@@ -443,6 +450,7 @@ constructor(
         val valueCounts = LongArray(columns.size)
         val minValues = arrayOfNulls<Any>(columns.size)
         val maxValues = arrayOfNulls<Any>(columns.size)
+        val containsNan = BooleanArray(columns.size)
         connection.createStatement().use { stmt ->
             stmt.executeQuery(sql.toString()).use { rs ->
                 if (!rs.next()) {
@@ -450,13 +458,14 @@ constructor(
                 }
                 var colIdx = 1
                 totalCount = rs.getLong(colIdx++)
-                var minMaxCursor = 0
                 for (i in columns.indices) {
                     valueCounts[i] = rs.getLong(colIdx++)
-                    if (minMaxCursor < minMaxColumns.size && minMaxColumns[minMaxCursor] == i) {
+                    if (minMaxColumns[i]) {
                         minValues[i] = rs.getObject(colIdx++)
                         maxValues[i] = rs.getObject(colIdx++)
-                        minMaxCursor++
+                    }
+                    if (floatColumns[i]) {
+                        containsNan[i] = rs.getBoolean(colIdx++)
                     }
                 }
             }
@@ -469,7 +478,7 @@ constructor(
             val nullCount = maxOf(0L, totalCount - valueCount)
             val min: String? = DuckDbWriterSupport.formatStatValue(col.columnType, minValues[i])
             val max: String? = DuckDbWriterSupport.formatStatValue(col.columnType, maxValues[i])
-            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, false))
+            result.add(DucklakeFileColumnStats(col.columnId, 0L, valueCount, nullCount, min, max, containsNan[i]))
         }
         return result
     }

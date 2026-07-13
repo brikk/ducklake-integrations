@@ -357,7 +357,8 @@ constructor(
         }
 
         val sql = StringBuilder("SELECT COUNT(*)")
-        val minMaxColumns: MutableList<Int> = mutableListOf()
+        val minMaxColumns = BooleanArray(columns.size)
+        val floatColumns = BooleanArray(columns.size)
         for (i in columns.indices) {
             val col = columns[i]
             val name = '"' + col.columnName.replace("\"", "\"\"") + '"'
@@ -365,7 +366,14 @@ constructor(
             sql.append(", COUNT(").append(name).append(")")
             if (supportsMinMax(col.columnType)) {
                 sql.append(", MIN(").append(name).append("), MAX(").append(name).append(")")
-                minMaxColumns.add(i)
+                minMaxColumns[i] = true
+            }
+            if (DuckDbWriterSupport.isFloatType(col.columnType)) {
+                // contains_nan: MIN/MAX exclude NaN, so DuckLake needs this flag to avoid pruning
+                // a NaN-bearing file. BOOL_OR ignores NULLs; an all-NULL column yields SQL NULL ->
+                // getBoolean returns false, which is correct (no observed NaN).
+                sql.append(", BOOL_OR(isnan(").append(name).append("))")
+                floatColumns[i] = true
             }
         }
         sql.append(" FROM ").append(ATTACHED_DB).append('.').append(ATTACHED_SCHEMA).append('.').append(ATTACHED_TABLE)
@@ -374,6 +382,7 @@ constructor(
         val valueCounts = LongArray(columns.size)
         val minValues = arrayOfNulls<Any>(columns.size)
         val maxValues = arrayOfNulls<Any>(columns.size)
+        val containsNan = BooleanArray(columns.size)
 
         connection.createStatement().use { stmt ->
             stmt.executeQuery(sql.toString()).use { rs ->
@@ -382,13 +391,14 @@ constructor(
                 }
                 var colIdx = 1
                 totalCount = rs.getLong(colIdx++)
-                var minMaxCursor = 0
                 for (i in columns.indices) {
                     valueCounts[i] = rs.getLong(colIdx++)
-                    if (minMaxCursor < minMaxColumns.size && minMaxColumns[minMaxCursor] == i) {
+                    if (minMaxColumns[i]) {
                         minValues[i] = rs.getObject(colIdx++)
                         maxValues[i] = rs.getObject(colIdx++)
-                        minMaxCursor++
+                    }
+                    if (floatColumns[i]) {
+                        containsNan[i] = rs.getBoolean(colIdx++)
                     }
                 }
             }
@@ -408,7 +418,7 @@ constructor(
                     nullCount,
                     min,
                     max,
-                    false))
+                    containsNan[i]))
         }
         return result
     }

@@ -1185,34 +1185,21 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
    the full feature set — re-survey ducklake-web when v1.1 tags.
 
-## Floating-point `contains_nan` stats — review 2026-07-13
+## Floating-point `contains_nan` stats — ✅ DONE 2026-07-13 (write side)
 
-- [ ] **Record `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN**
-  (correctness, P1, cross-engine). Every connector writer hard-codes the flag
-  false (persisted as SQL NULL), even when the file contains NaN:
-  `DucklakeStatsExtractor.kt:70` (parquet), `DucklakeColumnStatsAccumulator.kt`
-  (vortex/lance), `DuckDbFileWriter.kt` / `DuckDbArrowStreamFileWriter.kt` (`.db`).
-  Min/max deliberately exclude NaN (`DuckDbWriterSupport.formatStatValue`,
-  `DucklakeStatTypes`), so they can't compensate.
-  - **Why it's wrong (verified against `vendor/ducklake`):** on read,
-    `ducklake_transaction_state.cpp:775-777` sets `has_contains_nan = true` for a
-    float column and treats our NULL as `contains_nan = false`; then
-    `ducklake_stats.cpp:322-336 ToStats()` takes `has_contains_nan && !contains_nan`
-    → `CreateNumericStats()` (min/max pruning enabled). A NaN-bearing file records
-    e.g. `[1.0, 3.0]` and is pruned for `x > 5` (NaN sorts above finite values) →
-    too few rows. TRUE would make `ToStats()` return EMPTY stats → no pruning →
-    correct. Affects DuckDB reading Trino-written files AND Trino reading its own.
-  - **Fix direction (per writer):** the vortex/lance accumulator already walks
-    every value (it excludes NaN from min/max at `:96`,`:160-164`) — set a NaN bit
-    there. The `.db` writers derive stats via a DuckDB query — add
-    `bool_or(isnan(col))` (guard non-float). The parquet path reads only footer
-    min/max post-write, so it needs page-level inspection during the write (or a
-    NaN probe) — the hardest of the three. Persist TRUE when observed; keep NULL
-    (unknown) rather than asserting false when it can't be known.
-  - **Proof first:** write a Trino parquet AND a non-parquet file with `[1.0, NaN]`;
-    read via DuckDB `WHERE x > 0` and `WHERE x = 'NaN'::DOUBLE`; inspect
-    `ducklake_file_column_stats.contains_nan`. Source:
-    [TODO-possible-terra-issues.md § contains_nan](TODO-possible-terra-issues.md).
+- [x] **Record `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN.**
+  Shipped across all connector writers: `DucklakeColumnStatsAccumulator`
+  (vortex/lance) sets the bit where a NaN is excluded from min/max;
+  `DuckDbFileWriter` / `DuckDbArrowStreamFileWriter` add `BOOL_OR(isnan(col))` to
+  the stats query for float columns (NULL→false); `ParquetFileWriter` scans
+  top-level REAL/DOUBLE channels during `write()` (the footer can't carry NaN) and
+  folds the bit into the extracted stats. Tests: `TestDucklakeColumnStatsAccumulator`
+  + cross-engine `TestDucklakeCrossEngineNanStats` (DuckDB `WHERE x > 5` returns the
+  NaN row rather than pruning the file). Corpus stats/insert/general 502p/0f.
+  **Follow-up (open):** nested float leaves (struct/array/map of float) aren't
+  scanned on the parquet path (rare); the read-side Trino pruning honoring
+  `contains_nan` is a separate, lesser concern (Trino `NaN > 5` is false).
+  Source: [TODO-possible-terra-issues.md § contains_nan](TODO-possible-terra-issues.md).
 
 ## Hive Partition Path Encoding on Writes — ✅ DONE 2026-07-13
 

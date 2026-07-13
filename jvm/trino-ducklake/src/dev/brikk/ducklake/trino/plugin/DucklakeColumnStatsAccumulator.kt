@@ -73,6 +73,7 @@ internal class DucklakeColumnStatsAccumulator(columns: List<DucklakeColumnHandle
     private val valueCounts: LongArray = LongArray(this.columns.size)
     private val mins: Array<Comparable<Any>?> = arrayOfNulls(this.columns.size)
     private val maxs: Array<Comparable<Any>?> = arrayOfNulls(this.columns.size)
+    private val containsNan: BooleanArray = BooleanArray(this.columns.size)
     private var totalRows: Long = 0
 
     fun add(page: Page) {
@@ -92,8 +93,16 @@ internal class DucklakeColumnStatsAccumulator(columns: List<DucklakeColumnHandle
                 if (!trackMinMax) {
                     continue
                 }
-                val value: Comparable<Any> = extractComparable(type, block, position)
-                    ?: continue // NaN — excluded from min/max
+                val value: Comparable<Any>? = extractComparable(type, block, position)
+                if (value == null) {
+                    // The only null a min/max-tracked type yields here is a NaN REAL/DOUBLE:
+                    // record contains_nan (DuckLake needs it — a NaN-bearing file must NOT be
+                    // pruned by min/max) and keep it out of min/max.
+                    if (type == REAL || type == DOUBLE) {
+                        containsNan[channel] = true
+                    }
+                    continue
+                }
                 val currentMin = mins[channel]
                 if (currentMin == null || value.compareTo(currentMin) < 0) {
                     mins[channel] = value
@@ -119,7 +128,7 @@ internal class DucklakeColumnStatsAccumulator(columns: List<DucklakeColumnHandle
                     nullCount,
                     formatWinner(col.columnType, mins[i]),
                     formatWinner(col.columnType, maxs[i]),
-                    false))
+                    containsNan[i]))
         }
         return result
     }

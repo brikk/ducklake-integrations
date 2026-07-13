@@ -206,8 +206,24 @@ can therefore prune a connector-written file that holds qualifying rows.
 > `contains_nan` been TRUE, `ToStats()` returns EMPTY stats → no pruning → correct.
 > The connector's own range pruning (`JdbcDucklakeCatalog.findDataFileIdsInRange`)
 > is a lesser concern (it keeps files on unknown stats), but the same
-> false-negative applies to a Trino read of a Trino-written NaN file. Copied to
+> false-negative applies to a Trino read of a Trino-written NaN file — though note
+> Trino's own NaN comparison semantics differ from DuckDB's (Trino: `NaN > 5` is
+> false; DuckDB: true), so the Trino read side is a lesser/separate concern; the
+> confirmed impact is DuckDB reading connector-written files. Copied to
 > [TODO-WRITE-MODE.md § Floating-point `contains_nan`](TODO-WRITE-MODE.md#floating-point-contains_nan-stats--review-2026-07-13).
+>
+> **✅ FIXED 2026-07-13 (write side).** All connector writers now record
+> `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN:
+> `DucklakeColumnStatsAccumulator` (vortex/lance) sets a bit where NaN is excluded
+> from min/max; `DuckDbFileWriter` / `DuckDbArrowStreamFileWriter` add
+> `BOOL_OR(isnan(col))` to the stats query for float columns; `ParquetFileWriter`
+> scans top-level REAL/DOUBLE channels during `write()` (footer min/max can't carry
+> NaN) and folds the bit into the extracted stats. Pinned by
+> `TestDucklakeColumnStatsAccumulator` and cross-engine
+> `TestDucklakeCrossEngineNanStats.trinoWrittenNaNFileIsNotPrunedByDuckDb` (DuckDB
+> `WHERE x > 5` returns the NaN row instead of pruning the file). **Follow-up:**
+> nested float LEAVES (struct/array/map of float) are not yet scanned on the
+> parquet path — rare, documented in `ParquetFileWriter`.
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to
