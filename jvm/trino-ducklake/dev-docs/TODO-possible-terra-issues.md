@@ -27,6 +27,13 @@ threshold.
   its filtered set is empty.  Make an empty explicit list a no-op (or reject it)
   and reject null members rather than silently discarding them.
 
+> **VERDICT: CONFIRMED (trino, 2026-07-13).** `DucklakeExpireSnapshotsProcedure.kt:82-90`
+> — `explicit` is the *filtered* set (`snapshotIds?.filterNotNull()?.toSet().orEmpty()`);
+> `ARRAY[]` and `ARRAY[NULL]` both collapse to empty → `explicit.isNotEmpty()` false →
+> the `else` retention branch runs (default threshold `7d`, line 69), expiring every
+> non-latest snapshot past the cutoff. Fail-dangerous. **→ FIXING now** (branch on the
+> null-ness of the argument; empty explicit list = no-op).
+
 ## P1 — Partial-file time travel fails open when its required marker is absent
 
 A data file whose catalog row has `partial_max > requested_snapshot` must carry
@@ -47,6 +54,15 @@ read include every row in the file.
   earlier snapshot.
 - Real fix direction: when `snapshotFilterMax` is present, require a readable
   BIGINT marker and throw a clear `TrinoException` if it is absent or malformed.
+
+> **VERDICT: CONFIRMED (trino, 2026-07-13).** `DucklakeDeleteFileReader.kt:245` —
+> `messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN) ?: return emptySet()`. An
+> empty set = "no rows are newer than the requested snapshot", so a partial file
+> missing its marker returns ALL rows, including those that post-date the snapshot.
+> This path only runs when `snapshotFilterMax` is set (`DucklakeSplitManager.kt:637`
+> from `partial_max`), i.e. the file is KNOWN to contain filterable rows — so a
+> missing marker is an integrity failure, not a normal path. Violates AGENTS.md
+> "fail loud over silently wrong". **→ FIXING now** (throw when the marker is absent).
 
 ## P2 — Opaque-format `add_files` registers unreadable schemas
 
@@ -69,6 +85,15 @@ the catalog.
   partition-body requirements) through the same executor and reject a mismatch
   before `commitAddFiles`.
 
+> **VERDICT: CONFIRMED (trino, 2026-07-13).** `DucklakeAddFilesProcedure.kt:539-558`
+> — `countRows` builds an `ExecutionRequest` with `emptyList<DucklakeColumnHandle>()`
+> (`SELECT 1`), so nothing but the row count is validated for the lance/vortex/duckdb
+> branches; the parquet path (`buildFragment`) does name/type matching. A dataset
+> missing/renaming/mistyping a column commits an active catalog entry that only fails
+> at read. Deferred (P2) — the fix is a typed preflight projection through the same
+> executor; larger than the current batch and touches three format builders. Left
+> open for a focused follow-up.
+
 ## P2 — `DROP SCHEMA ... CASCADE` is ignored
 
 The Trino SPI supplies the `cascade` flag, but `DucklakeMetadata.dropSchema`
@@ -85,6 +110,13 @@ instead of dropping the tables and schema.
 - Real fix direction: decide and implement catalog-consistent cascade semantics.
   This needs an atomicity/transaction decision; do not simply loop over table
   drops without defining failure behavior.
+
+> **VERDICT: CONFIRMED (trino, 2026-07-13).** `DucklakeMetadata.kt:831-834` — the
+> `cascade` SPI flag is unused; delegates to `catalog.dropSchema(schemaName)`, which
+> rejects non-empty schemas (`JdbcDucklakeCatalog.kt:2263`). So `DROP SCHEMA s CASCADE`
+> fails on a non-empty schema. Deferred (P2) — needs an atomicity decision (per-table
+> drop ordering + failure/rollback behavior) that shouldn't be rushed into this batch.
+> Left open; flagged for a design pass.
 
 ## P2 — Identity partition writes accept types the encoder cannot serialize
 
@@ -106,6 +138,16 @@ and its first INSERT fails.
 - Real fix direction: implement canonical partition-text encoding and matching
   parsing for every identity-partitionable DuckLake type, or reject unsupported
   types at CREATE TABLE time until that is complete.
+
+> **VERDICT: CONFIRMED (trino, 2026-07-13).** `DucklakePartitionComputer.kt:93-109`
+> — `computeIdentityValue` handles a fixed set of scalars then falls to
+> `type.getSlice(block, position)`; for TIMESTAMP/DECIMAL (short forms are `long`s,
+> not slices) that hits `AbstractType.getSlice`, which throws
+> `UnsupportedOperationException`. CREATE TABLE succeeds; the first INSERT crashes
+> (not even a clean error). Adjacent to the hive-path encoding just fixed (same
+> method). **→ FIXING now** (canonical encode + matching parse in
+> `DucklakePartitionValueParser` for the identity-partitionable types; reject the
+> genuinely unencodable ones at CREATE TABLE).
 
 > **Triage pass 2026-07-12 (terra).** Each item below carries a `VERDICT`
 > block: code was read against the cited lines. CONFIRMED items are copied to
