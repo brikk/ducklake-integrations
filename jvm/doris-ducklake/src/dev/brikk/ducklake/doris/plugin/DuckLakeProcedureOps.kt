@@ -29,10 +29,12 @@ import org.apache.doris.connector.api.pushdown.ConnectorPredicate
  *  - `cleanup_old_files` — the second phase: physically deletes the blobs `expire_snapshots`
  *    scheduled, once older than a grace period, via the connector's own S3 client
  *    ([WarehouseBlobStore]); then drops their schedule rows.
- *  - `remove_orphan_files` — deletes `.parquet` objects under the warehouse that NO catalog row
+ *  - `remove_orphan_files` — deletes DuckLake-managed residue (`ducklake-`-prefixed `.parquet`/
+ *    `.puffin`/`.db` objects; see [OrphanFiles]) under the warehouse that NO catalog row
  *    references (residue of aborted commits) and are older than a grace period. Catalog-wide
- *    (models upstream `ducklake_delete_orphaned_files`): globs the whole `data_path`, diffs against
- *    `listAllReferencedFilePaths` (all tables), and — like the two above — IGNORES the named table.
+ *    (models upstream `ducklake_delete_orphaned_files`, which sweeps `.parquet`/`.puffin` as of
+ *    DuckLake 1.5.5): globs the whole `data_path`, diffs against `listAllReferencedFilePaths` (all
+ *    tables), and — like the two above — IGNORES the named table.
  *
  * ## Why one ops class per connector (not one per procedure)
  * Doris routes every `ALTER TABLE EXECUTE` for a connector through this one

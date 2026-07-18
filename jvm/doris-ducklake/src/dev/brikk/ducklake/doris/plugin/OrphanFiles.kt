@@ -17,8 +17,9 @@ import java.time.Instant
  * Modeled on the shared `remove_orphan_files` contract (Trino `DucklakeRemoveOrphanFilesProcedure`,
  * dev-docs DESIGN-maintenance §8.1): a file is deletable only if its **basename starts with the
  * `ducklake-` prefix that every DuckLake writer uses** (this connector + DuckDB) AND ends with a
- * managed extension. This is broader than upstream DuckDB's `.parquet`-only glob (we also reclaim
- * `.puffin`/`.db` residue) but NARROWER than a raw unreferenced-file diff — foreign files a user
+ * managed extension. This is broader than upstream DuckDB's `.parquet`/`.puffin` glob (upstream
+ * added `.puffin` in DuckLake 1.5.5, ducklake main `1e2e74ee`; before that it was `.parquet`-only —
+ * we also reclaim `.db` residue) but NARROWER than a raw unreferenced-file diff — foreign files a user
  * parked under the warehouse (`_SUCCESS`, `foo.txt`, `.crc`, their own non-`ducklake-` `data.parquet`)
  * are NEVER deleted. The `ducklake-` prefix is the key safety gate.
  *
