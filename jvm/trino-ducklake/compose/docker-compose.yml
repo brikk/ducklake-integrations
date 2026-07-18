@@ -130,7 +130,7 @@ services:
         condition: service_started
     ports:
       - "9080:8080"
-    mem_limit: 4g
+    mem_limit: ${TRINO_MEMORY_LIMIT:-4g}
     environment:
       JAVA_TOOL_OPTIONS: >-
         --add-opens=java.base/java.nio=ALL-UNNAMED

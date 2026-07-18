@@ -203,6 +203,7 @@ All in `.env`:
 |------------------------|-----------------------|-------------------------------------------|
 | `PLUGIN_VERSION`       | `483-1-ALPHA`         | Must match `:trino-ducklake` Gradle version (the assembled directory name) |
 | `TRINO_VERSION`        | `483`                 | `trinodb/trino` image tag                 |
+| `TRINO_MEMORY_LIMIT`   | `4g`                  | Container memory limit; the image sizes its JVM heap as 80% of this value |
 | `POSTGRES_VERSION`     | `18-alpine`           |                                           |
 | `MINIO_TAG`            | release tag           | `minio/minio` image tag                   |
 | `MC_TAG`               | release tag           | `minio/mc` image tag (separate from server!) |
