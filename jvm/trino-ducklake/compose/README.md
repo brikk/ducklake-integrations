@@ -242,10 +242,10 @@ Wipe the volumes (below) to reseed at a different scale.
 
 ### Parquet vs DuckDB format benchmark
 
-`tpch-format-benchmark.py` creates equivalent Parquet and DuckDB copies of all
-eight tables from a built-in Trino TPC-H scale, then runs the same scan and join
-queries through Parquet, embedded DuckDB, and Quack. It records server-side Trino
-timings and resource statistics rather than relying on client wall time.
+`tpch-format-benchmark.py` creates equivalent Parquet, DuckDB, and optionally
+Vortex copies from a built-in Trino TPC-H scale, then runs the same scan and join
+queries through the selected engines. It records server-side Trino timings and
+resource statistics rather than relying on client wall time.
 
 ```bash
 uv run tpch-format-benchmark.py \
@@ -264,6 +264,19 @@ connection pressure without biasing the comparison, pass (for example)
 Quack 1.5.4 also retains idle HTTP connections for 10 seconds, so sustained
 multi-query runs can use `--query-cooldown 4`. The delay applies before every
 variant and is outside Trino's reported query elapsed time.
+
+For a scan-only comparison at a larger scale, table and format preparation can
+be narrowed explicitly:
+
+```bash
+uv run tpch-format-benchmark.py \
+  --server http://localhost:9080 \
+  --source-schema sf100 --schema format_bench_sf100 \
+  --formats parquet duckdb vortex --tables lineitem \
+  --variants parquet duckdb_embedded vortex_embedded \
+  --queries q1 q6 --duckdb-read-mode materialize \
+  --task-concurrency 4 --prepare --benchmark
+```
 
 ## Common operations
 

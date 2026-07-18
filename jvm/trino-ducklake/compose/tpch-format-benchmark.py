@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["trino==0.338.0"]
 # ///
-"""Prepare and benchmark equivalent Parquet and DuckDB TPC-H tables in Trino."""
+"""Prepare and benchmark equivalent TPC-H tables across file formats in Trino."""
 
 from __future__ import annotations
 
@@ -38,7 +38,13 @@ TPCH_TABLES = (
 )
 
 QUERY_NAMES = ("q1", "q6", "q3", "q5")
-VARIANT_NAMES = ("parquet", "duckdb_embedded", "duckdb_quack")
+FORMAT_PREFIXES = {
+    "parquet": "parquet_",
+    "duckdb": "duckdb_",
+    "vortex": "vortex_",
+}
+VARIANT_NAMES = ("parquet", "duckdb_embedded", "duckdb_quack", "vortex_embedded")
+DEFAULT_VARIANTS = ("parquet", "duckdb_embedded", "duckdb_quack")
 
 
 @dataclass(frozen=True)
@@ -85,7 +91,21 @@ def parse_args() -> argparse.Namespace:
         help="Sleep this many seconds before every timed query (outside Trino timing)",
     )
     parser.add_argument("--queries", nargs="+", choices=QUERY_NAMES, default=list(QUERY_NAMES))
-    parser.add_argument("--variants", nargs="+", choices=VARIANT_NAMES, default=list(VARIANT_NAMES))
+    parser.add_argument("--variants", nargs="+", choices=VARIANT_NAMES, default=list(DEFAULT_VARIANTS))
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        choices=tuple(FORMAT_PREFIXES),
+        default=["parquet", "duckdb"],
+        help="File formats to prepare and inspect",
+    )
+    parser.add_argument(
+        "--tables",
+        nargs="+",
+        choices=TPCH_TABLES,
+        default=list(TPCH_TABLES),
+        help="TPC-H tables to prepare and inspect",
+    )
     parser.add_argument("--prepare", action="store_true", help="Create missing format tables")
     parser.add_argument("--benchmark", action="store_true", help="Run timed queries")
     parser.add_argument("--reset", action="store_true", help="Drop benchmark tables before preparation")
@@ -235,19 +255,21 @@ def prepare(
     schema: str,
     source_schema: str,
     reset: bool,
+    selected_formats: list[str],
+    selected_tables: list[str],
 ) -> list[dict[str, Any]]:
     runner.execute(f"CREATE SCHEMA IF NOT EXISTS {q(catalog)}.{q(schema)}")
-    formats = (("parquet", "parquet_"), ("duckdb", "duckdb_"))
+    formats = tuple((file_format, FORMAT_PREFIXES[file_format]) for file_format in selected_formats)
     if reset:
         for _, prefix in reversed(formats):
-            for table in reversed(TPCH_TABLES):
+            for table in reversed(selected_tables):
                 runner.execute(f"DROP TABLE IF EXISTS {destination(catalog, schema, prefix, table)}")
 
     rows, _, _ = runner.execute(f"SHOW TABLES FROM {q(catalog)}.{q(schema)}")
     existing = {row[0] for row in rows}
     preparation: list[dict[str, Any]] = []
     for file_format, prefix in formats:
-        for table in TPCH_TABLES:
+        for table in selected_tables:
             table_name = prefix + table
             if table_name in existing:
                 print(f"SKIP existing {catalog}.{schema}.{table_name}", flush=True)
@@ -277,10 +299,13 @@ def collect_storage_stats(
     runner: Runner,
     catalog: str,
     schema: str,
+    selected_formats: list[str],
+    selected_tables: list[str],
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for file_format, prefix in (("parquet", "parquet_"), ("duckdb", "duckdb_")):
-        for table in TPCH_TABLES:
+    for file_format in selected_formats:
+        prefix = FORMAT_PREFIXES[file_format]
+        for table in selected_tables:
             files_table = destination(catalog, schema, prefix, table)[:-1] + "$files\""
             sql = f"""
                 SELECT count(*) AS file_count,
@@ -372,6 +397,7 @@ def benchmark(
         Variant("parquet", catalog, "parquet_"),
         Variant("duckdb_embedded", catalog, "duckdb_"),
         Variant("duckdb_quack", quack_catalog, "duckdb_"),
+        Variant("vortex_embedded", catalog, "vortex_"),
     )
     variants = tuple(variant for variant in all_variants if variant.name in selected_variants)
     sql_by_variant = {
@@ -396,7 +422,7 @@ def benchmark(
                 session_properties: dict[str, str] = {}
                 if task_concurrency is not None:
                     session_properties["task_concurrency"] = str(task_concurrency)
-                if variant.name.startswith("duckdb_"):
+                if variant.name != "parquet":
                     session_properties[f"{variant.catalog}.duckdb_read_mode"] = read_mode
                 rows, stats, client_ms = runner.execute(
                     sql,
@@ -463,10 +489,12 @@ def main() -> int:
             args.schema,
             args.source_schema,
             args.reset,
+            args.formats,
+            args.tables,
         )
 
-    storage = collect_storage_stats(runner, args.catalog, args.schema)
-    for file_format in ("parquet", "duckdb"):
+    storage = collect_storage_stats(runner, args.catalog, args.schema, args.formats, args.tables)
+    for file_format in args.formats:
         selected = [row for row in storage if row["format"] == file_format]
         print(
             f"STORAGE {file_format}: files={sum(row['fileCount'] for row in selected)} "
@@ -500,6 +528,8 @@ def main() -> int:
             "destinationSchema": args.schema,
             "duckdbReadMode": args.duckdb_read_mode,
             "variants": args.variants,
+            "formats": args.formats,
+            "tables": args.tables,
             "taskConcurrency": args.task_concurrency,
             "queryCooldownSeconds": args.query_cooldown,
             "preparation": preparation,
