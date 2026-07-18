@@ -322,3 +322,108 @@ The guiding rule is simple: **source snapshots are authoritative; a cached scan
 is only a hint.** If that remains true in every failure and invalidation path,
 this can become a very useful BI acceleration feature without becoming a
 second, hidden storage system.
+
+---
+
+## Reconciliation against TODO-duckdb-silent-cache.md (2026-07-18)
+
+This doc and [`TODO-duckdb-silent-cache.md`](TODO-duckdb-silent-cache.md) were compared
+critically, verifying disputed claims against code. Neither was treated as authoritative.
+
+### Convergence (independently derived → high confidence)
+
+Both docs agree, and code confirms: httpfs is the default and bypasses Trino's filesystem
+cache; the in-process external-file cache is per-split/cold; Quack's is long-lived and
+process-wide; `enable_object_cache` is a dead no-op on the bundled DuckDB; the materialized
+file cache is unbounded with a hardcoded dir; the Quack shared-mount contract is implicit;
+DuckDB-path byte accounting is blind; Trino cache membership/local-path is not queryable
+(TODO doc § Q2b has the API evidence). Phase 0 above is effectively the TODO doc's risk
+checklist turned into work items — keep them in sync.
+
+### Corrections settled between the docs
+
+- **Layering, not replacement (this doc was right).** The connector staging/artifact cache
+  cannot be *replaced* by Trino's `CacheFileSystem` — DuckDB `ATTACH` needs a real path.
+  The TODO doc's "consider replacing `DucklakeMaterializedFileCache`" is amended to: the
+  staging layer sits *above* Trino's cache, which may accelerate the remote pull beneath it.
+- **`path + size` identity — right in general, overbroad for managed files.** Connector- and
+  DuckDB-written data files are `ducklake-<uuid>.*` (never-reused paths), so same-size
+  in-place replacement is a non-threat for managed files. The real exposure is
+  **`add_files`-registered external paths** (user-owned, can be overwritten in place) and any
+  artifact cache over arbitrary Parquet. Cheap Phase-0 upgrade this doc missed:
+  `TrinoInputFile.lastModified()` is already in the API — key on
+  `(path, size, lastModified)` today; ETag/version-id needs FS-specific plumbing.
+- **"Materialize rides Trino's cache" is backend- and size-conditional (both docs missed).**
+  The Memory cache backend skips files above `maxContentLength`
+  (`MemoryFileSystemCacheConfig`; `getLargeFileSkippedCount`), so a large materialize pull
+  may not be cached at all on that backend. Alluxio (block-based, on-disk) is the backend
+  that actually covers big files. Any claim of "cached like Parquet" must name the backend.
+
+### The shared blind spot: DuckLake scans are not pure bytes→rows
+
+Both docs treated a Parquet file as static content. **A DuckLake scan's effective content =
+data file ⊖ delete files/inlined deletes, filtered by `partial_max`/origin-snapshot, with
+row lineage on top.** Consequences the plan must absorb:
+
+1. **Artifact identity must include per-file delete state.** "The DuckLake snapshot" as
+   identity is correct but **over-invalidating** — any insert anywhere bumps the snapshot.
+   Per-file identity must fold in `(data_file_id, applied delete-file set + versions,
+   inlined-delete state, snapshot-filter bounds)`. Granularity is a real design decision,
+   not a detail.
+2. **A DELETE invalidates artifacts without touching any source file.** "Mostly-stable
+   Parquet collection" understates DuckLake churn: files are immutable but their *effective*
+   content changes with every delete. Admission must key on **effective-content churn**, not
+   file churn.
+3. **Positional semantics are a hard eligibility gate.** An artifact with a baked-in
+   filter/projection compacts row positions. The existing read path already refuses pushdown
+   when positions matter (`requiresContiguousPositions`,
+   `DucklakePageSourceProvider.kt:1484-1508`); identically, artifacts cannot serve
+   `$row_id`/`$file_row_number`/MERGE-target/delete-application reads unless they embed
+   per-row lineage. Add "no positional requirements, or lineage embedded" to the
+   exact-match compatibility gate.
+4. **Per-file artifacts keep the rewrite at the split level.** The page-source provider
+   already dispatches per split by file format, so "artifact for covered sources + native
+   Parquet for the delta" is just emitting different split types — near-zero planner
+   surgery. Multi-file scan-shape artifacts break split/stats boundaries and become real
+   planner work. Phase 2 should explicitly build **per-source-file artifacts first**; that
+   is the answer to planning question 2 that the current architecture makes obvious.
+
+Getting (1)–(3) wrong returns deleted rows from the artifact — the same bug class as the
+change-feed `partial_max` fixes of 2026-07-18. This is the highest-severity risk in the
+whole proposal.
+
+### Why DuckDB artifacts at all — the actual upside to chase
+
+The steady-state advantages of moving toward DuckDB-format cache artifacts (beyond "bytes
+are local"), which the phases above should eventually measure for:
+
+- **Merging multiple files that tend to be read together** into one artifact (possible with
+  Parquet too, but DuckDB gives one attachable database with its own internal layout).
+- **Indexes** inside the DuckDB database (ART indexes, zone-map-like skipping on the
+  artifact's physical order) — a thing Parquet cannot carry.
+- **Dropping unused fields** at conversion time — smaller artifacts, cheaper cold re-pull
+  from S3, less local disk per cached scan shape.
+- **Collocating data that joins together**, and potentially **pushing joins down into a
+  compound DuckDB artifact** (multiple tables/scan shapes in one attached database), if the
+  planner boundary allows it. This is the most speculative and the most differentiating.
+
+Directionally this resembles **Doris's decoupled/disaggregated storage-compute mode**:
+authoritative data in object storage, workers holding a locally-optimized, disposable
+representation that accelerates hot reads without owning the data.
+
+### The benchmark gate (do this before believing any of it)
+
+None of the above is assumed to beat the cheap alternative. Before Phase 2 investment,
+run a reasonable-size conversion comparison:
+
+- **Baseline: Parquet + heavy Trino filesystem cache** (`fs.cache.enabled` + Alluxio,
+  worker affinity already wired via `DucklakeSplit.affinityKey`). This is available today
+  with zero connector work — the artifact project must beat *this*, not beat "no cache."
+- **Parquet → DuckDB artifact** (per-file, then merged/indexed variants) — measure scan
+  latency, cold-pull bytes, build cost, disk residency.
+- **Parquet → Vortex** as the alternate derived format — Vortex may deliver the
+  columnar-scan win without the database machinery; if it's close, the DuckDB-specific
+  upside reduces to indexes/joins/compounding only.
+
+If Parquet-with-cache is within noise of DuckDB artifacts for the target BI shapes, the
+project should stop at Phase 0/1 (staging + hardening) and bank the win.
