@@ -20,15 +20,24 @@ traffic; host ports are exposed for local debugging tools.
 
 ## Start it
 
-The Trino container mounts the assembled plugin directory directly, so build
-the plugin first:
+The Trino container mounts the assembled plugin directory and both Trino and
+Quack mount the same old-glibc-compatible parity extension. Build both first:
 
 ```bash
-cd ../..                         # jvm/
+cd ../../..                      # repository root
+git submodule update --init --recursive
+cd duckdb-trino-parity-extension
+make linux-amd64
+cd ../jvm
 ./gradlew :trino-ducklake:pluginAssemble
 cd trino-ducklake/compose
 docker compose up -d
 ```
+
+Do not use the host `GEN=ninja make` artifact for Quack on a newer Linux host:
+it can link against a newer GLIBC than the Debian-based sidecar provides. The
+Compose default uses the portable `build/linux-amd64/...` output and refuses to
+create a directory silently when that file is missing.
 
 Startup order is enforced by `depends_on` health gates:
 
@@ -204,6 +213,8 @@ All in `.env`:
 | `PLUGIN_VERSION`       | `483-1-ALPHA`         | Must match `:trino-ducklake` Gradle version (the assembled directory name) |
 | `TRINO_VERSION`        | `483`                 | `trinodb/trino` image tag                 |
 | `TRINO_MEMORY_LIMIT`   | `4g`                  | Container memory limit; the image sizes its JVM heap as 80% of this value |
+| `QUACK_MEMORY_LIMIT`   | `4g`                  | Hard memory limit for the Quack sidecar container |
+| `PARITY_EXTENSION_PATH` | portable linux-amd64 build | Host path to the parity extension mounted into Trino and Quack |
 | `POSTGRES_VERSION`     | `18-alpine`           |                                           |
 | `MINIO_TAG`            | release tag           | `minio/minio` image tag                   |
 | `MC_TAG`               | release tag           | `minio/mc` image tag (separate from server!) |
@@ -226,6 +237,26 @@ All in `.env`:
 If you change `TPCH_SCALE_FACTOR` after the lake has been seeded, the
 bootstrap will *not* regenerate — it skips when `lake.tpch.*` already exists.
 Wipe the volumes (below) to reseed at a different scale.
+
+### Parquet vs DuckDB format benchmark
+
+`tpch-format-benchmark.py` creates equivalent Parquet and DuckDB copies of all
+eight tables from a built-in Trino TPC-H scale, then runs the same scan and join
+queries through Parquet, embedded DuckDB, and Quack. It records server-side Trino
+timings and resource statistics rather than relying on client wall time.
+
+```bash
+uv run tpch-format-benchmark.py \
+  --server http://localhost:9080 \
+  --source-schema sf10 \
+  --prepare --benchmark --rounds 3 \
+  --output /tmp/tpch-format-benchmark.json
+```
+
+Add `--reset` to drop and recreate the benchmark tables. Preparation is
+restartable: without `--reset`, existing format tables are retained and only
+missing tables are created. Use `--variants parquet duckdb_embedded` to omit
+Quack when only the in-process format comparison is needed.
 
 ## Common operations
 

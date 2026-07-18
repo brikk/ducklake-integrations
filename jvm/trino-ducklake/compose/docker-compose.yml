@@ -90,6 +90,7 @@ services:
       context: ../../ducklake-catalog/testFixtures/resources/docker/quack-server
       dockerfile: Dockerfile
     container_name: trino-ducklake-duckqk
+    mem_limit: ${QUACK_MEMORY_LIMIT:-4g}
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -117,7 +118,12 @@ services:
       # set. Identical in-container path on both sides keeps quack.properties
       # and ducklake.properties consistent. Server-side LOAD requires
       # allow_unsigned_extensions, set via `duckdb -unsigned` in entrypoint.sh.
-      - ../../../duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension:/opt/duckdb-extensions/trino_parity.duckdb_extension:ro
+      - type: bind
+        source: ${PARITY_EXTENSION_PATH}
+        target: /opt/duckdb-extensions/trino_parity.duckdb_extension
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
   trino:
@@ -146,7 +152,12 @@ services:
       #   cd $REPO/duckdb-trino-parity-extension && GEN=ninja make
       # The catalog property ducklake.duckdb.parity-extension-path in
       # ducklake.properties points at the in-container path below.
-      - ../../../duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension:/opt/duckdb-extensions/trino_parity.duckdb_extension:ro
+      - type: bind
+        source: ${PARITY_EXTENSION_PATH}
+        target: /opt/duckdb-extensions/trino_parity.duckdb_extension
+        read_only: true
+        bind:
+          create_host_path: false
       - ducklake-materialize:/tmp/ducklake-read
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]
