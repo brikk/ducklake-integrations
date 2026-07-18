@@ -22,6 +22,15 @@ Seeded 2026-07-05 from the upstream-risk conversation.
   sweep is exercised — tracked live files are never orphans, and dead-file
   reclaim via `expire_snapshots`/`cleanup_old_files` deleting a genuinely dead
   non-parquet file is correct, not a survival concern.)
+  - **UPDATE 2026-07-18 (ducklake main `1e2e74ee`):** the orphan-sweep glob filter
+    widened from `suffix(filename,'.parquet')` to
+    `(suffix(...,'.parquet') OR suffix(...,'.puffin'))` in
+    `ducklake_metadata_manager.cpp` `GetOrphanFilesForCleanup`. Puffin files are
+    DuckLake's OWN deletion-vector blobs, so this does **not** endanger our
+    `.vortex`/`.lance`/`.db` special-format orphans (still not swept). No action;
+    the survival test's premise holds. Confirms upstream is happy to grow the
+    swept-suffix set, so keep the test as the trip-wire — a future bump adding a
+    broad glob (or our formats) would break it loud. Landing in 1.5.5.
 
 ## Ideas we can't commit to yet
 
@@ -58,6 +67,14 @@ Seeded 2026-07-05 from the upstream-risk conversation.
   could stage + call `ducklake_commit` ourselves and get upstream's conflict
   checking for free instead of maintaining our Kotlin commit protocol for that
   backend. Re-check each refresh.
+  - **Re-checked 2026-07-18:** no new server-side-commit machinery this cycle.
+    Quack `v1.5-variegata` (→1.5.5) changes were correctness/hardening only —
+    reject `INSERT ... RETURNING` (was returning garbage), bind `count(*)` to the
+    EMPTY virtual column + forbid `rowid` (structural trip-wire so a future remote
+    UPDATE/DELETE can't half-enable via inherited NULL rowid), fetch-tag pushdown
+    hardening, `EXTRA_HTTP_HEADERS` secret. Quack `main` is all fetch-ahead /
+    read-ahead streaming + server-side client-id hashing (perf/plumbing). Trajectory
+    unchanged; still Quack-only, direct-SQL commit stays client-side.
 - [ ] **expire-vs-long-read (accepted risk, 2026-07-05)** — another engine's
   `expire_snapshots`/`cleanup_old_files` can delete files mid-read of a
   long-running Trino query. Accepted: our reads resolve the snapshot file list

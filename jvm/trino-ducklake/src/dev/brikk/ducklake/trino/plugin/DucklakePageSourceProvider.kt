@@ -579,10 +579,17 @@ class DucklakePageSourceProvider @Inject constructor(
         // This is what lets an UPDATE's delete + re-insert land on the SAME rowid and pair.
         val insertLineage: Map<Long, LongArray?> = readInsertLineage(fileSystem, tableDataPath, insertFiles)
 
+        // Per-row ORIGIN snapshot for cross-snapshot compacted ("partial") insert files (keyed by
+        // data_file_id). A partial file's rows come from several source snapshots merged into one
+        // file whose `begin_snapshot` is only the MIN; attributing every row to `begin_snapshot`
+        // would mis-report the change snapshot and mis-window rows. Ordinary files aren't read here
+        // (null) — every row's origin IS the file's `begin_snapshot`. See datafusion-ducklake #185.
+        val insertOriginSnapshots: Map<Long, LongArray?> = readInsertOriginSnapshots(fileSystem, tableDataPath, insertFiles)
+
         // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids.
         val deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
         val resolvedDeletions: List<ResolvedChangeFeedDeletion> =
-                resolveChangeFeedDeletions(fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
+                resolveChangeFeedDeletions(table, fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
 
         // Inlined data: small writes DuckDB keeps in ducklake_inlined_* tables. Inlined-row
         // insert/delete events (case 1/2) + inline file-position deletes (case 3), all folded into
@@ -594,12 +601,13 @@ class DucklakePageSourceProvider @Inject constructor(
 
         // Update pairing across ALL sources (file inserts + inlined inserts vs. every delete).
         val updatedBySnapshot: Map<Long, Set<Long>> = computeUpdatedRowids(
-                deletedRowidsBySnapshot, insertFiles, insertLineage, inlined.insertedRowidsBySnapshot)
+                deletedRowidsBySnapshot, insertFiles, insertLineage, insertOriginSnapshots,
+                inlined.insertedRowidsBySnapshot)
 
         val units: MutableList<ChangeFeedUnit> = mutableListOf()
         for (file in insertFiles) {
-            units.add(insertUnit(session, table, tableDataPath, requestedDataColumns, file,
-                    insertLineage[file.dataFileId], updatedBySnapshot))
+            units.addAll(insertUnitsForFile(session, table, tableDataPath, requestedDataColumns, file,
+                    insertLineage[file.dataFileId], insertOriginSnapshots[file.dataFileId], updatedBySnapshot))
         }
         for (resolved in resolvedDeletions) {
             units.add(deleteUnit(session, table, requestedDataColumns, resolved, updatedBySnapshot))
@@ -746,6 +754,11 @@ class DucklakePageSourceProvider @Inject constructor(
 
     private class ResolvedChangeFeedDeletion(
             val deletion: DucklakeChangeFeedDeletion,
+            // The snapshot to REPORT these deletions at. Usually the delete file's begin_snapshot
+            // (== deletion.snapshotId), but for a CONSOLIDATED ("partial") delete file it is the
+            // per-row `_ducklake_internal_snapshot_id`, so one physical file yields several
+            // resolutions — one per in-window deletion snapshot.
+            val snapshotId: Long,
             val resolvedPath: String,
             val deletedPositions: Set<Long>,
             val lineage: LongArray?)
@@ -761,6 +774,44 @@ class DucklakePageSourceProvider @Inject constructor(
             lineage[file.dataFileId] = readLineage(fileSystem, resolvedPath, file.fileFormat, file.footerSize)
         }
         return lineage
+    }
+
+    /**
+     * A file is a cross-snapshot compacted ("partial") file when its `partial_max` (MAX origin
+     * snapshot) exceeds its `begin_snapshot` (MIN origin) — i.e. it merges rows from more than one
+     * source snapshot. Ordinary files have `partial_max == null` (or `== begin_snapshot`).
+     */
+    private fun isPartialFile(file: DucklakeDataFile): Boolean {
+        val max: Long = file.partialMax ?: return false
+        return max > file.beginSnapshot
+    }
+
+    /**
+     * Per insert-file embedded `_ducklake_internal_snapshot_id` array (keyed by data_file_id) — the
+     * ORIGIN snapshot of each row, in file order. Read ONLY for partial files (see [isPartialFile]);
+     * ordinary files map to null and every row is attributed to the file's `begin_snapshot`. Parquet
+     * only — the non-parquet formats this connector writes never carry the column, and compaction
+     * output is always parquet.
+     */
+    private fun readInsertOriginSnapshots(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            insertFiles: List<DucklakeDataFile>): Map<Long, LongArray?> {
+        val origins: MutableMap<Long, LongArray?> = mutableMapOf()
+        for (file in insertFiles) {
+            if (!isPartialFile(file) || !DucklakeSessionProperties.FORMAT_PARQUET.equals(file.fileFormat, ignoreCase = true)) {
+                continue
+            }
+            val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
+            origins[file.dataFileId] = try {
+                DucklakeDeleteFileReader.readInternalSnapshotIds(
+                        fileSystem, resolvedPath, file.footerSize, parquetReaderOptions, fileFormatDataSourceStats)
+            }
+            catch (e: IOException) {
+                throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read partial-file origin snapshots: $resolvedPath", e)
+            }
+        }
+        return origins
     }
 
     /** The embedded row-lineage array for a data file (parquet only), or null when it isn't carried. */
@@ -786,41 +837,102 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** Resolves each deletion to its newly-deleted positions + lineage, dropping no-op events and
-     * recording the deleted rowids by snapshot (for update pairing). */
+     * recording the deleted rowids by snapshot (for update pairing).
+     *
+     * A CONSOLIDATED ("partial") current delete file — 3-column `(file_path, pos,
+     * _ducklake_internal_snapshot_id)` produced by delete consolidation (`flush_inlined_data`),
+     * whose `begin_snapshot` is only the MIN of the folded deletion snapshots and `partial_max` the
+     * MAX — is split into one resolution PER in-window deletion snapshot, each reporting that
+     * snapshot's positions. Otherwise the whole batch would be mis-reported at `begin_snapshot` and
+     * mis-windowed (delete-side analog of the insert `partial_max` fix; datafusion-ducklake #185). */
     private fun resolveChangeFeedDeletions(
+            table: ChangeFeedTableHandle,
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             deletions: List<DucklakeChangeFeedDeletion>,
             deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<ResolvedChangeFeedDeletion> {
         val resolved: MutableList<ResolvedChangeFeedDeletion> = mutableListOf()
         for (deletion in deletions) {
-            val positions: Set<Long> = newlyDeletedPositions(fileSystem, tableDataPath, deletion)
-            if (positions.isEmpty()) {
-                continue
-            }
             val resolvedPath: String = pathResolver.resolveFilePath(
                     deletion.dataFilePath, deletion.dataFilePathIsRelative, tableDataPath)
             val lineage: LongArray? = readLineage(fileSystem, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize)
-            val deletedRowids: Set<Long> = positions.mapTo(mutableSetOf()) { rowIdForPosition(lineage, deletion.rowIdStart, it) }
-            deletedRowidsBySnapshot.getOrPut(deletion.snapshotId) { mutableSetOf() }.addAll(deletedRowids)
-            resolved.add(ResolvedChangeFeedDeletion(deletion, resolvedPath, positions, lineage))
+
+            for ((eventSnapshot, positions) in newlyDeletedPositionsBySnapshot(fileSystem, tableDataPath, table, deletion)) {
+                if (positions.isEmpty()) {
+                    continue
+                }
+                val deletedRowids: Set<Long> = positions.mapTo(mutableSetOf()) { rowIdForPosition(lineage, deletion.rowIdStart, it) }
+                deletedRowidsBySnapshot.getOrPut(eventSnapshot) { mutableSetOf() }.addAll(deletedRowids)
+                resolved.add(ResolvedChangeFeedDeletion(deletion, eventSnapshot, resolvedPath, positions, lineage))
+            }
         }
         return resolved
     }
 
+    /** Whether [deletion]'s current delete file is a CONSOLIDATED (multi-snapshot) partial file. */
+    private fun isConsolidatedDelete(deletion: DucklakeChangeFeedDeletion): Boolean {
+        val max: Long = deletion.currentDeletePartialMax ?: return false
+        return !deletion.fullFileDelete && max > deletion.snapshotId
+    }
+
+    /**
+     * Newly-deleted file positions grouped by the snapshot to REPORT them at.
+     *
+     * Ordinary (2-column) or full-file delete: one group at `deletion.snapshotId` (the incremental
+     * `current − previous` diff, as before). Consolidated 3-column current file: the per-row
+     * `_ducklake_internal_snapshot_id` gives each position's true deletion snapshot — group by it and
+     * keep only groups inside the feed window `[startSnapshot, endSnapshot]`. `previous` is not
+     * subtracted in the consolidated case: consolidation folds prior deletions INTO this file with
+     * their own snapshots, so the per-row snapshot already windows them correctly.
+     */
+    private fun newlyDeletedPositionsBySnapshot(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            table: ChangeFeedTableHandle,
+            deletion: DucklakeChangeFeedDeletion): Map<Long, Set<Long>> {
+        if (!isConsolidatedDelete(deletion)) {
+            return mapOf(deletion.snapshotId to newlyDeletedPositions(fileSystem, tableDataPath, deletion))
+        }
+        val currentPath: String = pathResolver.resolveFilePath(
+                deletion.currentDeletePath!!, deletion.currentDeletePathIsRelative ?: false, tableDataPath)
+        val window: LongRange = table.startSnapshot..table.endSnapshot
+        val posToSnapshot: Map<Long, Long> = DucklakeDeleteFileReader.readPositionsWithSnapshots(
+                fileSystem, currentPath, deletion.currentDeleteFooterSize ?: 0L, parquetReaderOptions, fileFormatDataSourceStats)
+        val bySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+        for ((position, snapshot) in posToSnapshot) {
+            if (snapshot in window) {
+                bySnapshot.getOrPut(snapshot) { mutableSetOf() }.add(position)
+            }
+        }
+        return bySnapshot
+    }
+
     /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). Inserted
      * rowids come from file lineage values / the `[rowIdStart, +count)` range, plus inlined-insert
-     * rowids. */
+     * rowids. For a cross-snapshot compacted ("partial") file each row's inserted rowid is bucketed
+     * by its PER-ROW origin snapshot ([insertOriginSnapshots]), not the file's `begin_snapshot`, so
+     * an update's re-insert pairs against the delete in the snapshot that actually re-inserted it. */
     private fun computeUpdatedRowids(
             deletedRowidsBySnapshot: Map<Long, Set<Long>>,
             insertFiles: List<DucklakeDataFile>,
             insertLineage: Map<Long, LongArray?>,
+            insertOriginSnapshots: Map<Long, LongArray?>,
             inlinedInsertedRowidsBySnapshot: Map<Long, Set<Long>>): Map<Long, Set<Long>> {
         val rangesBySnapshot: MutableMap<Long, MutableList<LongRange>> = mutableMapOf()
         val lineageSetBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
         for (file in insertFiles) {
             val lineage: LongArray? = insertLineage[file.dataFileId]
-            if (lineage != null) {
+            val origins: LongArray? = insertOriginSnapshots[file.dataFileId]
+            if (origins != null && lineage != null) {
+                // Partial file: attribute each row's rowid to its own origin snapshot. (Compaction
+                // output always embeds BOTH the lineage rowid and the origin-snapshot columns, so
+                // both arrays are present and index-aligned by file position.)
+                val n: Int = minOf(origins.size, lineage.size)
+                for (position in 0 until n) {
+                    lineageSetBySnapshot.getOrPut(origins[position]) { mutableSetOf() }.add(lineage[position])
+                }
+            }
+            else if (lineage != null) {
                 lineageSetBySnapshot.getOrPut(file.beginSnapshot) { mutableSetOf() }.addAll(lineage.asList())
             }
             else {
@@ -839,26 +951,70 @@ class DucklakePageSourceProvider @Inject constructor(
         }.toMap()
     }
 
-    private fun insertUnit(
+    /**
+     * The insert-side change-feed unit(s) for one data file.
+     *
+     * Ordinary file: ONE unit whose every row is attributed to the file's `begin_snapshot`
+     * (`keepPositions = null`, whole file kept).
+     *
+     * Cross-snapshot compacted ("partial") file ([originSnapshots] non-null): the file merges rows
+     * from several source snapshots, so attributing all rows to `begin_snapshot` is wrong. Emit one
+     * unit PER distinct origin snapshot that falls in the feed window `[startSnapshot, endSnapshot]`,
+     * each keeping only that snapshot's file positions and stamping that snapshot id. Rows whose
+     * origin is outside the window are dropped (they belong to a different change-feed window) —
+     * this is the per-row half of the `partial_max` fix (catalog query is the file-selection half).
+     * Mirrors upstream DuckLake / datafusion-ducklake #185.
+     */
+    private fun insertUnitsForFile(
             session: ConnectorSession,
             table: ChangeFeedTableHandle,
             tableDataPath: String,
             dataColumns: List<DucklakeColumnHandle>,
             file: DucklakeDataFile,
             lineage: LongArray?,
-            updatedBySnapshot: Map<Long, Set<Long>>): ChangeFeedUnit {
+            originSnapshots: LongArray?,
+            updatedBySnapshot: Map<Long, Set<Long>>): List<ChangeFeedUnit> {
         val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
-        return ChangeFeedUnit(
-                baseSource = {
-                    openChangeFeedFile(session, resolvedPath, file.fileFormat, file.footerSize,
-                            file.fileSizeBytes, file.rowIdStart, file.recordCount, file.beginSnapshot, table, dataColumns)
-                },
-                snapshotId = file.beginSnapshot,
-                rowIdStart = file.rowIdStart,
-                lineageRowIds = lineage,
-                keepPositions = null,
-                updatedRowids = updatedBySnapshot[file.beginSnapshot] ?: emptySet(),
-                isDelete = false)
+        val baseSource: () -> ConnectorPageSource = {
+            openChangeFeedFile(session, resolvedPath, file.fileFormat, file.footerSize,
+                    file.fileSizeBytes, file.rowIdStart, file.recordCount, file.beginSnapshot, table, dataColumns)
+        }
+
+        if (originSnapshots == null) {
+            // Ordinary file: begin_snapshot IS every row's origin.
+            return listOf(ChangeFeedUnit(
+                    baseSource = baseSource,
+                    snapshotId = file.beginSnapshot,
+                    rowIdStart = file.rowIdStart,
+                    lineageRowIds = lineage,
+                    keepPositions = null,
+                    updatedRowids = updatedBySnapshot[file.beginSnapshot] ?: emptySet(),
+                    isDelete = false))
+        }
+
+        // Partial file: bucket file positions by their per-row origin snapshot, then keep only the
+        // buckets whose snapshot is in the feed window. Each bucket becomes its own unit so a single
+        // physical file surfaces as several correctly-attributed insert events.
+        val window: LongRange = table.startSnapshot..table.endSnapshot
+        val positionsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+        for (position in originSnapshots.indices) {
+            val origin: Long = originSnapshots[position]
+            if (origin in window) {
+                positionsBySnapshot.getOrPut(origin) { mutableSetOf() }.add(position.toLong())
+            }
+        }
+        return positionsBySnapshot.entries
+                .sortedBy { it.key }
+                .map { (snapshotId, positions) ->
+                    ChangeFeedUnit(
+                            baseSource = baseSource,
+                            snapshotId = snapshotId,
+                            rowIdStart = file.rowIdStart,
+                            lineageRowIds = lineage,
+                            keepPositions = positions,
+                            updatedRowids = updatedBySnapshot[snapshotId] ?: emptySet(),
+                            isDelete = false)
+                }
     }
 
     private fun deleteUnit(
@@ -874,11 +1030,11 @@ class DucklakePageSourceProvider @Inject constructor(
                             deletion.dataFileSizeBytes, deletion.rowIdStart, deletion.recordCount,
                             deletion.dataFileBeginSnapshot, table, dataColumns)
                 },
-                snapshotId = deletion.snapshotId,
+                snapshotId = resolved.snapshotId,
                 rowIdStart = deletion.rowIdStart,
                 lineageRowIds = resolved.lineage,
                 keepPositions = resolved.deletedPositions,
-                updatedRowids = updatedBySnapshot[deletion.snapshotId] ?: emptySet(),
+                updatedRowids = updatedBySnapshot[resolved.snapshotId] ?: emptySet(),
                 isDelete = true)
     }
 

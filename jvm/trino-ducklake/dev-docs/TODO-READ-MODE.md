@@ -274,6 +274,53 @@ data file's scan.
   embedded row-lineage column (parquet field-id 2147483540) for lineage-preserving writers — DuckDB
   AND, since 2026-07-06 (F7), Trino's own UPDATE/MERGE under `write_row_lineage = true` (default off
   keeps the delete+insert shape). See README § Change Feed and archive/TODO-jayson-special-list-COMPLETED-2026-07.md § F9.
+- [x] **change-feed insert side per-row origin-snapshot attribution — FIXED 2026-07-18.** Was:
+  `insertUnit` stamped `snapshotId = file.beginSnapshot` for EVERY row, so `table_changes` /
+  `table_insertions` over a `merge_adjacent_files` / `rewrite_data_files` output (`partial_max >
+  begin_snapshot`) attributed all merged rows to one snapshot and mis-windowed rows at the
+  (inclusive) boundary. Now the insert side reads each row's embedded `_ducklake_internal_snapshot_id`
+  (`DucklakeDeleteFileReader.readInternalSnapshotIds`, matched by column name — the read-only twin of
+  `readSnapshotDropPositions`) for partial files and:
+  - **File selection** — `getDataFilesAddedBetween` (`JdbcDucklakeCatalog.kt`) now also admits files
+    whose `begin_snapshot < start` but `partial_max >= start` (a partial file can begin before the
+    window yet carry in-window rows). Predicate: `begin_snapshot <= end AND (begin_snapshot >= start
+    OR partial_max >= start)`.
+  - **Per-row attribution** — `insertUnitsForFile` (replaces `insertUnit`) splits a partial file into
+    one `ChangeFeedUnit` per distinct origin snapshot in `[start, end]`, each with `keepPositions` =
+    that snapshot's file positions and `snapshotId` = that snapshot; rows whose origin is outside the
+    window are dropped. Ordinary files still emit one whole-file unit at `begin_snapshot`.
+  - **Update pairing** — `computeUpdatedRowids` buckets a partial file's inserted rowids by per-row
+    origin snapshot (lineage rowid × origin snapshot, index-aligned) instead of `begin_snapshot`.
+  Read/time-travel path was already correct (`DucklakeSplitManager.kt:633-637`); this brings the
+  change feed to parity. Mirrors datafusion-ducklake #185 (2026-07-16). Test:
+  `TestDucklakeChangeFeedPartialFile` (DuckDB N-snapshot write → `merge_adjacent_files` → Trino
+  `table_insertions`/`table_changes` sub-windows assert per-origin attribution). Note: a partial file
+  is re-scanned once per in-window origin snapshot (the existing "fully eager" change-feed tradeoff,
+  below); acceptable — origin-snapshot count per compacted file is small.
+- [x] **change-feed DELETE side per-deletion snapshot attribution for consolidated files — FIXED
+  2026-07-18 (delete-side analog of the insert `partial_max` fix).** REACHABILITY CONFIRMED (not
+  hypothetical): DuckDB `DELETE` (id=1) → `DELETE` (id=5) → `flush_inlined_data` produces ONE
+  consolidated 3-column delete file with `begin_snapshot = MIN` (4), `partial_max = MAX` (5), each
+  row carrying its own `_ducklake_internal_snapshot_id` (verified via probe + upstream
+  `ducklake_delete.cpp` WriteDeleteFileInternal: `begin_snapshot = min(per-row snapshot)`,
+  `WriteNewDeleteFiles`: `partial_max = max_snapshot`). Before the fix the incremental arm
+  (`getDeletionsBetween`) reported BOTH deletions at `begin_snapshot=4`: `table_deletions` over
+  window `[4,4]` wrongly included id=5, and over `[5,5]` MISSED id=5 entirely (empirically
+  reproduced, then fixed). Fix, mirroring the insert side:
+  - **File selection** — `incrementalDeletions` (`JdbcDucklakeCatalog.kt`) now admits a consolidated
+    delete file when its `[begin_snapshot, partial_max]` span overlaps the window (`begin <= end AND
+    partial_max >= start`), via `deleteFileOverlapsWindow`. Ordinary files still filter on
+    `begin_snapshot in window`.
+  - **Per-deletion attribution** — `DucklakeDeleteFileReader.readPositionsWithSnapshots` reads the
+    3-column file into `pos → deletion snapshot`; `newlyDeletedPositionsBySnapshot`
+    (`DucklakePageSourceProvider.kt`) groups positions by that snapshot, keeps only in-window
+    groups, and emits one `ResolvedChangeFeedDeletion` (new per-event `snapshotId`) per group.
+    `previous` is not subtracted for consolidated files (consolidation folds prior deletions INTO
+    the file with their own snapshots). Ordinary/full-file deletes unchanged (`current − previous`
+    at `begin_snapshot`).
+  Test: `TestDucklakeChangeFeedPartialDelete` (DuckDB 2-snapshot delete → `flush_inlined_data` →
+  `table_deletions` sub-windows assert per-deletion-snapshot attribution). datafusion-ducklake #185
+  fixed the identical case. Found + fixed during the 2026-07-18 upstream run.
 - [ ] DuckLake-specific metadata surfaces beyond `$files` / `$snapshots` / `$current_snapshot` /
   `$snapshot_changes` — evaluate as use-cases surface.
 - [ ] **Follow-up (perf/latency, review 2026-07-12): change-feed setup is fully

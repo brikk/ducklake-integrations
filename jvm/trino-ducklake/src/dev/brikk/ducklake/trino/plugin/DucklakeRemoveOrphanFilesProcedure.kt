@@ -64,8 +64,10 @@ import java.time.Instant
  *    member of a `ducklake-*.lance` dataset directory (see [isDucklakeManagedResidue]). Foreign
  *    files a user parked under the data path (`_SUCCESS`, `foo.txt`, `.crc`, their own
  *    non-`ducklake-` parquet) are never touched. This is broader than upstream DuckDB's
- *    `ducklake_delete_orphaned_files`, which is `.parquet`-only (it abandons `.db`/`.vortex`/
- *    `.puffin`/`.lance` residue — we reclaim ours), and narrower than a raw unreferenced-file sweep.
+ *    `ducklake_delete_orphaned_files`, which sweeps `.parquet`/`.puffin` only as of DuckLake 1.5.5
+ *    (`.puffin` added upstream in ducklake main `1e2e74ee`; before that it was `.parquet`-only) —
+ *    it still abandons `.db`/`.vortex`/`.lance` residue, which we reclaim — and narrower than a raw
+ *    unreferenced-file sweep.
  *  - The retention threshold is the grace period that keeps the op safe without a global lock: a
  *    file young enough to still be referenced by an in-flight (possibly cross-engine) writer is
  *    never deleted. The argument is floored by `ducklake.remove-orphan-files.min-retention`
@@ -74,7 +76,8 @@ import java.time.Instant
  *
  * Modeled on upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
  * mtime-gated), scoped to one table's data path in the Trino procedure idiom — but type-scoped to
- * DuckLake-managed residue (see above) rather than upstream's `.parquet`-only filter.
+ * DuckLake-managed residue (see above) rather than upstream's `.parquet`/`.puffin`-only filter
+ * (upstream added `.puffin` in DuckLake 1.5.5; still no `.db`/`.vortex`/`.lance`).
  */
 class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
@@ -301,8 +304,8 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
      *
      * Anything else (foreign files, a user's own non-`ducklake-` parquet, `_SUCCESS`, …) returns
      * false and is left untouched. This is intentionally narrower than a raw filesystem diff and
-     * broader than upstream DuckDB's parquet-only sweep (we also reclaim our `.db`/`.vortex`/
-     * `.puffin`/`.lance` residue, which DuckDB abandons).
+     * broader than upstream DuckDB's `.parquet`/`.puffin` sweep (upstream added `.puffin` in DuckLake
+     * 1.5.5; we also reclaim our `.db`/`.vortex`/`.lance` residue, which DuckDB abandons).
      */
     private fun isDucklakeManagedResidue(path: String): Boolean {
         val basename = path.substringAfterLast('/')

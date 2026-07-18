@@ -276,6 +276,64 @@ object DucklakeDeleteFileReader {
         }
     }
 
+    /**
+     * Reads the `_ducklake_internal_snapshot_id` column of a cross-snapshot compacted ("partial")
+     * DATA file, returning each row's ORIGIN snapshot id in file order (index = file-local
+     * position). Used by the change feed to attribute each merged row's insert event to the
+     * snapshot that actually produced it, rather than the merged file's `begin_snapshot` (which is
+     * only the MIN across the merged rows).
+     *
+     * Called ONLY for files the catalog marks partial (`partial_max > begin_snapshot`), so the
+     * marker column MUST be present. If it is absent we THROW rather than fall back to
+     * `begin_snapshot` for every row: that fallback would silently mis-attribute (and mis-window)
+     * every later-origin row — a fail-open the same way an empty drop-set would be in
+     * [readSnapshotDropPositions]. A missing marker on a partial file is a data/metadata integrity
+     * failure, not a normal path.
+     */
+    @Throws(IOException::class)
+    fun readInternalSnapshotIds(
+            fileSystem: TrinoFileSystem,
+            dataFilePath: String,
+            footerSizeHint: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats): LongArray {
+        val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
+        val memoryContext = newSimpleAggregatedMemoryContext()
+        var dataSource: ParquetDataSource? = null
+        try {
+            dataSource = createDataSource(inputFile, OptionalLong.empty(), parquetReaderOptions, memoryContext, stats)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
+            val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            val schema = parquetMetadata.fileMetaData.schema
+            val messageColumnIO = getColumnIO(schema, schema)
+            val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)
+                    ?: throw TrinoException(
+                            GENERIC_INTERNAL_ERROR,
+                            "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column, which is " +
+                                    "required to attribute change-feed rows to their origin snapshot: " + dataFilePath)
+            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
+                    .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
+            val parquetReader = createParquetReader(
+                    dataSource, inputFile.length(), parquetMetadata,
+                    Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
+            return collectRowIdsInOrder(ParquetPageSource(parquetReader))
+                    ?: throw TrinoException(
+                            GENERIC_INTERNAL_ERROR,
+                            "Partial data file has a null value in $INTERNAL_SNAPSHOT_ID_COLUMN: $dataFilePath")
+        }
+        catch (e: TrinoException) {
+            dataSource?.let { runCatching { it.close() } }
+            throw e
+        }
+        catch (e: IOException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+        catch (e: RuntimeException) {
+            throw closeAndWrap(dataSource, dataFilePath, e)
+        }
+    }
+
     /** File-local positions whose BIGINT value is strictly greater than [threshold], in file order. */
     private fun collectPositionsAbove(pageSource: ConnectorPageSource, threshold: Long): Set<Long> {
         val positions = mutableSetOf<Long>()
@@ -333,6 +391,75 @@ object DucklakeDeleteFileReader {
         catch (e: RuntimeException) {
             throw closeAndWrap(dataSource, deleteFilePath, e)
         }
+    }
+
+    /**
+     * Reads a consolidated ("partial") PARQUET delete file and returns, for each file-local
+     * position, the deletion snapshot that recorded it (`pos` → `_ducklake_internal_snapshot_id`).
+     * Used by the change feed to attribute each folded deletion to its OWN snapshot instead of the
+     * delete file's `begin_snapshot` (the MIN across the folded deletions). The delete-side twin of
+     * [readInternalSnapshotIds]; called only for files the catalog marks partial, so the marker
+     * column MUST be present — a missing one is a data/metadata integrity failure and THROWS rather
+     * than silently attributing every position to one snapshot.
+     */
+    @Throws(IOException::class)
+    fun readPositionsWithSnapshots(
+            fileSystem: TrinoFileSystem,
+            deleteFilePath: String,
+            footerSizeHint: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats): Map<Long, Long> {
+        val inputFile = fileSystem.newInputFile(toLocation(deleteFilePath))
+        val memoryContext = newSimpleAggregatedMemoryContext()
+        var dataSource: ParquetDataSource? = null
+        try {
+            dataSource = createDataSource(inputFile, OptionalLong.empty(), parquetReaderOptions, memoryContext, stats)
+            dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                    dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
+            val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            val schema: MessageType = parquetMetadata.fileMetaData.schema
+            val messageColumnIO = getColumnIO(schema, schema)
+            val posColumn = requiredNamedColumn(messageColumnIO, SPEC_POSITION_COLUMN, deleteFilePath)
+            val snapColumn = requiredNamedColumn(messageColumnIO, INTERNAL_SNAPSHOT_ID_COLUMN, deleteFilePath)
+            val parquetReader = createParquetReaderForColumns(
+                    dataSource, inputFile.length(), parquetMetadata,
+                    ImmutableList.of(posColumn, snapColumn), memoryContext, parquetReaderOptions)
+            return collectPositionSnapshots(ParquetPageSource(parquetReader), deleteFilePath)
+        }
+        catch (e: TrinoException) {
+            dataSource?.let { runCatching { it.close() } }
+            throw e
+        }
+        catch (e: IOException) {
+            throw closeAndWrap(dataSource, deleteFilePath, e)
+        }
+        catch (e: RuntimeException) {
+            throw closeAndWrap(dataSource, deleteFilePath, e)
+        }
+    }
+
+    /** Block 0 = `pos`, block 1 = snapshot id; returns pos → deletion snapshot (both non-null). */
+    private fun collectPositionSnapshots(pageSource: ConnectorPageSource, deleteFilePath: String): Map<Long, Long> {
+        val result = HashMap<Long, Long>()
+        pageSource.use { source ->
+            while (!source.isFinished) {
+                val page = source.nextSourcePage ?: continue
+                val posBlock = page.getBlock(0)
+                val snapBlock = page.getBlock(1)
+                for (i in 0 until posBlock.positionCount) {
+                    if (posBlock.isNull(i) || snapBlock.isNull(i)) {
+                        throw TrinoException(GENERIC_INTERNAL_ERROR,
+                                "Partial delete file has a null pos/$INTERNAL_SNAPSHOT_ID_COLUMN value: $deleteFilePath")
+                    }
+                    // A position folded across snapshots keeps its earliest deletion snapshot (a row
+                    // is deleted once); MIN is defensive — consolidation writes each pos once.
+                    val pos = BIGINT.getLong(posBlock, i)
+                    val snap = BIGINT.getLong(snapBlock, i)
+                    result.merge(pos, snap) { a, b -> minOf(a, b) }
+                }
+            }
+        }
+        return result
     }
 
     /** Resolves a named BIGINT/INT column to a projection [Column], or null if absent. */

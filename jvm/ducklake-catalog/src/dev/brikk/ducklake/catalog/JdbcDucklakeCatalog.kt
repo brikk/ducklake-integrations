@@ -438,10 +438,21 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         val file = DUCKLAKE_DATA_FILE.`as`("file")
         // Single-table read (no delete join): the insert side reads ALL rows of each file, so
         // delete-file columns are irrelevant here and left null on the returned DucklakeDataFile.
+        //
+        // A file is in-window if it could hold a row whose ORIGIN snapshot falls in [start, end]:
+        //   - begin_snapshot <= end  (its earliest row is not after the window), AND
+        //   - (begin_snapshot >= start OR partial_max >= start).
+        // For an ordinary file begin_snapshot == the row origin, so this reduces to
+        // begin_snapshot in [start, end]. For a cross-snapshot COMPACTED ("partial") file,
+        // begin_snapshot is only the MIN origin and partial_max the MAX; such a file can begin
+        // BEFORE the window yet still carry in-window rows (partial_max >= start). Widening the
+        // predicate to catch those is the first half of the fix — the page-source side then reads
+        // `_ducklake_internal_snapshot_id` and attributes each row to its true origin snapshot,
+        // dropping rows outside the window. Mirrors upstream DuckLake / datafusion-ducklake #185.
         return dsl.selectFrom(file)
             .where(file.TABLE_ID.eq(tableId))
-            .and(file.BEGIN_SNAPSHOT.ge(startSnapshot))
             .and(file.BEGIN_SNAPSHOT.le(endSnapshot))
+            .and(file.BEGIN_SNAPSHOT.ge(startSnapshot).or(file.PARTIAL_MAX.ge(startSnapshot)))
             .orderBy(file.BEGIN_SNAPSHOT, file.FILE_ORDER)
             .fetch { r -> toDataFileNoDelete(r) }
     }
@@ -479,20 +490,38 @@ class JdbcDucklakeCatalog(config: DucklakeCatalogConfig) : DucklakeCatalog {
         deletesByDataFileId[dataFileId]?.lastOrNull { orZero(it.beginSnapshot) < before }
 
     /** Incremental arm: delete files newly written within [window] (new deletions = current minus
-     * the predecessor delete file). */
+     * the predecessor delete file).
+     *
+     * A delete file is in-window if `begin_snapshot in window` (ordinary case: begin == the deletion
+     * snapshot) OR it is a CONSOLIDATED partial file whose `[begin_snapshot, partial_max]` range
+     * overlaps the window (`begin_snapshot <= end AND partial_max >= start`). A consolidated file can
+     * begin BEFORE the window yet fold in-window deletions (each row carries its own deletion
+     * snapshot); the change-feed page source then windows those per row. Mirrors the insert-side
+     * `partial_max` widening in [getDataFilesAddedBetween]. */
     private fun incrementalDeletions(
         window: LongRange,
         deletesByDataFileId: Map<Long, List<DucklakeDeleteFileRecord>>,
         dataFilesById: Map<Long, DucklakeDataFileRecord>,
     ): List<DucklakeChangeFeedDeletion> =
         deletesByDataFileId.values.flatten()
-            .filter { orZero(it.beginSnapshot) in window }
+            .filter { deleteFileOverlapsWindow(it, window) }
             .mapNotNull { current ->
                 val dataFile = dataFilesById[orZero(current.dataFileId)] ?: return@mapNotNull null
                 val begin = orZero(current.beginSnapshot)
                 buildDeletion(begin, dataFile, fullFileDelete = false, current = current,
                     previous = previousDelete(deletesByDataFileId, orZero(current.dataFileId), begin))
             }
+
+    /** Window overlap for a delete file: ordinary files by `begin_snapshot`; consolidated ("partial")
+     * files by their `[begin_snapshot, partial_max]` deletion-snapshot span. */
+    private fun deleteFileOverlapsWindow(delete: DucklakeDeleteFileRecord, window: LongRange): Boolean {
+        val begin = orZero(delete.beginSnapshot)
+        val partialMax = delete.partialMax
+        if (partialMax != null && partialMax > begin) {
+            return begin <= window.last && partialMax >= window.first
+        }
+        return begin in window
+    }
 
     /** Full-file arm: data files retired within [window] (TRUNCATE / DROP / a DELETE that removed
      * the last live rows / compaction) — every position not already deleted is retired. */

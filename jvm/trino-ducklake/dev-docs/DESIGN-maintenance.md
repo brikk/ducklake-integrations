@@ -63,8 +63,9 @@ table-scoped Trino procedures; see § 5 for the mapping.)
 
 **Scope note:** `remove_orphan_files` / `flush_inlined_data` now take **optional** `schema_name` /
 `table_name` — table (both) → schema (schema only) → catalog-wide (neither); and
-`remove_orphan_files` filters orphans by DuckLake file-type + `ducklake-` prefix (NOT upstream's
-parquet-only). Both are the **cross-engine contract in § 8** that Trino and Doris must implement
+`remove_orphan_files` filters orphans by DuckLake file-type + `ducklake-` prefix (broader than
+upstream's `.parquet`/`.puffin`, which added `.puffin` in DuckLake 1.5.5). Both are the
+**cross-engine contract in § 8** that Trino and Doris must implement
 identically.
 
 ## 3. First procedure: `remove_orphan_files` (this PR)
@@ -102,8 +103,9 @@ CALL system.remove_orphan_files(schema_name, table_name, retention_threshold => 
       member of a `ducklake-<uuid>.lance` dataset directory. This gate (`isDucklakeManagedResidue`)
       is what stops the sweep from deleting foreign files a user parked under the data path
       (`_SUCCESS`, `foo.txt`, `.crc`, their own non-`ducklake-` parquet). It is broader than upstream
-      DuckDB's `.parquet`-only filter (we also reclaim our `.db`/`.vortex`/`.puffin`/`.lance`
-      residue, which DuckDB leaves behind) but is NOT a blind unreferenced-file diff.
+      DuckDB's `.parquet`/`.puffin` filter (upstream added `.puffin` in DuckLake 1.5.5, ducklake main
+      `1e2e74ee`; we also reclaim our `.db`/`.vortex`/`.lance` residue, which DuckDB leaves behind) but
+      is NOT a blind unreferenced-file diff.
     - skip if `now - entry.lastModified() < retention_threshold` (the grace period),
     - otherwise it is a deletable orphan.
 4. `dry_run = true`: log the orphans (count + paths) at INFO, delete nothing.

@@ -24,9 +24,11 @@ import java.nio.file.Path
  * Protection test (TODO-uhoh: "cross-engine-cleanup-survival"): stock DuckDB's orphan sweep
  * (`ducklake_delete_orphaned_files`) must NOT delete this connector's non-parquet data files —
  * the `duckdb` (`.db`), `vortex` (`.vortex`), and `lance` (dataset *directory*) formats that stock
- * DuckLake doesn't produce. Upstream's sweep currently only lists/deletes `*.parquet` orphans; this
- * test PINS that assumption so an upstream filter change (e.g. when they add a second official
- * format) can't silently start deleting our data.
+ * DuckLake doesn't produce. Upstream's sweep lists/deletes `.parquet` + `.puffin` orphans as of
+ * DuckLake 1.5.5 (it added `.puffin` in ducklake main `1e2e74ee`; before that it was `.parquet`-only)
+ * — neither of which is a format we uniquely own, so our `.db`/`.vortex`/`.lance` residue is still
+ * spared. This test PINS that assumption so an upstream filter change (e.g. when they add another
+ * official format, or broaden the glob) can't silently start deleting our data.
  *
  * The test plants ORPHAN files of each format (untracked by the catalog) under the DuckLake data
  * path, then runs stock DuckDB's catalog-wide orphan sweep and asserts our non-parquet orphans
@@ -75,7 +77,8 @@ class TestDucklakeCrossEngineCleanupSurvival : AbstractDucklakeCrossEngineTest()
                 }
             }
 
-            // The protection: our non-parquet orphans must survive DuckDB's *.parquet-only sweep.
+            // The protection: our non-parquet/-puffin orphans must survive DuckDB's sweep
+            // (upstream lists .parquet + .puffin as of 1.5.5; .db/.vortex/.lance are ours alone).
             assertThat(Files.exists(duckdbOrphan)).`as`("duckdb (.db) orphan survives stock sweep").isTrue()
             assertThat(Files.exists(vortexOrphan)).`as`("vortex (.vortex) orphan survives stock sweep").isTrue()
             assertThat(Files.exists(lanceMember)).`as`("lance dataset-directory member survives stock sweep").isTrue()

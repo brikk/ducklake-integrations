@@ -206,16 +206,17 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `cf7e58f` (v0.4.0: atomic append-with-deletes; SQL UPDATE/DELETE) | 2026-07-12 |
-| `ducklake/` | `v1.5-variegata` | `84ef2d14` (partition-id retry metadata fix) | 2026-07-12 |
-| `ducklake/` | `main` | `34db89b2` (write rotation + cache-lifetime fixes) | 2026-07-12 |
-| `ducklake-web/` | `main` | `d65193cf` (no behavioral docs change) | 2026-07-12 |
-| `ducklake-web/` | `quack` | `bb393710` (unchanged from 2026-05-22) | 2026-07-12 |
-| `pg_ducklake/` | `main` | `6c1748f` (unchanged) | 2026-07-13 |
-| `pg_ducklake/` | `v1.0` | `6d751f5` (v1.0.1; inlined-flush ordering fix is PG-side, but confirms upstream row-lineage contract) | 2026-07-13 |
-| `duckdb-quack/` | `main` | `fd268d8` (multi-fetch projection fix; connection-pool changes) | 2026-07-12 |
-| `duckdb-quack/` | `v1.5-variegata` | `29fc039` (unchanged; v1.5.4) | 2026-07-12 |
-| `duckdb-web/` | `main` | `a48a99fb` (Quack remains beta; no DuckLake behavior change) | 2026-07-12 |
+| `datafusion-ducklake/` | `main` | `c07cc79` (v0.5.0 + unreleased: CDC official-semantics rewrite; compaction; write-side stats) | 2026-07-18 |
+| `ducklake/` | `v1.5-variegata` | `84ef2d14` (unchanged since 2026-07-12 — release branch frozen ahead of 1.5.5) | 2026-07-18 |
+| `ducklake/` | `main` | `2856687c` (add_files canonicalize/validate; orphan-sweep now also `.puffin`; expire empty-version) | 2026-07-18 |
+| `ducklake-web/` | `main` | `c7b5b19` (CSS/footer only; no behavioral docs change) | 2026-07-18 |
+| `ducklake-web/` | `quack` | `9a8dcf9` (unchanged content from 2026-05-22) | 2026-07-18 |
+| `pg_ducklake/` | `main` | `e43c6b8` (#228 DuckDB-dialect UDFs for partition flush over SPI; #226 TRUNCATE) | 2026-07-18 |
+| `pg_ducklake/` | `v1.0` | `6d751f5` (v1.0.1; unchanged) | 2026-07-13 |
+| `duckdb-quack/` | `main` | `2cb2728` (fetch-ahead/read-ahead streaming; server-side client-id hashing) | 2026-07-18 |
+| `duckdb-quack/` | `v1.5-variegata` | `b2466e4` (RETURNING reject; count(*)→EMPTY vcol + forbid rowid; fetch-tag pushdown hardening; EXTRA_HTTP_HEADERS) | 2026-07-18 |
+| `duckdb-web/` | `main` | `a48a99fb` (unchanged for our purposes; no DuckLake/Quack behavior docs) | 2026-07-18 |
+| `duckdb/` (core) | `v1.5-variegata` | latest tag `v1.5.4`; branch active toward 1.5.5 | 2026-07-18 |
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The
