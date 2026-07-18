@@ -120,6 +120,54 @@ Trino **does** expose a filesystem cache primitive, and our connector already si
 
 ---
 
+## Q2b — Can a worker ASK "is this file cached, and give me a local path"? NO. (Verified 483.)
+
+The obvious optimization for transparent Parquet→`.db` — *"before converting/reading, check if
+this Parquet file is already in the worker's cache and read it locally"* — is **not supported by
+Trino's public API.** The cache is deliberately a location-transparent black box to connectors:
+
+- **`TrinoInputFile`** (`trino-filesystem`, the only file handle a connector gets) exposes only
+  `newInput()` / `newStream()` / `length()` / `lastModified()` / `exists()` / `location()`.
+  **No `isCached()`, no `toLocalPath()`, no `File`/`Path` accessor.** `location()` returns the
+  logical remote URI, not a cache path.
+- **`TrinoInput`** exposes only positional byte reads (`readFully`/`readTail`) + `getMetrics()`.
+  So you read bytes (served from cache if warm), but you cannot learn *whether* they were a hit
+  or *where* they live on disk.
+- **`TrinoFileSystemCache`** interface = `cacheInput` / `cacheStream` / `cacheLength` / `expire`
+  only. No membership query, no path. And it isn't handed to connectors anyway — `FileSystemModule`
+  binds it inside its **own private Guice scope** via `OptionalBinder`; connector code only ever
+  sees the wrapped `TrinoFileSystemFactory`, never the cache object.
+- Backend internals confirm the intent: `MemoryFileSystemCache` HAS an `isCached(String)` +
+  `getHitCount`/`getRequestCount`, but `isCached` is **package-private** (and it's the in-memory
+  backend — no local file exists). `AlluxioFileSystemCache` has a **`protected uriStatus(...)`**
+  (Alluxio-internal); the on-disk Alluxio blocks are not surfaced as a stable path through any
+  Trino API. Neither is reachable or supported from a connector.
+- **Cache membership is also not stable/addressable per worker on purpose:** which worker holds a
+  file is a function of the consistent-hash ring over the split's `affinityKey`
+  (`CacheSplitAffinityProvider.getKey`, which we already feed into `DucklakeSplit.affinityKey`,
+  `DucklakeSplit.kt:80-84`). Affinity is *best-effort routing*, not a queryable index. A connector
+  can influence WHERE a split runs (to land near a warm entry) but cannot ASK what's cached where.
+
+**Consequences for the conversion work:**
+- You cannot implement "peek the cache, reuse the local copy if present" against Trino's cache.
+  The supported model is: read through the cache-wrapped `fileSystem` and let Trino serve warm
+  bytes transparently — you never see the hit or the path.
+- If the conversion design needs an *addressable* local artifact (e.g. hand DuckDB a real path to
+  ATTACH, or reuse a converted `.db` across queries), that artifact must be **our own**
+  materialized/converted file whose location WE control and index — i.e. an extension of
+  `DucklakeMaterializedFileCache` (or a converted-`.db` cache), NOT Trino's file cache. Trino's
+  cache can accelerate the *remote pull* underneath it, but it cannot be the artifact store or the
+  membership oracle.
+- To get "is it warm on this worker" locality for our own artifact cache, reuse `affinityKey`
+  (already wired) so the same input consistently routes to the same worker — then our own cache
+  answers "have I got this locally?" for that worker. That is the only viable "ask the worker"
+  path, and it's answered by **our** index, not Trino's.
+- If we ever need cache-hit observability, only *stats* are available (`MemoryFileSystemCache`
+  hit/request counters; `AlluxioCacheStats`) — and only if we build our own cache; Trino's are
+  internal.
+
+---
+
 ## Q3 — DuckDB built-in cache: constraint knobs we could expose. RESEARCHED (against our bundled DuckDB 1.5.4).
 
 **Correction to the earlier note:** `enable_object_cache` is now a **legacy PLACEHOLDER that
