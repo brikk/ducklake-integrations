@@ -430,6 +430,14 @@ semantics) — then connectors need only handle `IDENTITY`/`TRANSFORM`.
 
 ## 2026-05-19 · DuckLake position-delete files use OPTIONAL columns; Doris BE rejects them
 
+**UPDATE (2026-07-18):** re-verified against **`apache/doris:be-4.1.3`**
+(`doris-4.1.3-rc02-7126cf65d96`, the current 4.1.x release) — the Step-7 delete
+path **still fails identically** (`[CORRUPTION]Not nullable column has null
+values in parquet file`). So the fix is NOT in 4.1.3-rc02; upstream is preparing
+it for us (ETA unknown). Everything else in the smoke stayed green on 4.1.3
+(read, W1 DDL, W2/W2c INSERT, W3 CTAS, §12b backfill, §13 GC), no regressions vs
+4.1.2, so the compose BE was bumped 4.1.2 → 4.1.3. Original entry below.
+
 **Symptom.** Step 7 smoke: DuckDB issues DELETE on `tpch.orders` (with
 `data_inlining_row_limit = 0` so the DELETE materialises as a
 `ducklake_delete_file` row + a position-delete parquet file). The FE plugin

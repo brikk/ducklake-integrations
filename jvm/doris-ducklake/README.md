@@ -131,7 +131,7 @@ non-degraded core only.
 | `timestamp_s` | DATETIMEV2(0) | Yes | Yes | Second precision |
 | `timestamp_ms` | DATETIMEV2(3) | Yes | Yes | Millisecond precision |
 | `timestamp_ns` | DATETIMEV2(6) | Yes | — | Degraded — Doris caps datetime scale at 6; nanos clamp to micros (does not round-trip on write) |
-| `timestamptz` | DATETIMEV2(6) | Yes | — | Degraded (BE-gated) — read as naive UTC micros; the 4.1.0 BE can't read a UTC-micros parquet column into a zone-aware slot, so zone-aware typing is deferred (correct UTC values) |
+| `timestamptz` | DATETIMEV2(6) / TIMESTAMPTZ | Yes | — | Degraded (BE-gated) by default — read as naive UTC micros; the 4.1.x BE can't read a UTC-micros parquet column into a zone-aware slot, so zone-aware typing is deferred (correct UTC values). Set `enable.mapping.timestamp_tz=true` to map to zone-aware `TIMESTAMPTZ` on a master/nightly BE (see Configuration) |
 | `time` | STRING | Yes | — | Degraded — Doris has no first-class TIME |
 | `timetz` | STRING | Yes | — | Degraded |
 | `list<T>` | ARRAY(T) | Yes | — | Full nesting on read |
@@ -168,7 +168,8 @@ metadata, and comments dirs.
 | Time travel — FOR TIMESTAMP AS OF | Yes | Resolves to the snapshot active at-or-before the instant |
 | Snapshot pinning (MVCC) | Yes | `beginQuerySnapshot` / `applySnapshot` thread the resolved snapshot onto the scan |
 | Table statistics | Yes | Row count + on-disk size from `ducklake_table_stats` |
-| Schema evolution on read | Yes | Renamed / added columns read correctly (added columns NULL for older rows); across the alter suite |
+| Schema evolution on read | Yes | Renamed / added columns read correctly; a column added with `DEFAULT` backfills its `initial_default` value for older rows (scalar types; complex/binary skip to NULL), otherwise NULL; across the alter suite |
+| Registered files (`add_files`) | Yes | Externally-registered Parquet read via `ducklake_name_mapping` (case/rename/reorder resolved), including hive-layout directory partitions (`key=value/` path values filled). A table mixing hive-layout `add_files` files with natively-partitioned files fails loud rather than mis-filling |
 | Inlined data (small tables) | No (default) | **Hard-blocked by default** (loud error) — DuckLake keeps small writes in `ducklake_inlined_*` catalog rows, not Parquet. An experimental dev-only path (`experimental.inlined.reads=true`) synthesizes a temp Parquet, but it requires FE and BE to share warehouse storage as a local filesystem, so it is NOT production-viable. A distributed-cluster solution (object-store write or an SPI payload channel) is a required follow-up — see dev-docs. |
 | Delete files (merge-on-read) | Blocked | FE plumbing done; **blocked on the BE** — DuckLake position-delete Parquet uses OPTIONAL columns, the BE Iceberg reader requires REQUIRED (`[CORRUPTION] Not nullable column has null values`). See Known Limitations. |
 | Time travel over a compaction boundary | Guarded | A read AS OF a snapshot older than a `merge_adjacent_files` compaction needs a per-row hidden-column snapshot filter the BE can't apply — fails loudly instead of over-returning. Latest-snapshot reads unaffected. |
@@ -195,7 +196,8 @@ richer DDL/maintenance surface are not built.
 | INSERT OVERWRITE / static-partition INSERT | No | Not declared |
 | Sorted writes | No | |
 | ALTER TABLE (columns/branches/partition fields) | No | Generic P6 DDL SPI is available; not adopted yet |
-| Maintenance procedures (compaction, expire, …) | No | Generic P6 procedure SPI available; not adopted |
+| Maintenance — `expire_snapshots`, `cleanup_old_files`, `remove_orphan_files` | Yes | Run as `ALTER TABLE t EXECUTE <proc>(...)`. See [Procedures](#procedures). |
+| Maintenance — compaction (`rewrite_data_files`) | No | Generic P6 procedure SPI available; not adopted |
 
 ## Partitioning
 
@@ -216,6 +218,38 @@ richer DDL/maintenance surface are not built.
 | On-disk data size | Yes | From `ducklake_table_stats` |
 | Column min/max (file-level, for pruning) | Yes | From `ducklake_file_column_stats`; drives file pruning in `applyFilter` |
 | Bucket-partition pruning | Yes | Murmur3 target-bucket matching for equality/IN predicates |
+
+## Procedures
+
+Maintenance procedures are exposed through Doris's table-procedure grammar,
+`ALTER TABLE <table> EXECUTE <proc>(...)` (Doris has no catalog/schema-scoped
+`EXECUTE`). **Semantic caveat:** DuckLake snapshots are *catalog-wide* versions,
+not per-table, so `expire_snapshots` / `cleanup_old_files` operate **catalog-wide
+and ignore the named table** — the result row says so explicitly rather than
+faking per-table expiry. Compaction (`rewrite_data_files`) is not adopted yet.
+
+| Procedure | Scope | Description |
+|-----------|-------|-------------|
+| `expire_snapshots([retention_threshold], [snapshot_ids], [dry_run])` | Catalog-wide | Remove old DuckLake snapshots and **schedule** the data/delete files only they referenced for later deletion (a metadata-only catalog transaction; no storage I/O). Select by `retention_threshold` (default `7d`, floored by `maintenance.min-retention`) **or** an explicit comma-separated `snapshot_ids` list (mutually exclusive; the id list is not floored). The latest snapshot is never expirable. `dry_run => true` reports what would be expired. |
+| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide | The physical-deletion phase that pairs with `expire_snapshots`: delete the scheduled warehouse blobs older than the grace period (`retention_threshold`, default `7d`, floored by `maintenance.min-retention`), then drop the schedule rows of the files actually deleted (best-effort per file; a failed delete keeps its row for a later retry). Touches storage only. Requires `s3.*` credentials. |
+| `remove_orphan_files([scope], [retention_threshold], [dry_run])` | Tiered | Delete `ducklake-`-prefixed managed residue (`.parquet`/`.puffin`/`.db`) under the target data path that **no** catalog row references (the leftovers of aborted commits / failed CREATEs) and is older than the grace period. Foreign files are never touched. `scope` widens from the named table: `table` (default), `schema` (alias `database`), or `catalog`. Touches storage only. Requires `s3.*` credentials. |
+
+```sql
+-- Expire snapshots older than 30 days, then reclaim the freed files:
+ALTER TABLE dl.sales.orders EXECUTE expire_snapshots(retention_threshold = '30d');
+ALTER TABLE dl.sales.orders EXECUTE cleanup_old_files(retention_threshold = '7d');
+
+-- Or expire specific snapshot ids (not floored by the min-retention floor):
+ALTER TABLE dl.sales.orders EXECUTE expire_snapshots(snapshot_ids = '12,13,14');
+
+-- Sweep aborted-commit residue across the whole catalog (dry run first):
+ALTER TABLE dl.sales.orders EXECUTE remove_orphan_files(scope = 'catalog', dry_run = 'true');
+```
+
+The `maintenance.min-retention` catalog property (default `7d`) floors the
+retention window on all three so a too-small `retention_threshold` can't nuke
+recent time-travel snapshots or files an in-flight (possibly cross-engine)
+writer just produced — an explicit `snapshot_ids` list bypasses the floor.
 
 ## Cross-Engine Compatibility
 
@@ -267,8 +301,12 @@ Catalog properties on `CREATE CATALOG dl PROPERTIES (...)`:
 | `metadata.user` | Yes | Metadata database username |
 | `metadata.password` | No | Metadata database password (empty for trust auth) |
 | `storage.warehouse` | Yes | Warehouse root, e.g. `s3://bucket/path` or `file:///local/path` |
-| `s3.endpoint` / `s3.region` / `s3.access_key` / `s3.secret_key` | For S3 | Forwarded to the BE Parquet reader; the connector also emits the canonical `AWS_*` aliases the BE's `S3ObjStorage` expects |
+| `s3.endpoint` / `s3.region` / `s3.access_key` / `s3.secret_key` / `s3.session_token` | For S3 | Forwarded to the BE Parquet reader; the connector also emits the canonical `AWS_*` aliases the BE's `S3ObjStorage` expects (`AWS_ENDPOINT`/`AWS_REGION`/`AWS_ACCESS_KEY`/`AWS_SECRET_KEY`/`AWS_TOKEN`). `s3.*` are also what the maintenance procedures' S3 client uses. |
 | `use_path_style` | For S3 | `true` for MinIO / path-style S3 |
+| other `s3.*` / `aws.*` / `AWS_*` / `fs.*` | No | Any additional storage-credential keys are passed through verbatim to the BE reader (e.g. HDFS `fs.*`) |
+| `enable.mapping.timestamp_tz` | No | Default `false` maps `timestamptz` to naive `DATETIMEV2(6)` (correct UTC values, broad BE compatibility). `true` maps to zone-aware `TIMESTAMPTZ` — needs a master/nightly BE (the converter is NOT in any 4.1.x release). Mirrors the iceberg connector's flag. |
+| `maintenance.min-retention` | No | Retention floor (default `7d`) for the maintenance procedures' `retention_threshold`; guards recent time-travel snapshots / in-flight writes. See [Procedures](#procedures). |
+| `experimental.inlined.reads` | No | Dev-only. `true` enables the experimental inlined-data read path — **requires FE and BE to share warehouse storage as a local filesystem**, so it is NOT production-viable. Off by default (a table with live inlined rows fails loud). |
 
 ## Not Yet Implemented / Out of Scope
 
@@ -287,13 +325,19 @@ Catalog properties on `CREATE CATALOG dl PROPERTIES (...)`:
   delete *reads*.
 - **Time-travel over compaction** — needs a BE hook to apply the hidden
   `_ducklake_internal_snapshot_id` per-row filter for partial files.
-- **`ducklake_name_mapping`** — renamed columns over legacy `add_files`
-  Parquet not yet applied on the Doris scan.
+- **Per-file column mapping** — the scan-node-level schema dictionary
+  (`ducklake_name_mapping`, applied — renamed/reordered columns and `add_files`
+  files read correctly) can't express a *per-file* map, so the narrow case of
+  id-less files reusing a physical name across a DROP+re-ADD field-id boundary
+  is still unsolved (2 corpus files). Needs per-range schema info in the SPI or
+  a BE per-file name→field-id hook.
 - **Views** — DuckLake views not surfaced.
 
 **Write backlog:** DELETE/UPDATE/MERGE (P6 admits them by capability),
-INSERT OVERWRITE, sorted writes, ALTER, maintenance procedures — see
-[`dev-docs/TODO-write.md`](dev-docs/TODO-write.md).
+INSERT OVERWRITE, sorted writes, ALTER, compaction (`rewrite_data_files`) — see
+[`dev-docs/TODO-write.md`](dev-docs/TODO-write.md). (Snapshot expiry / file
+cleanup / orphan sweep maintenance procedures are implemented — see
+[Procedures](#procedures).)
 
 **Out of scope by design (execution-model mismatch, not backlog):**
 - Function / expression pushdown — the Doris BE evaluates predicates natively.
