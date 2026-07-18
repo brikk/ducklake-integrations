@@ -46,7 +46,9 @@ Startup order is enforced by `depends_on` health gates:
 3. `bootstrap` (one-shot Python + duckdb) installs the `ducklake` extension,
    `ATTACH`es the catalog (which writes ~28 metadata tables into Postgres),
    then optionally generates TPC-H data into `lake.tpch.*`
-4. `trino` starts, loads the plugin, and registers the `ducklake` catalog
+4. `materialize-cache-init` makes the shared DuckDB materialization volume writable by
+   the Trino image's `trino` user (UID/GID 1000)
+5. `duckqk` and `trino` start with that same volume mounted
 
 Re-running `docker compose up` is safe — the bootstrap detects an
 already-initialized catalog and skips both `ATTACH` setup and TPC-H generation.

@@ -85,6 +85,18 @@ services:
         exec python /bootstrap/init_ducklake.py
     restart: "no"
 
+  materialize-cache-init:
+    image: busybox:1.37.0
+    container_name: trino-ducklake-materialize-cache-init
+    user: "0:0"
+    volumes:
+      - ducklake-materialize:/tmp/ducklake-read
+    command:
+      - /bin/sh
+      - -c
+      - chown -R 1000:1000 /tmp/ducklake-read && chmod 0770 /tmp/ducklake-read
+    restart: "no"
+
   duckqk:
     build:
       context: ../../ducklake-catalog/testFixtures/resources/docker/quack-server
@@ -93,6 +105,8 @@ services:
     mem_limit: ${QUACK_MEMORY_LIMIT:-4g}
     depends_on:
       bootstrap:
+        condition: service_completed_successfully
+      materialize-cache-init:
         condition: service_completed_successfully
     environment:
       QUACK_PORT: "9494"
