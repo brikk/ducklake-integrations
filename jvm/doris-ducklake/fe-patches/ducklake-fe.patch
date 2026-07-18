@@ -1,26 +1,29 @@
 diff --git a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
-index 1746f9f33d4..d2930901c0e 100644
+index 2016402..32fb3d0 100644
 --- a/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
 +++ b/fe/fe-core/src/main/java/org/apache/doris/datasource/CatalogFactory.java
-@@ -47,7 +47,7 @@ public class CatalogFactory {
-     // Other types (hms, hudi) still use
-     // their built-in ExternalCatalog implementations until their ConnectorProviders are fully ready.
+@@ -54,7 +54,7 @@ public class CatalogFactory {
+     // set. Adding "hudi" here would build a standalone PluginDrivenExternalCatalog around HudiConnector with no
+     // fe-core catalog class backing it.
      private static final Set<String> SPI_READY_TYPES =
--            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg");
-+            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg", "ducklake");
+-            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg", "hms");
++            ImmutableSet.of("jdbc", "es", "trino-connector", "max_compute", "paimon", "iceberg", "hms", "ducklake");
  
      /**
       * create the catalog instance from catalog log.
 diff --git a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-index 44c2a7bb593..51e57e39357 100644
+index 149ff24..b91d9a4 100644
 --- a/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
 +++ b/fe/fe-core/src/main/java/org/apache/doris/nereids/trees/plans/commands/info/CreateTableInfo.java
-@@ -941,6 +941,8 @@ public class CreateTableInfo {
+@@ -931,6 +931,11 @@ public class CreateTableInfo {
                  return ENGINE_PAIMON;
              case "iceberg":
                  return ENGINE_ICEBERG;
 +            case "ducklake":
++                // DuckLake rides the iceberg engine/table shape (iceberg-spec position deletes,
++                // field-ids); a ducklake catalog is a PluginDrivenExternalCatalog whose CREATE TABLE
++                // uses the iceberg engine. Mirrors the iceberg case above.
 +                return ENGINE_ICEBERG;
-             default:
-                 return null;
-         }
+             case "hms":
+                 // A flipped HMS external catalog uses the hive engine for CREATE TABLE (legacy hms
+                 // catalogs always create hive-engine tables); the user-visible DISPLAY engine "hms"

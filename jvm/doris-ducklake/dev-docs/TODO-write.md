@@ -457,6 +457,22 @@ Two FE-route gaps surfaced and were fixed to get here (both in
    (`rewriteDataFilesPartial`/`PartialMergedFile`). Trino template exists
    (`DucklakeRewriteDataFilesProcedure`).
 
+## New SPI seams (2026-07-18 re-check) — see REPORT §"2026-07-18"
+
+Anchor: *"$position_deletes port done"* HANDOFF → tip `b2dff681aad`. All additive
+`default`s (plugin compiles unchanged; no thrift change). Full catalogue in
+[`REPORT-doris-p6-iceberg-spi-cutover.md`](./REPORT-doris-p6-iceberg-spi-cutover.md).
+Read-path doors (MTMV freshness, snapshot pin, scan profiles) live in TODO-read.
+
+- [ ] **(LOW) `TRUNCATE TABLE`** — implement `ConnectorTableOps.truncateTable()`
+  (new default) for DuckLake.
+- [ ] **(LOW) `SHOW CREATE TABLE`** — implement `ConnectorTableOps.renderShowCreateTableDdl()`
+  (new default) for DuckLake.
+- [ ] **(LATER) Metastore change events** — `event.ConnectorEventSource` /
+  `MetastoreChangeDescriptor` (surfaced via `Connector.getEventSource()`). HMS-notification-shaped
+  but neutral; could poll the DuckLake `ducklake_snapshot` commit log to drive cache
+  invalidation / MV auto-refresh. Medium lift, imperfect fit — evaluate after MTMV freshness.
+
 ## Reference
 
 - **Execution template (live):** `MaxComputeConnectorTransaction` +

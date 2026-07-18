@@ -73,10 +73,20 @@ stock Doris base, via the in-repo [`fe-overlay/Dockerfile`](./fe-overlay/Dockerf
 (`FROM apache/doris:fe-4.1.0`, wipes + COPYs `output/fe/{bin,lib,conf,plugins,webroot}`).
 (Originally a local-only file in the Doris checkout; now tracked here so it can't be lost.)
 
+# ⚠️ PINNED COMMIT — build from the SAME commit we last researched + re-diffed the patch against.
+#   `branch-catalog-spi` REBASES CONSTANTLY, so do NOT just `git pull` the branch tip: a newer
+#   tip may move the patch context or add a non-default SPI method that breaks the plugin.
+#   Pin (2026-07-18): b2dff681aad
+#     subject: "[feat](catalog) fe-connector-iceberg: port #64966 REST 401 re-auth to the connector"
+#   SHAs churn on rebase — if that SHA is GC'd/gone, check out the commit with that exact SUBJECT,
+#   then RE-VALIDATE before building: re-run the diff in ../dev-docs/REPORT-doris-p6-iceberg-spi-cutover.md
+#   §"upstream re-check" and re-diff ../fe-patches/ducklake-fe.patch (git apply --check must be clean).
+#   The current pin is recorded in ../fe-patches/FE-PATCHES.md → "Re-vendor log" (keep all three in sync).
+
 ```bash
 # 1. Build the P-series FE (JDK 17). Apply BOTH FE patches first — see
 #    ../fe-patches/FE-PATCHES.md (reapplyable: git apply ../fe-patches/ducklake-fe.patch):
-cd ~/DEV/OSS/db/doris   # branch-catalog-spi
+cd ~/DEV/OSS/db/doris && git checkout b2dff681aad   # branch-catalog-spi @ pinned commit (see note above)
 #   • CatalogFactory.java         : add "ducklake" to SPI_READY_TYPES        (catalog/INSERT route gate)
 #   • CreateTableInfo.java        : pluginCatalogTypeToEngine += "ducklake"→ENGINE_ICEBERG  (CREATE TABLE gate)
 JAVA_HOME=<jdk17> DISABLE_BUILD_UI=ON ./build.sh --fe        # → output/fe  (see doris-fe-build-macos memory)

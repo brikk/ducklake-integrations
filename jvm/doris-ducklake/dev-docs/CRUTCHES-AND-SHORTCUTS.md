@@ -41,6 +41,20 @@ LOUD, or compose test-harness config, not connector behavior.**
 - **Upstream ask (nice-to-have, not a fix):** `DuckLakeScanRange.TABLE_FORMAT_TYPE`
   has a `TODO(option-B)` to flip to `"ducklake"` once the BE adds a 5-line
   dispatch synonym. The thrift bytes are identical; purely cosmetic.
+- **LOAD-BEARING INVARIANT (do not violate):** our data ranges MUST NEVER set
+  the **top-level** `TIcebergFileDesc.content` to `1` (position-delete) or `3`
+  (deletion-vector). Upstream's `$position_deletes` sys-table feature made the
+  top-level `content` in `{1,3}` (+ a PARQUET/ORC range format) BE's sole
+  routing key into `iceberg_position_delete_sys_table_reader`
+  (`file_scanner.cpp` / `file_scanner_v2.cpp`) — a range that trips it also
+  gets its native reader to assert exactly one delete descriptor. Because we
+  masquerade as `table_format_type="iceberg"`, that BE routing applies to us
+  too. We currently comply: `DuckLakeScanRange.populateRangeParams`
+  (`DuckLakeScanRange.kt`) sets `content` ONLY on the per-delete-file
+  descriptors (`toThrift`), never on the top-level `fileDesc`. If a future edit
+  ever needs a top-level content flag, verify it can't be `1`/`3` or it will be
+  silently misrouted into the sys-table reader. Last checked against upstream:
+  see REPORT-doris-p6-iceberg-spi-cutover.md §"2026-07-15 upstream re-check".
 
 ## 3. Deliberate type degradations (fail loud OR documented-lossy, never silent-wrong)
 

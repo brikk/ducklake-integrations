@@ -428,12 +428,35 @@ genuinely wired upstream (unlike plugin DELETE).
    LinkageError across the SPI boundary. Keep the quarterly re-audit cadence.
 - [ ] **Kotlin migration for catalog** (`JdbcDucklakeCatalog.java`, `ConflictMatrix.java`, `LogicalConflictCheck.java` lost pattern switch + unnamed `_` to JDK 17 ABI; Kotlin reclaims modern syntax while emitting 17 bytecode). Separate scope on the catalog roadmap. Sanity-check §4b.
 
+## New SPI seams (2026-07-18 re-check) — see REPORT §"2026-07-18"
+
+Anchor: *"$position_deletes port done"* HANDOFF → tip `b2dff681aad`. All additive
+`default`s (no forced change; plugin compiles unchanged). Full catalogue + impact
+in [`REPORT-doris-p6-iceberg-spi-cutover.md`](./REPORT-doris-p6-iceberg-spi-cutover.md).
+
+- [ ] **(HIGH) MTMV freshness** — implement `ConnectorMetadata.getTableFreshness()`
+  → `mvcc.ConnectorTableFreshness(name, timestampMillis)` from the DuckLake snapshot
+  id/timestamp. Unblocks Doris materialized views over DuckLake. We already reference
+  `ConnectorMvccSnapshot` (7×); this is the missing freshness hook.
+- [ ] **(HIGH, correctness) `ignorePartitionPruneShortCircuit()` audit** — if DuckLake
+  ever renders a genuine-null partition as a NON-null sentinel, this must return `true`
+  or `col IS NULL` prunes every partition and silently drops the null-partition rows
+  (the paimon precedent). Confirm against how we surface partition values today.
+- [ ] **(MED) Query-scoped snapshot pin** — formalize `beginQuerySnapshot()` /
+  `resolveTimeTravel()` → `ConnectorMvccSnapshot` for DuckLake `FOR VERSION/TIME AS OF`
+  (Step 8 time-travel), pinned per-query and serialized to BE.
+- [ ] **(MED) `getMvccPartitionView()`** → `mvcc.ConnectorMvccPartitionView` — range-aware
+  partition MVCC for partition-aware MV refresh (after freshness).
+- [ ] **(LOW) `collectScanProfiles()`** → `scan.ConnectorScanProfile` — DuckLake scan
+  metrics (snapshots/manifests read, files pruned) into the Doris query profile.
+- [ ] **(LOW) `supportsTableSample()`** — `TABLESAMPLE` support.
+
 ## Upstream coordination (blockers for production, not for dev)
 
 Bundle the conversation — three asks, all the same shape ("transitional
 hardcoded list should be open / discoverable"):
 
-- [ ] **`SPI_READY_TYPES` whitelist removal**. `CatalogFactory.java` silently ignores any `ConnectorProvider` whose `getType()` is not in `{"jdbc","es","iceberg"}`. Until upstream parameterizes, we carry a one-line patch (`+ "ducklake"`) on every Doris release we deploy. Sanity-check §3.5.
+- [ ] **`SPI_READY_TYPES` whitelist removal + FE-patch re-diff**. `CatalogFactory.java` silently ignores any `ConnectorProvider` whose `getType()` is not in the hardcoded `SPI_READY_TYPES` set (now `{"jdbc","es","trino-connector","max_compute","paimon","iceberg","hms"}` as of the 2026-07-18 tip — upstream added `"hms"` with the Hive P11 migration). We carry a one-line patch (`+ "ducklake"`) on every deploy. **NOTE (re-diff needed):** the P11 rebase moved our second anchor — `CreateTableInfo.pluginCatalogTypeToEngine()` switch relocated and gained a `case "hms"`; our `case "ducklake" -> ENGINE_ICEBERG` still slots in, but `ducklake-fe.patch` must be re-diffed against the new context before any FE rebuild. Both anchors survive (trivial re-diff, not a rewrite). Sanity-check §3.5.
 - [ ] **Option B BE dispatch ask**. 5-line PR to `be/src/exec/scan/file_scanner.cpp:1252` and `:1343` adding `|| table_format_type == "ducklake"` to the iceberg branch. Unblocks honest table-format-string reporting in EXPLAIN/profile. Sanity-check §2.1.
 - [~] **`connector_plugin_root` discoverability** — done on OUR side (2026-07-08); upstream half
   still an ask. Surfaced the commented default in `compose/fe.conf` next to the existing

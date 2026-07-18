@@ -241,3 +241,97 @@ Everything re-validated live on the new baseline:
 6. Later: SHOW CREATE (`SUPPORTS_SHOW_CREATE_DDL` — after credential audit),
    nested column pruning (we have stable field ids), TopN lazy materialization,
    system tables + time travel, views, static-partition INSERT materialization.
+
+---
+
+## 2026-07-15 upstream re-check — where we last diffed `branch-catalog-spi`
+
+`branch-catalog-spi` **rebases frequently, so the SHA below WILL go stale** —
+match on the commit *message* (subject line), not the hash.
+
+- **Last-reviewed tip:** `c0865b021b0`
+  "[doc](catalog) HANDOFF: $position_deletes port done; e2e is the only
+  remaining flip gate"
+- **Baseline we diffed from (previous known-good reference point):**
+  `c215c4c77c5`
+  "[fix](build) fix parallel -T shade race in fe-connector-paimon-hive-shade"
+- **Range reviewed:** `c215c4c77c5..c0865b021b0` — 5 commits, of which **4 are
+  doc/HANDOFF** and exactly **one carries code**:
+  - `2e49827ecdd` "[feat](catalog) P6.6: support the iceberg $position_deletes
+    system table on the connector SPI" (ports upstream #65135 / `0814e49bea7`).
+
+### Impact on our plugin: none that breaks us; one invariant we already satisfy
+
+1. **SPI + thrift UNCHANGED.** Verified the whole range touches ZERO files in
+   `fe-connector-api`, `gensrc`, or any `*.thrift`; every changed `.java` lives
+   under `connector/iceberg/`. We compile against the SPI + thrift, so nothing
+   forces a code change or a rebuild break on us.
+2. **New load-bearing invariant — we already comply.** The feature makes the
+   **top-level** `TIcebergFileDesc.content ∈ {1,3}` (+ PARQUET/ORC range) BE's
+   sole routing key into the native `$position_deletes` reader, so "the data
+   path must never set top-level content to 1 or 3." Our
+   `DuckLakeScanRange.populateRangeParams` sets `content` only on the
+   per-delete-file descriptors (`toThrift`), never on the top-level `fileDesc`.
+   Recorded in CRUTCHES-AND-SHORTCUTS.md §2 as a do-not-violate constraint.
+3. **System tables — N/A to us.** The metadata change drops the old
+   "position_deletes not supported" filter in `IcebergConnectorMetadata`. Our
+   `DuckLakeConnectorMetadata` implements no `SysTable`/`listSupportedSysTables`
+   logic at all; those SPI methods are `default`, so we inherit the no-op and
+   `t$position_deletes` against a DuckLake table just hits the generic
+   not-found path. No regression, no adoption required.
+
+**Verdict:** no action needed. Next re-check: diff from `c0865b021b0` (or, once
+it rebases, from the commit whose subject is the "$position_deletes port done"
+HANDOFF) forward, and re-confirm the top-level-`content` invariant still holds.
+
+---
+
+## 2026-07-18 upstream re-check — new SPI seams since `$position_deletes`
+
+**Anchor (SHAs churn — match on subject):** last-reviewed = the *"$position_deletes
+port done; e2e is the only remaining flip gate"* HANDOFF (was `c0865b021b0`, now
+`4d46863b7f1` after a rebase). New tip = `b2dff681aad`. **7 new commits** in
+`4d46863b7f1..b2dff681aad` (943 files — dominated by the Hive P11 migration).
+
+New commits (by subject):
+1. `[refactor](catalog) Catalog spi 11 hive (#65473)` — 791 files (hive → SPI, parallels P6 iceberg)
+2. `[refactor](catalog) fe-connector: replace fat hive-catalog-shade with slim HMS metastore-client shade (#65721)`
+3. `[refactor](catalog) fe-core: remove dead Trino-ported DirectoryLister cache (#65734)`
+4. `[refactor](catalog) fe-core: remove dead ExternalMetadataOps layer, LakeSoul, odbc/statistics stubs (#65736)`
+5. `[refactor](catalog) fe-core: remove 6 dead datasource classes orphaned by the SPI migration (#65740)`
+6. `[refactor](catalog) drop ReauthenticatingRestSessionCatalog test orphaned by master rebase`
+7. `[feat](catalog) fe-connector-iceberg: port #64966 REST 401 re-auth to the connector`
+
+### Impact on us: SAFE — additive only
+
+- **SPI api grew ~1,884 lines but is 100% additive.** Every new method on
+  interfaces we implement (`ConnectorTableOps`, `ConnectorScanPlanProvider`,
+  `ConnectorWritePlanProvider`, `ConnectorWriteOps`, `ConnectorMetadata`) is a
+  `default`. **Zero removed / signature-changed methods** across the whole api.
+  → our plugin compiles unchanged.
+- **Wire format stable** — no `gensrc` / `*.thrift` changes.
+- **FE patch = trivial re-diff (NOT a rewrite).** Both anchors survive:
+  `CatalogFactory.SPI_READY_TYPES` still exists (upstream added `"hms"`; we still
+  just append `"ducklake"`); `CreateTableInfo.pluginCatalogTypeToEngine()` switch
+  survives and moved, gained a `case "hms"` — our `case "ducklake" -> ENGINE_ICEBERG`
+  still slots in. **[TRACKED: TODO-read Upstream coordination / build hygiene.]**
+- **Dead-code removals (#65734/#65736/#65740)** touch no class our plugin or FE
+  patch references — no fallout.
+
+### New doors (opt-in `default`s / new optional classes) — TRACKED as TODOs
+
+| Seam (new SPI) | DuckLake opportunity | Prio |
+| --- | --- | --- |
+| `ConnectorMetadata.getTableFreshness()` → `mvcc.ConnectorTableFreshness` | **MTMV / materialized views over DuckLake** — DuckLake snapshot id+ts maps ~1:1 | HIGH |
+| `ConnectorScanPlanProvider.ignorePartitionPruneShortCircuit()` | **correctness**: if we ever render a genuine-null partition as a non-null sentinel, must be `true` or `col IS NULL` drops null-partition rows | HIGH |
+| `beginQuerySnapshot()` / `resolveTimeTravel()` → `mvcc.ConnectorMvccSnapshot` | formalize DuckLake time-travel (`FOR VERSION/TIME AS OF`), query-scoped snapshot pin serialized to BE | MED |
+| `getMvccPartitionView()` → `mvcc.ConnectorMvccPartitionView` | range-aware partition MVCC for partition-aware MV refresh (after freshness) | MED |
+| `ConnectorScanPlanProvider.collectScanProfiles()` → `scan.ConnectorScanProfile` | DuckLake scan metrics into Doris query profile | LOW |
+| `ConnectorTableOps.truncateTable()` | `TRUNCATE TABLE` on DuckLake | LOW |
+| `ConnectorTableOps.renderShowCreateTableDdl()` | `SHOW CREATE TABLE` for DuckLake | LOW |
+| `ConnectorScanPlanProvider.supportsTableSample()` | `TABLESAMPLE` | LOW |
+| `event.ConnectorEventSource` / `MetastoreChangeDescriptor` | (medium lift, HMS-shaped) poll DuckLake `ducklake_snapshot` commit log → cache invalidation / MV auto-refresh | LATER |
+
+**Next re-check:** diff forward from the *"Catalog spi 11 hive"* / `b2dff681aad`
+tip; watch for P7+ connectors and any first NON-`default` SPI method (would be our
+first forced compile change).
