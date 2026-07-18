@@ -1,2 +1,4 @@
 [tools]
+cmake = "latest"
 java = "25"
+ninja = "latest"
