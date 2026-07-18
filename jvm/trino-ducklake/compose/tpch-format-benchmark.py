@@ -73,6 +73,17 @@ def parse_args() -> argparse.Namespace:
         default="httpfs",
     )
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument(
+        "--task-concurrency",
+        type=int,
+        help="Apply the same Trino task_concurrency to every benchmark variant",
+    )
+    parser.add_argument(
+        "--query-cooldown",
+        type=float,
+        default=0,
+        help="Sleep this many seconds before every timed query (outside Trino timing)",
+    )
     parser.add_argument("--queries", nargs="+", choices=QUERY_NAMES, default=list(QUERY_NAMES))
     parser.add_argument("--variants", nargs="+", choices=VARIANT_NAMES, default=list(VARIANT_NAMES))
     parser.add_argument("--prepare", action="store_true", help="Create missing format tables")
@@ -85,6 +96,10 @@ def parse_args() -> argparse.Namespace:
         args.benchmark = True
     if args.rounds < 1:
         parser.error("--rounds must be at least 1")
+    if args.task_concurrency is not None and args.task_concurrency < 1:
+        parser.error("--task-concurrency must be at least 1")
+    if args.query_cooldown < 0:
+        parser.error("--query-cooldown must not be negative")
     if args.benchmark and "parquet" not in args.variants:
         parser.error("--benchmark requires the parquet correctness baseline")
     args.schema = args.schema or f"format_bench_{args.source_schema}"
@@ -350,6 +365,8 @@ def benchmark(
     rounds: int,
     selected_queries: list[str],
     selected_variants: list[str],
+    task_concurrency: int | None,
+    query_cooldown: float,
 ) -> list[dict[str, Any]]:
     all_variants = (
         Variant("parquet", catalog, "parquet_"),
@@ -373,10 +390,14 @@ def benchmark(
         for query_name in selected_queries:
             for variant in ordered_variants:
                 sql = sql_by_variant[variant.name][query_name]
+                if query_cooldown:
+                    time.sleep(query_cooldown)
                 print(f"RUN round={round_number} query={query_name} variant={variant.name}", flush=True)
-                session_properties = None
+                session_properties: dict[str, str] = {}
+                if task_concurrency is not None:
+                    session_properties["task_concurrency"] = str(task_concurrency)
                 if variant.name.startswith("duckdb_"):
-                    session_properties = {f"{variant.catalog}.duckdb_read_mode": read_mode}
+                    session_properties[f"{variant.catalog}.duckdb_read_mode"] = read_mode
                 rows, stats, client_ms = runner.execute(
                     sql,
                     catalog=variant.catalog,
@@ -465,6 +486,8 @@ def main() -> int:
             args.rounds,
             args.queries,
             args.variants,
+            args.task_concurrency,
+            args.query_cooldown,
         )
         print_summary(benchmark_records)
 
@@ -477,6 +500,8 @@ def main() -> int:
             "destinationSchema": args.schema,
             "duckdbReadMode": args.duckdb_read_mode,
             "variants": args.variants,
+            "taskConcurrency": args.task_concurrency,
+            "queryCooldownSeconds": args.query_cooldown,
             "preparation": preparation,
             "storage": storage,
             "benchmark": benchmark_records,

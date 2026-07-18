@@ -258,7 +258,12 @@ uv run tpch-format-benchmark.py \
 Add `--reset` to drop and recreate the benchmark tables. Preparation is
 restartable: without `--reset`, existing format tables are retained and only
 missing tables are created. Use `--variants parquet duckdb_embedded` to omit
-Quack when only the in-process format comparison is needed.
+Quack when only the in-process format comparison is needed. To constrain Quack
+connection pressure without biasing the comparison, pass (for example)
+`--task-concurrency 4`; the setting is applied identically to every variant.
+Quack 1.5.4 also retains idle HTTP connections for 10 seconds, so sustained
+multi-query runs can use `--query-cooldown 4`. The delay applies before every
+variant and is outside Trino's reported query elapsed time.
 
 ## Common operations
 
