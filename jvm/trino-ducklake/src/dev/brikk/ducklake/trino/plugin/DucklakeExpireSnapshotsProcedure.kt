@@ -20,6 +20,7 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.ExpireSnapshotsResult
 import dev.brikk.ducklake.catalog.TransactionConflictException
 import io.airlift.log.Logger
+import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
@@ -66,7 +67,7 @@ class DucklakeExpireSnapshotsProcedure @Inject constructor(
                 "system",
                 "expire_snapshots",
                 ImmutableList.of(
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, "7d"),
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
                         Procedure.Argument("SNAPSHOT_IDS", ArrayType(BIGINT), false, null),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
                 EXPIRE_SNAPSHOTS.bindTo(this),

@@ -80,7 +80,7 @@ class DucklakePageSinkProvider @Inject constructor(
         val ducklakeMergeHandle = mergeHandle as DucklakeMergeTableHandle
 
         val writerOptions = ParquetWriterOptions.builder()
-                .setMaxBlockSize(parquetWriterConfig.blockSize)
+                .setMaxBlockSize(parquetWriterConfig.rowGroupSize)
                 .setMaxPageSize(parquetWriterConfig.pageSize)
                 .setMaxPageValueCount(parquetWriterConfig.pageValueCount)
                 .setBatchSize(parquetWriterConfig.batchSize)

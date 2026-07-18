@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
-version = "481-1-ALPHA"
+version = "483-1-ALPHA"
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.

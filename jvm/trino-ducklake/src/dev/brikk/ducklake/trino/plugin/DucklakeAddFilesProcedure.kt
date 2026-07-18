@@ -24,6 +24,7 @@ import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.TransactionConflictException
+import io.airlift.slice.Slices.utf8Slice
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
 import io.trino.filesystem.TrinoInputFile
@@ -112,7 +113,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         // 'duckdb' a single externally-written .db file (read via the ATTACH
                         // path, reading its main.t table) — all three without a parquet footer,
                         // see buildLanceFragment / buildVortexFragment / buildDuckDbFragment.
-                        Procedure.Argument("FILE_FORMAT", VARCHAR, false, "parquet")),
+                        Procedure.Argument("FILE_FORMAT", VARCHAR, false, utf8Slice("parquet"))),
                 ADD_FILES.bindTo(this),
                 true)
 

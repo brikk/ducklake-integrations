@@ -26,6 +26,7 @@ import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.Range
 import io.trino.spi.predicate.TupleDomain
@@ -472,11 +473,11 @@ class TestDucklakePageSourceProvider {
             null,
             SESSION,
             tableHandle,
-            DynamicFilter.EMPTY,
+            mutableSetOf(),
             Constraint.alwaysTrue()).use { splitSource ->
             val splits = ImmutableList.builder<ConnectorSplit>()
             while (!splitSource.isFinished) {
-                splits.addAll(splitSource.getNextBatch(1000).get().splits)
+                splits.addAll(splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get())
             }
             return splits.build()
         }

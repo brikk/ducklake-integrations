@@ -27,6 +27,7 @@ import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
@@ -282,10 +283,10 @@ class TestDucklakeInlinedDeleteHandling {
         @Throws(Exception::class)
         private fun getSplits(splitManager: DucklakeSplitManager, tableHandle: DucklakeTableHandle): List<DucklakeSplit> {
             splitManager.getSplits(
-                    null, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue()).use { splitSource ->
+                    null, SESSION, tableHandle, mutableSetOf(), Constraint.alwaysTrue()).use { splitSource ->
                 val splits = ImmutableList.builder<DucklakeSplit>()
                 while (!splitSource.isFinished) {
-                    for (split: ConnectorSplit in splitSource.getNextBatch(1000).get().splits) {
+                    for (split: ConnectorSplit in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
                         if (split is DucklakeSplit) {
                             splits.add(split)
                         }

@@ -17,6 +17,7 @@ import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorSplit
+import io.trino.spi.connector.ConnectorTableCredentials
 import io.trino.spi.function.table.ConnectorTableFunctionHandle
 import io.trino.spi.function.table.TableFunctionProcessorProvider
 import io.trino.spi.function.table.TableFunctionProcessorState
@@ -40,6 +41,7 @@ class LanceSearchProcessorProvider(
     override fun getSplitProcessor(
             session: ConnectorSession,
             handle: ConnectorTableFunctionHandle,
+            tableCredentials: java.util.Optional<ConnectorTableCredentials>,
             split: ConnectorSplit): TableFunctionSplitProcessor =
         LanceSearchSplitProcessor(
                 executorFactory.create(),

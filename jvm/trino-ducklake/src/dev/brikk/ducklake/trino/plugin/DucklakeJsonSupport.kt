@@ -37,7 +37,7 @@ import io.trino.spi.type.VarcharType
  *       loudly, which is the desired fail-loud behavior).
  */
 object DucklakeJsonSupport {
-    fun isJson(type: Type): Boolean = type.typeSignature.base == StandardTypes.JSON
+    fun isJson(type: Type): Boolean = type.baseName == StandardTypes.JSON
 
     /**
      * The physical Trino type to hand the parquet writer for [type]: a top-level JSON column

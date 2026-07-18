@@ -21,6 +21,7 @@ import dev.brikk.ducklake.catalog.DucklakeFilePathRef
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import io.airlift.log.Logger
+import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
@@ -96,7 +97,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
                         // the scope — table (both) → schema (schema only) → catalog-wide (neither).
                         Procedure.Argument("SCHEMA_NAME", VARCHAR, false, null),
                         Procedure.Argument("TABLE_NAME", VARCHAR, false, null),
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, "7d"),
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
                 REMOVE_ORPHAN_FILES.bindTo(this),
                 true)

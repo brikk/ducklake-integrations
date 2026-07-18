@@ -26,6 +26,7 @@ import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.catalog.PartialMergedFile
 import dev.brikk.ducklake.catalog.TransactionConflictException
 import io.airlift.log.Logger
+import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.DataSize
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
@@ -46,6 +47,7 @@ import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.ConnectorSplitSource
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
@@ -105,8 +107,8 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 ImmutableList.of(
                         Procedure.Argument("SCHEMA_NAME", VARCHAR),
                         Procedure.Argument("TABLE_NAME", VARCHAR),
-                        Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, "100MB"),
-                        Procedure.Argument("TARGET_FILE_SIZE", VARCHAR, false, "512MB"),
+                        Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, utf8Slice("100MB")),
+                        Procedure.Argument("TARGET_FILE_SIZE", VARCHAR, false, utf8Slice("512MB")),
                         Procedure.Argument("RECLAIM_SOURCES_IMMEDIATELY", BOOLEAN, false, false),
                         // Caps SOURCE FILES consumed per invocation (0 = unlimited) so a
                         // large table doesn't rewrite everything in one commit — mirrors
@@ -264,11 +266,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             candidateBasenames: Set<String>): List<DucklakeSplit> {
         val matched: MutableList<DucklakeSplit> = mutableListOf()
         val source: ConnectorSplitSource = splitManager.getSplits(
-                null, session, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue())
+                null, session, tableHandle, mutableSetOf(), Constraint.alwaysTrue())
         try {
             while (!source.isFinished) {
-                val batch = source.getNextBatch(SPLIT_BATCH_SIZE).get()
-                for (split: ConnectorSplit in batch.splits) {
+                val batch: List<ConnectorSplit> = source.getNextBatch(SPLIT_BATCH_SIZE, DynamicFilterSnapshot.EMPTY).get()
+                for (split: ConnectorSplit in batch) {
                     if (split is DucklakeSplit && basename(split.dataFilePath) in candidateBasenames) {
                         matched.add(split)
                     }

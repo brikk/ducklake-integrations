@@ -37,7 +37,7 @@ import io.trino.spi.type.TinyintType
 import io.trino.spi.type.Type
 import io.trino.spi.type.TypeManager
 import io.trino.spi.type.TypeParameter
-import io.trino.spi.type.TypeSignature
+import io.trino.spi.type.TypeDescriptor
 import io.trino.spi.type.UuidType
 import io.trino.spi.type.VarbinaryType
 import io.trino.spi.type.VarcharType
@@ -84,11 +84,11 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             if (parts.size != 2) {
                 throw TrinoException(NOT_SUPPORTED, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
             }
-            val keySignature: TypeSignature = toTrinoType(parts[0].trim()).typeSignature
-            val valueSignature: TypeSignature = toTrinoType(parts[1].trim()).typeSignature
+            val keyDescriptor: TypeDescriptor = toTrinoType(parts[0].trim()).typeDescriptor
+            val valueDescriptor: TypeDescriptor = toTrinoType(parts[1].trim()).typeDescriptor
             return typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                    TypeParameter.typeParameter(keySignature),
-                    TypeParameter.typeParameter(valueSignature)))
+                    TypeParameter.typeParameter(keyDescriptor),
+                    TypeParameter.typeParameter(valueDescriptor)))
         }
 
         return when (normalizedType) {
@@ -143,7 +143,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             // Native Trino JSON type (io.trino.type.JsonType, resolved via TypeManager since it is
             // not on the trino-spi compile classpath). Physically a UTF-8 string in parquet — the
             // same shape DuckDB writes — so reads/writes reuse the VARCHAR value paths.
-            "json" -> typeManager.getType(TypeSignature(StandardTypes.JSON))
+            "json" -> typeManager.getType(TypeDescriptor(StandardTypes.JSON))
             "variant" -> VarcharType.VARCHAR  // DEGRADED: No variant support, needs shredding implementation
             "interval" -> VarcharType.VARCHAR  // DEGRADED: Interval not supported in Trino, stored as string
 

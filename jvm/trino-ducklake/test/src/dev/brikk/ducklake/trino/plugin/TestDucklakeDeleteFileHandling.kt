@@ -29,6 +29,7 @@ import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
@@ -114,11 +115,11 @@ class TestDucklakeDeleteFileHandling {
                 null,
                 SESSION,
                 tableHandle,
-                DynamicFilter.EMPTY,
+                mutableSetOf(),
                 Constraint.alwaysTrue()).use { splitSource ->
                 val splits = ImmutableList.builder<DucklakeSplit>()
                 while (!splitSource.isFinished) {
-                    for (split: ConnectorSplit in splitSource.getNextBatch(1000).get().splits) {
+                    for (split: ConnectorSplit in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
                         splits.add(split as DucklakeSplit)
                     }
                 }

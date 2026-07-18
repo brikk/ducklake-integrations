@@ -76,7 +76,7 @@ class DucklakePageSink(
         private val writeRowLineage: Boolean = false,
 ) : ConnectorPageSink {
     private val writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder()
-            .setMaxBlockSize(parquetWriterConfig.blockSize)
+            .setMaxBlockSize(parquetWriterConfig.rowGroupSize)
             .setMaxPageSize(parquetWriterConfig.pageSize)
             .setMaxPageValueCount(parquetWriterConfig.pageValueCount)
             .setBatchSize(parquetWriterConfig.batchSize)
@@ -123,7 +123,7 @@ class DucklakePageSink(
             duckdbTargetWriteBytes
         }
         else {
-            parquetWriterConfig.blockSize.toBytes()
+            parquetWriterConfig.rowGroupSize.toBytes()
         }
 
         this.columnTypes = handle.columns.map(DucklakeColumnHandle::columnType)

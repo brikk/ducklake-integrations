@@ -22,7 +22,6 @@ import dev.brikk.ducklake.catalog.testing.CatalogTestSupport
 import io.trino.spi.StandardErrorCode
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilter
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -54,7 +53,7 @@ class TestDucklakePuffinDeleteFileGuard {
                     "ducklake-deletion-vector-" + UUID.randomUUID() + ".puffin")
 
             // No exception — the guard accepts puffin.
-            splitManager.getSplits(null, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue())
+            splitManager.getSplits(null, SESSION, tableHandle, mutableSetOf(), Constraint.alwaysTrue())
         }
     }
 
@@ -74,7 +73,7 @@ class TestDucklakePuffinDeleteFileGuard {
                         null,
                         SESSION,
                         tableHandle,
-                        DynamicFilter.EMPTY,
+                        mutableSetOf(),
                         Constraint.alwaysTrue())
             }
                     .isInstanceOfSatisfying(TrinoException::class.java) { ex ->

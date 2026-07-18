@@ -36,7 +36,6 @@ import io.trino.spi.connector.ConnectorSplitSource
 import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.connector.ConnectorTransactionHandle
 import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilter
 import io.trino.spi.TrinoException
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.connector.FixedSplitSource
@@ -71,7 +70,7 @@ class DucklakeSplitManager @Inject constructor(
             transaction: ConnectorTransactionHandle?,
             session: ConnectorSession?,
             table: ConnectorTableHandle,
-            dynamicFilter: DynamicFilter,
+            dynamicFilterColumns: MutableSet<ColumnHandle>,
             constraint: Constraint): ConnectorSplitSource {
         specialSplitSource(table)?.let { return it }
 

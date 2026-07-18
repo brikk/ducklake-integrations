@@ -7,6 +7,8 @@
     <ID>LongMethod:DuckDbFileWriter.kt:DuckDbFileWriter$@Throws(SQLException::class) private fun extractColumnStats: List&lt;DucklakeFileColumnStats&gt;</ID>
     <ID>ThrowsCount:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$private fun countRows: Long</ID>
     <ID>TooGenericExceptionCaught:DucklakeAddFilesProcedure.kt:DucklakeAddFilesProcedure$e: RuntimeException</ID>
+    <ID>ThrowsCount:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readInternalSnapshotIds: LongArray</ID>
+    <ID>ThrowsCount:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readPositionsWithSnapshots: Map&lt;Long, Long&gt;</ID>
     <ID>ThrowsCount:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$@Throws(IOException::class) fun readSnapshotDropPositions: Set&lt;Long&gt;</ID>
     <ID>ThrowsCount:DucklakeFlushInlinedDataProcedure.kt:DucklakeFlushInlinedDataProcedure$private fun flushOneTable: Boolean</ID>
     <ID>ComplexCondition:DuckDbExpressionTranslator.kt:DuckDbExpressionTranslator.Companion$name.catalogSchema.isEmpty &amp;&amp; "concat" == name.name &amp;&amp; args.size &gt;= 2 &amp;&amp; call.type is VarcharType</ID>

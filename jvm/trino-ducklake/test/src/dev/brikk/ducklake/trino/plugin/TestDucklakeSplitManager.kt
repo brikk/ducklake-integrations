@@ -22,7 +22,7 @@ import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.DateType.DATE
@@ -270,11 +270,11 @@ class TestDucklakeSplitManager {
                 null,
                 null,
                 tableHandle,
-                DynamicFilter.EMPTY,
+                mutableSetOf(),
                 constraint).use { splitSource ->
             val splits: ImmutableList.Builder<ConnectorSplit> = ImmutableList.builder()
             while (!splitSource.isFinished) {
-                splits.addAll(splitSource.getNextBatch(1000).get().splits)
+                splits.addAll(splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get())
             }
             return splits.build()
         }

@@ -19,6 +19,7 @@ import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeScheduledFile
 import io.airlift.log.Logger
+import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
@@ -62,7 +63,7 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
                 "system",
                 "cleanup_old_files",
                 ImmutableList.of(
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, "7d"),
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
                 CLEANUP_OLD_FILES.bindTo(this),
                 true)

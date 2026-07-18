@@ -24,7 +24,7 @@ import io.trino.filesystem.cache.NoopSplitAffinityProvider
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilter
+import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.Range
 import io.trino.spi.predicate.TupleDomain
@@ -84,11 +84,11 @@ class TestDucklakePartitionPruning {
         @Throws(Exception::class)
         private fun getSplits(splitManager: DucklakeSplitManager, tableHandle: DucklakeTableHandle): List<DucklakeSplit> {
             splitManager.getSplits(
-                null, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue()
+                null, SESSION, tableHandle, mutableSetOf(), Constraint.alwaysTrue()
             ).use { splitSource ->
                 val splits = ImmutableList.builder<DucklakeSplit>()
                 while (!splitSource.isFinished) {
-                    for (split in splitSource.getNextBatch(1000).get().splits) {
+                    for (split in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
                         splits.add(split as DucklakeSplit)
                     }
                 }
