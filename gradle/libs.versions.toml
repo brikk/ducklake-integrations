@@ -30,7 +30,7 @@ lance-core = "6.0.0"
 # On 0.3.0-SNAPSHOT pending release: adds Finding.areas + TranspileReport.okAccepting {} and tiers
 # the DATE+INTERVAL hazard (provably-DATE→REFUSAL, bare-column→WARNING). See the gate policy in
 # TrinoCorpusDialect + the 0.3.0 migration note in dev-docs/NOTE-transpile-first-corpus-gate.md.
-brikk-sql = "0.3.0-SNAPSHOT"
+brikk-sql = "0.7.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
