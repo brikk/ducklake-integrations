@@ -20,9 +20,9 @@ import io.trino.spi.connector.ConnectorTableHandle
 /**
  * The *scan-shaped* form of a change-feed function: [DucklakeMetadata.applyTableFunction] maps the
  * analyzed [ChangeFeedFunctionHandle] to this [ConnectorTableHandle] so the engine plans an
- * ordinary table scan over the function's output. Unlike the lance searches this carries no
- * pushdown state — the change feed reads a bounded set of files and its predicates stay entirely
- * in the engine's filter above the scan.
+ * ordinary table scan over the function's output. This carries no pushdown state — the change
+ * feed reads a bounded set of files and its predicates stay entirely in the engine's filter
+ * above the scan.
  *
  * All state is carried directly (no nested [io.trino.spi.function.table.ConnectorTableFunctionHandle])
  * so there is no Jackson polymorphic-type-id hazard.

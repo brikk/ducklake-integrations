@@ -57,30 +57,24 @@ import java.util.Optional
 import java.util.OptionalLong
 
 /**
- * Implements `CALL <catalog>.system.add_files(...)` — registers
- * pre-existing data files (parquet, lance dataset directories, vortex files, duckdb
- * `.db` files) as DuckLake data files of a table without rewriting. Mirrors upstream's
- * `ducklake_add_data_files` table function for parquet; lance/vortex/duckdb are registered
- * opaquely (no footer/stats/name map) and read through the FileScan / ATTACH paths.
+ * Implements `CALL <catalog>.system.add_files(...)` — registers pre-existing parquet
+ * data files as DuckLake data files of a table without rewriting. Mirrors upstream's
+ * `ducklake_add_data_files` table function.
+ *
+ * Parquet is the only supported format: the opaque duckdb/vortex/lance registration modes
+ * were removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
  *
  * v1 contract:
  *
  *   - Each entry in `FILES` is a concrete file path (no glob expansion yet).
  *   - Parquet column names must match the table column names case-insensitively;
- *       reordering is permitted. Lance/vortex/duckdb reads project by name, so their column
- *       names must match the table's exactly (as DuckDB renders them). A duckdb `.db` file
- *       must hold the data in a single `main.t` table (the shape the connector's own duckdb
- *       writer emits and the read path ATTACHes).
+ *       reordering is permitted.
  *   - Hive partitioning supports the IDENTITY transform only (path segments of the
  *       form `key=value/`). Files for tables with transform-based partition
  *       specs (year / month / etc.) are out of scope for v1.
- *   - Partitioned tables: parquet uses `hive_partitioning => true` to read each partition value
+ *   - Partitioned tables use `hive_partitioning => true` to read each partition value
  *       from the `key=value/` path (the column may be omitted from the file body — it is
- *       constant-filled on read). lance/vortex ALSO support `hive_partitioning => true` now, but
- *       because opaque scan-registered files are column-projected by the DuckDB engine (no
- *       constant-fill), the partition column must be PRESENT in the file; the path value is
- *       recorded so the registered file is prunable without a scan. A partitioned lance/vortex
- *       `add_files` WITHOUT `hive_partitioning` is rejected (we can't place the opaque file).
+ *       constant-filled on read).
  *
  */
 class DucklakeAddFilesProcedure @Inject constructor(

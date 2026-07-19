@@ -20,10 +20,8 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
  * Nested struct field DDL — `ALTER TABLE ... ADD COLUMN parent.child <type>` / `DROP COLUMN
- * parent.child` — exercised here over the default (parquet) format, where old files self-heal via
- * the parquet reader's name/field-id struct binding + NULL-fill. Non-parquet (duckdb/vortex)
- * reconciliation via per-file `struct_pack` reshaping is covered by
- * [AbstractDucklakeNestedFieldEvolutionFormatTest].
+ * parent.child` — exercised over the parquet format, where old files self-heal via the parquet
+ * reader's name/field-id struct binding + NULL-fill.
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
  */
