@@ -52,4 +52,8 @@ jobs:
             build/distributions/*.tar.gz
             build/distributions/*.sha256
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          # No auto-generated notes: with no prior release tag GitHub would synthesize a
+          # "What's Changed" + "New Contributors" changelog from the ENTIRE repo history
+          # (the old ducklake-integrations commits/authors). Keep the release body clean;
+          # write notes by hand when wanted.
+          generate_release_notes: false
