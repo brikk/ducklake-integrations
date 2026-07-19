@@ -73,6 +73,37 @@ stock Doris base, via the in-repo [`fe-overlay/Dockerfile`](./fe-overlay/Dockerf
 (`FROM apache/doris:fe-4.1.0`, wipes + COPYs `output/fe/{bin,lib,conf,plugins,webroot}`).
 (Originally a local-only file in the Doris checkout; now tracked here so it can't be lost.)
 
+### Where the FE source lives (this Linux box)
+
+The upstream Doris checkout and its worktrees live under `~/DEV/OSS/`:
+
+- **`~/DEV/OSS/doris`** — the main clone (currently on `master`). The general
+  Doris repo; look here for BE source, base build scripts, upstream history.
+- **`~/DEV/OSS/doris-catalog-spi`** — a **linked git worktree** of that same repo,
+  parked (detached HEAD) at the **pinned** connector-SPI commit we build the FE
+  from (`b2dff681aad`, `branch-catalog-spi`). **This is the one we build the plugin
+  FE against.** Its `output/fe/` is the FE build below.
+
+(Both are the same `.git`; `git worktree list` from either shows the pair. If a path
+here ever looks wrong, `git worktree list` is the source of truth for where each
+checkout actually is.)
+
+### FE build artifacts & where they live
+
+One `./build.sh --fe` yields **three** artifacts, each kept in a different place for a
+different consumer. **None are committed to git** — they're all local-machine state, so
+another machine / agent / CI won't have them until reproduced or copied:
+
+| Artifact | Location | Consumer | Get it elsewhere |
+|---|---|---|---|
+| **Raw FE build** (`output/fe`, ~2 GB; incl. `lib/doris-fe.jar`) | `~/DEV/OSS/doris-catalog-spi/output/fe` | staging source for the image | regenerate with `build.sh --fe` (not shipped — too big/machine-specific) |
+| **Overlay image** `doris-fe:pr62767-local` | local Docker/podman image store (**not** in any registry) | the compose FE (runtime) — `docker-compose.yml` | `docker save doris-fe:pr62767-local \| ...` or push to a registry the other side can pull |
+| **SPI compile jars** (`fe-connector-api`, `fe-connector-spi`, `fe-thrift`, `1.2-SNAPSHOT`) | `~/.m2/repository/org/apache/doris/…` (installed via `mvn install -P flatten`) | the gradle plugin build (`build.gradle.kts` → `mavenLocal()`, `org.apache.doris` only) | re-run the flatten install (below) on that box, or copy the `~/.m2/.../1.2-SNAPSHOT` trees over |
+
+Verify the runtime image actually carries the build you think it does:
+`sha256sum ~/DEV/OSS/doris-catalog-spi/output/fe/lib/doris-fe.jar` should equal
+`docker run --rm --entrypoint sha256sum doris-fe:pr62767-local /opt/apache-doris/fe/lib/doris-fe.jar`.
+
 # ⚠️ PINNED COMMIT — build from the SAME commit we last researched + re-diffed the patch against.
 #   `branch-catalog-spi` REBASES CONSTANTLY, so do NOT just `git pull` the branch tip: a newer
 #   tip may move the patch context or add a non-default SPI method that breaks the plugin.
@@ -84,18 +115,21 @@ stock Doris base, via the in-repo [`fe-overlay/Dockerfile`](./fe-overlay/Dockerf
 #   The current pin is recorded in ../fe-patches/FE-PATCHES.md → "Re-vendor log" (keep all three in sync).
 
 ```bash
-# 1. Build the P-series FE (JDK 17). Apply BOTH FE patches first — see
-#    ../fe-patches/FE-PATCHES.md (reapplyable: git apply ../fe-patches/ducklake-fe.patch):
-cd ~/DEV/OSS/db/doris && git checkout b2dff681aad   # branch-catalog-spi @ pinned commit (see note above)
+# 1. Build the P-series FE (JDK 17) in the pinned worktree. Apply BOTH FE patches
+#    first — see ../fe-patches/FE-PATCHES.md (reapplyable: git apply --3way ../fe-patches/ducklake-fe.patch):
+cd ~/DEV/OSS/doris-catalog-spi && git checkout b2dff681aad   # pinned commit worktree (see note above)
 #   • CatalogFactory.java         : add "ducklake" to SPI_READY_TYPES        (catalog/INSERT route gate)
 #   • CreateTableInfo.java        : pluginCatalogTypeToEngine += "ducklake"→ENGINE_ICEBERG  (CREATE TABLE gate)
 JAVA_HOME=<jdk17> DISABLE_BUILD_UI=ON ./build.sh --fe        # → output/fe  (see doris-fe-build-macos memory)
+# Also reinstall the SPI compile jars our gradle build needs (see the artifacts table above):
+cd fe && <mvn> install -P flatten -pl fe-connector/fe-connector-api,fe-connector/fe-connector-spi,fe-thrift -DskipTests
 
-# 2. Image it (stage a minimal context so podman/docker isn't sent the multi-GB repo):
-S=/tmp/feimg; rm -rf $S; mkdir -p $S/output $S/docker/runtime/doris-fe-overlay
-cp -r output/fe $S/output/fe
-cp docker/runtime/doris-fe-overlay/*.txt $S/docker/runtime/doris-fe-overlay/
-podman build -f docker/runtime/doris-fe-overlay/Dockerfile \
+# 2. Image it with the TRACKED overlay Dockerfile (jvm/doris-ducklake/compose/fe-overlay/Dockerfile),
+#    staging a minimal context so podman/docker isn't sent the multi-GB repo:
+S=/tmp/feimg; rm -rf $S; mkdir -p $S/output
+cp -r ~/DEV/OSS/doris-catalog-spi/output/fe $S/output/fe
+# run -f relative to THIS integrations repo root (adjust the path if your CWD differs):
+podman build -f jvm/doris-ducklake/compose/fe-overlay/Dockerfile \
   -t doris-fe:pr62767-local \
   --build-arg BASE_IMAGE=apache/doris:fe-4.1.0 --build-arg OUTPUT_PATH=./output  $S
 ```
