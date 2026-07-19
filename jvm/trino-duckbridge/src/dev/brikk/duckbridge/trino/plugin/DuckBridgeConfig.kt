@@ -59,6 +59,35 @@ class DuckBridgeConfig {
         return this
     }
 
+    // ---- lance / vortex scan+search PTFs (P5) ----------------------------------------------
+    // These PTFs run through DuckDB's `lance` / `vortex` extensions. When enabled, the connector
+    // INSTALLs (floating latest) + LOADs the extension on each connection so the PTF's synthetic
+    // scan query resolves. Off by default so a plain DuckDB/parity deployment never pays the
+    // per-connection extension load. On a remote (Quack) server the extension is a server-side
+    // concern — the connector probes it, never manages it.
+
+    /** Enable the `lance_scan` / `lance_vector_search` / `lance_fts` / `lance_hybrid_search` PTFs. */
+    var isLanceEnabled: Boolean = false
+        private set
+
+    @Config("duckbridge.lance.enabled")
+    @ConfigDescription("Enable the lance scan + search table functions (requires the DuckDB lance extension)")
+    fun setLanceEnabled(lanceEnabled: Boolean): DuckBridgeConfig {
+        this.isLanceEnabled = lanceEnabled
+        return this
+    }
+
+    /** Enable the `vortex_scan` PTF. */
+    var isVortexEnabled: Boolean = false
+        private set
+
+    @Config("duckbridge.vortex.enabled")
+    @ConfigDescription("Enable the vortex scan table function (requires the DuckDB vortex extension)")
+    fun setVortexEnabled(vortexEnabled: Boolean): DuckBridgeConfig {
+        this.isVortexEnabled = vortexEnabled
+        return this
+    }
+
     /**
      * Optional explicit filesystem path to the `trino_parity.duckdb_extension` binary. When set,
      * it overrides the bundled-per-platform extraction path resolved by

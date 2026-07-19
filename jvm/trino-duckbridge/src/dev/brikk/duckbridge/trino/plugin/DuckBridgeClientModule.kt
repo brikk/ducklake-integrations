@@ -55,6 +55,7 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
         configBinder(binder).bindConfig(JdbcStatisticsConfig::class.java)
         configBinder(binder).bindConfig(DuckBridgeConfig::class.java)
         binder.bind(DuckBridgeParity::class.java).`in`(Scopes.SINGLETON)
+        binder.bind(DuckBridgeScanExtensions::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DuckBridgeExecutorFactory::class.java).`in`(Scopes.SINGLETON)
         // Override base-jdbc's default ConnectorPageSourceProvider with our gating one. It delegates
         // to the default JdbcPageSourceProvider for the JDBC engine (production) and only diverts to
@@ -69,10 +70,16 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
             .addBinding()
             .to(DuckBridgeSessionProperties::class.java)
             .`in`(Scopes.SINGLETON)
-        newSetBinder(binder, ConnectorTableFunction::class.java)
-            .addBinding()
-            .toProvider(Query::class.java)
-            .`in`(Scopes.SINGLETON)
+        val tableFunctions = newSetBinder(binder, ConnectorTableFunction::class.java)
+        tableFunctions.addBinding().toProvider(Query::class.java).`in`(Scopes.SINGLETON)
+        // lance / vortex scan + search PTFs (P5). They're always registered (so a clear
+        // "extension not enabled" error fires at analyze time); the per-connection extension load is
+        // config-gated in DuckBridgeClient.getConnection.
+        tableFunctions.addBinding().toProvider(LanceScanFunctionProvider::class.java).`in`(Scopes.SINGLETON)
+        tableFunctions.addBinding().toProvider(VortexScanFunctionProvider::class.java).`in`(Scopes.SINGLETON)
+        tableFunctions.addBinding().toProvider(LanceVectorSearchFunctionProvider::class.java).`in`(Scopes.SINGLETON)
+        tableFunctions.addBinding().toProvider(LanceFtsFunctionProvider::class.java).`in`(Scopes.SINGLETON)
+        tableFunctions.addBinding().toProvider(LanceHybridSearchFunctionProvider::class.java).`in`(Scopes.SINGLETON)
     }
 
     /**
@@ -106,12 +113,15 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
     @Provides
     @Singleton
     @ForBaseJdbc
+    @Suppress("LongParameterList")
     fun connectionFactory(
         config: BaseJdbcConfig,
         duckBridgeConfig: DuckBridgeConfig,
         transport: DuckBridgeTransport,
         credentialProvider: CredentialProvider,
         openTelemetry: OpenTelemetry,
+        parity: DuckBridgeParity,
+        scanExtensions: DuckBridgeScanExtensions,
     ): ConnectionFactory {
         val driver: Driver
         val connectionProperties = Properties()
@@ -137,9 +147,14 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
                 }
             }
         }
-        return DriverConnectionFactory.builder(driver, config.connectionUrl, credentialProvider)
-            .setConnectionProperties(connectionProperties)
-            .setOpenTelemetry(openTelemetry)
-            .build()
+        val base =
+            DriverConnectionFactory.builder(driver, config.connectionUrl, credentialProvider)
+                .setConnectionProperties(connectionProperties)
+                .setOpenTelemetry(openTelemetry)
+                .build()
+        // Decorate so parity + lance/vortex extensions load on EVERY connection — including
+        // base-jdbc's metadata probes (getTableHandle/getColumns) that bypass
+        // DuckBridgeClient.getConnection. Session-specific SET TimeZone stays in getConnection.
+        return DuckBridgeExtensionConnectionFactory(base, parity, scanExtensions)
     }
 }

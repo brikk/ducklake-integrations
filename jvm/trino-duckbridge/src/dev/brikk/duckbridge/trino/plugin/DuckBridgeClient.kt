@@ -113,7 +113,6 @@ class DuckBridgeClient
         identifierMapping: IdentifierMapping,
         queryModifier: RemoteQueryModifier,
         private val connectorExpressionRewriter: ConnectorExpressionRewriter<ParameterizedExpression>,
-        private val parity: DuckBridgeParity,
     ) : BaseJdbcClient(
             "\"",
             connectionFactory,
@@ -125,7 +124,9 @@ class DuckBridgeClient
         ) {
         override fun getConnection(session: ConnectorSession): Connection {
             // BaseJdbcClient.getConnection calls Connection.setReadOnly, but DuckDB does not
-            // support changing read-only status at the connection level, so open directly.
+            // support changing read-only status at the connection level, so open directly. The
+            // connection factory is decorated (DuckBridgeExtensionConnectionFactory) to load parity
+            // + lance/vortex extensions on every connection; here we add the session-specific zone.
             val connection = connectionFactory.openConnection(session)
             try {
                 // Set the DuckDB session TimeZone to match Trino's session zone so date/time
@@ -133,9 +134,6 @@ class DuckBridgeClient
                 // sides. Failure (e.g. a fractional bare offset DuckDB can't parse) is logged once
                 // and tolerated — Tier C pushdown degrades to Trino-side eval for this connection.
                 applySessionTimeZone(connection, session)
-                // First-touch parity init: LOAD + probe the extension. Fails loud if parity is
-                // enabled but the extension can't be loaded/probed.
-                parity.ensureInitialised(connection)
             } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
                 // Any failure while preparing the connection must not leak it back to the pool.
                 runCatching { connection.close() }
@@ -252,6 +250,8 @@ class DuckBridgeClient
             super.addColumn(session, handle, column, position)
         }
 
+        // One branch per DuckDB JDBC type; kept as a single dispatch (matches the P1/P2 port shape).
+        @Suppress("CyclomaticComplexMethod")
         override fun toColumnMapping(
             session: ConnectorSession,
             connection: Connection,
@@ -294,6 +294,15 @@ class DuckBridgeClient
                 Types.TIMESTAMP ->
                     // DuckDB TIMESTAMP is microsecond precision.
                     return Optional.of(timestampColumnMapping(TIMESTAMP_MICROS))
+                Types.ARRAY -> {
+                    // DuckDB list/array (e.g. lance embedding FLOAT[3], VARCHAR[] tags). The element
+                    // type is only in the type name; the array mapping parses it. Unsupported element
+                    // types fall through to CONVERT_TO_VARCHAR / empty like any other type.
+                    val arrayMapping = typeHandle.jdbcTypeName().orElse(null)?.let(DuckBridgeArrayColumnMapping::fromTypeName)
+                    if (arrayMapping != null) {
+                        return Optional.of(arrayMapping)
+                    }
+                }
             }
 
             if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
