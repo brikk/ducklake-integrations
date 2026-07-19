@@ -21,9 +21,4 @@ TOKEN="${QUACK_TOKEN:-ducklake-test-token}"
     # namespace makes 0.0.0.0 mean "this container's interfaces only".
     printf "SELECT * FROM quack_serve('quack://0.0.0.0:%s/', token := '%s', allow_other_hostname := true);\n" "$PORT" "$TOKEN"
     exec sleep infinity
-# -unsigned: client-side LOAD of trino_parity.duckdb_extension (forwarded over
-# Quack RPC from the trino-ducklake connector) requires allow_unsigned_extensions
-# at server startup. Setting `SET allow_unsigned_extensions=true` after the DB
-# is running is rejected — must be a CLI flag at process start. No-op for any
-# server that never gets asked to LOAD an unsigned extension.
-} | duckdb -unsigned
+} | duckdb

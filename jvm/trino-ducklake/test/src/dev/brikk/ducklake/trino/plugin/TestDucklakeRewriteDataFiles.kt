@@ -31,8 +31,8 @@ import java.util.Comparator
 /**
  * End-to-end coverage of `rewrite_data_files` — the non-partial / Iceberg-style compaction WRITER
  * (dev-docs/DESIGN-maintenance.md § 7). Full-Trino: a PostgreSQL metadata catalog ATTACHed with a
- * LOCAL data path, the connector's own parquet read+write path (no DuckDB parity extension needed —
- * the v1 writer is non-partial). Asserts file count drops while the row set / values are preserved,
+ * LOCAL data path, the connector's own parquet read+write path (the v1 writer is non-partial).
+ * Asserts file count drops while the row set / values are preserved,
  * time-travel still resolves the pre-compaction files, deletes are physically applied, and the v1
  * gates (partitioned reject, below-count no-op) hold.
  *

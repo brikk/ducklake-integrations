@@ -43,8 +43,7 @@ import java.util.concurrent.TimeUnit
  * metadata lives in a PostgreSQL catalog ATTACHed with an `s3://` `DATA_PATH` (so the
  * catalog-stored data path — which wins over the connector property in [DucklakePathResolver] —
  * routes every new data file to the bucket). PG (not a single-file local DuckDB catalog) is used so
- * the concurrent-writer cell is real: a `.db` catalog is single-writer by construction. Parquet
- * over s3 needs no DuckDB executor at all; the one duckdb-format cell uses the parity extension.
+ * the concurrent-writer cell is real: a `.db` catalog is single-writer by construction.
  * Skips when Docker/MinIO is unavailable.
  *
  * SAME_THREAD by default; the concurrent-writer test manages its own thread pool.

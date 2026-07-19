@@ -18,9 +18,6 @@ import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer
 import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import org.junit.jupiter.api.Assumptions
-import java.nio.file.Path
-import java.util.Locale
-import java.util.Optional
 
 /**
  * Manages the shared catalog-backend fixtures used by Trino plugin tests. Holds
@@ -168,16 +165,10 @@ object DucklakeTestCatalogEnvironment {
                 result = quackServer
                 if (result == null) {
                     try {
-                        // The Quack CATALOG-plane DuckDB server (metadata backend). The
-                        // trino_parity DuckDB extension is a DATA-plane concern that moved to
-                        // brikk/duckbridge and is no longer bundled here; only honor an explicit
-                        // system-property path if one is supplied, else run without it.
-                        val configuredPath: Path? = System.getProperty("ducklake.test.parityExtensionPath")
-                            ?.trim()
-                            ?.takeIf { it.isNotEmpty() }
-                            ?.let(Path::of)
-                        val extensionPath: Optional<Path> = Optional.ofNullable(configuredPath)
-                        result = TestingDucklakeDuckDbQuackCatalogServer(extensionPath)
+                        // The Quack CATALOG-plane DuckDB server (metadata backend). It needs no
+                        // DuckDB extension beyond core Quack; the trino_parity DATA-plane extension
+                        // moved to brikk/duckbridge and is no longer part of this repo.
+                        result = TestingDucklakeDuckDbQuackCatalogServer()
                         quackServer = result
                         Runtime.getRuntime().addShutdownHook(Thread { result!!.close() })
                     }
