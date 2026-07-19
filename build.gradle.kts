@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+group = "dev.brikk.ducklake"
 version = "483-1-ALPHA"
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
@@ -172,7 +173,7 @@ tasks.test {
     // (-Dducklake.corpus.dirs=all for the full corpus).
     systemProperty(
         "ducklake.corpus.root",
-        rootProject.projectDir.resolve("trino-ducklake/ducklake/test/sql").absolutePath,
+        rootProject.projectDir.resolve("ducklake/test/sql").absolutePath,
     )
     System.getProperty("ducklake.corpus.dirs")?.let {
         systemProperty("ducklake.corpus.dirs", it)

@@ -1,5 +1,22 @@
 /.idea/
 
+# Gradle build outputs + caches (the build now lives at the repo root).
+.gradle
+build/
+.kotlin/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE / tooling
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+.settings/
+.project
+.classpath
+.qodana/
+
 # Qodana spills its container HOME (JDK downloads, prefs) into the repo root via the
 # bind mount when `qodana scan` runs from jvm/. Ignore the leakage.
 /.java/

@@ -1,16 +1,10 @@
-# CI for brikk/ducklake-integrations.
+# CI for brikk/ducklake-integrations (the Trino DuckLake connector).
 #
-# Scope: the JVM/Gradle build lives entirely under `jvm/` (wrapper at jvm/gradlew,
-# settings at jvm/settings.gradle.kts), so every Gradle step runs with
-# working-directory: jvm.
-#
-# Modules built/tested here (see jvm/settings.gradle.kts):
-#   :ducklake-catalog, :ducklake-corpus-replay, :trino-ducklake, :jooq-custom-naming
-# DELIBERATELY EXCLUDED: :doris-ducklake — it does NOT compile in CI. It depends on a
-#   locally-published Apache Doris `1.2-SNAPSHOT` FE connector (fe-connector-api/spi/thrift)
-#   that only exists in a developer's ~/.m2 from a custom Doris FE build. This is
-#   pre-existing drift unrelated to CI work; re-enable once the Doris FE is rebuilt and
-#   its artifacts are available to CI. We never invoke any :doris-ducklake task below.
+# Scope: this is now a single-project Gradle build at the repo ROOT (wrapper at ./gradlew,
+# settings at ./settings.gradle.kts). The shared catalog + corpus-replay moved to
+# github.com/brikk/ducklake-catalog and are consumed as published dev.brikk.ducklake
+# artifacts (Maven Central / snapshots). The Doris connector moved to
+# github.com/brikk/doris-ducklake. Neither is built here anymore.
 #
 # NOTE: the DuckDB `trino_parity` extension and the duckdb/vortex/lance data-file formats
 # were moved OUT of this repo (to github.com/brikk/duckbridge). trino-ducklake no longer
@@ -44,9 +38,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           # submodules are required:
-          #   - jvm/ducklake-corpus-replay/ducklake (duckdb/ducklake): the sqllogictest
-          #     corpus fixture that the replay tests read from.
-          #   - jvm/trino-ducklake/ducklake-web (duckdb/ducklake-web).
+          #   - ducklake (duckdb/ducklake): the sqllogictest corpus fixture the replay
+          #     tests read from (ducklake.corpus.root -> ducklake/test/sql).
+          #   - ducklake-web (duckdb/ducklake-web).
           submodules: recursive
 
       - name: Set up JDK 25 (Temurin)
@@ -60,37 +54,25 @@ jobs:
 
       - name: Set up Gradle (with caching)
         # gradle/actions/setup-gradle handles Gradle user-home caching (dependencies,
-        # wrapper dist) and reads the wrapper version from jvm/gradle/wrapper.
+        # wrapper dist) and reads the wrapper version from gradle/wrapper.
         uses: gradle/actions/setup-gradle@v6
 
       # detekt and tests are split into two invocations ON PURPOSE. detekt runs in the
-      # Gradle daemon (heap bumped in jvm/gradle.properties for cold-cache dependency
+      # Gradle daemon (heap bumped in gradle.properties for cold-cache dependency
       # resolution); tests fork their own 3 GB JVM. Running them together lets the two
       # heavy phases peak simultaneously, which risks OOM on a 2-core/7 GB runner.
-      # Sequential steps bound peak memory and give clean failure attribution. We name
-      # valid tasks explicitly instead of a top-level `check` so :doris-ducklake is never
-      # configured/executed (it depends on a locally-published Doris 1.2-SNAPSHOT absent in CI).
+      # Sequential steps bound peak memory and give clean failure attribution.
       - name: detekt (quality gate)
-        working-directory: jvm
-        # :jooq-custom-naming has NO detekt plugin, so it is verified in the test step via `check`.
-        run: >-
-          ./gradlew
-          :ducklake-catalog:detekt
-          :ducklake-corpus-replay:detekt
-          :trino-ducklake:detekt
-          --stacktrace
+        run: ./gradlew detekt --stacktrace
 
-      - name: tests (excluding :doris-ducklake)
-        working-directory: jvm
-        # :trino-ducklake:test includes dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay.
-        # We do NOT pass -Dducklake.corpus.dirs here, so it runs only its default starter
-        # set (general,catalog,time_travel,view) to keep PR runtime bounded. The FULL
-        # corpus (-Dducklake.corpus.dirs=all) runs in corpus-nightly.yml.
+      - name: tests
+        # `test` includes dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay. We do NOT
+        # pass -Dducklake.corpus.dirs here, so it runs only its default starter set
+        # (general,catalog,time_travel,view) to keep PR runtime bounded. The FULL corpus
+        # (-Dducklake.corpus.dirs=all) runs in corpus-nightly.yml.
         # (Beware: the leading `d` matters. `-Dducklake.corpus.dirs=all` is correct;
         #  `-Ducklake.corpus.dirs=all` is parsed by the JVM as `-D ucklake...` and
         #  silently falls back to the starter set.)
-        #
-        # :jooq-custom-naming:check compiles/verifies that module (no detekt, no tests there).
         #
         # Docker + network dependency: tests use Testcontainers for PostgreSQL (Docker is
         # preinstalled on ubuntu-latest) and download DuckDB extensions at test time
@@ -101,14 +83,7 @@ jobs:
         # -PexcludeTags=ci-unstable skips one orphan-dataset-dir cleanup test that passes
         # locally but not on the CI filesystem (cause not yet reproduced; tracked in
         # dev-docs/TODO-WRITE-MODE.md). Everything else runs.
-        run: >-
-          ./gradlew
-          :ducklake-catalog:test
-          :ducklake-corpus-replay:test
-          :trino-ducklake:test
-          :jooq-custom-naming:check
-          -PexcludeTags=ci-unstable
-          --stacktrace
+        run: ./gradlew test -PexcludeTags=ci-unstable --stacktrace
 
       - name: Upload test & detekt reports
         # Only on failure — the reports are the useful artifact when something breaks.
@@ -117,7 +92,7 @@ jobs:
         with:
           name: build-and-test-reports
           path: |
-            jvm/*/build/reports
-            jvm/*/build/test-results
+            build/reports
+            build/test-results
           if-no-files-found: ignore
           retention-days: 14

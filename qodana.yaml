@@ -8,7 +8,7 @@
 # without one — token only enables Qodana Cloud upload):
 #   cd jvm && qodana scan
 #
-# Results land in jvm/.qodana/ (gitignored) — qodana.sarif.json + an HTML report.
+# Results land in .qodana/ (gitignored) — qodana.sarif.json + an HTML report.
 version: "1.0"
 
 # Community JVM linter (free). Pin a tag if you want reproducibility.
