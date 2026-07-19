@@ -14,63 +14,46 @@ Tested with DuckDB 1.5.4 for cross-engine compatibility.
 The [DuckLake spec](ducklake-web/docs/stable/specification/) is included as a submodule.
 All documentation and feature tables in this module are current against that version of the spec.
 
-## Build
-
-Requires Java 25. Install via [SDKMan](https://sdkman.io/install/):
-
-```shell
-cd jvm
-sdk env install
-sdk env
-```
-
 > **Note:** This connector reads and writes **parquet data files only**. The experimental
 > DuckDB/vortex/lance data-file formats and the DuckDB-engine predicate-pushdown path were
 > removed and now live in the standalone **[duckbridge](https://github.com/brikk/duckbridge)**
-> Trino → DuckDB connector. The `ducklake-catalog` module's DuckDB/Quack usage is the
-> metadata/catalog plane and is unaffected.
-
-### Build the plugin
-
-```shell
-./gradlew :trino-ducklake:pluginAssemble
-```
-
-The assembled plugin is at `trino-ducklake/build/trino-plugin/trino-ducklake-<version>/`.
-
-### Local dev stack (Docker Compose)
-
-For interactive hacking against a real Trino + Postgres + MinIO + DuckLake
-stack with optional TPC-H seed data, see [compose/README.md](compose/README.md).
-
-### Running Tests
-
-Tests require Docker or Podman (PostgreSQL — and the Quack DuckDB sidecar when
-that backend is selected — run via Testcontainers). The default test backend is
-PostgreSQL; flip backends with the `ducklake.test.catalog-backend` system
-property:
-
-```shell
-./gradlew :trino-ducklake:test                                                # PostgreSQL (default)
-./gradlew :trino-ducklake:test -Dducklake.test.catalog-backend=DUCKDB_LOCAL   # local DuckDB .db file
-./gradlew :trino-ducklake:test -Dducklake.test.catalog-backend=DUCKDB_QUACK   # remote DuckDB over Quack (experimental; see TODO doc)
-```
+> Trino → DuckDB connector. The `ducklake-catalog` metadata/catalog plane is unaffected.
 
 ## Install
 
-Copy the assembled plugin directory into your Trino installation's plugin directory:
+### Download
+
+Grab the latest plugin archive from the
+[GitHub Releases](https://github.com/brikk/trino-ducklake/releases) page — each release ships
+`trino-ducklake-<version>.zip` and `trino-ducklake-<version>.tar.gz` (with `.sha256` sidecars).
+Both expand to a single `trino-ducklake-<version>/` directory of JARs.
 
 ```bash
-cp -r trino-ducklake/build/trino-plugin/trino-ducklake-<version> /usr/lib/trino/plugin/ducklake
+# verify + unpack (example, zip)
+sha256sum -c trino-ducklake-<version>.zip.sha256
+unzip trino-ducklake-<version>.zip
+```
+
+(Or build it yourself — see [Building from source](#building-from-source) at the bottom.)
+
+### Install into Trino
+
+Copy the unpacked plugin directory into your Trino installation's plugin directory, renaming it
+to `ducklake`:
+
+```bash
+cp -r trino-ducklake-<version> /usr/lib/trino/plugin/ducklake
 ```
 
 The plugin directory should contain all JARs flat (not nested in a subdirectory):
 
 ```
 /usr/lib/trino/plugin/ducklake/
-  io.trino_trino-ducklake-<version>.jar
+  trino-ducklake-<version>.jar
   ...other jars...
 ```
+
+### Configure a catalog
 
 Create a catalog properties file at `etc/catalog/ducklake.properties`. Pick the
 backend that matches your deployment shape.
@@ -167,6 +150,32 @@ s3.region=<region>
 ```
 
 Restart Trino for the new plugin and catalog to take effect.
+
+## Configuration
+
+Catalog properties (set in `etc/catalog/<name>.properties`):
+
+| Property | Required | Default | Description |
+|----------|:--------:|---------|-------------|
+| `ducklake.catalog.database-url` | Yes | — | JDBC URL for the catalog metadata DB; the backend dialect is inferred from the scheme. PostgreSQL: `jdbc:postgresql://host:port/db`. MySQL 8+: `jdbc:mysql://host:3306/db`. Local DuckDB: `jdbc:duckdb:/abs/path/to/lake.db` |
+| `ducklake.catalog.database-user` | Conditional | — | Catalog database username. Required for PostgreSQL and MySQL; omit for local DuckDB |
+| `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL and MySQL; omit for local DuckDB |
+| `ducklake.data-path` | Yes | — | Base path for data files |
+| `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
+| `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
+| `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
+| `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
+| `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
+
+### Session Properties
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `read_snapshot_id` | — | Pin reads in this session to a snapshot ID |
+| `read_snapshot_timestamp` | — | Pin reads in this session to an ISO-8601 instant |
+| `data_file_format` | session-inherited | Only `'parquet'` is supported. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). |
+
+Snapshot resolution precedence: query clause > session property > catalog config > current snapshot.
 
 ## Type System
 
@@ -544,8 +553,9 @@ The connector is tested for bidirectional compatibility with DuckDB:
 Beyond the hand-written cross-engine suites, the connector is verified against
 **DuckLake's own upstream test corpus** — the 466 sqllogictest files (7,600+ test
 cases) that the reference C++ implementation ships in `duckdb/ducklake` `test/sql/`,
-pinned as a git submodule in the sibling [`ducklake-corpus-replay`](../ducklake-corpus-replay/)
-module. Each corpus file is executed **verbatim** through an embedded DuckDB
+vendored as the `ducklake` git submodule and driven by the published
+[`dev.brikk.ducklake:ducklake-test-corpus-replay`](https://github.com/brikk/ducklake-catalog)
+replay harness. Each corpus file is executed **verbatim** through an embedded DuckDB
 oracle (no dialect translation), building real catalog state on an isolated
 PostgreSQL metadata database; every lake read the corpus performs is then
 re-executed through a live Trino query runner against the *same* catalog and
@@ -557,33 +567,9 @@ hardest to catch by hand (on first contact the harness found two real bugs that
 release, so conformance coverage compounds for free:
 
 ```shell
-./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay"                            # starter set
-./gradlew :trino-ducklake:test --tests "*TestTrinoCorpusReplay" -Dducklake.corpus.dirs=all # full corpus
+./gradlew test --tests "*TestTrinoCorpusReplay"                            # starter set
+./gradlew test --tests "*TestTrinoCorpusReplay" -Dducklake.corpus.dirs=all # full corpus
 ```
-
-## Configuration
-
-| Property | Required | Default | Description |
-|----------|:--------:|---------|-------------|
-| `ducklake.catalog.database-url` | Yes | — | JDBC URL for the catalog metadata DB; the backend dialect is inferred from the scheme. PostgreSQL: `jdbc:postgresql://host:port/db`. MySQL 8+: `jdbc:mysql://host:3306/db`. Local DuckDB: `jdbc:duckdb:/abs/path/to/lake.db` |
-| `ducklake.catalog.database-user` | Conditional | — | Catalog database username. Required for PostgreSQL and MySQL; omit for local DuckDB |
-| `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL and MySQL; omit for local DuckDB |
-| `ducklake.data-path` | Yes | — | Base path for data files |
-| `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
-| `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
-| `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
-| `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
-| `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
-
-### Session Properties
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `read_snapshot_id` | — | Pin reads in this session to a snapshot ID |
-| `read_snapshot_timestamp` | — | Pin reads in this session to an ISO-8601 instant |
-| `data_file_format` | session-inherited | Only `'parquet'` is supported. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). |
-
-Snapshot resolution precedence: query clause > session property > catalog config > current snapshot.
 
 ## Not Yet Implemented
 
@@ -664,6 +650,48 @@ research item.
   read/write path, function/expression pushdown, and the lance search table functions were
   removed and moved to the standalone **[duckbridge](https://github.com/brikk/duckbridge)**
   Trino → DuckDB connector (see [Non-Parquet Data Files](#non-parquet-data-files-removed--moved-to-duckbridge)).
+
+## Building from source
+
+Requires **JDK 25**. The repo pins it via [mise](https://mise.jdx.dev) (`mise.toml`) — run
+`mise install` — or point `JAVA_HOME` at any JDK 25. The shared catalog layer
+(`dev.brikk.ducklake:ducklake-catalog`) resolves from Maven Central; clone with submodules
+(`git clone --recurse-submodules`, or `git submodule update --init`) so the corpus fixture and
+`ducklake-web` spec are present.
+
+### Build the plugin distribution
+
+```shell
+./gradlew pluginDist
+```
+
+Produces `build/distributions/trino-ducklake-<version>.{zip,tar.gz}` (+ `.sha256`), each
+expanding to a `trino-ducklake-<version>/` directory of jars — the same artifacts attached to a
+GitHub Release. For just the exploded plugin dir (no archive), use `./gradlew pluginAssemble`
+(output under `build/trino-plugin/trino-ducklake-<version>/`).
+
+### Local dev stack (Docker Compose)
+
+For interactive hacking against a real Trino + Postgres + MinIO + DuckLake stack with optional
+TPC-H seed data, see [compose/README.md](compose/README.md).
+
+### Running tests
+
+Tests require Docker or Podman (PostgreSQL — and the Quack DuckDB sidecar when that backend is
+selected — run via Testcontainers). The default test backend is PostgreSQL; flip backends with
+the `ducklake.test.catalog-backend` system property:
+
+```shell
+./gradlew test                                                # PostgreSQL (default)
+./gradlew test -Dducklake.test.catalog-backend=DUCKDB_LOCAL   # local DuckDB .db file
+./gradlew test -Dducklake.test.catalog-backend=DUCKDB_QUACK   # remote DuckDB over Quack (experimental)
+```
+
+### Releasing
+
+Push a `v<version>` tag (e.g. `v0.1.0`); the [`release.yml`](.github/workflows/release.yml)
+workflow builds `pluginDist` and attaches the archives + checksums to the GitHub Release for
+that tag.
 
 ## Additional Documentation
 
