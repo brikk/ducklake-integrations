@@ -135,9 +135,9 @@ tasks.withType<JavaCompile> {
 
 tasks.test {
     useJUnitPlatform {
-        // Optional JUnit tag exclusion, e.g. `-PexcludeTags=quack-container,ci-unstable`.
-        // CI uses this to skip heavy/environment-specific integration tests on the PR gate
-        // (see .github/workflows/ci.yml) while keeping them runnable locally. Comma-separated.
+        // Optional JUnit tag exclusion, e.g. `-PexcludeTags=some-tag,another-tag` (comma-separated).
+        // A generic escape hatch for skipping heavy/environment-specific integration tests on the
+        // PR gate while keeping them runnable locally. No tags are excluded by default or in CI.
         (project.findProperty("excludeTags") as String?)
             ?.split(",")
             ?.map { it.trim() }

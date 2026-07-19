@@ -79,11 +79,7 @@ jobs:
         # (INSTALL ducklake/postgres). On a fully air-gapped runner these self-skip via
         # JUnit assumeTrue; ubuntu-latest has outbound network, so they execute. No secrets
         # or external services are required.
-        #
-        # -PexcludeTags=ci-unstable skips one orphan-dataset-dir cleanup test that passes
-        # locally but not on the CI filesystem (cause not yet reproduced; tracked in
-        # dev-docs/TODO-WRITE-MODE.md). Everything else runs.
-        run: ./gradlew test -PexcludeTags=ci-unstable --stacktrace
+        run: ./gradlew test --stacktrace
 
       - name: Upload test & detekt reports
         # Only on failure — the reports are the useful artifact when something breaks.

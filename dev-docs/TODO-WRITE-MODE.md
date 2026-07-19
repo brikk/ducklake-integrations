@@ -31,27 +31,26 @@ Leaf File Column Stats, and § Per-Table Storage Path below.)
 
 ## CI Follow-ups (GitHub Actions)
 
-The `.github/workflows/ci.yml` PR gate builds the `trino_parity` extension (cached by submodule
-SHA) and runs detekt + tests for all buildable modules; `corpus-nightly.yml` runs the full corpus.
-Two tests are currently EXCLUDED from the PR gate via `-PexcludeTags` (JUnit tags) with follow-ups:
+The `.github/workflows/ci.yml` PR gate runs detekt + tests; `corpus-nightly.yml` runs the full
+corpus. No tests are tag-excluded on the PR gate today. History of the two former exclusions:
 
-- [ ] **`quack-container` — glibc-portable parity extension for the Quack sidecar.** The
-  `build-parity-extension` job builds the extension with host `make` on `ubuntu-latest` (glibc
-  2.39). That binary loads fine in-process but NOT inside the older Quack container
-  (`GLIBC_2.38 not found`), so `TestDucklakeLanceS3QuackRead` + `TestDucklakeQuackS3InitRace` are
-  tag-excluded on PRs. Fix: build a glibc-portable binary via the extension's Docker cross-target
-  (`make linux-amd64`, or the `duckdb/extension-ci-tools` manylinux path) — a portable (old-glibc)
-  binary is forward-compatible, so ONE binary would serve both the in-process executor AND the
-  Quack container. Wire it into a dedicated job (Quack is the experimental backend, so it need not
-  gate every PR — a nightly/on-demand job is fine). Then drop `quack-container` from the exclude
-  list.
-- [ ] **`ci-unstable` — `TestDucklakeRemoveOrphanFiles.removesEmptiedOrphanDatasetDirectory`.**
-  Passes locally; on the CI runner the emptied orphan `.lance` dataset DIRECTORY survives
-  `remove_orphan_files` (procedure reports success, `Files.exists(dataset)` stays true). Storage-only
-  path (`listFiles`/`deleteDirectory` in `DucklakeRemoveOrphanFilesProcedure`), no Quack/glibc
-  involvement — cause not yet reproduced. Method-level tag so the rest of the class still gates CI.
-  Investigate (add CI-side logging or reproduce in an ubuntu-24.04 container): likely an empty-dir
-  discovery/removal difference on the runner filesystem, or a real edge in the emptied-dir sweep.
+- [x] **`quack-container` — OBSOLETE (resolved by the parity move-out, 2026-07).** This item
+  covered a glibc-portable build of the `trino_parity` extension so one binary served both the
+  in-process executor and the older Quack container (`GLIBC_2.38 not found`). The `trino_parity`
+  extension and the duckdb/vortex/lance data-file formats were **moved out of this repo** to
+  `github.com/brikk/duckbridge` (see `ci.yml` header + `PLAN-duckdb-parity-moveout.md`); the tests
+  it named (`TestDucklakeLanceS3QuackRead`, `TestDucklakeQuackS3InitRace`) no longer exist here.
+  Nothing to build in this repo — the portable-extension work now belongs in `brikk/duckbridge`.
+- [x] **`ci-unstable` — `TestDucklakeRemoveOrphanFiles.removesEmptiedOrphanDatasetDirectory`
+  (re-enabled 2026-07-19).** Was tag-excluded after the emptied orphan `.lance` dataset directory
+  was reported as surviving `remove_orphan_files` on the CI runner (pre repo-restructure).
+  Root-caused as not reproducible: on any POSIX local FS Trino 483's `HdfsFileSystem.deleteDirectory`
+  is a true recursive rmdir and `listFiles` is recursive/files-only, so once the member files are
+  deleted the empty `data/` + `_versions/` subdirs satisfy the emptiness guard and the whole tree is
+  removed (`DucklakeRemoveOrphanFilesProcedure.removeEmptiedDatasetDirectories`). Verified green
+  single-class on tmpfs AND ext4, and in the full concurrent suite with no exclusion. The tag +
+  the `-PexcludeTags=ci-unstable` in `ci.yml` are removed; the test now dumps any surviving tree in
+  its assertion message so a future CI failure is actionable rather than a hand-wave.
 
 ## DuckDB-as-Catalog Backend (Local + Quack)
 

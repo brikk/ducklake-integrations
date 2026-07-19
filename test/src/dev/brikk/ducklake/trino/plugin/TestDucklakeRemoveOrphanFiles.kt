@@ -20,7 +20,6 @@ import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.parallel.Execution
@@ -232,11 +231,13 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }.hasMessageContaining("table_name requires schema_name")
     }
 
-    // ci-unstable: passes locally but the emptied orphan .lance dataset DIRECTORY is not removed on
-    // the CI runner's filesystem (remove_orphan_files reports success, dir survives) — cause not yet
-    // reproduced/understood. Method-level tag so the rest of this class still gates CI. Excluded via
-    // -PexcludeTags in .github/workflows/ci.yml; investigation tracked in dev-docs/TODO-WRITE-MODE.md.
-    @Tag("ci-unstable")
+    // Previously @Tag("ci-unstable"): an emptied orphan .lance dataset DIRECTORY was reported as
+    // surviving remove_orphan_files on the CI runner (pre repo-restructure). Root-caused as
+    // not reproducible: on any POSIX local FS Trino's HdfsFileSystem.deleteDirectory is a recursive
+    // rmdir and listFiles is recursive/files-only, so once the member files are deleted the empty
+    // data/ + _versions/ subdirs make the emptiness guard true and the whole tree is removed.
+    // Verified green single-class on tmpfs AND ext4, and in the full concurrent suite. Re-enabled
+    // 2026-07-19; the assertion below dumps any surviving tree so a future CI failure is actionable.
     @Test
     fun removesEmptiedOrphanDatasetDirectory() {
         val table = "test_schema.orphan_dataset_dir"
@@ -260,7 +261,9 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
             computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
                     + "table_name => 'orphan_dataset_dir', retention_threshold => '7d', dry_run => false)")
 
-            assertThat(Files.exists(dataset)).`as`("emptied orphan dataset directory removed").isFalse()
+            assertThat(Files.exists(dataset))
+                    .`as`("emptied orphan dataset directory removed; surviving tree: %s", survivingTree(dataset))
+                    .isFalse()
             assertThat(computeActual("SELECT id FROM $table").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1)
         }
@@ -319,6 +322,16 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
         finally {
             tryDrop(table)
+        }
+    }
+
+    /** On assertion failure, a diagnostic listing of whatever still lives under [dir] (empty if gone). */
+    private fun survivingTree(dir: Path): String {
+        if (!Files.exists(dir)) {
+            return "<removed>"
+        }
+        Files.walk(dir).use { w ->
+            return w.map { dir.parent.relativize(it).toString() }.collect(Collectors.joining(", "))
         }
     }
 
