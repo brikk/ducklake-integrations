@@ -38,7 +38,15 @@ object DuckBridgeQueryRunner {
         return "jdbc:duckdb:$path"
     }
 
-    fun create(connectionUrl: String): QueryRunner {
+    fun create(connectionUrl: String): QueryRunner = create(connectionUrl, emptyMap())
+
+    /**
+     * @param connectionUrl the base-jdbc `connection-url` (`jdbc:duckdb:...` embedded or
+     *        `jdbc:quack://host:port` remote).
+     * @param extraProperties additional catalog properties (e.g. `duckbridge.quack.token`,
+     *        `duckbridge.parity-extension-path`).
+     */
+    fun create(connectionUrl: String, extraProperties: Map<String, String>): QueryRunner {
         val session =
             testSessionBuilder()
                 .setCatalog(CATALOG)
@@ -50,7 +58,10 @@ object DuckBridgeQueryRunner {
             queryRunner.createCatalog(
                 CATALOG,
                 "duckbridge",
-                mapOf("connection-url" to connectionUrl),
+                buildMap {
+                    put("connection-url", connectionUrl)
+                    putAll(extraProperties)
+                },
             )
             return queryRunner
         } catch (e: Throwable) {

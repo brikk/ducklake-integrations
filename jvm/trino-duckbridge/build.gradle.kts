@@ -46,6 +46,18 @@ dependencies {
     implementation("io.trino:trino-plugin-toolkit")
     implementation("jakarta.validation:jakarta.validation-api")
     implementation(libs.duckdb.jdbc)
+    // Quack remote transport (T3): gizmo's pure-JVM JDBC driver for DuckDB's Quack RPC protocol.
+    // No runtime deps of its own (uses JDK 17 HttpClient). Selected by connection-url prefix
+    // (jdbc:quack://...) alongside the embedded DuckDB driver.
+    implementation(libs.quack.jdbc)
+    // Arrow — the T2 (execution-engine) data plane decodes DuckDB's arrowExportStream batches to
+    // Trino Pages via DuckBridgeArrowToPageConverter. Also feeds P5's lance PTFs later. Copied from
+    // the trino-ducklake dependency block.
+    implementation(platform(libs.arrow.bom))
+    implementation(libs.arrow.vector)
+    implementation(libs.arrow.memory.core)
+    implementation(libs.arrow.data)
+    runtimeOnly(libs.arrow.memory.netty)
 
     // SPI dependencies — provided by Trino at runtime (compileOnly = Maven provided)
     compileOnly("com.fasterxml.jackson.core:jackson-annotations")
@@ -72,6 +84,9 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter-api")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Testcontainers-hosted Quack server for the T3 (quack-jdbc) integration tests.
+    testImplementation(libs.testcontainers.core)
 
     // compileOnly deps also needed at test time
     testCompileOnly("com.fasterxml.jackson.core:jackson-annotations")

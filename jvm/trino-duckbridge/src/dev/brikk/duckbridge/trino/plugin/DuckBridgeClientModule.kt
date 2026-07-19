@@ -18,6 +18,7 @@ import com.google.inject.Provides
 import com.google.inject.Scopes
 import com.google.inject.Singleton
 import com.google.inject.multibindings.Multibinder.newSetBinder
+import com.google.inject.multibindings.OptionalBinder.newOptionalBinder
 import io.airlift.configuration.AbstractConfigurationAwareModule
 import io.airlift.configuration.ConfigBinder.configBinder
 import io.opentelemetry.api.OpenTelemetry
@@ -28,18 +29,22 @@ import io.trino.plugin.jdbc.DriverConnectionFactory
 import io.trino.plugin.jdbc.ForBaseJdbc
 import io.trino.plugin.jdbc.JdbcClient
 import io.trino.plugin.jdbc.JdbcStatisticsConfig
+import io.trino.plugin.jdbc.JdbcPageSourceProvider
 import io.trino.plugin.jdbc.credential.CredentialProvider
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder
 import io.trino.plugin.jdbc.expression.ParameterizedExpression
 import io.trino.plugin.jdbc.ptf.Query
 import io.trino.spi.function.table.ConnectorTableFunction
+import com.gizmodata.quack.jdbc.sql.QuackDriver
 import org.duckdb.DuckDBDriver
+import java.sql.Driver
 import java.util.Properties
 
 /**
- * Guice wiring for the DuckBridge connector: binds the [DuckBridgeClient], the
- * [DriverConnectionFactory] over [DuckDBDriver], the config, and the `query` passthrough
- * table function.
+ * Guice wiring for the DuckBridge connector: binds the [DuckBridgeClient], the transport
+ * [DuckBridgeTransport] (derived from the connection-url), a [DriverConnectionFactory] over the
+ * transport's JDBC driver ([DuckDBDriver] embedded / [QuackDriver] remote), the config, and the
+ * `query` passthrough table function.
  */
 class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
     override fun setup(binder: Binder) {
@@ -50,6 +55,16 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
         configBinder(binder).bindConfig(JdbcStatisticsConfig::class.java)
         configBinder(binder).bindConfig(DuckBridgeConfig::class.java)
         binder.bind(DuckBridgeParity::class.java).`in`(Scopes.SINGLETON)
+        binder.bind(DuckBridgeExecutorFactory::class.java).`in`(Scopes.SINGLETON)
+        // Override base-jdbc's default ConnectorPageSourceProvider with our gating one. It delegates
+        // to the default JdbcPageSourceProvider for the JDBC engine (production) and only diverts to
+        // the T2 Arrow page source for the DUCKDB_LOCAL engine. JdbcPageSourceProvider's own deps
+        // (JdbcClient, executor, retry policy) are bound by the base JdbcModule.
+        binder.bind(JdbcPageSourceProvider::class.java).`in`(Scopes.SINGLETON)
+        newOptionalBinder(binder, io.trino.spi.connector.ConnectorPageSourceProvider::class.java)
+            .setBinding()
+            .to(DuckBridgePageSourceProvider::class.java)
+            .`in`(Scopes.SINGLETON)
         newSetBinder(binder, io.trino.plugin.base.session.SessionPropertiesProvider::class.java)
             .addBinding()
             .to(DuckBridgeSessionProperties::class.java)
@@ -82,26 +97,47 @@ class DuckBridgeClientModule : AbstractConfigurationAwareModule() {
         return builder.build()
     }
 
+    /** Transport is fully determined by the connection-url prefix (see [DuckBridgeTransport]). */
+    @Provides
+    @Singleton
+    fun transport(config: BaseJdbcConfig): DuckBridgeTransport =
+        DuckBridgeTransport.fromConnectionUrl(config.connectionUrl)
+
     @Provides
     @Singleton
     @ForBaseJdbc
     fun connectionFactory(
         config: BaseJdbcConfig,
         duckBridgeConfig: DuckBridgeConfig,
+        transport: DuckBridgeTransport,
         credentialProvider: CredentialProvider,
         openTelemetry: OpenTelemetry,
     ): ConnectionFactory {
+        val driver: Driver
         val connectionProperties = Properties()
-        if (duckBridgeConfig.isAllowUnsignedExtensions) {
-            // DuckDB JDBC connection property. Required later so the in-process DuckDB can
-            // LOAD the locally-built (unsigned) trino_parity.duckdb_extension.
-            connectionProperties.setProperty("allow_unsigned_extensions", "true")
+        when (transport) {
+            DuckBridgeTransport.EMBEDDED -> {
+                driver = DuckDBDriver()
+                if (duckBridgeConfig.isAllowUnsignedExtensions) {
+                    // DuckDB JDBC connection property. Required so the in-process DuckDB can LOAD
+                    // the locally-built (unsigned) trino_parity.duckdb_extension.
+                    connectionProperties.setProperty("allow_unsigned_extensions", "true")
+                }
+            }
+            DuckBridgeTransport.QUACK -> {
+                driver = QuackDriver()
+                // Host/port come from the URL; credentials + tls come from config, kept out of the
+                // copy-pasteable URL. Token resolution order (token → tokenEnv → tokenFile) is the
+                // driver's; we only forward whichever the operator set.
+                duckBridgeConfig.quackToken?.let { connectionProperties.setProperty("token", it) }
+                duckBridgeConfig.quackTokenEnv?.let { connectionProperties.setProperty("tokenEnv", it) }
+                duckBridgeConfig.quackTokenFile?.let { connectionProperties.setProperty("tokenFile", it) }
+                if (duckBridgeConfig.isQuackTls) {
+                    connectionProperties.setProperty("tls", "true")
+                }
+            }
         }
-        return DriverConnectionFactory.builder(
-            DuckDBDriver(),
-            config.connectionUrl,
-            credentialProvider,
-        )
+        return DriverConnectionFactory.builder(driver, config.connectionUrl, credentialProvider)
             .setConnectionProperties(connectionProperties)
             .setOpenTelemetry(openTelemetry)
             .build()

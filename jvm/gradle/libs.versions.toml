@@ -2,6 +2,7 @@
 kotlin = "2.3.10"
 adbc = "0.21.0"
 duckdb = "1.5.4.0"
+quack-jdbc = "0.2.0-alpha.4"
 arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
 terpal-sql-lib = "2.0.0.PL-4.4.0"
@@ -47,6 +48,7 @@ adbc-jni = { module = "org.apache.arrow.adbc:adbc-driver-jni", version.ref = "ad
 
 hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
 duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
+quack-jdbc = { module = "com.gizmodata:quack-jdbc", version.ref = "quack-jdbc" }
 lance-core = { module = "org.lance:lance-core", version.ref = "lance-core" }
 trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
 trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }

@@ -30,35 +30,39 @@ import java.sql.SQLException
  * install instructions rather than silently degrading to no function pushdown (which would look like
  * a mysterious perf cliff, not a misconfiguration).
  *
- * P3 note: this LOADs into the in-process (T1 embedded) DuckDB the JDBC driver opened. A remote
- * DuckDB (Quack) needs the LOAD forwarded server-side against a server-resident binary; this class's
- * "resolve a local path, LOAD it over the JDBC connection" assumption must generalize to "the server
- * already has the extension, just LOAD by name/server-path" for P3.
+ * Transport-aware (P3):
+ *  - EMBEDDED (T1): resolve a worker-local binary (bundled extraction or the configured path) and
+ *    `LOAD '<local-path>'` over the in-process DuckDB connection.
+ *  - QUACK (T3): the worker cannot extract a binary for the *remote* server. If
+ *    `duckbridge.parity-extension-path` is set it is treated as a SERVER-SIDE path and LOADed over
+ *    the pass-through connection; otherwise we assume the server pre-loaded the extension and just
+ *    probe `trino_meta()`. Either way, failure throws with server-side install instructions.
  */
 class DuckBridgeParity
     @Inject
-    constructor(private val config: DuckBridgeConfig) {
+    constructor(
+        private val config: DuckBridgeConfig,
+        private val transport: DuckBridgeTransport,
+    ) {
         val isEnabled: Boolean get() = config.isParityEnabled
 
         /**
-         * Resolved extension path (explicit override or bundled extraction). Computed lazily and
-         * memoised; null only when parity is disabled OR no binary is available (the latter throws at
-         * [ensureInitialised] time so the failure surfaces per-query, not at wiring time).
+         * Resolved LOCAL extension path for the embedded transport (explicit override or bundled
+         * extraction). Computed lazily and memoised. Never consulted for the Quack transport — a
+         * worker-local binary can't be LOADed into a remote server.
          */
-        private val resolvedPath: String? by lazy { resolvePath() }
-
-        private fun resolvePath(): String? {
+        private val resolvedLocalPath: String? by lazy {
             if (!config.isParityEnabled) {
-                return null
+                null
+            } else {
+                config.parityExtensionPath ?: TrinoParityExtensionResolver.resolveBundledExtensionPath()
             }
-            config.parityExtensionPath?.let { return it }
-            return TrinoParityExtensionResolver.resolveBundledExtensionPath()
         }
 
         /**
-         * LOAD + probe the parity extension on [connection] the first time it is handed out. Cheap and
-         * idempotent to call per connection: DuckDB LOAD of an already-loaded extension is a no-op, and
-         * the `trino_meta()` probe is a tiny table scan. No-op when parity is disabled.
+         * LOAD (where applicable) + probe the parity extension on [connection] each time it is handed
+         * out. Idempotent: DuckDB LOAD of an already-loaded extension is a no-op and the `trino_meta()`
+         * probe is a tiny table scan. No-op when parity is disabled.
          *
          * @throws TrinoException if parity is enabled but the extension can't be loaded or probed.
          */
@@ -66,37 +70,78 @@ class DuckBridgeParity
             if (!config.isParityEnabled) {
                 return
             }
+            when (transport) {
+                DuckBridgeTransport.EMBEDDED -> initialiseEmbedded(connection)
+                DuckBridgeTransport.QUACK -> initialiseQuack(connection)
+            }
+        }
+
+        private fun initialiseEmbedded(connection: Connection) {
             val path =
-                resolvedPath
+                resolvedLocalPath
                     ?: throw parityUnavailable(
                         "the trino_parity DuckDB extension binary was not found for this platform " +
                             "(${TrinoParityExtensionResolver.detectPlatform() ?: "unknown platform"})",
+                        remote = false,
                     )
-            loadAndProbe(connection, path)?.let { throw it }
+            loadAndProbe(connection, path, remote = false)?.let { throw it }
+        }
+
+        private fun initialiseQuack(connection: Connection) {
+            // On a remote server we can only LOAD a path the SERVER can read. When configured, treat
+            // duckbridge.parity-extension-path as a server-side path; otherwise assume the server
+            // pre-loaded the extension and just probe.
+            val serverPath = config.parityExtensionPath
+            if (serverPath != null) {
+                loadAndProbe(connection, serverPath, remote = true)?.let { throw it }
+            } else {
+                probeOnly(connection)?.let { throw it }
+            }
         }
 
         /** LOAD + probe; returns a ready-to-throw [TrinoException] on any failure, or null on success. */
-        private fun loadAndProbe(connection: Connection, path: String): TrinoException? =
+        private fun loadAndProbe(connection: Connection, path: String, remote: Boolean): TrinoException? =
             try {
                 TrinoFunctionAliases.loadInProcess(connection, path)
-                val rows = TrinoFunctionAliases.probeMetaRowCount(connection)
-                if (rows > 0) {
-                    null
-                } else {
-                    parityUnavailable("trino_meta() returned no rows after LOAD '$path' — extension did not register")
-                }
+                probeAfterLoad(connection, path, remote)
             } catch (e: SQLException) {
-                parityUnavailable("failed to LOAD/probe trino_parity from '$path': ${e.message}", e)
+                parityUnavailable("failed to LOAD/probe trino_parity from '$path': ${e.message}", remote, e)
             }
 
-        private fun parityUnavailable(reason: String, cause: Throwable? = null): TrinoException {
+        /** Probe only — used for Quack when the server is expected to have pre-loaded the extension. */
+        private fun probeOnly(connection: Connection): TrinoException? =
+            try {
+                probeAfterLoad(connection, path = null, remote = true)
+            } catch (e: SQLException) {
+                parityUnavailable("trino_meta() is not resolvable on the Quack server: ${e.message}", remote = true, e)
+            }
+
+        @Throws(SQLException::class)
+        private fun probeAfterLoad(connection: Connection, path: String?, remote: Boolean): TrinoException? {
+            val rows = TrinoFunctionAliases.probeMetaRowCount(connection)
+            return if (rows > 0) {
+                null
+            } else {
+                val where = path?.let { "after LOAD '$it'" } ?: "on the Quack server"
+                parityUnavailable("trino_meta() returned no rows $where — extension did not register", remote)
+            }
+        }
+
+        private fun parityUnavailable(reason: String, remote: Boolean, cause: Throwable? = null): TrinoException {
             log.error(cause, "duckbridge: parity extension unavailable — %s", reason)
+            val fix =
+                if (remote) {
+                    "Install the trino_parity extension on the Quack/DuckDB server (start it with " +
+                        "`duckdb -unsigned` and `LOAD` the binary, or set duckbridge.parity-extension-path to a " +
+                        "server-side path)"
+                } else {
+                    "Build the extension (`(cd duckdb-trino-parity-extension && make)`) so it is bundled in the " +
+                        "plugin jar, or set duckbridge.parity-extension-path to a valid local binary"
+                }
             return TrinoException(
                 NOT_SUPPORTED,
                 "DuckBridge parity pushdown is enabled but unavailable: $reason. " +
-                    "Build the extension (`(cd duckdb-trino-parity-extension && make)`) so it is bundled in the " +
-                    "plugin jar, set duckbridge.parity-extension-path to a valid binary, or disable pushdown with " +
-                    "duckbridge.parity.enabled=false.",
+                    "$fix, or disable pushdown with duckbridge.parity.enabled=false.",
                 cause,
             )
         }
