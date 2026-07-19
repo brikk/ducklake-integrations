@@ -1,8 +1,13 @@
 # PLAN — DuckDB-format moveout: `trino-duckdb-parity` connector
 
-**Status: APPROVED — P0 resolved 2026-07-19.** All gates G1–G6 signed off on their
-written recommendations. §4.4 audit complete (verdicts below). Implementation in
-progress.
+**Status: APPROVED — P0 resolved 2026-07-19. P1/P2/P3/P5 SHIPPED and TRANSPLANTED.**
+The new connector was built in-tree as `jvm/trino-duckbridge` (naming evolved from the
+draft's `trino-duckdb-parity`: module `trino-duckbridge`, connector name `duckbridge`,
+package `dev.brikk.duckbridge.trino.plugin`) and then moved to its permanent home:
+**`/home/jayson/brokk/duckbridge` → github.com/brikk/duckbridge** (see that repo's
+`trino-duckbridge/dev-docs/` for P2/P3/P5 notes and the transplant plan). P4 (T4 codec
+evaluation) is deferred pending upstream gizmo FSST work. Remaining in THIS repo:
+**P6 (trino-ducklake strip-down, §4.2 + §7 guard) and P7 (docs)**.
 
 ### P0 resolution record
 
