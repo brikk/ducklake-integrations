@@ -100,25 +100,6 @@ class TestDucklakeAnalyze : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    @Test
-    fun analyzeNonParquetData() {
-        // All formats matter: ANALYZE must work over a non-parquet (duckdb) data file too.
-        val table = "test_schema.an_duckdb"
-        try {
-            computeActual("CREATE TABLE $table WITH (data_file_format = 'duckdb') AS " +
-                    "SELECT * FROM (VALUES (1, 'x'), (2, 'y')) AS t(id, name)")
-
-            setRecordCount("an_duckdb", 999L)
-            computeActual("ANALYZE $table")
-
-            assertThat(catalogRecordCount("an_duckdb")).isEqualTo(2L)
-            assertThat(showStatsRowCount(table)).isEqualTo(2.0)
-        }
-        finally {
-            tryDropTable(table)
-        }
-    }
-
     private fun showStatsRowCount(table: String): Double? {
         val summary = computeActual("SHOW STATS FOR $table").materializedRows
                 .firstOrNull { it.getField(COLUMN_NAME) == null }

@@ -14,10 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DUCKDB_WRITER_MODE
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.WRITER_MODE_APPENDER
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.WRITER_MODE_ARROW_STREAM
 import io.trino.Session
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -58,18 +54,6 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
     private fun parquetSession(): Session =
             Session.builder(session)
                     .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, DucklakeSessionProperties.FORMAT_PARQUET)
-                    .build()
-
-    private fun appenderSession(): Session =
-            Session.builder(session)
-                    .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
-                    .setCatalogSessionProperty("ducklake", DUCKDB_WRITER_MODE, WRITER_MODE_APPENDER)
-                    .build()
-
-    private fun arrowStreamSession(): Session =
-            Session.builder(session)
-                    .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
-                    .setCatalogSessionProperty("ducklake", DUCKDB_WRITER_MODE, WRITER_MODE_ARROW_STREAM)
                     .build()
 
     /** Compact (already-canonical) JSON so Trino's whitespace-stripping canonicalization is a no-op. */
@@ -136,18 +120,6 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
     fun trinoWritesJsonParquet() {
         // Parquet is the cross-engine format — assert DuckDB reads the JSON column back too.
         writeReadRoundTrip(parquetSession(), "json_parquet", "parquet", crossEngineDuckdbRead = true)
-    }
-
-    @Test
-    fun trinoWritesJsonDuckDbAppender() {
-        // Upstream DuckLake reads data files as parquet only, so duckdb-format files aren't
-        // externally readable by DuckDB (any type) — assert the Trino round-trip only.
-        writeReadRoundTrip(appenderSession(), "json_duckdb_appender", "duckdb", crossEngineDuckdbRead = false)
-    }
-
-    @Test
-    fun trinoWritesJsonDuckDbArrowStream() {
-        writeReadRoundTrip(arrowStreamSession(), "json_duckdb_arrow", "duckdb", crossEngineDuckdbRead = false)
     }
 
     @Test

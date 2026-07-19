@@ -104,42 +104,33 @@ class DucklakePageSourceProvider @Inject constructor(
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val parquetReaderOptions: ParquetReaderOptions,
         private val catalog: DucklakeCatalog,
-        private val duckDbReadCache: DucklakeMaterializedFileCache,
-        private val duckDbS3Config: DuckDbS3Config,
-        ducklakeConfig: DucklakeConfig,
-        private val executorFactory: DucklakeDuckDbExecutorFactory)
+        ducklakeConfig: DucklakeConfig)
         : ConnectorPageSourceProvider
 {
-    private val autoHttpfsThresholdBytes: Long = ducklakeConfig
-            .getDuckdbAutoHttpfsThreshold().toBytes()
-
     // Resolves relative catalog file paths (data/delete files) to full paths for the change feed,
     // which reads files the way the split manager does. Built from the same inputs the split
     // manager's injected resolver uses; the provider isn't handed one directly.
     private val pathResolver: DucklakePathResolver = DucklakePathResolver(catalog, ducklakeConfig)
 
     // Schema-evolution resolution cache: (tableId, file begin_snapshot) -> column_id ->
-    // physical name in the file. The DuckDB-engine read path (.db / vortex / lance) reads
-    // files by their physical column names, which are the names the columns had when the file
-    // was WRITTEN — so a column renamed or added after the file means the current name doesn't
-    // exist in the file and the read errors. We resolve the file's write-snapshot column names
-    // from the catalog so renames alias and added columns project NULL (DuckDbSelectSqlBuilder).
+    // physical name in the file. Used by the parquet reader's era-name fallback (renamed/added
+    // columns) and by the inlined-data nested-field / era-default resolution below.
     // Bounded + cleared wholesale on overflow; schema-evolution reads are rare so it stays tiny.
     private val fileColumnNamesCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, Map<Long, String>> =
             java.util.concurrent.ConcurrentHashMap()
 
-    // Full column tree (incl. nested rows, with parent_column) per (tableId, snapshot), for building
-    // nested struct reshape plans. Same bounded/cleared-on-overflow policy as fileColumnNamesCache.
+    // Full column tree (incl. nested rows, with parent_column) per (tableId, snapshot), used by the
+    // inlined-data nested-field mapping. Same bounded/cleared-on-overflow policy as fileColumnNamesCache.
     private val columnTreeCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, List<DucklakeColumn>> =
             java.util.concurrent.ConcurrentHashMap()
 
     private data class FileColumnNamesKey(val tableId: Long, val beginSnapshot: Long)
 
     /**
-     * Resolve `column_id -> physical name in the file` for a DuckDB-engine data split, by
-     * reading the table's column set as of the file's begin_snapshot. Empty when the table
-     * handle or begin_snapshot is unavailable (test splits) — the SQL builder then projects
-     * current names directly (the no-evolution fast path).
+     * Resolve `column_id -> physical name in the file` for a data split, by reading the table's
+     * column set as of the file's begin_snapshot. Empty when the table handle or begin_snapshot is
+     * unavailable (test splits) — the parquet reader then projects current names directly (the
+     * no-evolution fast path).
      */
     private fun resolveFileColumnNames(table: ConnectorTableHandle, split: DucklakeSplit): Map<Long, String> {
         if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L) {
@@ -155,61 +146,6 @@ class DucklakePageSourceProvider @Inject constructor(
                 .associate { it.columnId to it.columnName }
         fileColumnNamesCache[key] = resolved
         return resolved
-    }
-
-    /**
-     * Build per-file struct reshape plans for nested schema evolution: when a projected struct's
-     * shape in this file differs from the current schema (a subfield was added / dropped / renamed
-     * since the file was written), the SQL builder normalizes it with `struct_pack`. Empty unless a
-     * struct is projected AND its file shape actually drifted. See [NestedFieldReshapePlanner].
-     */
-    private fun resolveStructReshapePlans(
-            table: ConnectorTableHandle,
-            split: DucklakeSplit,
-            projectedColumns: List<DucklakeColumnHandle>): Map<Long, List<StructFieldPlan>> {
-        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L || split.beginSnapshot == table.snapshotId) {
-            return emptyMap()
-        }
-        // Only structs can drift; skip the catalog reads entirely when none are projected.
-        if (projectedColumns.none { it.columnType is RowType }) {
-            return emptyMap()
-        }
-        val currentColumns: List<DucklakeColumn> = columnTree(table.tableId, table.snapshotId)
-        val fileColumns: List<DucklakeColumn> = columnTree(table.tableId, split.beginSnapshot)
-        return NestedFieldReshapePlanner.buildPlans(projectedColumns, currentColumns, fileColumns)
-    }
-
-    /**
-     * Top-level scalar columns whose DuckLake type differs between the file's begin_snapshot and the
-     * current schema — i.e. widened by `ALTER … SET DATA TYPE` after the file was written. The
-     * DuckDB-engine SQL builder CASTs these to the current type (the physical file holds the old
-     * one). Empty unless a projected scalar column actually changed type. Nested/complex promotions
-     * are out of scope (the SET TYPE DDL rejects them).
-     */
-    private fun resolvePromotedColumnIds(
-            table: ConnectorTableHandle,
-            split: DucklakeSplit,
-            projectedColumns: List<DucklakeColumnHandle>): Set<Long> {
-        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L || split.beginSnapshot == table.snapshotId) {
-            return emptySet()
-        }
-        val projectedScalarIds: Set<Long> = projectedColumns
-                .filterNot { it.columnType is RowType || it.columnType is io.trino.spi.type.ArrayType || it.columnType is io.trino.spi.type.MapType }
-                .mapTo(mutableSetOf()) { it.columnId }
-        if (projectedScalarIds.isEmpty()) {
-            return emptySet()
-        }
-        val fileTypeById: Map<Long, String> = columnTree(table.tableId, split.beginSnapshot)
-                .filter { it.parentColumn == null }
-                .associate { it.columnId to it.columnType }
-        val currentTypeById: Map<Long, String> = columnTree(table.tableId, table.snapshotId)
-                .filter { it.parentColumn == null }
-                .associate { it.columnId to it.columnType }
-        return projectedScalarIds.filterTo(mutableSetOf()) { id ->
-            val fileType: String? = fileTypeById[id]
-            val currentType: String? = currentTypeById[id]
-            fileType != null && currentType != null && fileType != currentType
-        }
     }
 
     private fun columnTree(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
@@ -232,7 +168,7 @@ class DucklakePageSourceProvider @Inject constructor(
             columns: List<ColumnHandle>,
             dynamicFilter: DynamicFilter): ConnectorPageSource
     {
-        specialSplitPageSource(session, split, table, columns, dynamicFilter)?.let { return it }
+        specialSplitPageSource(session, split, table, columns)?.let { return it }
 
         val ducklakeSplit = split as DucklakeSplit
 
@@ -266,7 +202,7 @@ class DucklakePageSourceProvider @Inject constructor(
             // Get file system for the session
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
             val delegate: ConnectorPageSource = createDataFilePageSource(
-                    session, ducklakeSplit, table, sourceColumns, effectivePredicate, fileSystem)
+                    ducklakeSplit, table, sourceColumns, effectivePredicate, fileSystem)
             return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
         }
         catch (e: IOException) {
@@ -275,69 +211,33 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /**
-     * The per-format data-file read dispatch (parquet reader vs the DuckDB-engine file scan for
-     * duckdb/vortex/lance), returning the raw delegate WITHOUT the constant-virtual wrapper. Shared
-     * by [createPageSource] (which wraps it) and the change feed ([createChangeFeedPageSource]),
-     * which drives it per data file requesting the table columns + `$row_id`. Positional virtuals
-     * ($row_id / $file_row_number) requested in [sourceColumns] are still injected in-pipeline by
-     * the underlying readers; the split's own delete files (if any) are applied there too.
+     * The data-file read dispatch (parquet only), returning the raw delegate WITHOUT the
+     * constant-virtual wrapper. Shared by [createPageSource] (which wraps it) and the change feed
+     * ([createChangeFeedPageSource]), which drives it per data file requesting the table columns +
+     * `$row_id`. Positional virtuals ($row_id / $file_row_number) requested in [sourceColumns] are
+     * still injected in-pipeline by the reader; the split's own delete files (if any) are applied
+     * there too. Non-parquet data-file formats fail loud (§7 guard) — this connector reads only
+     * parquet; the duckdb/vortex/lance read paths were removed (see brikk/duckbridge).
      */
     @Throws(IOException::class)
     private fun createDataFilePageSource(
-            session: ConnectorSession,
             ducklakeSplit: DucklakeSplit,
             table: ConnectorTableHandle,
             sourceColumns: List<DucklakeColumnHandle>,
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
             fileSystem: TrinoFileSystem): ConnectorPageSource
     {
-        // Resolve the data file location. NOTE: do NOT open a TrinoInputFile here — only the
-        // parquet branch needs one. Lance data files are *directories* (the catalog path ends
-        // in a trailing slash for an existing dir), and fileSystem.newInputFile rejects a
-        // directory/trailing-slash location; the DuckDB-engine branch reads via the path string
-        // (`__lance_scan('<dir>')`), not a TrinoInputFile, so opening one is both unnecessary
-        // and fatal for lance.
-        val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
         val format = ducklakeSplit.fileFormat
-        if (DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
-            val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
-            return createParquetPageSource(
-                    inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
-            { resolveFileColumnNames(table, ducklakeSplit) }
+        if (!DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
+            throw TrinoException(NOT_SUPPORTED,
+                    "Data file '${ducklakeSplit.dataFilePath}' has format '$format', but this connector reads only " +
+                            "parquet data files. The duckdb/vortex/lance formats were removed (see brikk/duckbridge).")
         }
-        // The DuckDB engine handles both the .db ATTACH path and the file-scan formats
-        // (vortex + lance). createDuckDbPageSource picks the source shape per
-        // split.fileFormat via resolveDuckDbReadTarget.
-        if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(format, ignoreCase = true) ||
-                DucklakeSessionProperties.FORMAT_VORTEX.equals(format, ignoreCase = true) ||
-                DucklakeSessionProperties.FORMAT_LANCE.equals(format, ignoreCase = true)) {
-            val pushedExpressions: List<String> = if (table is DucklakeTableHandle)
-                table.pushedExpressions
-            else
-                emptyList()
-            // Resolve physical (file-snapshot) column names so the DuckDB-engine read
-            // survives schema evolution (renamed/added columns) — see DuckDbSelectSqlBuilder.
-            val fileColumnNamesById: Map<Long, String> = resolveFileColumnNames(table, ducklakeSplit)
-            // ...and per-file struct reshape plans for NESTED schema evolution (added/dropped/
-            // renamed struct subfields), which the SQL builder normalizes with struct_pack.
-            val structReshapePlans: Map<Long, List<StructFieldPlan>> =
-                    resolveStructReshapePlans(table, ducklakeSplit, sourceColumns)
-            // ...and columns whose scalar type widened since the file was written (SET DATA TYPE):
-            // the file holds the old physical type, so the SQL builder CASTs them to the current one.
-            val promotedColumnIds: Set<Long> = resolvePromotedColumnIds(table, ducklakeSplit, sourceColumns)
-            return createDuckDbPageSource(
-                    dataFileLocation,
-                    sourceColumns,
-                    ducklakeSplit,
-                    effectivePredicate,
-                    pushedExpressions,
-                    fileSystem,
-                    session,
-                    fileColumnNamesById,
-                    structReshapePlans,
-                    promotedColumnIds)
-        }
-        throw TrinoException(NOT_SUPPORTED, "Unsupported file format: $format")
+        val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
+        val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
+        return createParquetPageSource(
+                inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
+        { resolveFileColumnNames(table, ducklakeSplit) }
     }
 
     /**
@@ -1077,7 +977,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.FILE_ROW_NUMBER.columnHandle()
         return try {
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
-            createDataFilePageSource(session, split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
+            createDataFilePageSource(split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
         }
         catch (e: IOException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to open change-feed data file: $resolvedPath", e)
@@ -1448,100 +1348,9 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
-    private fun createDuckDbPageSource(
-            dataFileLocation: Location,
-            columns: List<DucklakeColumnHandle>,
-            split: DucklakeSplit,
-            effectivePredicate: TupleDomain<DucklakeColumnHandle>,
-            pushedExpressions: List<String>,
-            fileSystem: TrinoFileSystem,
-            session: ConnectorSession,
-            fileColumnNamesById: Map<Long, String>,
-            structReshapePlans: Map<Long, List<StructFieldPlan>>,
-            promotedColumnIds: Set<Long> = emptySet()): ConnectorPageSource
-    {
-        // Separate positional columns (MERGE $row_id + queryable $row_id / $file_row_number)
-        // from file-resident columns. The .db file does not store row IDs / file positions;
-        // they are injected after the data page source returns its rows, exactly as on the
-        // parquet path.
-        val positionalInjections: MutableList<PositionalInjection> = mutableListOf()
-        val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
-        for (i in columns.indices) {
-            val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
-            if (addRowIdStart != null) {
-                positionalInjections.add(PositionalInjection(i, addRowIdStart))
-            }
-            else {
-                fileColumns.add(columns[i])
-            }
-        }
-
-        // See createParquetPageSource: disable predicate/expression pushdown when any positional
-        // column is requested so cumulative-offset positions stay aligned with the scan output.
-        // The MERGE $row_id (-100) counts: DuckDB applies pushed predicates per-ROW, so a pushed
-        // merge scan returns only matching rows, the cumulative offsets compact, and the delete
-        // file tombstones the wrong rows (the wrong-survivors failure that drove this guard).
-        val requiresContiguousPositions: Boolean =
-                splitHasActiveDeletes(split) || columns.any { positionalColumnKind(it) != null }
-
-        // Empty projection (e.g. COUNT(*)) is handled inside DuckDbFilePageSource by
-        // issuing a synthetic SELECT 1 and emitting empty-block pages with the right
-        // row count.
-
-        val attachTarget: DuckDbAttachTarget = resolveDuckDbReadTarget(
-                session, dataFileLocation, fileSystem, split)
-
-        val fileColumnTypes: List<Type> = fileColumns.stream()
-                .map { it.columnType }
-                .collect(toImmutableList())
-
-        // Restrict the pushed-down predicate to columns we actually project (filter
-        // pipeline still applies any not-pushed-down or non-projected predicates above).
-        // B3b: when the split carries active position deletes, drop the pushed predicate so
-        // DuckDB returns rows contiguously from row 0. PositionalVirtualInjectingPageSource's cumulative
-        // nextRowOffset assumes contiguous output; predicate-pushed DuckDB scans return only
-        // matching rows, breaking the position math. Trino still filters above the page source.
-        // Hash-set membership so the per-domain filter is O(predicateColumns) rather than
-        // O(predicateColumns * fileColumns) — fileColumns is an ArrayList, so .contains is a
-        // linear scan with record-based equals per probe.
-        val fileColumnSet: Set<DucklakeColumnHandle> = fileColumns.toHashSet()
-        val filePredicate: TupleDomain<DucklakeColumnHandle> = if (requiresContiguousPositions)
-                TupleDomain.all()
-            else
-                effectivePredicate.filter { col, _ -> fileColumnSet.contains(col) }
-
-        // Carry Trino's session zone through to the executor so it can run
-        // `SET TimeZone` on attach. Required for Tier C correctness (TIMESTAMP
-        // WITH TIME ZONE pushdown) and harmlessly deterministic for Tier A/B
-        // (DuckDB's default zone is the JVM system TZ — Costa Rica on a dev box,
-        // UTC in CI — so an explicit SET is the only way to make duckdb-format
-        // reads reproducible across deployment environments). See
-        // dev-docs/archive/REPORT-datetime-tz-handling.md.
-        val duckDbTimeZone: String? = TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id)
-
-        // B3b: drop pushed complex expressions when the split has active deletes — same
-        // reasoning as the TupleDomain drop above. DuckDB-side filtering would return only
-        // matching rows, breaking PositionalVirtualInjectingPageSource's cumulative-offset math.
-        val effectivePushedExpressions: List<String> = if (requiresContiguousPositions) emptyList() else pushedExpressions
-        var pageSource: ConnectorPageSource = DuckDbFilePageSource(
-                executorFactory.create(), attachTarget, fileColumns, fileColumnTypes, filePredicate, effectivePushedExpressions,
-                duckDbTimeZone, fileColumnNamesById, structReshapePlans, promotedColumnIds)
-
-        if (positionalInjections.isNotEmpty()) {
-            pageSource = PositionalVirtualInjectingPageSource(
-                    pageSource, fileColumns.size + positionalInjections.size, positionalInjections, split.rowIdStart)
-        }
-
-        pageSource = applyDeleteFile(fileSystem, split, pageSource)
-
-        log.debug("Created DuckDB page source for %d columns from file: %s",
-                columns.size, split.dataFilePath)
-        return pageSource
-    }
-
     /**
-     * Page sources for the non-data-file splits: metadata tables, inlined data, and the lance
-     * search PTF scans. Null for ordinary data-file splits ([DucklakeSplit]).
+     * Page sources for the non-data-file splits: metadata tables, inlined data, and the change
+     * feed. Null for ordinary data-file splits ([DucklakeSplit]).
      * (createInlinedPageSource materializes rows in memory, so it weaves virtuals per row
      * directly — it needs per-row begin_snapshot for $snapshot_id anyway. No outer wrapper.)
      */
@@ -1549,174 +1358,11 @@ class DucklakePageSourceProvider @Inject constructor(
             session: ConnectorSession,
             split: ConnectorSplit,
             table: ConnectorTableHandle,
-            columns: List<ColumnHandle>,
-            dynamicFilter: DynamicFilter): ConnectorPageSource? = when (split) {
+            columns: List<ColumnHandle>): ConnectorPageSource? = when (split) {
         is DucklakeMetadataSplit -> createMetadataPageSource(split, columns)
         is DucklakeInlinedSplit -> createInlinedPageSource(split, columns)
-        is LanceSearchSplit -> createLanceSearchPageSource(session, split, table as LanceSearchTableHandle, columns, dynamicFilter)
         is ChangeFeedSplit -> createChangeFeedPageSource(session, table as ChangeFeedTableHandle, columns)
         else -> null
-    }
-
-    /**
-     * Page source for one lance-search PTF-scan split (`applyTableFunction` rewrite — see
-     * [LanceSearchTableHandle]). Runs the matching `lance_*` DuckDB call over the split's
-     * dataset directory through [DuckDbFilePageSource], with the engine's projection
-     * ([columns] — only the requested output columns are SELECTed), the handle's pushed
-     * predicate intersected with the dynamic filter rendered as the `WHERE`, and `applyTopN`'s
-     * trimmed per-fragment `k` folded into the rendered argument tail.
-     */
-    private fun createLanceSearchPageSource(
-            session: ConnectorSession,
-            split: LanceSearchSplit,
-            tableHandle: LanceSearchTableHandle,
-            columns: List<ColumnHandle>,
-            dynamicFilter: DynamicFilter): ConnectorPageSource
-    {
-        val dynamicFilterPredicate: TupleDomain<DucklakeColumnHandle> = dynamicFilter.currentPredicate
-                .transformKeys(DucklakeColumnHandle::class.java::cast)
-        val effectivePredicate: TupleDomain<DucklakeColumnHandle> = tableHandle.pushedPredicate
-                .intersect(dynamicFilterPredicate)
-        if (effectivePredicate.isNone) {
-            return EmptyPageSource()
-        }
-
-        val search: LanceSearchHandle = tableHandle.effectiveSearch()
-        // With prefilter => true, lance REQUIRES every WHERE conjunct over the call to be
-        // pushable into the function and errors otherwise ("requires filter pushdown for
-        // prefilterable columns"). DuckDB can push single-range conjuncts (=, >, BETWEEN, ...)
-        // but not OR-of-ranges or IN-lists — so render only the pushable domains; the rest stay
-        // engine-side (the full predicate is always in the engine's remaining filter).
-        val renderedPredicate: TupleDomain<DucklakeColumnHandle> = if (search.prefilter)
-            effectivePredicate.filter { _, domain -> isPrefilterPushable(domain) }
-        else
-            effectivePredicate
-        val projectedColumns: List<DucklakeColumnHandle> = columns.stream()
-                .map(DucklakeColumnHandle::class.java::cast)
-                .collect(toImmutableList())
-        val target = DuckDbAttachTarget.FileScan(
-                split.datasetPath,
-                LanceSearchSplitProcessor.scanFunctionFor(search),
-                DucklakeSessionProperties.FORMAT_LANCE,
-                null,
-                LanceSearchSplitProcessor.renderExtraArgsSql(search))
-        val duckDbTimeZone: String? = TrinoTimeZoneNormaliser.normalise(session.timeZoneKey.id)
-        return DuckDbFilePageSource(
-                executorFactory.create(),
-                target,
-                projectedColumns,
-                projectedColumns.map { it.columnType },
-                renderedPredicate,
-                emptyList(),
-                duckDbTimeZone)
-    }
-
-    /**
-     * Whether a domain renders as a WHERE conjunct DuckDB can push into a lance table function
-     * under `prefilter := true`: a single range over an orderable type, with no NULL allowance
-     * (nullable domains render an `OR x IS NULL` arm, which is not pushable). Probed live
-     * (2026-06-10): single-range and BETWEEN push; OR-of-ranges and IN-lists do not.
-     */
-    private fun isPrefilterPushable(domain: io.trino.spi.predicate.Domain): Boolean {
-        if (domain.isNullAllowed || domain.isNone || domain.values.isAll) {
-            return false
-        }
-        return runCatching { domain.values.ranges.rangeCount == 1 }.getOrDefault(false)
-    }
-
-    /**
-     * The read target for a DuckDB-engine split. For the `duckdb` (.db) format this is the
-     * ATTACH target from [resolveDuckDbAttachTarget]. For the single-file scan format
-     * (`vortex`) the same materialize-vs-streaming decision is reused, then wrapped as a
-     * [DuckDbAttachTarget.FileScan] carrying the scan function + extension so the executor
-     * reads via `read_vortex('path')` instead of ATTACHing a database — but WITHOUT the
-     * httpfs secret on the streaming s3 shape: `read_vortex` is object_store-credentialed
-     * (`AWS_*` env), not secret-credentialed, so s3-streaming vortex reads need the lance-O1 env
-     * channel on the executing process. `lance` is a dataset *directory* and bypasses the
-     * materialize cache entirely (see below).
-     */
-    private fun resolveDuckDbReadTarget(
-            session: ConnectorSession,
-            dataFileLocation: Location,
-            fileSystem: TrinoFileSystem,
-            split: DucklakeSplit): DuckDbAttachTarget
-    {
-        // Lance is a *dataset directory*, not a single file: `__lance_scan('<dir>')` reads the
-        // whole dataset (manifest + data + index files). It must NOT route through
-        // resolveDuckDbAttachTarget's materialize cache, which copies a single file to local tmp
-        // — that would pull one file out of the directory and hand DuckDB a broken path. Instead
-        // hand the catalog path straight to __lance_scan. No DuckDbS3Config even for s3:// — the
-        // lance extension's Rust object_store ignores DuckDB httpfs secrets entirely and resolves
-        // credentials from process-global AWS_* env (HANDOFF O1; the Quack sidecar gets them via
-        // container env). Passing the config would only run a pointless httpfs INSTALL + the
-        // CREATE of a secret lance never reads (and, before the IF NOT EXISTS + retry fix in
-        // DuckDbS3Config/DuckDbCatalogWriteRetry, that needless CREATE was the write-write
-        // conflict trigger first observed on this very path).
-        if (DucklakeSessionProperties.FORMAT_LANCE.equals(split.fileFormat, ignoreCase = true)) {
-            return DuckDbAttachTarget.FileScan(
-                    dataFileLocation.toString(), "__lance_scan", "lance", null)
-        }
-        val base: DuckDbAttachTarget = resolveDuckDbAttachTarget(session, dataFileLocation, fileSystem, split)
-        if (DucklakeSessionProperties.FORMAT_DUCKDB.equals(split.fileFormat, ignoreCase = true)) {
-            return base
-        }
-        val scanFunction: String
-        val extension: String
-        when {
-            DucklakeSessionProperties.FORMAT_VORTEX.equals(split.fileFormat, ignoreCase = true) -> {
-                scanFunction = "read_vortex"; extension = "vortex"
-            }
-            else -> throw TrinoException(NOT_SUPPORTED, "Unsupported DuckDB-engine file format: ${split.fileFormat}")
-        }
-        return when (base) {
-            is DuckDbAttachTarget.LocalPath ->
-                DuckDbAttachTarget.FileScan(base.path.toAbsolutePath().toString(), scanFunction, extension, null)
-            // No DuckDbS3Config on the streaming shape: `read_vortex` binds through Rust
-            // object_store, which NEVER consults DuckDB httpfs secrets (probed 2026-06-11 —
-            // single-threaded read with only the secret present falls back to the EC2 metadata
-            // service and fails; only the vortex COPY *write* honors the secret). Credentials
-            // are the lance-O1 `AWS_*` env channel: the Quack sidecar's container env, or the
-            // Trino JVM's own env in-process (DuckDbS3Config.toObjectStoreEnv). Shipping the
-            // secret anyway would just add pointless httpfs INSTALL + secret-create chatter.
-            is DuckDbAttachTarget.HttpfsS3 ->
-                DuckDbAttachTarget.FileScan(base.s3Url, scanFunction, extension, null)
-            is DuckDbAttachTarget.FileScan -> base
-        }
-    }
-
-    /**
-     * Decide whether to materialize the `.db` file to local tmp and ATTACH that
-     * path, or load DuckDB's httpfs extension and ATTACH the remote `s3://` URL
-     * directly. Driven by the `duckdb_read_mode` session property; `auto`
-     * (the default) consults the `ducklake.duckdb.auto-httpfs-threshold` config.
-     */
-    private fun resolveDuckDbAttachTarget(
-            session: ConnectorSession,
-            dataFileLocation: Location,
-            fileSystem: TrinoFileSystem,
-            split: DucklakeSplit): DuckDbAttachTarget
-    {
-        val mode: String = DucklakeSessionProperties.getDuckDbReadMode(session)
-        val useHttpfs: Boolean = when (mode.lowercase(Locale.ROOT)) {
-            DucklakeSessionProperties.READ_MODE_MATERIALIZE -> false
-            DucklakeSessionProperties.READ_MODE_HTTPFS -> true
-            // 'auto' picks per-file. Below the threshold the materialize cache wins
-            // (small files are cheap to download and warm reads are then local). At or
-            // above the threshold we stream blocks via httpfs to avoid the full pull.
-            DucklakeSessionProperties.READ_MODE_AUTO -> split.fileSizeBytes >= autoHttpfsThresholdBytes
-            else -> throw TrinoException(NOT_SUPPORTED, "Unsupported duckdb_read_mode: $mode")
-        }
-
-        val url: String = dataFileLocation.toString()
-        val isS3: Boolean = url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
-        if (useHttpfs && isS3) {
-            return DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config)
-        }
-        // httpfs against a non-s3 target degrades to materialize — the local path is
-        // already directly attachable, no need for a remote-streaming protocol.
-        val localPath: Path = duckDbReadCache.materialize(
-                fileSystem, dataFileLocation, split.fileSizeBytes)
-        return DuckDbAttachTarget.LocalPath(localPath)
     }
 
     companion object {

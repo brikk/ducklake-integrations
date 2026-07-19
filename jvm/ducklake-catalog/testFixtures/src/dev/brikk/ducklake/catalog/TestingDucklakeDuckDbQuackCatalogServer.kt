@@ -16,16 +16,15 @@ package dev.brikk.ducklake.catalog
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.images.builder.ImageFromDockerfile
-import org.testcontainers.utility.MountableFile
-import java.nio.file.Files
-import java.nio.file.Path
-import java.util.Optional
 
 /**
  * Testcontainer wrapper for a DuckDB process hosting a Quack RPC listener.
  * Acts as the remote DuckLake-catalog server in cross-engine tests — clients
  * (in-process DuckDB JDBC connections) attach via
  * `ATTACH 'ducklake:quack:host:port' AS lake (...)`.
+ *
+ * This is a catalog-plane server (metadata backend only); it needs no
+ * DuckDB extension beyond the core Quack extension.
  *
  * This must remain process-isolated from any JVM-internal DuckDB instance
  * that intends to attach DuckLake-on-Quack: hosting `quack_serve` and the
@@ -34,29 +33,20 @@ import java.util.Optional
  * `scripts/run_quack_tests.py` comment and the in-tree
  * `QuackJdbcProbeTest` for the diagnostic narrative.
  */
-class TestingDucklakeDuckDbQuackCatalogServer(parityExtensionPath: Optional<Path>) : AutoCloseable {
+class TestingDucklakeDuckDbQuackCatalogServer : AutoCloseable {
 
     private val container: GenericContainer<*>
     private val token: String = DEFAULT_TOKEN
 
     init {
-        var c: GenericContainer<*> = GenericContainer(buildImage())
+        container = GenericContainer(buildImage())
             .withExposedPorts(CONTAINER_PORT)
             .withEnv("QUACK_PORT", CONTAINER_PORT.toString())
             .withEnv("QUACK_TOKEN", token)
             .withStartupAttempts(3)
             .waitingFor(Wait.forListeningPort())
-        if (parityExtensionPath.isPresent && Files.isRegularFile(parityExtensionPath.get())) {
-            c = c.withCopyFileToContainer(
-                MountableFile.forHostPath(parityExtensionPath.get()),
-                IN_CONTAINER_PARITY_EXTENSION_PATH
-            )
-        }
-        this.container = c
         container.start()
     }
-
-    constructor() : this(Optional.empty())
 
     fun getHost(): String = container.host
 
@@ -86,16 +76,6 @@ class TestingDucklakeDuckDbQuackCatalogServer(parityExtensionPath: Optional<Path
     companion object {
         private const val CONTAINER_PORT: Int = 9494
         private const val DEFAULT_TOKEN: String = "ducklake-test-token"
-
-        /**
-         * In-container path where the trino_parity DuckDB extension is mounted
-         * (when [TestingDucklakeDuckDbQuackCatalogServer] is
-         * called with a non-empty path). Clients reach this via the Quack wrapper
-         * with `LOAD '<path>'` — server-side allow_unsigned_extensions is
-         * enabled by the entrypoint's `duckdb -unsigned` invocation.
-         */
-        const val IN_CONTAINER_PARITY_EXTENSION_PATH: String =
-            "/opt/duckdb-extensions/trino_parity.duckdb_extension"
 
         private fun buildImage(): ImageFromDockerfile {
             // Reuse the same image hash across test classes — Testcontainers keys

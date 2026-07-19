@@ -19,9 +19,8 @@ import io.trino.spi.type.VarcharType
 
 /**
  * DuckLake maps its `json` type to Trino's native `JsonType` (`io.trino.type.JsonType`, which
- * lives in `trino-main` — NOT importable on the connector's `trino-spi`-only compile classpath,
- * the same reason [DuckDbExpressionTranslator] bridges `LikePattern` reflectively). This helper
- * lets the plugin recognise and manipulate JSON columns without a compile-time reference:
+ * lives in `trino-main` — NOT importable on the connector's `trino-spi`-only compile classpath).
+ * This helper lets the plugin recognise and manipulate JSON columns without a compile-time reference:
  *
  *   - [isJson] identifies the type by its type-signature base string (`"json"`), which is stable
  *       and requires neither a class import nor a `TypeManager` handle.

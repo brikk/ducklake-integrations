@@ -33,11 +33,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Full-Trino end-to-end coverage of **parquet data files written to and read from S3** (MinIO),
- * the cell the capability grid never filled: every existing S3 test (`TestDucklakeLanceS3QuackRead`,
- * `TestDucklakeQuackS3InitRace`, `TestDucklakeDuckDbExecutorBackends`) exercises the *executor*
- * (DuckDB/lance/vortex over s3), never Trino's own `ParquetWriter`/`ParquetPageSource` against an
- * S3-resident DuckLake catalog. Parquet over S3 goes through Trino's native S3 filesystem
+ * Full-Trino end-to-end coverage of **parquet data files written to and read from S3** (MinIO).
+ * Parquet over S3 goes through Trino's native S3 filesystem
  * (`trino-filesystem-s3`, `fs.native-s3.enabled`) with no DuckDB involvement, so this is a pure
  * connector + filesystem path: CTAS, INSERT, SELECT, DELETE, UPDATE, MERGE, schema evolution, and
  * time travel, all with data files physically on `s3://`.
@@ -46,8 +43,7 @@ import java.util.concurrent.TimeUnit
  * metadata lives in a PostgreSQL catalog ATTACHed with an `s3://` `DATA_PATH` (so the
  * catalog-stored data path — which wins over the connector property in [DucklakePathResolver] —
  * routes every new data file to the bucket). PG (not a single-file local DuckDB catalog) is used so
- * the concurrent-writer cell is real: a `.db` catalog is single-writer by construction. Parquet
- * over s3 needs no DuckDB executor at all; the one duckdb-format cell uses the parity extension.
+ * the concurrent-writer cell is real: a `.db` catalog is single-writer by construction.
  * Skips when Docker/MinIO is unavailable.
  *
  * SAME_THREAD by default; the concurrent-writer test manages its own thread pool.
@@ -144,11 +140,6 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
                 "s3.aws-access-key" to USER,
                 "s3.aws-secret-key" to PASSWORD,
                 "s3.path-style-access" to "true")
-        // For the duckdb-format-over-s3 case the in-process executor LOADs the parity extension;
-        // thread the host-side binary path through when the build provides it.
-        System.getProperty("ducklake.test.parityExtensionPath")?.takeIf { it.isNotBlank() }?.let {
-            props["ducklake.duckdb.parity-extension-path"] = it
-        }
         return props
     }
 
@@ -329,34 +320,6 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
                     .`as`("partition directories materialize as s3 objects")
                     .anySatisfy { assertThat(it).contains("region=us") }
                     .anySatisfy { assertThat(it).contains("region=eu") }
-        }
-        finally {
-            tryDrop(table)
-        }
-    }
-
-    /**
-     * The duckdb data-file format over s3: the connector writes a `.db` file to a local temp dir
-     * and uploads it to the bucket through the native S3 filesystem; the read path downloads it
-     * back (auto → materialize for a small file) and runs through the in-process DuckDB executor
-     * with the parity extension. Proves the non-parquet write+read round-trips over s3.
-     */
-    @Test
-    fun duckdbFormatCtasAndReadOverS3() {
-        val table = "test_schema.s3_duckdb"
-        try {
-            computeActual("CREATE TABLE $table WITH (data_file_format = 'duckdb') AS "
-                    + "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
-            assertThat(computeScalar("SELECT DISTINCT file_format FROM \"s3_duckdb\$files\"") as String)
-                    .isEqualTo("duckdb")
-            assertThat(s3Objects())
-                    .`as`("the duckdb .db data file is a physical object on s3")
-                    .anySatisfy { assertThat(it).endsWith(".db") }
-            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(3L)
-            // Predicate read exercises pushdown into DuckDB over the s3-materialized file.
-            assertThat(computeActual("SELECT name FROM $table WHERE id = 2").materializedRows
-                    .map { it.getField(0) as String })
-                    .containsExactly("b")
         }
         finally {
             tryDrop(table)

@@ -50,20 +50,10 @@ on a shared PostgreSQL catalog. Engine-agnostic core (`ReplayReadEngine` seam); 
 in the engine modules. The corpus grows with every upstream release, so spec-conformance
 coverage compounds automatically.
 
-### [duckdb-trino-parity-extension](duckdb-trino-parity-extension/) (git submodule)
-
-Native DuckDB extension that provides `trino_<name>(...)` functions with semantics matching
-Trino's documented behaviour on Unicode and other edge cases where DuckDB's built-ins
-diverge. Required at attach time by the trino-ducklake plugin's predicate-pushdown layer;
-bundled into the plugin jar as platform-specific resources.
-
 ## Getting Started
 
-This repo carries three git submodules:
+This repo carries two git submodules:
 
-- `duckdb-trino-parity-extension` — the native DuckDB extension consumed by trino-ducklake at
-  attach time. Itself carries the `duckdb` and `extension-ci-tools` submodules from the
-  upstream DuckDB extension template.
 - `jvm/trino-ducklake/ducklake-web` — the DuckLake specification, used as reference docs.
 - `jvm/ducklake-corpus-replay/ducklake` — the upstream `duckdb/ducklake` reference
   implementation, pinned to the release matching our DuckDB version; its `test/sql/` corpus is
@@ -75,8 +65,7 @@ Clone with all submodules in one shot:
 git clone --recurse-submodules https://github.com/<org>/ducklake-integrations.git
 ```
 
-If already cloned without submodules, initialize them (recursive picks up the nested
-submodules inside the extension):
+If already cloned without submodules, initialize them:
 
 ```shell
 git submodule update --init --recursive
@@ -84,31 +73,19 @@ git submodule update --init --recursive
 
 ### Building
 
-The trino-ducklake plugin jar bundles the trino_parity DuckDB extension binary for each
-platform it can find at build time. Build the extension first, then the plugin:
+The `trino-ducklake` plugin is parquet-only and needs no native extension:
 
 ```shell
-# Build the host-platform extension (~30 min first time — DuckDB + vendored ICU)
-cd duckdb-trino-parity-extension
-GEN=ninja make
-
-# Optional: cross-build for Linux to enable the connector's Quack-engine tests on macOS
-make linux-arm64    # native on Apple Silicon
-make linux-amd64    # via Rosetta/qemu emulation, slower
-
-# Alternative: skip the local build and pull every platform from the
-# extension repo's CI matrix (signed artifacts on every push to main):
-scripts/fetch-from-ci-artifacts.sh
-
-# Build the Trino plugin (gradle picks up every available build/<platform>/... binary)
-cd ../jvm
+cd jvm
 ./gradlew build
 ```
 
-See [duckdb-trino-parity-extension/README.md](duckdb-trino-parity-extension/README.md) for
-the extension's prerequisites (ninja, ccache; ICU is vendored, no vcpkg needed locally)
-and platform notes. See the [JVM project README](jvm/README.md) for JVM-side build
-prerequisites (Java 25, Docker).
+See the [JVM project README](jvm/README.md) for JVM-side build prerequisites
+(Java 25, Docker).
+
+The native `trino_parity` DuckDB extension (predicate-pushdown functions) now lives with the
+standalone Trino → DuckDB connector at
+[github.com/brikk/duckbridge](https://github.com/brikk/duckbridge).
 
 ## License
 

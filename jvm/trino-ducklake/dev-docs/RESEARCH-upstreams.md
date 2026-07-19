@@ -17,10 +17,10 @@ To bootstrap a fresh checkout (or refresh an existing one):
 Paths in this document are written **relative to the repo root**. Sibling
 docs in this same directory:
 
-- Working TODOs: `TODO-WRITE-MODE.md`, `TODO-READ-MODE.md`,
-  `TODO-pushdown-duckdb.md`, `TODO-duckdb-lake-format.md`. Research-derived
+- Working TODOs: `TODO-WRITE-MODE.md`, `TODO-READ-MODE.md`. Research-derived
   items get folded in there directly (each has an "Open Research Items"
-  pointer section).
+  pointer section). (The DuckDB-engine pushdown/format TODOs moved to
+  brikk/duckbridge dev-docs archive with the pushdown machinery.)
 - Parking lot: `TODO-uhoh.md` — concerns without a home yet (direction-of-travel
   worries, protection tests, unplaceable ideas). **Glance at it on every refresh
   run** — re-verify its "Watch" items against the new diff (e.g. server-side

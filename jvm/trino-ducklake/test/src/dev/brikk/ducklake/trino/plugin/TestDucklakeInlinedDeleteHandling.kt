@@ -245,10 +245,7 @@ class TestDucklakeInlinedDeleteHandling {
                         FileFormatDataSourceStats(),
                         ParquetReaderConfig().toParquetReaderOptions(),
                         catalog,
-                        DucklakeMaterializedFileCache(),
-                        DuckDbS3Config.fromCatalogConfig(emptyMap()),
-                        config,
-                        DucklakeDuckDbExecutorFactory(config))
+                        config)
                 return Fixture(isolated, catalog, splitManager, pageSourceProvider)
             }
         }

@@ -56,26 +56,6 @@ class TestDucklakeTruncate : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
-    fun truncateNonParquetData() {
-        val table = "test_schema.trunc_duckdb"
-        try {
-            computeActual("CREATE TABLE $table WITH (data_file_format = 'duckdb') AS " +
-                    "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)")
-            computeActual("TRUNCATE TABLE $table")
-            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
-
-            // Re-insert keeps the table's declared format.
-            computeActual("INSERT INTO $table VALUES (3, 'c')")
-            assertThat(computeScalar("SELECT DISTINCT file_format FROM \"trunc_duckdb\$files\"") as String)
-                    .isEqualTo("duckdb")
-            assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(1L)
-        }
-        finally {
-            tryDropTable(table)
-        }
-    }
-
-    @Test
     fun truncatePartitionedTableClearsAllPartitions() {
         val table = "test_schema.trunc_part"
         try {

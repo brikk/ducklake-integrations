@@ -39,11 +39,6 @@ internal open class TestDucklakeSetFieldType : AbstractDucklakeIntegrationTest()
         assertNestedFieldWideningAcrossGenerations("parquet")
     }
 
-    @Test
-    fun nestedFieldWideningReadsAcrossFileGenerationsDuckDb() {
-        assertNestedFieldWideningAcrossGenerations("duckdb")
-    }
-
     private fun assertNestedFieldWideningAcrossGenerations(format: String) {
         val table = "test_schema.promote_field_$format"
         try {
@@ -56,28 +51,6 @@ internal open class TestDucklakeSetFieldType : AbstractDucklakeIntegrationTest()
 
             assertThat(computeScalar("SELECT typeof(s) FROM $table LIMIT 1")).isEqualTo("row(\"a\" bigint)")
             val values = computeActual("SELECT id, s.a FROM $table ORDER BY id").materializedRows
-                    .map { (it.getField(1) as Number).toLong() }
-            assertThat(values).containsExactly(1L, 3_000_000_000L)
-        }
-        finally {
-            tryDropTable(table)
-        }
-    }
-
-    @Test
-    fun deeplyNestedFieldWideningReadsOldRowsDuckDb() {
-        val table = "test_schema.promote_field_deep"
-        try {
-            computeActual(
-                    "CREATE TABLE $table (id INTEGER, s ROW(m ROW(a INTEGER))) WITH (data_file_format = 'duckdb')")
-            computeActual("INSERT INTO $table VALUES (1, CAST(ROW(ROW(1)) AS ROW(m ROW(a INTEGER))))")
-            computeActual("ALTER TABLE $table ALTER COLUMN s.m.a SET DATA TYPE BIGINT")
-            computeActual(
-                    "INSERT INTO $table VALUES (2, CAST(ROW(ROW(3000000000)) AS ROW(m ROW(a BIGINT))))")
-
-            assertThat(computeScalar("SELECT typeof(s) FROM $table LIMIT 1"))
-                    .isEqualTo("row(\"m\" row(\"a\" bigint))")
-            val values = computeActual("SELECT id, s.m.a FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(1) as Number).toLong() }
             assertThat(values).containsExactly(1L, 3_000_000_000L)
         }

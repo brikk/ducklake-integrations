@@ -35,11 +35,6 @@ internal open class TestDucklakeSetColumnType : AbstractDucklakeIntegrationTest(
         assertIntegerWideningAcrossGenerations("parquet")
     }
 
-    @Test
-    fun integerWideningReadsAcrossFileGenerationsDuckDb() {
-        assertIntegerWideningAcrossGenerations("duckdb")
-    }
-
     private fun assertIntegerWideningAcrossGenerations(format: String) {
         val table = "test_schema.promote_int_$format"
         try {

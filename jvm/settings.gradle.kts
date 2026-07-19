@@ -19,6 +19,7 @@ dependencyResolutionManagement {
 include(":ducklake-catalog")
 include(":ducklake-corpus-replay")
 include(":trino-ducklake")
+
 // :doris-ducklake depends on Apache Doris fe-connector-api/spi/thrift
 // 1.2-SNAPSHOT, published to ~/.m2 from the branch-catalog-spi P-series FE
 // build (see jvm/doris-ducklake/dev-docs/PLAN.md).

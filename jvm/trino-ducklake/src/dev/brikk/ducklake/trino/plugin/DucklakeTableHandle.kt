@@ -22,13 +22,9 @@ import io.trino.spi.predicate.TupleDomain
 /**
  * Handle for a Ducklake table, including snapshot context and pushed-down predicates.
  *
- * `pushedExpressions` carries function-shape predicates that
- * [DuckDbExpressionTranslator] successfully translated into DuckDB SQL
- * fragments (e.g. `trino_lower("name") = 'apple'`). They are AND-ed into
- * the WHERE clause sent to DuckDB on the `.db` read path. For mixed-format
- * tables, the same conjuncts are also returned in `remainingExpression`
- * so Trino re-applies them above the scan — double evaluation on `.db`
- * splits is cheap because the result set is already reduced.
+ * Pushdown is TupleDomain-only (projection + domain predicates + partition-transform
+ * classification). Function-shape expression pushdown was removed with the DuckDB-engine
+ * read path (see PLAN-duckdb-parity-moveout.md §4.2); parquet is the only data-file format.
  */
 @JvmRecord
 data class DucklakeTableHandle @JsonCreator constructor(
@@ -43,22 +39,11 @@ data class DucklakeTableHandle @JsonCreator constructor(
         @get:JvmName("unenforcedPredicate")
         @param:JsonProperty("unenforcedPredicate") val unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
         @get:JvmName("enforcedPredicate")
-        @param:JsonProperty("enforcedPredicate") val enforcedPredicate: TupleDomain<DucklakeColumnHandle>,
-        @get:JvmName("pushedExpressions")
-        @param:JsonProperty("pushedExpressions") val pushedExpressions: List<String>)
+        @param:JsonProperty("enforcedPredicate") val enforcedPredicate: TupleDomain<DucklakeColumnHandle>)
         : ConnectorTableHandle
 {
-    constructor(
-            schemaName: String,
-            tableName: String,
-            tableId: Long,
-            snapshotId: Long,
-            unenforcedPredicate: TupleDomain<DucklakeColumnHandle>,
-            enforcedPredicate: TupleDomain<DucklakeColumnHandle>)
-            : this(schemaName, tableName, tableId, snapshotId, unenforcedPredicate, enforcedPredicate, emptyList())
-
     constructor(schemaName: String, tableName: String, tableId: Long, snapshotId: Long)
-            : this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all(), emptyList())
+            : this(schemaName, tableName, tableId, snapshotId, TupleDomain.all(), TupleDomain.all())
 
     fun getSchemaTableName(): SchemaTableName {
         return SchemaTableName(schemaName, tableName)

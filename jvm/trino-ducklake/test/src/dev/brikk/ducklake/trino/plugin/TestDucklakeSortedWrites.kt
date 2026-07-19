@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.DATA_FILE_FORMAT
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
 import io.trino.Session
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -174,36 +173,6 @@ class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
             assertThat(result.rowCount).isEqualTo(4L)
             assertThat(result.materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1, 2, 3, 4)
-        }
-        finally {
-            dropDuckdbTable(fullDuckdb)
-        }
-    }
-
-    @Test
-    fun testSortedDuckDbFormatTableFallsBackToUnsorted() {
-        // Regression: a sorted table written in duckdb format is outside the gate (only parquet
-        // sorts). The write must still succeed and return correct data.
-        val table = uniqueTable("sorted_duckdb_fmt")
-        val fullDuckdb = "ducklake_db.test_schema.$table"
-        try {
-            createDuckdbConnection().use { duck ->
-                duck.createStatement().use { stmt ->
-                    stmt.execute("CREATE TABLE $fullDuckdb (id INTEGER, name VARCHAR)")
-                    stmt.execute("ALTER TABLE $fullDuckdb SET SORTED BY (id ASC)")
-                }
-            }
-
-            val duckSession: Session = Session.builder(session)
-                    .setCatalogSessionProperty("ducklake", DATA_FILE_FORMAT, FORMAT_DUCKDB)
-                    .build()
-            computeActual(duckSession,
-                    "INSERT INTO test_schema.$table VALUES (3, 'c'), (1, 'a'), (2, 'b')")
-
-            val result = computeActual("SELECT id, name FROM test_schema.$table ORDER BY id")
-            assertThat(result.rowCount).isEqualTo(3L)
-            assertThat(result.materializedRows.map { it.getField(0) as Int })
-                    .containsExactly(1, 2, 3)
         }
         finally {
             dropDuckdbTable(fullDuckdb)

@@ -63,10 +63,7 @@ class TestDucklakeDeleteFileHandling {
                 FileFormatDataSourceStats(),
                 ParquetReaderConfig().toParquetReaderOptions(),
                 catalog,
-                DucklakeMaterializedFileCache(),
-                DuckDbS3Config.fromCatalogConfig(emptyMap()),
-                config,
-                DucklakeDuckDbExecutorFactory(config))
+                config)
 
             val snapshotId = catalog.currentSnapshotId
             val table = getTable(catalog, "test_schema", "simple_table", snapshotId)

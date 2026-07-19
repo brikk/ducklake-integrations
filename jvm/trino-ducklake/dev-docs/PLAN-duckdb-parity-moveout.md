@@ -1,7 +1,46 @@
 # PLAN — DuckDB-format moveout: `trino-duckdb-parity` connector
 
-**Status: DRAFT for review.** Decision gates (§3) need sign-off before implementation
-starts — per AGENTS.md, the architectural choices here are consult-first.
+**Status: APPROVED — P0 resolved 2026-07-19. P1/P2/P3/P5 SHIPPED and TRANSPLANTED.**
+The new connector was built in-tree as `jvm/trino-duckbridge` (naming evolved from the
+draft's `trino-duckdb-parity`: module `trino-duckbridge`, connector name `duckbridge`,
+package `dev.brikk.duckbridge.trino.plugin`) and then moved to its permanent home:
+**`/home/jayson/DEV/brikk/duckbridge` → github.com/brikk/duckbridge** (see that repo's
+`trino-duckbridge/dev-docs/` for P2/P3/P5 notes and the transplant plan). P4 (T4 codec
+evaluation) is deferred pending upstream gizmo FSST work. Remaining in THIS repo:
+**P6 (trino-ducklake strip-down, §4.2 + §7 guard) and P7 (docs)**.
+
+### P0 resolution record
+
+- **Gates:** G1(a→c), G2 (T3 control / T3-passthrough interim data plane, T2 gated on
+  Quack pool rework, T4 strategic, T1 test-only, T5 parked), G3 (move search + scan
+  PTFs, drop writes), G4 (none), G5 (`duckdb-parity`), G6 (clean cut) — all accepted
+  as recommended.
+- **Prereq checks:** Trino pin is 483; `io.trino:trino-base-jdbc:483` is on Maven
+  Central. Upstream `trino-duckdb` was published only for 470–476 (dropped upstream
+  after 476) — use its source as a skeleton reference only, never a dependency; the
+  G5 collision concern is thereby weakened but distinct naming stands. gizmo
+  `quack-jdbc` is **not** on Maven Central — resolve coordinates/vendoring before P3.
+  `duckdb-trino-parity-extension` submodule initialized; per-platform binaries still
+  require `make` before bundling produces non-empty resources.
+- **§4.4 audit verdicts (all confirmed DuckDB-engine-only; zero parquet-side
+  consumers):**
+  - `DucklakeMaterializedFileCache` — dies with `.db` read path; delete files never
+    touch the cache (`DucklakeDeleteFileReader`/`DucklakePuffinDeleteReader` read
+    streams directly).
+  - `DuckDbCatalogWriteRetry` — clean MOVE with `QuackDuckDbExecutor` (its only code
+    consumers). The `DucklakePageSourceProvider` "consumer" is a comment, not code.
+    `ducklake-catalog` has its own unrelated `WriteTransactionRetry`.
+  - `NestedFieldReshapePlanner`/`StructFieldPlan` — MOVES entirely. Parquet self-heals
+    nested evolution in the reader; the `DucklakeMetadata` "consumer" is comments
+    only. SQL emission lives in `DuckDbSelectSqlBuilder.appendStructPack`.
+  - `DucklakeColumnStatsAccumulator` — DIES (instantiated only for vortex/lance COPY
+    writers). Parquet writer never touches `DuckDbWriterSupport`; no helper extraction
+    needed. Sole `DuckDbWriterSupport` member used: `formatStatValue`.
+  - `DucklakeArrowToPageConverter` — MOVES; parquet add_files is footer-based
+    (`buildFragment`) and never calls the converter.
+  - `pushedExpressions` — read-consumed only via the DuckDB-engine chain
+    (PageSourceProvider DuckDB branch → `DuckDbFilePageSource` → executor →
+    `DuckDbSelectSqlBuilder`); parquet page source takes no such argument.
 
 ## 1. Why
 

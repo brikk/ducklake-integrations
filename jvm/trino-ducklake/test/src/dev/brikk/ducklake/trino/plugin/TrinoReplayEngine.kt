@@ -88,11 +88,6 @@ class TrinoReplayEngine : ReplayReadEngine {
                 .put("ducklake.catalog.database-password", server.getPassword())
                 .put("ducklake.data-path", attachment.dataPath)
                 .put("fs.hadoop.enabled", "true")
-                .also { props ->
-                    System.getProperty("ducklake.test.parityExtensionPath")
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { props.put("ducklake.duckdb.parity-extension-path", it) }
-                }
                 .buildOrThrow()
         runner.createCatalog(catalog, "ducklake", properties)
         currentCatalog = catalog

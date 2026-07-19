@@ -47,11 +47,6 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         configBinder(binder).bindConfig(ParquetReaderConfig::class.java)
         configBinder(binder).bindConfig(ParquetWriterConfig::class.java)
 
-        // Snapshot of the S3 settings the user gave the FileSystemModule, also needed for
-        // DuckDB's httpfs extension (N2). Bound from the raw catalog map rather than via
-        // a parallel @Config class so the user only configures s3 once.
-        binder.bind(DuckDbS3Config::class.java).toInstance(DuckDbS3Config.fromCatalogConfig(catalogConfig))
-
         // Core connector components
         binder.bind(DucklakeConnector::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeTransactionManager::class.java).`in`(Scopes.SINGLETON)
@@ -126,22 +121,12 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         // Table properties
         binder.bind(DucklakeTableProperties::class.java).`in`(Scopes.SINGLETON)
 
-        // DuckDB-format read cache (per-JVM)
-        binder.bind(DucklakeMaterializedFileCache::class.java).`in`(Scopes.SINGLETON)
-
-        // DuckDB execution-engine factory (selects InProcess / Quack / Swanlake
-        // per ducklake.execution-engine config).
-        binder.bind(DucklakeDuckDbExecutorFactory::class.java).`in`(Scopes.SINGLETON)
-
         // Procedures (per-catalog, exposed under <catalog>.system.<name>).
         bindProcedures(binder)
 
         // Table functions (per-catalog, invoked as TABLE(<catalog>.system.<name>(...))).
         // DucklakeFunctionProvider routes each function's handle to its split processor.
         val tableFunctionBinder = Multibinder.newSetBinder(binder, ConnectorTableFunction::class.java)
-        tableFunctionBinder.addBinding().to(LanceVectorSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
-        tableFunctionBinder.addBinding().to(LanceFtsTableFunction::class.java).`in`(Scopes.SINGLETON)
-        tableFunctionBinder.addBinding().to(LanceHybridSearchTableFunction::class.java).`in`(Scopes.SINGLETON)
         // Change feed (F9): table_insertions / table_deletions / table_changes.
         tableFunctionBinder.addBinding().to(TableInsertionsTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(TableDeletionsTableFunction::class.java).`in`(Scopes.SINGLETON)

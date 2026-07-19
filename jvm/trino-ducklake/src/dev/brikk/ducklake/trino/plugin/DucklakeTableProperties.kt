@@ -45,7 +45,7 @@ open class DucklakeTableProperties @Inject constructor() {
                         { value -> value }),
                 stringProperty(
                         DATA_FILE_FORMAT_PROPERTY,
-                        "Data file format for this table's CTAS payload: 'parquet' (default) or 'duckdb'. Overrides the session-level data_file_format for this CREATE only.",
+                        "Data file format for this table's CTAS payload. Only 'parquet' (the default) is supported.",
                         null,
                         { value -> validateDataFileFormat(value) },
                         false),

@@ -20,24 +20,16 @@ traffic; host ports are exposed for local debugging tools.
 
 ## Start it
 
-The Trino container mounts the assembled plugin directory and both Trino and
-Quack mount the same old-glibc-compatible parity extension. Build both first:
+The Trino container mounts the assembled plugin directory. Build it first:
 
 ```bash
 cd ../../..                      # repository root
 git submodule update --init --recursive
-cd duckdb-trino-parity-extension
-make linux-amd64
-cd ../jvm
+cd jvm
 ./gradlew :trino-ducklake:pluginAssemble
 cd trino-ducklake/compose
 docker compose up -d
 ```
-
-Do not use the host `GEN=ninja make` artifact for Quack on a newer Linux host:
-it can link against a newer GLIBC than the Debian-based sidecar provides. The
-Compose default uses the portable `build/linux-amd64/...` output and refuses to
-create a directory silently when that file is missing.
 
 Startup order is enforced by `depends_on` health gates:
 
@@ -46,54 +38,10 @@ Startup order is enforced by `depends_on` health gates:
 3. `bootstrap` (one-shot Python + duckdb) installs the `ducklake` extension,
    `ATTACH`es the catalog (which writes ~28 metadata tables into Postgres),
    then optionally generates TPC-H data into `lake.tpch.*`
-4. `materialize-cache-init` makes the shared DuckDB materialization volume writable by
-   the Trino image's `trino` user (UID/GID 1000)
-5. `duckqk` and `trino` start with that same volume mounted
+4. `duckqk` (the Quack catalog-plane DuckDB server) and `trino` start
 
 Re-running `docker compose up` is safe — the bootstrap detects an
 already-initialized catalog and skips both `ATTACH` setup and TPC-H generation.
-
-### JVM `--add-opens` for the DuckDB-format path
-
-Reading or writing tables with `data_file_format = 'duckdb'` goes through Apache
-Arrow's C-data export, which requires the JVM module flags:
-
-```
---add-opens=java.base/java.nio=ALL-UNNAMED
---add-opens=java.base/java.lang=ALL-UNNAMED
-```
-
-The compose stack injects these into the Trino container via `JAVA_TOOL_OPTIONS`
-(see `docker-compose.yml`). **Production Trino deployments using this connector
-need the same flags in `etc/jvm.config`** — without them every duckdb-format
-read/write fails with `UnsupportedOperationException: sun.misc.Unsafe or
-java.nio.DirectByteBuffer.<init>(long, int) not available`.
-
-Plain parquet workloads are unaffected; only the duckdb-format path uses Arrow.
-
-### Cross-engine caveat for `data_file_format = 'duckdb'`
-
-Tables written with `data_file_format = 'duckdb'` are visible only to this
-connector. The DuckLake spec field `'duckdb'` is not a recognized format value
-in the upstream DuckLake DuckDB extension, and the connector currently writes
-empty `column_stats` for these files (Phase 1 deferral). As a result, queries
-through DuckDB itself that touch the catalog's stats path — including
-`duckdb_tables()` and several `SHOW`/introspection commands — will error with
-`INTERNAL Error: Calling GetValueInternal on a value that is NULL` once any
-duckdb-format table exists.
-
-The bootstrap script (`bootstrap/init_ducklake.py`) is defensive about this:
-its informational stats-count is wrapped in try/except, and the TPC-H seed
-falls back to `information_schema.tables` if `duckdb_tables()` fails. If you
-hit a sticky state, wipe it:
-
-```bash
-docker compose down -v        # drops postgres + minio volumes
-docker compose up -d
-```
-
-Plain parquet tables are unaffected and remain readable from any DuckLake
-client.
 
 ## Exposed ports
 
@@ -215,8 +163,7 @@ All in `.env`:
 | `PLUGIN_VERSION`       | `483-1-ALPHA`         | Must match `:trino-ducklake` Gradle version (the assembled directory name) |
 | `TRINO_VERSION`        | `483`                 | `trinodb/trino` image tag                 |
 | `TRINO_MEMORY_LIMIT`   | `4g`                  | Container memory limit; the image sizes its JVM heap as 80% of this value |
-| `QUACK_MEMORY_LIMIT`   | `4g`                  | Hard memory limit for the Quack sidecar container |
-| `PARITY_EXTENSION_PATH` | portable linux-amd64 build | Host path to the parity extension mounted into Trino and Quack |
+| `QUACK_MEMORY_LIMIT`   | `4g`                  | Hard memory limit for the Quack catalog-plane container |
 | `POSTGRES_VERSION`     | `18-alpine`           |                                           |
 | `MINIO_TAG`            | release tag           | `minio/minio` image tag                   |
 | `MC_TAG`               | release tag           | `minio/mc` image tag (separate from server!) |
@@ -239,44 +186,6 @@ All in `.env`:
 If you change `TPCH_SCALE_FACTOR` after the lake has been seeded, the
 bootstrap will *not* regenerate — it skips when `lake.tpch.*` already exists.
 Wipe the volumes (below) to reseed at a different scale.
-
-### Parquet vs DuckDB format benchmark
-
-`tpch-format-benchmark.py` creates equivalent Parquet, DuckDB, and optionally
-Vortex copies from a built-in Trino TPC-H scale, then runs the same scan and join
-queries through the selected engines. It records server-side Trino timings and
-resource statistics rather than relying on client wall time.
-
-```bash
-uv run tpch-format-benchmark.py \
-  --server http://localhost:9080 \
-  --source-schema sf10 \
-  --prepare --benchmark --rounds 3 \
-  --output /tmp/tpch-format-benchmark.json
-```
-
-Add `--reset` to drop and recreate the benchmark tables. Preparation is
-restartable: without `--reset`, existing format tables are retained and only
-missing tables are created. Use `--variants parquet duckdb_embedded` to omit
-Quack when only the in-process format comparison is needed. To constrain Quack
-connection pressure without biasing the comparison, pass (for example)
-`--task-concurrency 4`; the setting is applied identically to every variant.
-Quack 1.5.4 also retains idle HTTP connections for 10 seconds, so sustained
-multi-query runs can use `--query-cooldown 4`. The delay applies before every
-variant and is outside Trino's reported query elapsed time.
-
-For a scan-only comparison at a larger scale, table and format preparation can
-be narrowed explicitly:
-
-```bash
-uv run tpch-format-benchmark.py \
-  --server http://localhost:9080 \
-  --source-schema sf100 --schema format_bench_sf100 \
-  --formats parquet duckdb vortex --tables lineitem \
-  --variants parquet duckdb_embedded vortex_embedded \
-  --queries q1 q6 --duckdb-read-mode materialize \
-  --task-concurrency 4 --prepare --benchmark
-```
 
 ## Common operations
 

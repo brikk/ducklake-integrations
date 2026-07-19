@@ -85,18 +85,6 @@ services:
         exec python /bootstrap/init_ducklake.py
     restart: "no"
 
-  materialize-cache-init:
-    image: busybox:1.37.0
-    container_name: trino-ducklake-materialize-cache-init
-    user: "0:0"
-    volumes:
-      - ducklake-materialize:/tmp/ducklake-read
-    command:
-      - /bin/sh
-      - -c
-      - chown -R 1000:1000 /tmp/ducklake-read && chmod 0770 /tmp/ducklake-read
-    restart: "no"
-
   duckqk:
     build:
       context: ../../ducklake-catalog/testFixtures/resources/docker/quack-server
@@ -106,38 +94,18 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
-      materialize-cache-init:
-        condition: service_completed_successfully
     environment:
       QUACK_PORT: "9494"
       QUACK_TOKEN: ${QUACK_TOKEN:-ducklake-engine-token}
-      # Lance s3 credential channel (HANDOFF O1): the DuckDB lance extension's Rust
-      # object_store ignores DuckDB httpfs secrets and reads these process-global
-      # AWS_* env vars instead. Set at container launch, inherited by the duckdb
-      # process — keep in sync with DuckDbS3Config.toObjectStoreEnv()'s mapping of
-      # the catalog's s3.* properties. Harmless for non-lance reads.
+      # S3 credentials for the catalog-plane DuckDB server's own object access
+      # (reading parquet data files server-side under the DUCKDB_QUACK backend).
+      # Inherited by the duckdb process at container launch.
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_REGION: us-east-1
       AWS_ENDPOINT: http://minio:9000
       AWS_ENDPOINT_URL: http://minio:9000
       AWS_ALLOW_HTTP: "true"
-    volumes:
-      # Shared with trino at the same path so materialize-mode .db files
-      # written by the Trino worker are visible to server-side ATTACH.
-      - ducklake-materialize:/tmp/ducklake-read
-      # trino_parity extension binary, same as the trino container — Quack
-      # server-side LOAD '<path>' is sent through the wrapper by the
-      # QuackDuckDbExecutor when the catalog has ducklake.duckdb.parity-extension-path
-      # set. Identical in-container path on both sides keeps quack.properties
-      # and ducklake.properties consistent. Server-side LOAD requires
-      # allow_unsigned_extensions, set via `duckdb -unsigned` in entrypoint.sh.
-      - type: bind
-        source: ${PARITY_EXTENSION_PATH}
-        target: /opt/duckdb-extensions/trino_parity.duckdb_extension
-        read_only: true
-        bind:
-          create_host_path: false
     restart: unless-stopped
 
   trino:
@@ -161,18 +129,6 @@ services:
       - ./trino/etc/catalog/quack.properties:/etc/trino/catalog/quack.properties:ro
       - ./trino/etc/catalog/quack_ovh.properties:/etc/trino/catalog/quack_ovh.properties:ro
       - ../build/trino-plugin/trino-ducklake-${PLUGIN_VERSION}:/usr/lib/trino/plugin/ducklake:ro
-      # trino_parity DuckDB extension — provides trino_<name> macros + native
-      # ICU lower/upper/reverse. Build with:
-      #   cd $REPO/duckdb-trino-parity-extension && GEN=ninja make
-      # The catalog property ducklake.duckdb.parity-extension-path in
-      # ducklake.properties points at the in-container path below.
-      - type: bind
-        source: ${PARITY_EXTENSION_PATH}
-        target: /opt/duckdb-extensions/trino_parity.duckdb_extension
-        read_only: true
-        bind:
-          create_host_path: false
-      - ducklake-materialize:/tmp/ducklake-read
     healthcheck:
       test: ["CMD", "/usr/lib/trino/bin/health-check"]
       interval: 5s
@@ -183,4 +139,3 @@ services:
 volumes:
   postgres-data:
   minio-data:
-  ducklake-materialize:
