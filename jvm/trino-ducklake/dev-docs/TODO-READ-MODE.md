@@ -342,77 +342,14 @@ data file's scan.
 - [ ] Test views across all catalog backends (SQLite, PostgreSQL, DuckDB) — today's
   view tests exercise PostgreSQL only.
 
-## Alternative Columnar File Formats (epics)
+## Alternative Columnar File Formats (epics) — REMOVED (P6, 2026-07)
 
-DuckLake's `ducklake_data_file.file_format` column already enumerates the
-file format per data file (today: `parquet`, `duckdb`). The catalog schema
-is format-agnostic; adding a new format is a connector-side concern
-(reader plumbing + executor-side ATTACH, where applicable) plus a writer
-follow-up.
-
-Two epics tracked here at high level. **UPDATE: both have SHIPPED** — Lance (read + write +
-add_files + vector/FTS/hybrid search) and Vortex (read + write + add_files) are in the connector;
-see TODO-lance.md / TODO-vortex.md. The section below is kept as the original design rationale. The
-epics were originally framed as unscheduled "when a workload pushes" items:
-"when a real workload pushes for them" items.
-
-**DuckDB extension availability (probed 2026-06-06, pinned DuckDB `1.5.3.0`):**
-both `lance` and `vortex` are **core** extensions (HTTP 200 at
-`extensions.duckdb.org/v1.5.3/{osx_arm64,linux_amd64}`), loadable via plain
-`INSTALL lance; LOAD lance;` / `INSTALL vortex; LOAD vortex;` from the
-in-process DuckDB executor — no community-repo opt-in. The reader probe for
-each epic (write one file via DuckDB → register against a DuckLake table with
-the matching `file_format` → attempt a Trino read through the duckdb-format
-executor path) is unblocked. See the availability matrix in
-[TODO-duckdb-lake-format.md](TODO-duckdb-lake-format.md).
-
-### Lance file support
-
-DuckLake snapshots that reference Lance-format data files. Lance is the
-columnar storage shape used by lancedb — vectorized scans, vector-index
-secondary structures, and a Trino-native reader path via the
-`lance-jni` / `lance-arrow` surface or a Lance table-function pushdown.
-
-Existing design sketch: [RESEARCH-lance-and-pushdown.md](RESEARCH-lance-and-pushdown.md).
-Covers: Trino table-function SPI for Lance, route A vs route B trade-offs
-(in-process Lance reader vs federation through a Lance service), and how
-the existing pushdown layer (translator + macro alias surface in
-`TODO-pushdown-duckdb.md`) would extend to Lance's expression syntax.
-
-**Chunked plan: [TODO-lance.md](TODO-lance.md)** — both routes (A: via the
-DuckDB `lance` extension; B: direct via `lance-core` JNI / the vendored
-`lance-trino` plugin), phased, with the dataset-vs-file risk called out.
-
-### Vortex file support
-
-DuckLake snapshots that reference Vortex-format data files. Vortex is a
-newer high-performance columnar storage layer (Spiral DB) with explicit
-compression-cascade encodings and lazy decompression; the target use case
-is analytic scans where Parquet's row-group encoding is a bottleneck.
-
-**Chunked plan: [TODO-vortex.md](TODO-vortex.md)** — read via the DuckDB
-`vortex` extension (no Trino-Vortex project exists to adopt); shares Route A's
-file-scan machinery with Lance. Scope summary:
-
-- **Reader path**: most likely route is a `VortexPageSource` paralleling
-  the existing `DuckDbFilePageSource` / Trino's standard `ParquetPageSource`.
-  Vortex's Java surface — if mature — replaces the Parquet reader for
-  files whose `file_format = 'vortex'`. If Java bindings aren't mature,
-  fall back to a Vortex-via-DuckDB extension (if one exists) and reuse
-  the duckdb-format executor abstraction from step 4 of the pushdown
-  program.
-- **Pushdown integration**: TupleDomain + function-shape pushdown work
-  the same way the parquet path does today; specifics depend on what
-  Vortex's filter API surface looks like.
-- **Cross-engine compatibility**: catalog-side `file_format = 'vortex'`
-  has to be agreed between writer and reader. Check whether the
-  upstream DuckLake spec has reserved the string (it should be opaque
-  to the spec; the connector decides what it can read).
-
-SHIPPED (read + write + add_files). Original probe-first plan, kept for the record —
-write one Vortex file outside DuckLake, register it as `add_files` against
-a DuckLake table with `file_format='vortex'`, attempt to read via Trino,
-record what blows up. That tells us what the first PR scope is.
+The DuckDB `.db` / Lance / Vortex data-file formats were removed from
+`trino-ducklake` (now parquet-only) and the DuckDB-engine machinery — including
+the Lance/Vortex read surfaces, their design docs, and the pushdown program —
+moved to **github.com/brikk/duckbridge** (see that repo's `trino-duckbridge/dev-docs/archive/`).
+This connector reads parquet data files only; a non-parquet `file_format` in a
+catalog now fails loud (see PLAN-duckdb-parity-moveout.md §7).
 
 ## Research / Evaluation
 

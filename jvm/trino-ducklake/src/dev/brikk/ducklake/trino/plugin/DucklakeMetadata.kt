@@ -1174,7 +1174,6 @@ class DucklakeMetadata(
         // CTAS precedence: WITH clause > session property > connector default. The
         // "match latest existing data file" rule that drives INSERT inheritance can't
         // apply here because the table is fresh — there are no prior data files.
-        // (See N1 in TODO-duckdb-lake-format.md.)
         val fileFormat: String = declaredFormat
                 ?: DucklakeSessionProperties.getDataFileFormat(session)
                         .orElse(DucklakeSessionProperties.FORMAT_PARQUET)

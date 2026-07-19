@@ -327,8 +327,9 @@ second, hidden storage system.
 
 ## Reconciliation against TODO-duckdb-silent-cache.md (2026-07-18)
 
-This doc and [`TODO-duckdb-silent-cache.md`](TODO-duckdb-silent-cache.md) were compared
-critically, verifying disputed claims against code. Neither was treated as authoritative.
+This doc and `TODO-duckdb-silent-cache.md` (removed in P6 — the DuckDB `.db` read/cache
+program moved to brikk/duckbridge dev-docs archive) were compared critically, verifying
+disputed claims against code. Neither was treated as authoritative.
 
 ### Convergence (independently derived → high confidence)
 
