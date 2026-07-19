@@ -60,13 +60,7 @@ dependencies {
         exclude(group = "javax.annotation", module = "javax.annotation-api")
     }
     implementation("org.weakref:jmxutils")
-    implementation(libs.duckdb.jdbc)
     implementation(libs.roaring.bitmap)
-    implementation(platform(libs.arrow.bom))
-    implementation(libs.arrow.vector)
-    implementation(libs.arrow.memory.core)
-    implementation(libs.arrow.data)
-    runtimeOnly(libs.arrow.memory.netty)
 
     // SPI dependencies — provided by Trino at runtime (compileOnly = Maven provided)
     compileOnly("com.fasterxml.jackson.core:jackson-annotations")
@@ -97,6 +91,11 @@ dependencies {
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.mysql)
 
+    // External DuckDB JDBC driver — TEST-ONLY: cross-engine tests drive a standalone DuckDB
+    // process (jdbc:duckdb:) that writes/reads parquet DuckLake tables through the shared catalog,
+    // to prove Trino and DuckDB agree. The production connector no longer embeds DuckDB.
+    testImplementation(libs.duckdb.jdbc)
+
     // brikk-sql: DuckDB→Trino SQL transpiler powering the corpus-replay dialect gate
     // (transpile-first — run what transpiles + is mappable, engine-skip the rest). TEST-ONLY:
     // the production connector never sees raw SQL (Trino parses it). The -jvm artifacts are the
@@ -105,11 +104,6 @@ dependencies {
     testImplementation(libs.brikk.sql)
     testImplementation(libs.brikk.sql.metadata)
     testImplementation(libs.brikk.sql.verify)
-
-    // Route B (lance-core JNI) — used ONLY by the gated BenchLanceRouteAVsB benchmark; the jar
-    // bundles per-platform natives (incl. darwin-aarch64). Arrow transitives resolve through the
-    // arrow BOM above.
-    testImplementation(libs.lance.core)
 
     // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
     // ducklake-catalog's java-test-fixtures source set.
@@ -130,94 +124,6 @@ tasks.withType<JavaCompile> {
     options.compilerArgs.addAll(listOf(
         "--enable-preview",
     ))
-}
-
-// ---- Bundle trino_parity DuckDB extension into the plugin jar ----
-//
-// The connector requires the trino_parity.duckdb_extension binary to be
-// LOAD-able by the in-process DuckDB at attach time. We bundle every
-// locally-built platform variant into the plugin jar's classpath resources,
-// keyed by platform name. TrinoParityExtensionResolver detects the runtime
-// platform and extracts the matching binary; for the Quack engine, the
-// testcontainer mounts the linux-arm64 binary so the Linux server can LOAD it.
-//
-// Source paths (one per platform, each independently optional):
-//   ../../duckdb-trino-parity-extension/build/release/extension/...    host platform
-//                                                                       (output of `make`)
-//   ../../duckdb-trino-parity-extension/build/linux-arm64/release/...  output of `make linux-arm64`
-//   ../../duckdb-trino-parity-extension/build/linux-amd64/release/...  output of `make linux-amd64`
-//
-// Bundled to: META-INF/.../duckdb-extensions/<platform>/trino_parity.duckdb_extension
-//
-// Missing binaries are non-fatal at build time; the plugin jar just ships
-// without that platform's variant and operators on that platform have to wire
-// the path manually (or build the extension first).
-
-val parityExtensionRoot: File =
-    rootProject.projectDir.resolve("../duckdb-trino-parity-extension")
-
-val hostPlatform: String = run {
-    val os = System.getProperty("os.name").lowercase()
-    val arch = System.getProperty("os.arch").lowercase()
-    val osPart = when {
-        os.contains("mac") || os.contains("darwin") -> "darwin"
-        os.contains("linux") -> "linux"
-        os.contains("windows") -> "windows"
-        else -> "unknown"
-    }
-    val archPart = when (arch) {
-        "x86_64", "amd64" -> "amd64"
-        "aarch64", "arm64" -> "arm64"
-        else -> "unknown"
-    }
-    "$osPart-$archPart"
-}
-
-// (platform-name, source path) — the host build lands in build/release;
-// cross-built variants land in build/<platform>/release/.
-val parityExtensionSources: List<Pair<String, File>> = listOf(
-    hostPlatform to parityExtensionRoot.resolve("build/release/extension/trino_parity/trino_parity.duckdb_extension"),
-    "linux-arm64" to parityExtensionRoot.resolve("build/linux-arm64/release/extension/trino_parity/trino_parity.duckdb_extension"),
-    "linux-amd64" to parityExtensionRoot.resolve("build/linux-amd64/release/extension/trino_parity/trino_parity.duckdb_extension"),
-).distinctBy { it.first }  // host might equal linux-arm64 on Linux CI; dedupe
-
-val bundleParityExtension by tasks.registering {
-    description = "Copy every available trino_parity.duckdb_extension into the plugin's classpath resources."
-    group = "build"
-    val outputs = parityExtensionSources.map { (platform, _) ->
-        layout.buildDirectory.file(
-            "generated-resources/parity-extension/dev/brikk/ducklake/trino/plugin/duckdb-extensions/$platform/trino_parity.duckdb_extension"
-        )
-    }
-    inputs.files(parityExtensionSources.map { it.second }).withPropertyName("sources").optional()
-    this.outputs.files(outputs).withPropertyName("bundled")
-    doLast {
-        var bundled = 0
-        for ((platform, source) in parityExtensionSources) {
-            if (!source.isFile) {
-                logger.lifecycle("trino_parity: $platform binary missing at ${source.relativeToOrSelf(rootProject.projectDir)} — skipping (build it with `(cd duckdb-trino-parity-extension && make ${if (platform == hostPlatform) "" else platform})`).")
-                continue
-            }
-            val target = layout.buildDirectory.file(
-                "generated-resources/parity-extension/dev/brikk/ducklake/trino/plugin/duckdb-extensions/$platform/trino_parity.duckdb_extension"
-            ).get().asFile
-            target.parentFile.mkdirs()
-            source.copyTo(target, overwrite = true)
-            bundled++
-            logger.info("trino_parity: bundled $platform from ${source.relativeToOrSelf(rootProject.projectDir)}")
-        }
-        if (bundled == 0) {
-            logger.lifecycle("trino_parity: NO platform binaries bundled — plugin jar will require ducklake.duckdb.parity-extension-path to be set at deploy time.")
-        }
-    }
-}
-
-sourceSets.main {
-    resources.srcDir(layout.buildDirectory.dir("generated-resources/parity-extension"))
-}
-
-tasks.named("processResources") {
-    dependsOn(bundleParityExtension)
 }
 
 tasks.test {
@@ -243,14 +149,6 @@ tasks.test {
     // Podman Docker API compatibility rejects status=restarting filter in ReportLeakedContainers
     systemProperty("ReportLeakedContainers.disabled", "true")
 
-    // Forward the manual-benchmark gate + tunables (see BenchLanceRouteAVsB) to the test JVM.
-    System.getProperties().stringPropertyNames()
-            .filter { it.startsWith("ducklake.bench") }
-            .forEach { name ->
-                systemProperty(name, System.getProperty(name))
-                inputs.property(name, System.getProperty(name))
-            }
-
     // Forward the catalog-backend selector from the Gradle CLI to the test JVM. Gradle
     // doesn't propagate `-D` system properties to forked test workers by default.
     // Without this, `-Dducklake.test.catalog-backend=DUCKDB_QUACK` silently runs PG.
@@ -259,15 +157,6 @@ tasks.test {
         // Treat the property as a task input so Gradle re-runs the test task when the
         // selector value changes instead of returning a cached UP-TO-DATE result.
         inputs.property("ducklake.test.catalog-backend", it)
-    }
-
-    // Forward the trino_parity extension path. When set, DucklakeQueryRunner threads
-    // it into the catalog properties as `ducklake.duckdb.parity-extension-path`, and
-    // the in-process executor LOADs the binary instead of replaying the in-tree SQL
-    // aliases. See https://github.com/brikk/duckdb-trino-parity-extension.
-    System.getProperty("ducklake.test.parityExtensionPath")?.let {
-        systemProperty("ducklake.test.parityExtensionPath", it)
-        inputs.property("ducklake.test.parityExtensionPath", it)
     }
 
     // Upstream DuckLake sqllogictest corpus (TestTrinoCorpusReplay): corpus location
@@ -291,8 +180,8 @@ tasks.test {
         "--add-modules=jdk.incubator.vector",
         "--sun-misc-unsafe-memory-access=allow",
         "--enable-native-access=ALL-UNNAMED",
-        // Arrow's MemoryUtil reaches into private DirectByteBuffer constructor for
-        // off-heap interop with DuckDB's Arrow C-data export.
+        // The standalone DuckDB JDBC driver (cross-engine tests) reaches into private
+        // DirectByteBuffer internals for off-heap interop.
         "--add-opens=java.base/java.nio=ALL-UNNAMED",
         "--add-opens=java.base/java.lang=ALL-UNNAMED",
     )

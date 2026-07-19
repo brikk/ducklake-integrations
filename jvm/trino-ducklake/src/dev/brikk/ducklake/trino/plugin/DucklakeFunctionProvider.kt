@@ -14,7 +14,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import com.google.inject.Inject
-import io.trino.plugin.base.classloader.ClassLoaderSafeTableFunctionProcessorProvider
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.function.FunctionProvider
@@ -23,20 +22,13 @@ import io.trino.spi.function.table.TableFunctionProcessorProvider
 
 /**
  * Dispatches the engine's "who executes this table function?" lookup to the matching
- * processor provider. Today's table functions are the lance searches
- * (`system.lance_vector_search` / `lance_fts` / `lance_hybrid_search`), all executed by
- * [LanceSearchProcessorProvider].
+ * processor provider. The only remaining table function is the change feed, which is always
+ * planned as a scan via [DucklakeMetadata.applyTableFunction]; the processor path is never taken.
  */
-class DucklakeFunctionProvider @Inject constructor(
-        private val executorFactory: DucklakeDuckDbExecutorFactory) : FunctionProvider {
+class DucklakeFunctionProvider @Inject constructor() : FunctionProvider {
 
     override fun getTableFunctionProcessorProvider(
             functionHandle: ConnectorTableFunctionHandle): TableFunctionProcessorProvider {
-        if (functionHandle is LanceSearchHandle) {
-            return ClassLoaderSafeTableFunctionProcessorProvider(
-                    LanceSearchProcessorProvider(executorFactory),
-                    javaClass.classLoader)
-        }
         if (functionHandle is ChangeFeedHandle) {
             // The change feed is always planned as a scan via DucklakeMetadata.applyTableFunction
             // (it reuses the connector's data-file read path + pushdown-free filtering above the

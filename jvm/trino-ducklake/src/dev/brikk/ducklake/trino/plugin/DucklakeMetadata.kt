@@ -64,9 +64,7 @@ import io.trino.spi.connector.RowChangeParadigm
 import io.trino.spi.connector.SaveMode
 import io.trino.spi.connector.SchemaTableName
 import io.trino.spi.connector.SchemaTablePrefix
-import io.trino.spi.connector.SortItem
 import io.trino.spi.connector.TableFunctionApplicationResult
-import io.trino.spi.connector.TopNApplicationResult
 import io.trino.spi.function.table.ConnectorTableFunctionHandle
 import io.trino.spi.connector.ViewNotFoundException
 import io.trino.spi.predicate.Domain
@@ -197,6 +195,11 @@ class DucklakeMetadata(
         val table: DucklakeTable = catalog.getTable(baseTableName.schemaName, baseTableName.tableName, snapshotId)
             ?: return null
 
+        // Fail-loud guard (§7): a table whose declared data_file_format setting is not parquet
+        // references the removed DuckDB/vortex/lance formats. Surface a named error at load time
+        // rather than returning silently-wrong results. Never silently over/under-return.
+        validateDataFileFormatIsParquet(catalog.getTableDataFileFormat(table.tableId), baseTableName)
+
         if (metadataTable != null) {
             val parsed = metadataTable
             return DucklakeMetadataTableHandle(
@@ -229,20 +232,6 @@ class DucklakeMetadata(
             return ConnectorTableMetadata(
                     SchemaTableName("system", tableHandle.feedType.functionName),
                     tableHandle.outputColumns().map { column ->
-                        ColumnMetadata.builder()
-                                .setName(column.columnName)
-                                .setType(column.columnType)
-                                .setNullable(column.nullable)
-                                .build()
-                    })
-        }
-
-        if (tableHandle is LanceSearchTableHandle) {
-            // PTF-scan handle (applyTableFunction). Reached by EXPLAIN / plan printing; the
-            // synthetic name is the backing DuckDB function, columns are the function output.
-            return ConnectorTableMetadata(
-                    SchemaTableName("system", LanceSearchSplitProcessor.scanFunctionFor(tableHandle.search())),
-                    tableHandle.search().outputColumns.map { column ->
                         ColumnMetadata.builder()
                                 .setName(column.columnName)
                                 .setType(column.columnType)
@@ -358,11 +347,6 @@ class DucklakeMetadata(
             return toColumnHandles(getMetadataColumns(tableHandle.metadataTableType))
         }
 
-        if (tableHandle is LanceSearchTableHandle) {
-            // PTF-scan handle: the column handles are fixed at analyze time (no virtuals).
-            return tableHandle.search().outputColumns.associateBy { it.columnName }
-        }
-
         if (tableHandle is ChangeFeedTableHandle) {
             // PTF-scan handle: output columns (snapshot_id/rowid[/change_type] + table columns).
             return tableHandle.outputColumns().associateBy { it.columnName }
@@ -415,7 +399,7 @@ class DucklakeMetadata(
 
     override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics
     {
-        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle
+        if (tableHandle is DucklakeMetadataTableHandle
                 || tableHandle is ChangeFeedTableHandle) {
             return TableStatistics.empty()
         }
@@ -520,7 +504,7 @@ class DucklakeMetadata(
             tableHandle: ConnectorTableHandle,
             analyzeProperties: Map<String, Any>): ConnectorAnalyzeMetadata
     {
-        if (tableHandle is DucklakeMetadataTableHandle || tableHandle is LanceSearchTableHandle
+        if (tableHandle is DucklakeMetadataTableHandle
                 || tableHandle is ChangeFeedTableHandle) {
             throw TrinoException(NOT_SUPPORTED, "ANALYZE is not supported for this table")
         }
@@ -583,20 +567,14 @@ class DucklakeMetadata(
     }
 
     /**
-     * Map a lance search table function to a [LanceSearchTableHandle] *scan*, so the engine's
-     * `RewriteTableFunctionToTableScan` plans an ordinary TableScanNode over the function's
-     * output and [applyFilter] / [applyTopN] compose on it (the table-function processor path
-     * has no pushdown hooks — HANDOFF O2). The processor wiring stays as a fallback.
+     * Map the change-feed table function to a [ChangeFeedTableHandle] *scan*, so the engine's
+     * `RewriteTableFunctionToTableScan` plans an ordinary TableScanNode over the function's output
+     * and [applyFilter] composes on it.
      */
     override fun applyTableFunction(
             session: ConnectorSession,
             handle: ConnectorTableFunctionHandle): Optional<TableFunctionApplicationResult<ConnectorTableHandle>>
     {
-        if (handle is LanceSearchHandle) {
-            return Optional.of(TableFunctionApplicationResult(
-                    LanceSearchTableHandle(handle, TupleDomain.all(), null),
-                    handle.outputColumns.toList()))
-        }
         if (handle is ChangeFeedHandle) {
             return Optional.of(TableFunctionApplicationResult(
                     ChangeFeedTableHandle(
@@ -612,62 +590,6 @@ class DucklakeMetadata(
         return Optional.empty()
     }
 
-    /**
-     * `ORDER BY <natural score column> LIMIT n` over a lance search scan — the documented
-     * exact-global-top-k recipe — trims the per-fragment `k` to `n`: each fragment's top-n is
-     * still a superset of the global top-n, and `topNGuaranteed=false` keeps the engine's own
-     * sort+limit above the scan, so this is purely row-volume reduction.
-     */
-    override fun applyTopN(
-            session: ConnectorSession,
-            handle: ConnectorTableHandle,
-            topNCount: Long,
-            sortItems: List<SortItem>,
-            assignments: Map<String, ColumnHandle>): Optional<TopNApplicationResult<ConnectorTableHandle>>
-    {
-        if (handle !is LanceSearchTableHandle || sortItems.size != 1 || topNCount <= 0) {
-            return Optional.empty()
-        }
-        val sortColumn = assignments[sortItems[0].name] as? DucklakeColumnHandle
-            ?: return Optional.empty()
-        val search = handle.search()
-        // Direction must match the function's natural order; nulls placement is irrelevant
-        // (the order columns are never NULL in lance output — hybrid's nullable `_score` is
-        // not an order column).
-        if (sortColumn.columnName != search.scoreOrderColumn()
-                || sortItems[0].sortOrder.isAscending != search.scoreOrderAscending()) {
-            return Optional.empty()
-        }
-        val newLimitK: Long = minOf(handle.limitK ?: search.k, topNCount)
-        if (newLimitK == (handle.limitK ?: search.k)) {
-            return Optional.empty()
-        }
-        return Optional.of(TopNApplicationResult(handle.copy(limitK = newLimitK), false, false))
-    }
-
-    /**
-     * Lance search PTF scan: push the TupleDomain into the WHERE the page source renders over
-     * the lance_* call. Everything stays in the remaining filter: with prefilter => false
-     * DuckDB applies the WHERE after the search (same rows the engine would keep), and with
-     * prefilter => true lance filters BEFORE searching (more rows can come back) — either way
-     * the engine's re-application above the scan is correct and cheap.
-     */
-    private fun applyLanceSearchFilter(
-            handle: LanceSearchTableHandle,
-            constraint: Constraint): Optional<ConstraintApplicationResult<ConnectorTableHandle>>
-    {
-        val pushed: TupleDomain<DucklakeColumnHandle> = extractDucklakePredicate(constraint.summary)
-        val combined: TupleDomain<DucklakeColumnHandle> = handle.pushedPredicate.intersect(pushed)
-        if (combined == handle.pushedPredicate) {
-            return Optional.empty()
-        }
-        return Optional.of(ConstraintApplicationResult(
-                handle.copy(pushedPredicate = combined),
-                constraint.summary,
-                constraint.expression,
-                false))
-    }
-
     /** Table handles with no TupleDomain pushdown surface (predicates stay in the engine filter). */
     private fun isFilterExemptHandle(handle: ConnectorTableHandle): Boolean =
             handle is DucklakeMetadataTableHandle || handle is ChangeFeedTableHandle
@@ -679,10 +601,6 @@ class DucklakeMetadata(
     {
         if (isFilterExemptHandle(handle)) {
             return Optional.empty()
-        }
-
-        if (handle is LanceSearchTableHandle) {
-            return applyLanceSearchFilter(handle, constraint)
         }
 
         val table = handle as DucklakeTableHandle
@@ -735,20 +653,8 @@ class DucklakeMetadata(
         val combinedEnforced: TupleDomain<DucklakeColumnHandle> = table.enforcedPredicate.intersect(newEnforced)
         val combinedUnenforced: TupleDomain<DucklakeColumnHandle> = table.unenforcedPredicate.intersect(newUnenforced)
 
-        // Function-shape pushdown: anything DuckDbExpressionTranslator recognises in
-        // constraint.getExpression() becomes a SQL fragment AND-ed into the WHERE clause
-        // the .db reader sends to DuckDB. We also keep the same expression in
-        // remainingExpression so Trino re-evaluates it above the scan — see
-        // dev-docs/TODO-pushdown-duckdb.md, "Regime 1 — common-SQL functions". Double
-        // evaluation on .db splits is cheap, parquet splits keep working unchanged.
-        val newExpressionClauses: List<String> = DuckDbExpressionTranslator.translateConjuncts(
-                constraint.expression, constraint.assignments, session)
-        val combinedExpressions: List<String> = mergePushedExpressions(
-                table.pushedExpressions, newExpressionClauses)
-
         if (combinedEnforced == table.enforcedPredicate
-                && combinedUnenforced == table.unenforcedPredicate
-                && combinedExpressions == table.pushedExpressions) {
+                && combinedUnenforced == table.unenforcedPredicate) {
             return Optional.empty()
         }
 
@@ -758,8 +664,7 @@ class DucklakeMetadata(
                 table.tableId,
                 table.snapshotId,
                 combinedUnenforced,
-                combinedEnforced,
-                combinedExpressions)
+                combinedEnforced)
 
         // Fully enforced predicates are omitted from remaining filter.
         // Partially enforced predicates (e.g. temporal transforms) remain so engine verifies exact semantics.
@@ -1025,9 +930,8 @@ class DucklakeMetadata(
     // files written under the old physical type still read correctly). `fieldPath` is the dotted path
     // INCLUDING the top-level column name (e.g. [s, child]). We resolve the child's current Trino type
     // by walking the catalog column tree, validate the promotion, and hand the DuckLake type string to
-    // the catalog. Reads across file generations: parquet self-heals, the DuckDB-engine (non-parquet)
-    // path CASTs the widened field inside struct_pack (NestedFieldReshapePlanner + DuckDbSelectSqlBuilder),
-    // and inlined values convert under the current type.
+    // the catalog. Reads across file generations: parquet self-heals the widened field via field
+    // name/id, and inlined values convert under the current type.
     override fun setFieldType(session: ConnectorSession, tableHandle: ConnectorTableHandle, fieldPath: List<String>, type: Type)
     {
         val handle = tableHandle as DucklakeTableHandle
@@ -1064,8 +968,7 @@ class DucklakeMetadata(
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
     // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
     // Reads of files written before a nested change are reconciled per file: parquet self-heals via
-    // field name/id; non-parquet (DuckDB-engine) reshapes the struct with struct_pack (see
-    // NestedFieldReshapePlanner / DuckDbSelectSqlBuilder).
+    // field name/id.
     override fun addField(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
@@ -1126,7 +1029,6 @@ class DucklakeMetadata(
                 activePartitionSpec,
                 temporalPartitionEncoding,
                 fileFormat,
-                DucklakeSessionProperties.getDuckDbWriterMode(session),
                 resolveWriteSortColumns(
                         handle.tableId, handle.snapshotId, ducklakeColumns, activePartitionSpec, fileFormat))
     }
@@ -1287,7 +1189,6 @@ class DucklakeMetadata(
                 activePartitionSpec,
                 temporalPartitionEncoding,
                 fileFormat,
-                DucklakeSessionProperties.getDuckDbWriterMode(session),
                 // A freshly-created table generally has no sort spec yet (Trino has no
                 // `sorted_by` property; DuckDB's SET SORTED BY runs post-create), so this is
                 // normally empty — but resolving here keeps CTAS consistent with INSERT for the
@@ -1348,6 +1249,25 @@ class DucklakeMetadata(
             return latestFormat
         }
         return DucklakeSessionProperties.FORMAT_PARQUET
+    }
+
+    /**
+     * Fail-loud guard (§7 of PLAN-duckdb-parity-moveout.md): this connector reads only parquet
+     * data files. A catalog whose table-scoped `data_file_format` setting (already decoded by
+     * `CatalogFileFormat.fromStored`) names anything other than parquet references the removed
+     * DuckDB/vortex/lance data-file formats. Throw a named [NOT_SUPPORTED] error naming the table
+     * and the format found, rather than proceeding and returning silently-wrong results. A null
+     * (unset) format means the table inherits parquet — allowed.
+     */
+    private fun validateDataFileFormatIsParquet(dataFileFormat: String?, tableName: SchemaTableName) {
+        if (dataFileFormat != null
+                && !DucklakeSessionProperties.FORMAT_PARQUET.equals(dataFileFormat, ignoreCase = true)) {
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s declares data_file_format '%s', but this connector reads only parquet data " +
+                            "files. The duckdb/vortex/lance data-file formats were removed (see brikk/duckbridge). " +
+                            "Recreate the table as parquet to read it here.",
+                    tableName.schemaName, tableName.tableName, dataFileFormat))
+        }
     }
 
     private fun resolveTableDataPath(schemaName: String, tableName: String, snapshotId: Long): String
@@ -1422,8 +1342,7 @@ class DucklakeMetadata(
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                resolveWriteFormat(session, handle.tableId, handle.snapshotId),
-                DucklakeSessionProperties.getDuckDbWriterMode(session))
+                resolveWriteFormat(session, handle.tableId, handle.snapshotId))
 
         // Build data file ranges for row ID → data file resolution. getDataFiles LEFT-JOINs
         // ducklake_delete_file, returning one row per (data_file, active delete_file) pair —
@@ -1851,20 +1770,6 @@ class DucklakeMetadata(
                 // If parsing fails, skip range
             }
             return null
-        }
-
-        private fun mergePushedExpressions(existing: List<String>, additions: List<String>): List<String>
-        {
-            if (additions.isEmpty()) {
-                return existing
-            }
-            val merged: ImmutableList.Builder<String> = ImmutableList.builder<String>().addAll(existing)
-            for (clause in additions) {
-                if (!existing.contains(clause)) {
-                    merged.add(clause)
-                }
-            }
-            return merged.build()
         }
 
         private fun classifyColumnConstraint(

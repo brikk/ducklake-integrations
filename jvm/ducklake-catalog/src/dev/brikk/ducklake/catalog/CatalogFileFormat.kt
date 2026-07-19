@@ -14,32 +14,23 @@
 package dev.brikk.ducklake.catalog
 
 /**
- * Namespaces this connector's NON-parquet data-file formats when they are persisted to the shared
- * catalog (`ducklake_data_file.file_format` and the table-scoped `data_file_format` setting), so a
- * future upstream DuckLake that introduces a file format of the same bare name (`vortex`, `lance`,
- * `duckdb`, ...) cannot collide with ours in a catalog both engines share. The stored form is
- * `trino/<format>` — the same slash-namespacing convention the connector uses for its view dialect
- * (`trino/brikk`, see `DucklakeMetadata`). `parquet` is left bare: it is the DuckLake spec's own
- * format, read by every engine, and must never be namespaced.
+ * Persistence adapter for this connector's data-file format in the shared catalog
+ * (`ducklake_data_file.file_format` and the table-scoped `data_file_format` setting).
  *
- * All persistence flows through [toStored] (write) / [fromStored] (read), so the connector always
- * works in bare internal names (`vortex`) while the catalog carries the namespaced value. Reads
- * accept BOTH the namespaced form and the legacy bare form written before this change, so existing
- * catalogs keep working with no migration.
+ * Writes are parquet-only now (the experimental duckdb/vortex/lance formats were removed —
+ * see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge), so [toStored] no longer namespaces
+ * anything: it persists the bare format as-is.
+ *
+ * [fromStored] STAYS and still strips the legacy `trino/<format>` namespace prefix that older
+ * catalogs may carry for those removed formats, so the fail-loud guard (§7) sees the bare format
+ * name (`vortex`, `lance`, `duckdb`) and can name it in the error instead of `trino/vortex`.
  */
 internal object CatalogFileFormat {
     private const val NAMESPACE_PREFIX = "trino/"
-    private const val PARQUET = "parquet"
 
-    /** Bare internal format → the value to persist. `parquet` stays bare; others become `trino/<fmt>`. */
-    fun toStored(format: String): String =
-        if (format.equals(PARQUET, ignoreCase = true) || format.startsWith(NAMESPACE_PREFIX)) {
-            format
-        }
-        else {
-            NAMESPACE_PREFIX + format
-        }
+    /** Bare internal format → the value to persist. Writes are parquet-only; persist as-is. */
+    fun toStored(format: String): String = format
 
-    /** Persisted value → bare internal format. Strips our namespace; legacy bare names pass through. */
+    /** Persisted value → bare internal format. Strips the legacy namespace; bare names pass through. */
     fun fromStored(stored: String?): String? = stored?.removePrefix(NAMESPACE_PREFIX)
 }

@@ -47,35 +47,11 @@ open class DucklakeSessionProperties @Inject constructor() {
                     false),
             stringProperty(
                     DATA_FILE_FORMAT,
-                    "Data file format for new writes in this session: 'parquet' or 'duckdb'. " +
+                    "Data file format for new writes in this session. Only 'parquet' is supported. " +
                             "When unset (default), writes inherit the format of the most recent existing data file " +
-                            "in the table (or fall back to 'parquet' for an empty table). An explicit set on this " +
-                            "property overrides that inheritance.",
+                            "in the table (or fall back to 'parquet' for an empty table).",
                     null,
                     { value -> validateDataFileFormat(value) },
-                    false),
-            stringProperty(
-                    DUCKDB_WRITER_MODE,
-                    "Writer implementation for the duckdb format: 'arrow_stream' (default — Page → Arrow → INSERT FROM registered stream, columnar) or 'appender' (JDBC Appender, per-cell JNI; kept for comparison). No effect when data_file_format is 'parquet'.",
-                    WRITER_MODE_ARROW_STREAM,
-                    { value -> validateDuckDbWriterMode(value) },
-                    false),
-            stringProperty(
-                    DUCKDB_READ_MODE,
-                    "Read strategy for duckdb-format data files: 'httpfs' (default; DuckDB streams blocks from S3 directly via the httpfs extension and maintains its own warm cache across queries), 'materialize' (download whole .db file to local tmp then ATTACH; useful when many small reads dominate), or 'auto' (picks per-file based on ducklake.duckdb.auto-httpfs-threshold). No effect when data_file_format is 'parquet'.",
-                    READ_MODE_HTTPFS,
-                    { value -> validateDuckDbReadMode(value) },
-                    false),
-            booleanProperty(
-                    PUSHDOWN_TIMESTAMP_WITH_TIMEZONE,
-                    "Enable pushdown of date/time predicates over TIMESTAMP WITH TIME ZONE columns " +
-                            "to DuckDB on the duckdb-format read path. On by default (the cross-engine " +
-                            "semantic corpus has burned in). Requires successful SET TimeZone on attach " +
-                            "(automatic for all named IANA zones and integer-hour offsets; fractional bare " +
-                            "offsets like '+05:30' get a one-shot WARN and the pushdown silently degrades " +
-                            "to Trino-side evaluation for that attach). Set to false to keep these predicates " +
-                            "above the scan. See dev-docs/archive/REPORT-datetime-tz-handling.md.",
-                    true,
                     false),
             booleanProperty(
                     WRITE_DELETION_VECTORS,
@@ -105,49 +81,13 @@ open class DucklakeSessionProperties @Inject constructor() {
         const val DATA_FILE_FORMAT: String = "data_file_format"
 
         const val FORMAT_PARQUET: String = "parquet"
-        const val FORMAT_DUCKDB: String = "duckdb"
-
-        // Read-only via the DuckDB `vortex` extension (FileScan path). Writes not yet wired.
-        const val FORMAT_VORTEX: String = "vortex"
-
-        // Read + write via the DuckDB `lance` extension. Reads use the FileScan __lance_scan path;
-        // writes go through the Arrow-stream writer (COPY … FORMAT lance) — see
-        // resolveDuckDbReadTarget / DuckDbArrowStreamFileWriter. Lance is a *dataset directory*, not
-        // a single file. See dev-docs/TODO-lance.md + HANDOFF-lance-route-a.md.
-        const val FORMAT_LANCE: String = "lance"
-
-        /** Accepted `data_file_format` values (lowercase) — single source of truth for the validators. */
-        val SUPPORTED_DATA_FILE_FORMATS: Set<String> =
-                setOf(FORMAT_PARQUET, FORMAT_DUCKDB, FORMAT_VORTEX, FORMAT_LANCE)
-
-        const val DUCKDB_WRITER_MODE: String = "duckdb_writer_mode"
-
-        const val WRITER_MODE_APPENDER: String = "appender"
-        const val WRITER_MODE_ARROW_STREAM: String = "arrow_stream"
-
-        const val DUCKDB_READ_MODE: String = "duckdb_read_mode"
-
-        const val READ_MODE_MATERIALIZE: String = "materialize"
-        const val READ_MODE_HTTPFS: String = "httpfs"
-        const val READ_MODE_AUTO: String = "auto"
 
         /**
-         * Step 4 chunk 3: enable Tier C pushdown — date/time functions on
-         * `TIMESTAMP WITH TIME ZONE` arguments. Off by default while the
-         * cross-engine semantic corpus burns in; flip after staging confirms no
-         * regressions. The translator gates WTZ-arg entries on this property; when
-         * off, predicates over WTZ columns stay above the scan (Trino re-evaluates,
-         * correct but slower). When on, the predicates push to DuckDB which
-         * interprets the WTZ instants using the session `TimeZone` that chunk
-         * 2's plumbing set on attach.
-         *
-         * Correctness is bounded by chunk 2's `SET TimeZone` success: if
-         * that failed (rare — only for fractional bare-offset session zones DuckDB
-         * can't normalise), Tier C results may diverge from Trino's reference. The
-         * one-shot WARN logged by both executors is the breadcrumb. See
-         * dev-docs/archive/REPORT-datetime-tz-handling.md.
+         * Accepted `data_file_format` values (lowercase) — single source of truth for the
+         * validators. Parquet only: the experimental duckdb/vortex/lance data-file formats were
+         * removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
          */
-        const val PUSHDOWN_TIMESTAMP_WITH_TIMEZONE: String = "pushdown_timestamp_with_timezone"
+        val SUPPORTED_DATA_FILE_FORMATS: Set<String> = setOf(FORMAT_PARQUET)
 
         const val WRITE_DELETION_VECTORS: String = "write_deletion_vectors"
 
@@ -205,46 +145,5 @@ open class DucklakeSessionProperties @Inject constructor() {
             }
         }
 
-        fun getDuckDbWriterMode(session: ConnectorSession): String =
-            session.getProperty(DUCKDB_WRITER_MODE, String::class.java)
-
-        private fun validateDuckDbWriterMode(value: String) {
-            if (!WRITER_MODE_APPENDER.equals(value, ignoreCase = true) && !WRITER_MODE_ARROW_STREAM.equals(value, ignoreCase = true)) {
-                throw TrinoException(
-                        INVALID_SESSION_PROPERTY,
-                    "$DUCKDB_WRITER_MODE must be one of: '$WRITER_MODE_APPENDER', '$WRITER_MODE_ARROW_STREAM'"
-                )
-            }
-        }
-
-        fun getDuckDbReadMode(session: ConnectorSession): String =
-            session.getProperty(DUCKDB_READ_MODE, String::class.java)
-
-        /**
-         * @return `true` iff the session has opted into Tier C pushdown
-         * (date/time predicates over TIMESTAMP WITH TIME ZONE columns).
-         * Default `false`. A `null` session (the test overload of
-         * `translateConjuncts` that doesn't have one) reads as off,
-         * which keeps the safer "don't push WTZ" behaviour for unit tests
-         * that synthesize calls without a session.
-         */
-        fun isPushdownTimestampWithTimeZone(session: ConnectorSession?): Boolean {
-            if (session == null) {
-                return false
-            }
-            val v = session.getProperty(PUSHDOWN_TIMESTAMP_WITH_TIMEZONE, Boolean::class.javaObjectType)
-            return v != null && v
-        }
-
-        private fun validateDuckDbReadMode(value: String) {
-            if (!READ_MODE_MATERIALIZE.equals(value, ignoreCase = true)
-                    && !READ_MODE_HTTPFS.equals(value, ignoreCase = true)
-                    && !READ_MODE_AUTO.equals(value, ignoreCase = true)) {
-                throw TrinoException(
-                        INVALID_SESSION_PROPERTY,
-                    "$DUCKDB_READ_MODE must be one of: '$READ_MODE_MATERIALIZE', '$READ_MODE_HTTPFS', '$READ_MODE_AUTO'"
-                )
-            }
-        }
     }
 }

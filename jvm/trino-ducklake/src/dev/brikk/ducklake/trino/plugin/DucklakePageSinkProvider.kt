@@ -44,15 +44,12 @@ class DucklakePageSinkProvider @Inject constructor(
     private val parquetWriterConfig: ParquetWriterConfig,
     parquetReaderConfig: ParquetReaderConfig,
     private val fileFormatDataSourceStats: FileFormatDataSourceStats,
-    ducklakeConfig: DucklakeConfig,
     nodeVersion: NodeVersion,
     private val pageIndexerFactory: PageIndexerFactory,
     private val pageSorter: PageSorter
 )
         : ConnectorPageSinkProvider {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
-    private val duckdbTargetWriteBytes: Long = ducklakeConfig
-            .getDuckdbTargetWriteBytes().toBytes()
     private val trinoVersion: String = nodeVersion.toString()
 
     override fun createPageSink(
@@ -122,7 +119,6 @@ class DucklakePageSinkProvider @Inject constructor(
                     fileSystemFactory.create(session),
                     fragmentCodec,
                     parquetWriterConfig,
-                    duckdbTargetWriteBytes,
                     trinoVersion,
                     pageIndexerFactory,
                     pageSorter,

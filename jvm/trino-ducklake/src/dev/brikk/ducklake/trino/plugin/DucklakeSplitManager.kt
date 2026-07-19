@@ -85,6 +85,7 @@ class DucklakeSplitManager @Inject constructor(
 
         log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName)
 
+        validateDataFileFormats(dataFiles, tableHandle)
         validateDeleteFileFormats(dataFiles, tableHandle)
         validateNoUnfilterablePartialFiles(tableHandle)
 
@@ -198,33 +199,26 @@ class DucklakeSplitManager @Inject constructor(
 
     /**
      * Fixed-split sources for the non-data-file handles: metadata tables ($files etc.) and the
-     * lance search PTF scans (`applyTableFunction` rewrite — the handle already carries the
-     * resolved dataset directories, one [LanceSearchSplit] each; predicate/topN pushdown state
-     * rides on the table handle and is consumed by the page source). Null for ordinary tables.
+     * change-feed PTF scan. Null for ordinary tables.
      */
     private fun specialSplitSource(table: ConnectorTableHandle): ConnectorSplitSource? = when (table) {
         is DucklakeMetadataTableHandle -> FixedSplitSource(listOf(DucklakeMetadataSplit(
                 table.baseTableId,
                 table.snapshotId,
                 table.metadataTableType)))
-        is LanceSearchTableHandle -> FixedSplitSource(table.search().datasetPaths.map { LanceSearchSplit(it) })
         is ChangeFeedTableHandle -> FixedSplitSource(listOf(ChangeFeedSplit(table.tableId)))
         else -> null
     }
 
     /**
-     * Splits for table-function execution — today the lance searches (`system.lance_vector_search`
-     * / `lance_fts` / `lance_hybrid_search`). The handle already carries the resolved lance
-     * dataset directories (one split each); the per-split search inputs ride on the handle itself
-     * (see [LanceSearchHandle]).
+     * Splits for table-function execution. The only remaining table function (the change feed) is
+     * always planned as a table scan via [DucklakeMetadata.applyTableFunction], so this path is
+     * never taken; fail clearly if it ever is.
      */
     override fun getSplits(
             transaction: ConnectorTransactionHandle,
             session: ConnectorSession,
             function: io.trino.spi.function.table.ConnectorTableFunctionHandle): ConnectorSplitSource {
-        if (function is LanceSearchHandle) {
-            return FixedSplitSource(function.datasetPaths.map { LanceSearchSplit(it) })
-        }
         throw IllegalArgumentException("Unknown table function handle: ${function.javaClass.name}")
     }
 
@@ -705,6 +699,30 @@ class DucklakeSplitManager @Inject constructor(
 
     companion object {
         private val log: Logger = Logger.get(DucklakeSplitManager::class.java)
+
+        /**
+         * Fail-loud guard (§7 of PLAN-duckdb-parity-moveout.md): this connector reads only parquet
+         * data files. A data file whose `file_format` (already decoded by `CatalogFileFormat.fromStored`
+         * in the catalog layer) is not parquet references the removed DuckDB/vortex/lance formats.
+         * Throw a named [NOT_SUPPORTED] error naming the table and the format found, rather than
+         * skipping the file — under-returning rows is the silent-wrong failure mode this repo's rules
+         * exist to prevent.
+         */
+        private fun validateDataFileFormats(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle) {
+            for (dataFile in dataFiles) {
+                val format: String = dataFile.fileFormat
+                if (!"parquet".equals(format, ignoreCase = true)) {
+                    throw TrinoException(NOT_SUPPORTED, String.format(
+                            "Table %s.%s references a data file with format '%s', but this connector reads only " +
+                                    "parquet data files. The duckdb/vortex/lance data-file formats were removed " +
+                                    "(see brikk/duckbridge). Recreate the table as parquet to read it here. (file: %s)",
+                            tableHandle.schemaName,
+                            tableHandle.tableName,
+                            format,
+                            dataFile.path))
+                }
+            }
+        }
 
         /**
          * Reject snapshots that reference delete files in formats this connector cannot read.

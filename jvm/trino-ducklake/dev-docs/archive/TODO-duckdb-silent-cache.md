@@ -1,3 +1,7 @@
+> **TOMBSTONE (P6, 2026-07):** The DuckDB/vortex/lance data-file formats were removed from
+> `trino-ducklake` (now parquet-only); the DuckDB-engine machinery moved to
+> github.com/brikk/duckbridge. Archived for history only.
+
 # TODO — DuckDB-format read paths & the "silent" DuckDB-side cache
 
 Research note (2026-07-18, updated after review). How the connector reads DuckDB-format

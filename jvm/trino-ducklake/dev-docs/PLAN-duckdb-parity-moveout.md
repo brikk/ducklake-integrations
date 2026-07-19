@@ -4,7 +4,7 @@
 The new connector was built in-tree as `jvm/trino-duckbridge` (naming evolved from the
 draft's `trino-duckdb-parity`: module `trino-duckbridge`, connector name `duckbridge`,
 package `dev.brikk.duckbridge.trino.plugin`) and then moved to its permanent home:
-**`/home/jayson/brokk/duckbridge` → github.com/brikk/duckbridge** (see that repo's
+**`/home/jayson/DEV/brikk/duckbridge` → github.com/brikk/duckbridge** (see that repo's
 `trino-duckbridge/dev-docs/` for P2/P3/P5 notes and the transplant plan). P4 (T4 codec
 evaluation) is deferred pending upstream gizmo FSST work. Remaining in THIS repo:
 **P6 (trino-ducklake strip-down, §4.2 + §7 guard) and P7 (docs)**.

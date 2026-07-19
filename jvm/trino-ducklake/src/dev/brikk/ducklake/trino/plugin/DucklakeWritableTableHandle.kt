@@ -42,8 +42,6 @@ data class DucklakeWritableTableHandle @JsonCreator constructor(
         @param:JsonProperty("temporalPartitionEncoding") val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding,
         @get:JvmName("fileFormat")
         @param:JsonProperty("fileFormat") val fileFormat: String,
-        @get:JvmName("duckDbWriterMode")
-        @param:JsonProperty("duckDbWriterMode") val duckDbWriterMode: String,
         /**
          * The honored write-side sort prefix (see [DucklakeSortColumn]). Non-empty ONLY for the
          * gated case — parquet format, unpartitioned table, a resolvable DuckLake sort spec — in

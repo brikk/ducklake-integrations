@@ -300,30 +300,6 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
     }
 
     @Test
-    fun changeFeedOverNonParquetData() {
-        val table = "test_schema.cf_duckdb"
-        try {
-            computeActual("CREATE TABLE $table WITH (data_file_format = 'duckdb') AS " +
-                    "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, val)")
-            val s2 = snapshot()
-            computeActual("DELETE FROM $table WHERE id = 1")
-            val s3 = snapshot()
-
-            val inserted = rows(
-                    "SELECT rowid, id, val FROM TABLE(ducklake.system.table_insertions('test_schema', 'cf_duckdb', $s2, $s2)) ORDER BY rowid")
-            assertThat(inserted.map { it.getField(2) as String }).containsExactly("a", "b")
-
-            val deleted = rows(
-                    "SELECT rowid, id, val FROM TABLE(ducklake.system.table_deletions('test_schema', 'cf_duckdb', $s3, $s3))")
-            assertThat(deleted).hasSize(1)
-            assertThat(deleted[0].getField(2) as String).isEqualTo("a")
-        }
-        finally {
-            tryDropTable(table)
-        }
-    }
-
-    @Test
     fun projectionSelectsSubsetOfChangeColumns() {
         val table = "test_schema.cf_projection"
         try {

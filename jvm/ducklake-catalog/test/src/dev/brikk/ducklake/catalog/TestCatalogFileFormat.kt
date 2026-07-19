@@ -17,45 +17,28 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 /**
- * Unit coverage of [CatalogFileFormat]: our non-parquet formats persist namespaced (`trino/<fmt>`)
- * so a future upstream format of the same bare name can't collide; `parquet` stays bare; and reads
- * accept BOTH the namespaced form and the legacy bare form (no migration for existing catalogs).
+ * Unit coverage of [CatalogFileFormat] after the P6 moveout: writes are parquet-only, so [toStored]
+ * is now identity (no namespacing); [fromStored] STAYS and still strips the legacy `trino/<fmt>`
+ * namespace so the §7 fail-loud guard sees the bare removed-format name in stale catalogs.
  */
 class TestCatalogFileFormat {
     @Test
-    fun parquetIsNeverNamespaced() {
+    fun toStoredIsIdentity() {
         assertThat(CatalogFileFormat.toStored("parquet")).isEqualTo("parquet")
         assertThat(CatalogFileFormat.toStored("PARQUET")).isEqualTo("PARQUET")
+    }
+
+    @Test
+    fun readStripsLegacyNamespaceAndToleratesBareNames() {
         assertThat(CatalogFileFormat.fromStored("parquet")).isEqualTo("parquet")
-    }
-
-    @Test
-    fun nonParquetFormatsAreNamespacedOnWrite() {
-        assertThat(CatalogFileFormat.toStored("duckdb")).isEqualTo("trino/duckdb")
-        assertThat(CatalogFileFormat.toStored("vortex")).isEqualTo("trino/vortex")
-        assertThat(CatalogFileFormat.toStored("lance")).isEqualTo("trino/lance")
-    }
-
-    @Test
-    fun namespaceIsNotAppliedTwice() {
-        assertThat(CatalogFileFormat.toStored("trino/vortex")).isEqualTo("trino/vortex")
-    }
-
-    @Test
-    fun readStripsNamespaceAndToleratesLegacyBareNames() {
-        // Namespaced (written after this change).
+        // Legacy namespaced removed-format names (written before P6) decode to the bare name so the
+        // guard can name the format in its error.
         assertThat(CatalogFileFormat.fromStored("trino/vortex")).isEqualTo("vortex")
         assertThat(CatalogFileFormat.fromStored("trino/lance")).isEqualTo("lance")
-        // Legacy bare names (written before this change) — backward compatible, no migration.
+        assertThat(CatalogFileFormat.fromStored("trino/duckdb")).isEqualTo("duckdb")
+        // Legacy bare names pass through unchanged.
         assertThat(CatalogFileFormat.fromStored("vortex")).isEqualTo("vortex")
         assertThat(CatalogFileFormat.fromStored("duckdb")).isEqualTo("duckdb")
         assertThat(CatalogFileFormat.fromStored(null)).isNull()
-    }
-
-    @Test
-    fun roundTrips() {
-        for (format in listOf("parquet", "duckdb", "vortex", "lance")) {
-            assertThat(CatalogFileFormat.fromStored(CatalogFileFormat.toStored(format))).isEqualTo(format)
-        }
     }
 }

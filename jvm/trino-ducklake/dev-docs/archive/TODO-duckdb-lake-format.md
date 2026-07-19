@@ -1,3 +1,7 @@
+> **TOMBSTONE (P6, 2026-07):** The DuckDB/vortex/lance data-file formats were removed from
+> `trino-ducklake` (now parquet-only); the DuckDB-engine machinery moved to
+> github.com/brikk/duckbridge. Archived for history only.
+
 # TODO: DuckDB as a first-class data file format
 
 Living tracker for DuckDB-as-DuckLake-data-file-format work.

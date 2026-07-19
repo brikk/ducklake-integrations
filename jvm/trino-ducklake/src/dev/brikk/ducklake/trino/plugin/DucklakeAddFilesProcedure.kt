@@ -89,8 +89,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
         private val typeConverter: DucklakeTypeConverter,
         private val pathResolver: DucklakePathResolver,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
-        private val executorFactory: DucklakeDuckDbExecutorFactory,
-        private val duckDbS3Config: DuckDbS3Config,
         parquetReaderConfig: ParquetReaderConfig,
 ) : Provider<Procedure> {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -106,13 +104,9 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         Procedure.Argument("ALLOW_MISSING", BOOLEAN, false, false),
                         Procedure.Argument("IGNORE_EXTRA_COLUMNS", BOOLEAN, false, false),
                         Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false),
-                        // Optional format selector. Default 'parquet' keeps every existing call
-                        // unchanged. 'lance' registers an externally-written Lance dataset
-                        // *directory* (read via the FileScan __lance_scan path); 'vortex' a
-                        // single externally-written .vortex file (FileScan read_vortex path);
-                        // 'duckdb' a single externally-written .db file (read via the ATTACH
-                        // path, reading its main.t table) — all three without a parquet footer,
-                        // see buildLanceFragment / buildVortexFragment / buildDuckDbFragment.
+                        // Optional format selector. Only 'parquet' (the default) is supported;
+                        // the duckdb/vortex/lance registration modes were removed (see
+                        // PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
                         Procedure.Argument("FILE_FORMAT", VARCHAR, false, utf8Slice("parquet"))),
                 ADD_FILES.bindTo(this),
                 true)
@@ -138,16 +132,12 @@ class DucklakeAddFilesProcedure @Inject constructor(
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
         }
         val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
-        // add_files supports every format the connector can write (parquet + the three opaque
-        // scan/attach formats), which is exactly SUPPORTED_DATA_FILE_FORMATS.
+        // Parquet is the only supported add_files format; the duckdb/vortex/lance registration
+        // modes were removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
         if (format !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "add_files file_format must be 'parquet', 'lance', 'vortex', or 'duckdb', got '$format'")
+                    "add_files file_format must be 'parquet', got '$format'")
         }
-        // lance + vortex + duckdb register opaquely (no footer, no stats, no name map). Partitioned
-        // registration is supported via hive_partitioning => true (the partition values are read
-        // from the key=value/ path layout, identity transforms only — see the gate below).
-        val isScanRegistered: Boolean = format != FORMAT_PARQUET
 
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
@@ -168,15 +158,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
-        // A lance/vortex file is registered opaquely (no column read), so the only way to know
-        // which partition it belongs to is the hive-style key=value/ path layout. Require
-        // hive_partitioning => true for a partitioned table; without it we can't place the file.
-        if (isScanRegistered && activePartitionSpec.isPresent && !hivePartitioning) {
-            throw TrinoException(NOT_SUPPORTED,
-                    "add_files file_format => '$format' into a partitioned table requires hive_partitioning => true "
-                            + "(the partition value is read from the key=value/ path); table \"$schemaName.$tableName\" is partitioned")
-        }
-
         if (activePartitionSpec.isPresent && hivePartitioning) {
             for (field in activePartitionSpec.get().fields) {
                 if (field.transform != DucklakePartitionTransform.IDENTITY) {
@@ -190,19 +171,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
-        // Opaque-format (lance/vortex/duckdb) registration is validated by PROJECTING the table's
-        // data columns out of the source and converting one batch — this fails loudly here on a
-        // missing/renamed/incompatibly-typed column instead of committing an unreadable catalog
-        // entry that only errors at first SELECT. Partition columns live in the hive path, not the
-        // file, so they are excluded from the projection.
-        val partitionColumnIds: Set<Long> = activePartitionSpec
-                .map { spec -> spec.fields.filter { it.transform == DucklakePartitionTransform.IDENTITY }
-                        .map { it.columnId }.toSet() }
-                .orElse(emptySet())
-        val dataColumnHandles: List<DucklakeColumnHandle> = topLevelColumns
-                .filter { it.columnId !in partitionColumnIds }
-                .map { DucklakeColumnHandle(it.columnId, it.columnName, typeConverter.toTrinoType(it.columnType), it.nullsAllowed) }
-
         val processed: MutableSet<String> = mutableSetOf()
         val fragments: MutableList<dev.brikk.ducklake.catalog.DucklakeWriteFragment> = mutableListOf()
 
@@ -214,31 +182,17 @@ class DucklakeAddFilesProcedure @Inject constructor(
             if (!processed.add(normalized)) {
                 continue
             }
-            fragments.add(when (format) {
-                DucklakeSessionProperties.FORMAT_LANCE -> {
-                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildLanceFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
-                }
-                DucklakeSessionProperties.FORMAT_VORTEX -> {
-                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildVortexFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
-                }
-                DucklakeSessionProperties.FORMAT_DUCKDB -> {
-                    val (pv, pid) = scanPartitionValues(filePath, activePartitionSpec, topLevelColumns, hivePartitioning)
-                    buildDuckDbFragment(fileSystem, filePath, pv, pid, dataColumnHandles)
-                }
-                else -> buildFragment(
-                        fileSystem,
-                        filePath,
-                        schemaName,
-                        tableName,
-                        allColumns,
-                        topLevelColumns,
-                        activePartitionSpec,
-                        allowMissing,
-                        ignoreExtraColumns,
-                        hivePartitioning)
-            })
+            fragments.add(buildFragment(
+                    fileSystem,
+                    filePath,
+                    schemaName,
+                    tableName,
+                    allColumns,
+                    topLevelColumns,
+                    activePartitionSpec,
+                    allowMissing,
+                    ignoreExtraColumns,
+                    hivePartitioning))
         }
 
         try {
@@ -373,249 +327,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     // best-effort
                 }
             }
-        }
-    }
-
-    /**
-     * Builds a fragment for an externally-written Lance dataset *directory*. Unlike parquet there
-     * is no footer to read: the path is registered opaquely (one catalog row per dataset, read via
-     * the FileScan `__lance_scan` path), record_count is sourced by counting rows through the same
-     * DuckDB executor the read path uses, and file_size is a best-effort sum of the directory's
-     * files. No column stats and no name map — Lance reads project columns by name, so the
-     * dataset's column names must match the table's (as DuckDB renders them).
-     */
-    /**
-     * Partition values + partition_id for a scan-registered (lance/vortex) file, read from the
-     * hive-style `key=value/` path layout. Empty/null when the table is unpartitioned or
-     * `hive_partitioning` is off. Identity transforms only — the caller already gated non-identity.
-     */
-    private fun scanPartitionValues(
-            filePath: String,
-            activePartitionSpec: Optional<DucklakePartitionSpec>,
-            topLevelColumns: List<DucklakeColumn>,
-            hivePartitioning: Boolean,
-    ): Pair<Map<Int, String?>, Long?> {
-        if (!hivePartitioning || activePartitionSpec.isEmpty) {
-            return emptyMap<Int, String?>() to null
-        }
-        val spec = activePartitionSpec.get()
-        val hiveValues: Map<String, String> = parseHivePartitions(filePath)
-        val columnNameById: Map<Long, String> = topLevelColumns.associate { it.columnId to it.columnName }
-        val out: MutableMap<Int, String?> = linkedMapOf()
-        for (field in spec.fields) {
-            if (field.transform != DucklakePartitionTransform.IDENTITY) {
-                continue
-            }
-            val value: String? = columnNameById[field.columnId]?.let { hiveValues[it] }
-            if (value != null) {
-                out[field.partitionKeyIndex] = value
-            }
-        }
-        return out to (if (out.isEmpty()) null else spec.partitionId)
-    }
-
-    private fun buildLanceFragment(
-            fileSystem: TrinoFileSystem,
-            filePath: String,
-            partitionValues: Map<Int, String?>,
-            partitionId: Long?,
-            dataColumnHandles: List<DucklakeColumnHandle>,
-    ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
-        val recordCount: Long = countRowsViaFileScan(filePath, "__lance_scan", DucklakeSessionProperties.FORMAT_LANCE, dataColumnHandles)
-        val fileSize: Long = bestEffortDirectorySize(fileSystem, filePath)
-        return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
-                filePath,
-                /* pathIsRelative */ false,
-                DucklakeSessionProperties.FORMAT_LANCE,
-                fileSize,
-                /* footerSize */ 0L,
-                recordCount,
-                /* columnStats */ emptyList(),
-                partitionValues,
-                partitionId,
-                /* nameMap */ null)
-    }
-
-    /**
-     * Builds a fragment for an externally-written single `.vortex` file. Like lance, the
-     * registration is opaque: no footer, no column stats, no name map — `read_vortex`
-     * projects columns by name, so the file's column names must match the table's.
-     * record_count is sourced by scanning the file through the same DuckDB executor the
-     * read path uses; file_size comes from the filesystem (vortex is a single file, unlike
-     * the lance dataset directory).
-     */
-    private fun buildVortexFragment(
-            fileSystem: TrinoFileSystem,
-            filePath: String,
-            partitionValues: Map<Int, String?>,
-            partitionId: Long?,
-            dataColumnHandles: List<DucklakeColumnHandle>,
-    ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
-        val fileSize: Long
-        try {
-            val inputFile: TrinoInputFile = fileSystem.newInputFile(Location.of(filePath))
-            if (!inputFile.exists()) {
-                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
-            }
-            fileSize = inputFile.length()
-        }
-        catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
-        }
-        val recordCount: Long = countRowsViaFileScan(filePath, "read_vortex", DucklakeSessionProperties.FORMAT_VORTEX, dataColumnHandles)
-        return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
-                filePath,
-                /* pathIsRelative */ false,
-                DucklakeSessionProperties.FORMAT_VORTEX,
-                fileSize,
-                /* footerSize */ 0L,
-                recordCount,
-                /* columnStats */ emptyList(),
-                partitionValues,
-                partitionId,
-                /* nameMap */ null)
-    }
-
-    /**
-     * Builds a fragment for an externally-written single DuckDB `.db` file. Like lance/vortex the
-     * registration is opaque: no footer, no column stats, no name map — the read path ATTACHes the
-     * file READ_ONLY and projects its `main.t` table by column name, so the file's column names must
-     * match the table's (as DuckDB renders them). record_count is sourced by scanning the file's
-     * `main.t` through the same DuckDB executor the read path uses (ATTACH, not a FileScan table
-     * function); file_size comes from the filesystem (duckdb is a single file, like vortex).
-     */
-    private fun buildDuckDbFragment(
-            fileSystem: TrinoFileSystem,
-            filePath: String,
-            partitionValues: Map<Int, String?>,
-            partitionId: Long?,
-            dataColumnHandles: List<DucklakeColumnHandle>,
-    ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
-        val fileSize: Long
-        try {
-            val inputFile: TrinoInputFile = fileSystem.newInputFile(Location.of(filePath))
-            if (!inputFile.exists()) {
-                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
-            }
-            fileSize = inputFile.length()
-        }
-        catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
-        }
-        val recordCount: Long = countRowsViaAttach(filePath, dataColumnHandles)
-        return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
-                filePath,
-                /* pathIsRelative */ false,
-                DucklakeSessionProperties.FORMAT_DUCKDB,
-                fileSize,
-                /* footerSize */ 0L,
-                recordCount,
-                /* columnStats */ emptyList(),
-                partitionValues,
-                partitionId,
-                /* nameMap */ null)
-    }
-
-    /**
-     * Counts the rows of a scan-registered dataset (lance directory / vortex file) by scanning
-     * it through the DuckDB executor (the same engine the read path uses), reusing the FileScan
-     * source. Doubles as a readability/existence check — a missing or unreadable dataset
-     * surfaces as an error here.
-     */
-    private fun countRowsViaFileScan(
-            url: String,
-            scanFunction: String,
-            extension: String,
-            projection: List<DucklakeColumnHandle>,
-    ): Long {
-        // No DuckDbS3Config even for s3:// — both extensions bind object_store credentials from
-        // process AWS_* env, never DuckDB secrets (HANDOFF O1), so the httpfs + secret setup the
-        // config triggers is pure overhead (and a concurrent-CREATE race on the Quack engine).
-        val target = DuckDbAttachTarget.FileScan(url, scanFunction, extension, null)
-        return countRows(target, extension, url, projection)
-    }
-
-    /**
-     * Counts the rows of a scan-registered DuckDB `.db` file by ATTACHing it READ_ONLY through the
-     * DuckDB executor (the same engine + attach target the read path uses) and scanning its
-     * `main.t` table. Local paths attach directly; `s3://` URLs attach through httpfs with the
-     * catalog's `ducklake_s3` secret (unlike lance/vortex, a `.db` ATTACH reads through DuckDB's own
-     * filesystem layer, which DOES honor the secret — see [DuckDbAttachTarget]). Doubles as a
-     * readability/existence check.
-     */
-    private fun countRowsViaAttach(url: String, projection: List<DucklakeColumnHandle>): Long {
-        val target: DuckDbAttachTarget = if (isS3(url)) {
-            DuckDbAttachTarget.HttpfsS3(url, duckDbS3Config)
-        }
-        else {
-            DuckDbAttachTarget.LocalPath(java.nio.file.Path.of(stripFileScheme(url)))
-        }
-        return countRows(target, DucklakeSessionProperties.FORMAT_DUCKDB, url, projection)
-    }
-
-    /**
-     * Scans [target] through the DuckDB executor and returns the total row count — AND validates
-     * the source schema against the table by [projection]. Projecting the table's data columns by
-     * name makes a missing/renamed column fail (DuckDB "column not found"); converting the first
-     * batch through the read path's Arrow→page converter makes an incompatibly-typed column fail.
-     * Both surface here as a clear `INVALID_PROCEDURE_ARGUMENT` BEFORE `commitAddFiles`, instead of
-     * committing a catalog entry that only errors at first SELECT. An empty [projection] (a table
-     * with only partition columns) falls back to a count-only `SELECT 1` scan.
-     */
-    private fun countRows(
-            target: DuckDbAttachTarget,
-            label: String,
-            url: String,
-            projection: List<DucklakeColumnHandle>,
-    ): Long {
-        val request = DucklakeDuckDbExecutor.ExecutionRequest(
-                target, projection, TupleDomain.all<DucklakeColumnHandle>())
-        // Reuse the read path's converter to type-check the projected columns (positional, by the
-        // requested types). Only the first batch is converted — the Arrow schema is fixed per scan.
-        val converter: DucklakeArrowToPageConverter? =
-                if (projection.isEmpty()) null else DucklakeArrowToPageConverter(projection.map { it.columnType })
-        var count = 0L
-        try {
-            executorFactory.create().execute(request).use { ctx ->
-                val reader = ctx.arrowReader()
-                var validated = false
-                while (reader.loadNextBatch()) {
-                    val root = reader.vectorSchemaRoot
-                    count += root.rowCount.toLong()
-                    if (!validated) {
-                        converter?.convert(root)
-                        validated = true
-                    }
-                }
-            }
-        }
-        catch (e: SQLException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "Failed to read $label dataset (does its schema match the table?): $url", e)
-        }
-        catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read $label dataset: $url", e)
-        }
-        catch (e: RuntimeException) {
-            // Arrow→page conversion of a present-but-incompatibly-typed column throws here.
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "$label dataset schema is incompatible with the table (column type mismatch): $url", e)
-        }
-        return count
-    }
-
-    /** Best-effort sum of a dataset directory's file sizes; 0 if it cannot be listed. */
-    private fun bestEffortDirectorySize(fileSystem: TrinoFileSystem, dirPath: String): Long {
-        return try {
-            var total = 0L
-            val iterator = fileSystem.listFiles(Location.of(dirPath))
-            while (iterator.hasNext()) {
-                total += iterator.next().length()
-            }
-            total
-        }
-        catch (_: IOException) {
-            0L
         }
     }
 

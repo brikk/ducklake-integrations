@@ -66,10 +66,7 @@ class TestDucklakePageSourceProvider {
             FileFormatDataSourceStats(),
             ParquetReaderConfig().toParquetReaderOptions(),
             catalog,
-            DucklakeMaterializedFileCache(),
-            DuckDbS3Config.fromCatalogConfig(emptyMap()),
-            config,
-            DucklakeDuckDbExecutorFactory(config))
+            config)
     }
 
     @AfterEach

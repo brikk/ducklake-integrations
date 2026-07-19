@@ -54,16 +54,18 @@ coverage compounds automatically.
 
 Native DuckDB extension that provides `trino_<name>(...)` functions with semantics matching
 Trino's documented behaviour on Unicode and other edge cases where DuckDB's built-ins
-diverge. Required at attach time by the trino-ducklake plugin's predicate-pushdown layer;
-bundled into the plugin jar as platform-specific resources.
+diverge. Consumed at attach time by the standalone [duckbridge](https://github.com/brikk/duckbridge)
+Trino → DuckDB connector's predicate-pushdown layer. (The `trino-ducklake` connector is
+parquet-only and no longer uses it.)
 
 ## Getting Started
 
 This repo carries three git submodules:
 
-- `duckdb-trino-parity-extension` — the native DuckDB extension consumed by trino-ducklake at
-  attach time. Itself carries the `duckdb` and `extension-ci-tools` submodules from the
-  upstream DuckDB extension template.
+- `duckdb-trino-parity-extension` — the native DuckDB extension consumed by the standalone
+  [duckbridge](https://github.com/brikk/duckbridge) connector at attach time (the `trino-ducklake`
+  connector is parquet-only and no longer uses it). Itself carries the `duckdb` and
+  `extension-ci-tools` submodules from the upstream DuckDB extension template.
 - `jvm/trino-ducklake/ducklake-web` — the DuckLake specification, used as reference docs.
 - `jvm/ducklake-corpus-replay/ducklake` — the upstream `duckdb/ducklake` reference
   implementation, pinned to the release matching our DuckDB version; its `test/sql/` corpus is
@@ -84,8 +86,9 @@ git submodule update --init --recursive
 
 ### Building
 
-The trino-ducklake plugin jar bundles the trino_parity DuckDB extension binary for each
-platform it can find at build time. Build the extension first, then the plugin:
+The [duckbridge](https://github.com/brikk/duckbridge) connector bundles the trino_parity DuckDB
+extension binary for each platform it can find at build time. (The `trino-ducklake` plugin is
+parquet-only and needs no extension.) To build the extension:
 
 ```shell
 # Build the host-platform extension (~30 min first time — DuckDB + vendored ICU)

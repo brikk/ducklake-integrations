@@ -25,16 +25,13 @@ open class DucklakePageSourceProviderFactory @Inject constructor(
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         parquetReaderConfig: ParquetReaderConfig,
         private val catalog: DucklakeCatalog,
-        private val duckDbReadCache: DucklakeMaterializedFileCache,
-        private val duckDbS3Config: DuckDbS3Config,
-        private val ducklakeConfig: DucklakeConfig,
-        private val executorFactory: DucklakeDuckDbExecutorFactory)
+        private val ducklakeConfig: DucklakeConfig)
         : ConnectorPageSourceProviderFactory
 {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun createPageSourceProvider(): DucklakePageSourceProvider
     {
-        return DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, duckDbReadCache, duckDbS3Config, ducklakeConfig, executorFactory)
+        return DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, ducklakeConfig)
     }
 }

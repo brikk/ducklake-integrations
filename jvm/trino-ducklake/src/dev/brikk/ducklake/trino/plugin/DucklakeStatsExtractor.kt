@@ -105,10 +105,8 @@ object DucklakeStatsExtractor {
                 totalNullCount += groupNullCount
                 // value_count is the NON-NULL value count. Parquet num_values counts all values
                 // (nulls included), but the catalog's value_count must hold the non-null count so
-                // that value_count + null_count == row count. This matches the DuckDB writer path
-                // (DuckDbFileWriter derives value_count from COUNT(col) and null_count from
-                // totalCount - value_count) and the DuckLake spec (ducklake_transaction.cpp:
-                // value_count = num_values - null_count). Emitting the raw num_values here would
+                // that value_count + null_count == row count. This matches the DuckLake spec
+                // (ducklake_transaction.cpp: value_count = num_values - null_count). Emitting the raw num_values here would
                 // over-count rows for any column containing nulls, inflating the consumer's
                 // totalCount past the data-file row count and tripping the stats-suppression guard
                 // (and skewing nullsFraction) in DucklakeMetadata.getTableStatistics.

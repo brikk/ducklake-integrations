@@ -24,41 +24,11 @@ sdk env install
 sdk env
 ```
 
-### Prerequisite: build the trino_parity DuckDB extension first
-
-This connector's predicate-pushdown path REQUIRES the
-[`trino_parity` DuckDB extension](../../duckdb-trino-parity-extension/) to be loadable into
-the DuckDB instance at attach time. The gradle build bundles every available platform's
-`.duckdb_extension` binary into the plugin jar as classpath resources, and
-`TrinoParityExtensionResolver` extracts the matching one at runtime.
-
-> **The extension is a git submodule** (and it nests the `duckdb` and
-> `extension-ci-tools` submodules). If you cloned without `--recurse-submodules`,
-> initialise them from the repo root before building:
-> `git submodule update --init --recursive`. Full clone/build walkthrough:
-> [root README → Getting Started](../../README.md#getting-started).
-
-Build at least the host-platform binary before assembling the plugin:
-
-```shell
-cd ../../duckdb-trino-parity-extension
-GEN=ninja make
-```
-
-For the Quack-engine tests (`-Dducklake.test.catalog-backend=DUCKDB_QUACK` and the
-default `TestDucklakeDuckDbExecutorBackends`), the Quack server runs as a Linux
-testcontainer regardless of the host OS. On a macOS dev box you also need a Linux build
-of the extension so the testcontainer can LOAD it:
-
-```shell
-cd ../../duckdb-trino-parity-extension
-make linux-arm64    # native on Apple Silicon
-make linux-amd64    # slower under Rosetta/qemu emulation
-```
-
-The gradle bundling is non-fatal on missing platforms — it'll just ship a plugin jar
-without that variant. At deploy time, set `ducklake.duckdb.parity-extension-path` to
-override the bundled binary with an explicit filesystem path.
+> **Note:** This connector reads and writes **parquet data files only**. The experimental
+> DuckDB/vortex/lance data-file formats and the DuckDB-engine predicate-pushdown path were
+> removed and now live in the standalone **[duckbridge](https://github.com/brikk/duckbridge)**
+> Trino → DuckDB connector. The `ducklake-catalog` module's DuckDB/Quack usage is the
+> metadata/catalog plane and is unaffected.
 
 ### Build the plugin
 
@@ -251,7 +221,7 @@ operators and functions are not available through Trino.
 | Feature | Supported | Notes |
 |---------|:---------:|-------|
 | SELECT / table scans | Yes | |
-| Predicate pushdown (WHERE) | Yes | TupleDomain on all types (both formats); duckdb-format splits also get operator/`CAST`/`LIKE`/function pushdown into DuckDB — see [`README-duckdb-format-pushdown-reference.md`](README-duckdb-format-pushdown-reference.md) |
+| Predicate pushdown (WHERE) | Yes | TupleDomain on all types, with partition-transform classification for pruning |
 | File-level pruning (min/max stats) | Yes | Eliminates whole Parquet files via `ducklake_file_column_stats` (top-level and nested-leaf rows). Trino predicates today land on top-level handles; the nested-leaf stats are emitted on write so DuckDB readers can prune subfield predicates against Trino-written tables. |
 | Partition pruning | Yes | Identity and temporal partitions |
 | Bucket partition pruning | Yes | Murmur3 hash; prunes files for equality predicates (ranges aren't pruned — bucketing scrambles ordering) |
@@ -264,7 +234,7 @@ operators and functions are not available through Trino.
 | Mixed inline + Parquet snapshots | Yes | Both sources unioned transparently |
 | Delete files (merge-on-read) | Yes | Parquet positional delete files |
 | Delete-file evolution across snapshots | Yes | Reads the currently-valid delete file per data file at the active snapshot (spec: at most one delete file per data file per snapshot) |
-| Schema evolution on read | Yes | Renamed columns and columns added after a data file was written read correctly (added columns return NULL for older rows) — across all four data file formats (parquet via field_id; duckdb/vortex/lance via catalog name resolution at the file's write snapshot) |
+| Schema evolution on read | Yes | Renamed columns and columns added after a data file was written read correctly (added columns return NULL for older rows) — parquet self-heals via field_id |
 | Time travel — FOR VERSION AS OF | Yes | By snapshot ID |
 | Time travel — FOR TIMESTAMP AS OF | Yes | By timestamp |
 | Snapshot pinning (session) | Yes | `read_snapshot_id`, `read_snapshot_timestamp` |
@@ -314,9 +284,9 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 |---------|:---------:|-------|
 | INSERT INTO | Yes | Writes Parquet files (ZSTD compression) by default; inherits the table's declared or latest data file format |
 | CREATE TABLE AS SELECT | Yes | |
-| DELETE | Yes | Writes Parquet positional delete files; verified against parquet, duckdb, vortex, and lance data files |
-| UPDATE | Yes | Atomic delete + insert in one snapshot; rewritten rows inherit the table's data file format (all four formats verified). On parquet, rewritten rows keep their original `rowid` (embedded lineage column, `write_row_lineage` on by default) so change feeds pair them as updates and rowids stay stable across engines |
-| MERGE INTO | Yes | WHEN MATCHED THEN UPDATE/DELETE + WHEN NOT MATCHED THEN INSERT; verified against all four data file formats |
+| DELETE | Yes | Writes Parquet positional delete files (or puffin deletion vectors) over parquet data files |
+| UPDATE | Yes | Atomic delete + insert in one snapshot. Rewritten rows keep their original `rowid` (embedded lineage column, `write_row_lineage` on by default) so change feeds pair them as updates and rowids stay stable across engines |
+| MERGE INTO | Yes | WHEN MATCHED THEN UPDATE/DELETE + WHEN NOT MATCHED THEN INSERT |
 | CREATE SCHEMA | Yes | |
 | DROP SCHEMA | Yes | Non-empty schema drop rejected |
 | CREATE TABLE | Yes | Supports nested types and partition spec |
@@ -329,9 +299,9 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 | ALTER TABLE ADD COLUMN | Yes | Supports nested types |
 | ALTER TABLE DROP COLUMN | Yes | |
 | ALTER TABLE RENAME COLUMN | Yes | Field-ID based; existing files read correctly |
-| Partitioned writes | Yes | Identity and temporal transforms; verified for parquet, duckdb, vortex, and lance data files (hive-style `key=value/` paths per format) |
+| Partitioned writes | Yes | Identity and temporal transforms (hive-style `key=value/` paths) |
 | Bucket partitioned writes | Yes | `partitioned_by = ARRAY['bucket(N, col)']`; Iceberg-compatible Murmur3 hash |
-| Register existing files (`add_files`) | Yes | `CALL system.add_files(...)`; parquet (IDENTITY hive partitioning supported), lance dataset directories, and vortex files (`file_format => 'lance'`/`'vortex'`) |
+| Register existing files (`add_files`) | Yes | `CALL system.add_files(...)`; parquet only (IDENTITY hive partitioning supported) |
 | Cross-engine Parquet compatibility | Yes | `field_id` annotations for DuckDB interop |
 | Concurrent conflict detection | Yes | Snapshot lineage check; aborts on stale base |
 | TRUNCATE TABLE | Yes | Bulk metadata clear (end-snapshots all data/delete files + inlined rows; O(1), no delete files written); keeps the schema. Clears inlined rows too, so it works where DELETE is gated. Time travel still sees pre-truncate rows. |
@@ -340,8 +310,8 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 | COMMENT ON TABLE | Yes | Stored as the `comment` tag in `ducklake_tag`; visible to DuckDB |
 | COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
 | DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Run `CALL system.flush_inlined_data(schema, table)` first (or `data_inlining_row_limit = 0`) to make the rows file-resident, then DELETE/UPDATE/MERGE work. Reads over inlined+file mixes work. |
-| ALTER TABLE SET TYPE | Yes | Widening type promotions only (`ALTER COLUMN c SET DATA TYPE …`): the signed-integer chain (TINYINT→SMALLINT→INTEGER→BIGINT), integer→REAL/DOUBLE, REAL→DOUBLE, and TIMESTAMP→TIMESTAMP WITH TIME ZONE; a same-type change is a no-op. Narrowing / incompatible changes are rejected at DDL time so files written under the old physical type stay readable. Files written before the change read at the widened type: parquet self-heals via the reader's type coercion, the non-parquet (duckdb/vortex) path CASTs the old physical column to the current type, and inlined values convert under the current type. Nested struct-field promotions (`ALTER COLUMN s.child SET DATA TYPE …`, any nesting depth) are supported too: the DuckDB-engine path CASTs the widened field inside the reshaping `struct_pack`. List-element / map-value type changes are out of scope. |
-| ALTER TABLE ADD/DROP FIELD | Yes | Nested struct field add/drop (`ADD COLUMN s.child …` / `DROP COLUMN s.child`) on every data format. Files written before the change are reconciled per file: parquet self-heals (struct fields bind by name/field-id, missing subfields read NULL); non-parquet (duckdb/vortex) reshapes the struct with `struct_pack` — added subfields read NULL, dropped ones are skipped (no positional misbind), renames/reorders map by column_id, and a NULL struct stays NULL. Lance is excluded (its ROW writes are gated upstream, so a struct can't be written to a lance file). See dev-docs/DESIGN-nested-field-evolution.md. |
+| ALTER TABLE SET TYPE | Yes | Widening type promotions only (`ALTER COLUMN c SET DATA TYPE …`): the signed-integer chain (TINYINT→SMALLINT→INTEGER→BIGINT), integer→REAL/DOUBLE, REAL→DOUBLE, and TIMESTAMP→TIMESTAMP WITH TIME ZONE; a same-type change is a no-op. Narrowing / incompatible changes are rejected at DDL time so files written under the old physical type stay readable. Files written before the change read at the widened type: parquet self-heals via the reader's type coercion, and inlined values convert under the current type. Nested struct-field promotions (`ALTER COLUMN s.child SET DATA TYPE …`, any nesting depth) are supported too. List-element / map-value type changes are out of scope. |
+| ALTER TABLE ADD/DROP FIELD | Yes | Nested struct field add/drop (`ADD COLUMN s.child …` / `DROP COLUMN s.child`). Files written before the change are reconciled per file: parquet self-heals (struct fields bind by name/field-id, missing subfields read NULL). See dev-docs/DESIGN-nested-field-evolution.md. |
 | ANALYZE | Yes | Refreshes the cached table-level stats (`ducklake_table_stats` + `ducklake_table_column_stats`). The engine scans for an authoritative live row count; the per-column aggregates are rebuilt from the authoritative per-file stats, tightening any min/max that incremental maintenance left stale after a delete. Stats are otherwise maintained on every write, so ANALYZE is a no-op on a never-drifted table. A non-versioned side-table refresh: no new snapshot, `next_row_id` preserved. |
 | Sorted writes | Yes | When a table carries a DuckLake sort spec (set via DuckDB `ALTER TABLE … SET SORTED BY (…)` — there is no Trino `sorted_by` property yet), a Trino INSERT physically orders the rows it writes into each parquet data file by the spec's honored leading prefix (same prefix the read side advertises as a `SortingProperty`). Gated to parquet + unpartitioned tables with a resolvable spec; partitioned / non-parquet / no-spec writes are unchanged. In-memory sort (buffers the INSERT's pages), so it targets the bounded gated scope. |
 
@@ -374,100 +344,23 @@ catalogs; it should not be needed against any v1-conformant catalog.
 | Conservative mode for mixed inline+Parquet | Yes | Row count preserved, column stats suppressed |
 | Conservative mode for schema evolution | Yes | Stats suppressed when coverage is incomplete |
 
-## DuckDB-Format Data Files (EXPERIMENTAL)
+## Non-Parquet Data Files (removed — moved to duckbridge)
 
-> **Experimental.** The `.db`-format read/write path is feature-complete with cross-engine tests, but the surface is still evolving (executor abstractions, session properties, write modes). Default to parquet for production workloads unless you've evaluated the trade-offs.
+This connector reads and writes **parquet data files only** (delete files: parquet/puffin;
+inlined data unchanged). The experimental **duckdb** (`.db`), **vortex**, and **lance**
+data-file formats — along with the DuckDB-engine read/write path, function/expression pushdown,
+and the lance vector/FTS/hybrid search table functions — were removed and now live in the
+standalone **[duckbridge](https://github.com/brikk/duckbridge)** Trino → DuckDB connector.
 
-DuckLake's `ducklake_data_file.file_format` column enumerates the file format per data file; values today are `parquet` and `duckdb`. A duckdb-format split is one whose data lives in a single-table DuckDB database file (`.db`).
-
-**Predicate & function pushdown.** duckdb-format splits get an extra pushdown layer on top of the standard TupleDomain + file-pruning: the connector translates Trino predicates — standard operators, `CAST`, `LIKE`, `concat`, and ~95 catalogued functions (string, numeric, regex, encoding, distance, hash, date/time) — into DuckDB SQL and evaluates them server-side. Parquet splits use Trino's standard reader and don't get this layer. **Full reference (every operator, transform, and function):** [`README-duckdb-format-pushdown-reference.md`](README-duckdb-format-pushdown-reference.md). Roadmap/history: [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md).
-
-**Read modes** (session property `duckdb_read_mode`, default `httpfs`):
-
-| Mode | Behaviour |
-|---|-------|
-| `materialize` | Download the `.db` to a local tmp cache, then `ATTACH 'path' AS lake (READ_ONLY)`. Fast steady-state when files are local; the cache amortises ATTACH cost across queries. |
-| `httpfs` | Load DuckDB's httpfs extension, `ATTACH 's3://...' AS lake (READ_ONLY)`. DuckDB streams blocks server-side; no whole-file download. |
-| `auto` | Pick per file based on the `ducklake.duckdb.auto-httpfs-threshold` config — files below the threshold materialize, files at or above stream via httpfs. |
-
-**Executors** (the in-process strategy is the default; Quack is gated on upstream RPC maturity):
-
-- **In-process** — DuckDB embedded via `jdbc:duckdb:`. Per-split connection lifecycle. A DuckDB crash takes the JVM down.
-- **Quack** — out-of-process DuckDB reached via Quack RPC. The local JDBC client ships SQL server-side via `quack_query_by_name`. Sidecar crash recoverable independently of the Trino worker.
-
-Both executors set `SET TimeZone = '<session_zone>'` on attach (required for Tier C predicate pushdown correctness over `TIMESTAMP WITH TIME ZONE`) and install the same `trino_*` macro library so function pushdown lands consistently on both paths.
-
-**Write modes** (session property `duckdb_writer_mode`, default `arrow_stream`):
-
-| Mode | Notes |
-|---|-------|
-| `arrow_stream` | Page → Arrow → `INSERT FROM` registered stream. Columnar end-to-end. |
-| `appender` | JDBC Appender; per-cell JNI calls. Kept for comparison; the Arrow path is faster. |
-
-**Mixed-format tables.** A DuckLake table can carry both parquet and duckdb splits within the same logical table. The connector returns translated function-shape conjuncts both as a pushdown hint (used by `.db` splits) AND in `remainingExpression` (so Trino re-evaluates above the scan for parquet splits). Each path handles its own correctness independently.
-
-**User-visible behaviour change (chunk 3.5):** `SELECT timestamptz_col FROM duckdb_format_table` renders in the session zone — matching how Iceberg / Hive / parquet `isAdjustedToUtc=true` connectors return WTZ. The connector's Arrow-to-Page converter resolves the TimeZone from the Arrow schema TZ instead of hardcoding UTC. Parquet-format reads through Trino's standard parquet reader still render in UTC (upstream Trino behaviour); mixed-format tables show this asymmetry today.
-
-**Complex types** (`ROW`/`MAP`/`ARRAY`, nested arbitrarily) read and write through the
-duckdb-format path. List *elements* are limited to scalars on write; complex columns get
-value/null-count stats only (no min/max).
-
-## Vortex Data Files (EXPERIMENTAL)
-
-> **Experimental**, like the other non-parquet formats.
-
-`data_file_format = 'vortex'` writes each CTAS/INSERT payload as a single
-[Vortex](https://vortex.dev) file via DuckDB's `vortex` extension (`COPY ... (FORMAT vortex)`),
-and reads dispatch through the same DuckDB execution engine as the `.db` format — but via the
-`read_vortex('<path>')` table function instead of an ATTACH. TupleDomain predicates render into
-the scan's `WHERE` and evaluate inside DuckDB.
-
-- **Types:** scalars, `ARRAY` of scalar, and `ROW` columns round-trip (NULL rows included).
-  **`MAP` writes are rejected at schema time** — the DuckDB vortex extension fails *natively*
-  (crash/hang, not an error) on MAP COPY (probed 2026-06-11); use parquet or duckdb format for
-  MAP columns.
-- **Read modes:** the `.db` format's materialize-vs-httpfs decision is reused. Sub-threshold s3
-  files download through Trino's filesystem (credentials handled by Trino). **Streaming s3 reads
-  need the `AWS_*` env channel** on the executing process: `read_vortex` binds through Rust
-  `object_store`, which ignores DuckDB httpfs secrets — same channel as lance, see
-  [README-lance-format.md § S3 datasets](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel).
-  (The vortex COPY *write* path goes through Trino's filesystem upload and needs no env.)
-
-## Lance Data Files & Vector Search (EXPERIMENTAL)
-
-> **Experimental**, like the other non-parquet formats.
-
-`data_file_format = 'lance'` stores each write as a [Lance](https://lancedb.github.io/lance/)
-**dataset directory** and enables three search table functions over the table's lance data:
-
-```sql
-SELECT id, title, _distance
-FROM TABLE(ducklake.system.lance_vector_search(
-        schema_name => 'vectors', table_name => 'docs',
-        column_name => 'emb', query_vec => ARRAY[0.12, 0.85], k => 10))
-ORDER BY _distance LIMIT 10;
-```
-
-| Capability | Notes |
-|---|---|
-| CTAS / INSERT (`data_file_format='lance'`) | Scalars + `ARRAY` of scalar; embedding columns (`ARRAY(REAL)`) round-trip into `lance_vector_search`. `ROW` writes are gated (upstream NULL-struct loss) and `MAP` writes are gated at schema time (lance < format 2.2 fails the COPY at close) — register externally-written datasets via `add_files` instead. |
-| Reads | `__lance_scan('<dataset dir>')` through the DuckDB engine; TupleDomain pushdown; full complex-type reads |
-| `add_files(file_format => 'lance')` | Register externally-produced lance datasets (the embedding-pipeline route) |
-| `lance_vector_search` | k-NN over an embedding column; appends `_distance` |
-| `lance_fts` | BM25 full-text (no index required); appends `_score` |
-| `lance_hybrid_search` | Combined vector + text with optional `alpha`; appends `_distance`, `_score`, `_hybrid_score` |
-| Search pushdown | `WHERE` / `ORDER BY <score> LIMIT n` / projection push down (`prefilter => true` for filter-then-search semantics) |
-| s3 datasets | Quack engine + `AWS_*` sidecar env (lance ignores DuckDB secrets) |
-| Upstream churn guard | `TestLanceExtensionCanary` pins the verified extension build |
-
-**Full reference — arguments, exact-top-k recipe, prefilter pushability, s3 channel, gates:**
-[`README-lance-format.md`](README-lance-format.md). Architecture decision (DuckDB extension vs
-lance-core JNI): [`dev-docs/archive/REPORT-lance-route-a-vs-b.md`](dev-docs/archive/REPORT-lance-route-a-vs-b.md).
+A catalog that still references a non-parquet `file_format` (from an older deployment) fails
+loud with a named `NOT_SUPPORTED` error at metadata load and split generation, rather than
+returning silently-wrong results. The `ducklake-catalog` module's DuckDB/Quack usage is the
+metadata/catalog plane and is unaffected.
 
 ## Change Feed
 
 Three table functions expose the rows that changed between two snapshots (DuckLake's data change
-feed), for **all** data file formats:
+feed):
 
 ```sql
 -- Rows changed between snapshots 3 and 4 (bounds inclusive):
@@ -515,7 +408,7 @@ Set on `CREATE TABLE ... WITH (...)` and `CREATE TABLE ... AS SELECT ... WITH (.
 | Property | Type | Description |
 |----------|------|-------------|
 | `partitioned_by` | `ARRAY(VARCHAR)` | Partition columns with optional transform, e.g. `ARRAY['region', 'year(event_date)', 'bucket(4, customer_id)']`. See [Partitioning](#partitioning). |
-| `data_file_format` | `VARCHAR` | The table's DECLARED data file format: `'parquet'` (default), `'duckdb'`, `'vortex'`, or `'lance'`. Beats the session property at CREATE time and is persisted as a table-scoped setting in `ducklake_metadata`, so later plain INSERTs (including into a still-empty `CREATE TABLE`) keep writing the declared format. Undeclared tables instead inherit the format of their most recent data file. The non-parquet formats are **namespaced in the catalog** as `trino/<format>` (e.g. `trino/vortex`) — you always write/read the bare name (`'vortex'`), but the persisted `file_format` carries the `trino/` prefix so a future upstream DuckLake format of the same bare name can't collide in a shared catalog. `parquet` is stored bare (the DuckLake spec's own format). |
+| `data_file_format` | `VARCHAR` | The table's DECLARED data file format. Only `'parquet'` (the default) is supported; the experimental duckdb/vortex/lance formats were removed (see [duckbridge](https://github.com/brikk/duckbridge)). |
 | `location` | `VARCHAR` | Per-table storage path landed in `ducklake_table.path`. Values with a URI scheme (`s3://`, `gs://`, `file://`, `abfss://`, ...) are stored absolute (`path_is_relative=false`); other values are stored relative to the schema's data path. Trailing slash is appended if missing; `..` segments are rejected. Defaults to `<tableName>/`. |
 
 Example:
@@ -541,12 +434,12 @@ operates on whichever DuckLake catalog you invoke through.
 
 | Procedure | Description |
 |-----------|-------------|
-| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing data files of an existing DuckLake table without rewriting. `file_format => 'parquet'` (default) mirrors upstream's `ducklake_add_data_files`; `'lance'` registers externally-written Lance dataset directories and `'vortex'` single `.vortex` files (both opaquely: row count scanned through the read engine, no stats/name map). Partitioned lance/vortex datasets are registered with `hive_partitioning => true`, which learns identity-partition values from the `key=value/` path (the partition column must be present in the file). |
+| `add_files(schema_name, table_name, files, [allow_missing], [ignore_extra_columns], [hive_partitioning], [file_format])` | Register pre-existing **parquet** data files of an existing DuckLake table without rewriting (`file_format => 'parquet'`, the only supported value; mirrors upstream's `ducklake_add_data_files`). Partitioned datasets are registered with `hive_partitioning => true`, which learns identity-partition values from the `key=value/` path (the partition column must be present in the file). |
 | `flush_inlined_data([schema_name], [table_name])` | Materialize inlined rows (written cross-engine by DuckDB under `data_inlining_row_limit`) into a Parquet data file and clear the inlined rows, atomically. Unblocks DELETE/UPDATE/MERGE, which are gated while a table has inlined rows. **Scope by args:** both → one table; `schema_name` only → every table in the schema; neither → every table with inlined rows across the catalog (partitioned tables are skipped with a log in the wide scopes; an explicit single-table call errors on partitioned). No-op when nothing is inlined. |
 | `rewrite_data_files(schema_name, table_name, [file_size_threshold], [target_file_size], [reclaim_sources_immediately])` | Compaction / `optimize`: merge a table's small data files into fewer larger files through the real read path (so delete files / partial files / schema evolution all apply). Per-partition groups for partitioned tables; size-bounded output (`target_file_size`, default 512MB). Registers the merged files + end-snapshots the sources atomically; `reclaim_sources_immediately => true` writes the partial-emitting (`merge_adjacent`) variant that deletes sources outright. |
-| `remove_orphan_files([schema_name], [table_name], [retention_threshold], [dry_run])` | Delete files under the target data path(s) that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). **Only DuckLake-written residue is deleted** — `ducklake-`-prefixed data/delete files (`.parquet`/`.puffin`/`.db`/`.vortex`) and `ducklake-*.lance` dataset dirs; foreign files a user parked under the path (`_SUCCESS`, `foo.txt`, their own non-`ducklake-` parquet) are never touched. This is broader than upstream's sweep, which lists `.parquet`/`.puffin` as of DuckLake 1.5.5 (we also reclaim `.db`/`.vortex`/`.lance` residue). **Scope by args:** both → one table; `schema_name` only → the whole schema; neither → the whole catalog (the wide scopes reclaim residue from a failed `CREATE TABLE` that a per-table call can't name). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — a grace period protecting files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` reports and removes nothing. Touches storage only. |
+| `remove_orphan_files([schema_name], [table_name], [retention_threshold], [dry_run])` | Delete files under the target data path(s) that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). **Only DuckLake-written residue is deleted** — `ducklake-`-prefixed data/delete files (`.parquet`/`.puffin`); foreign files a user parked under the path (`_SUCCESS`, `foo.txt`, their own non-`ducklake-` parquet) are never touched. **Scope by args:** both → one table; `schema_name` only → the whole schema; neither → the whole catalog (the wide scopes reclaim residue from a failed `CREATE TABLE` that a per-table call can't name). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — a grace period protecting files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` reports and removes nothing. Touches storage only. |
 | `expire_snapshots([retention_threshold], [snapshot_ids], [dry_run])` | Catalog-wide. Remove old DuckLake snapshots and reclaim the data/delete files only they referenced. Select either by `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention`) or an explicit `snapshot_ids` ARRAY (not floored); the latest snapshot is never expirable. Plain catalog transaction (no new snapshot); only **schedules** dead files for deletion — run `cleanup_old_files` to reclaim the space. `dry_run => true` lists the snapshots that would be expired. Mirrors upstream `ducklake_expire_snapshots`. |
-| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). Single-file formats (parquet/duckdb/vortex) and lance dataset **directories** are both reclaimed (a lance data file is a directory, removed recursively). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
+| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
 
 ### `add_files`
 
@@ -597,8 +490,7 @@ lock (a file young enough to still be referenced by an in-flight, possibly cross
 never touched), and the threshold is floored by the `ducklake.remove-orphan-files.min-retention`
 config so it can't be set dangerously low. The known set spans every data/delete-file path the
 catalog references at **any** snapshot (so end-snapshotted-but-not-yet-cleaned files are safe) plus
-files already scheduled for deletion; lance/vortex dataset *directories* are matched by prefix so
-their member files are never mistaken for orphans. Touches storage only — no snapshot, no catalog
+files already scheduled for deletion. Touches storage only — no snapshot, no catalog
 mutation. See [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
 
 ### `expire_snapshots` + `cleanup_old_files`
@@ -680,10 +572,6 @@ release, so conformance coverage compounds for free:
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
 | `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
-| `ducklake.duckdb.auto-httpfs-threshold` | No | `64MiB` | **EXPERIMENTAL.** File-size threshold for the `auto` setting of `duckdb_read_mode`. Files at or above this size stream via httpfs; smaller files materialize to local tmp. No effect when `data_file_format` is `parquet`. |
-| `ducklake.execution-engine` | No | in-process | **EXPERIMENTAL.** DuckDB execution engine for non-parquet splits: in-process (default) or `quack` (out-of-process sidecar over Quack RPC; requires the `ducklake.quack.*` properties below). |
-| `ducklake.quack.host` / `ducklake.quack.port` / `ducklake.quack.token` | With `quack` | — | **EXPERIMENTAL.** Quack sidecar endpoint + auth token. For lance/vortex s3 datasets, the sidecar container's environment also carries the `AWS_*` credential channel (see [README-lance-format.md](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel)). |
-| `ducklake.duckdb.parity-extension-path` | No | bundled | Filesystem path to the `trino_parity.duckdb_extension` binary; overrides the platform-matched binary bundled into the plugin jar. REQUIRED (server-side path) when the Quack engine is used. |
 | `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
 | `ducklake.temporal-partition-encoding-read-leniency` | No | `true` | **Deprecated.** Companion to the above; accepts both encodings on read |
 
@@ -693,10 +581,7 @@ release, so conformance coverage compounds for free:
 |----------|---------|-------------|
 | `read_snapshot_id` | — | Pin reads in this session to a snapshot ID |
 | `read_snapshot_timestamp` | — | Pin reads in this session to an ISO-8601 instant |
-| `data_file_format` | session-inherited | `'parquet'`, `'duckdb'`, `'vortex'`, or `'lance'`. Controls the format of writes (CTAS / INSERT) in this session. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). The table-level `data_file_format` property overrides this for a specific `CREATE`. All non-parquet formats are **EXPERIMENTAL**. |
-| `duckdb_writer_mode` | `arrow_stream` | **EXPERIMENTAL.** `'arrow_stream'` (default, columnar) or `'appender'` (JDBC Appender; kept for comparison). No effect when `data_file_format` is `parquet`. |
-| `duckdb_read_mode` | `httpfs` | **EXPERIMENTAL.** Read strategy for duckdb-format data files: `'httpfs'` (DuckDB streams blocks from S3), `'materialize'` (download `.db` to local tmp then ATTACH), or `'auto'` (per-file decision against `ducklake.duckdb.auto-httpfs-threshold`). No effect when `data_file_format` is `parquet`. |
-| `pushdown_timestamp_with_timezone` | `true` | Enable function pushdown of date/time predicates over `TIMESTAMP WITH TIME ZONE` columns on the duckdb-format read path (Tier C). On by default. Requires successful `SET TimeZone` on attach — automatic for all named IANA zones and integer-hour offsets; fractional bare-offset session zones get a one-shot WARN and pushdown silently degrades to Trino-side evaluation. Set to `false` to keep these predicates above the scan. See [`dev-docs/TODO-pushdown-duckdb.md`](dev-docs/TODO-pushdown-duckdb.md). |
+| `data_file_format` | session-inherited | Only `'parquet'` is supported. When unset, inherits the format of the most recent existing data file in the table (parquet for empty tables). |
 
 Snapshot resolution precedence: query clause > session property > catalog config > current snapshot.
 
@@ -766,8 +651,8 @@ research item.
   (`(file_path, pos)` with file-local positions — readable by DuckDB); set the session property
   `write_deletion_vectors = true` to emit `.puffin` deletion-vector files instead (matching DuckDB's
   `write_deletion_vectors` option). Both shapes are read by Trino and DuckDB. Position-delete
-  filtering is verified against parquet, duckdb, vortex, and lance data files, and both directions
-  (Trino-writes/DuckDB-reads and DuckDB-writes/Trino-reads) are cross-engine tested for each format.
+  filtering over parquet data files is cross-engine tested in both directions
+  (Trino-writes/DuckDB-reads and DuckDB-writes/Trino-reads).
 - Row lineage is both read AND written (session property `write_row_lineage`, on by default).
   Trino's UPDATE/MERGE rewrites AND `rewrite_data_files` compaction embed each row's original
   rowid (`_ducklake_internal_row_id`, parquet field-id `2147483540` — DuckDB's own encoding), so
@@ -775,32 +660,15 @@ research item.
   (Trino's `table_changes` AND DuckDB's) pair rewrites into `update_preimage`/`update_postimage`,
   and the `$row_id` virtual resolves the preserved ids on plain reads. Parquet data files only;
   cross-engine tested (DuckDB observes the same rowid after a Trino lineage UPDATE).
-- The duckdb-format data file path (`data_file_format = 'duckdb'`) is **EXPERIMENTAL**.
-  Read modes (`materialize` / `httpfs` / `auto`), writer modes (`arrow_stream` / `appender`),
-  function pushdown, and Tier C TIMESTAMP-WITH-TIME-ZONE semantics are all wired and
-  tested but the API surface is still evolving — see [DuckDB-Format Data Files](#duckdb-format-data-files-experimental).
-  The user-visible WTZ rendering change (session-zone instead of UTC) applies to
-  duckdb-format reads only; parquet-format reads through Trino's standard reader
-  still render WTZ in UTC.
-- Vortex and lance formats are **EXPERIMENTAL** with format-specific write gates from upstream
-  issues: vortex rejects `MAP` columns at schema time (native failure in the vortex extension's
-  MAP COPY), lance rejects `ROW` columns (NULL-struct loss in the arrow-scan → lance COPY leg)
-  and `MAP` columns (the installed lance extension needs file format 2.2+ and otherwise fails
-  the COPY at close) at schema time. Reads of externally-written files with those types work. Streaming s3 reads
-  of both formats require the `AWS_*` env credential channel (Rust `object_store` ignores
-  DuckDB httpfs secrets) — see [README-lance-format.md](README-lance-format.md#s3-datasets--the-aws_-env-credential-channel).
-- The lance search table functions reject (v1): mixed-format tables, tables with row-level
-  deletes, and s3-resident datasets on the in-process engine (Quack-only).
+- The experimental **duckdb** / **vortex** / **lance** data-file formats, the DuckDB-engine
+  read/write path, function/expression pushdown, and the lance search table functions were
+  removed and moved to the standalone **[duckbridge](https://github.com/brikk/duckbridge)**
+  Trino → DuckDB connector (see [Non-Parquet Data Files](#non-parquet-data-files-removed--moved-to-duckbridge)).
 
 ## Additional Documentation
 
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
 - [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
 - [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
-- [Pushdown reference (DuckDB-format reads)](README-duckdb-format-pushdown-reference.md) — complete current surface: predicate/pruning, operators, transforms, all ~95 functions
-- [Lance format & vector search reference](README-lance-format.md) — search function arguments, exact-top-k recipe, prefilter semantics, s3 channel, write gates, upstream canary
-- [TODO for pushdown](dev-docs/TODO-pushdown-duckdb.md) — Pushdown program tracker (steps 1-6, catalog totals, round notes)
-- [TODO for DuckDB-format support](dev-docs/TODO-duckdb-lake-format.md) — Living tracker for the `.db` format feature (phases, test gaps)
-- [TODO for lance](dev-docs/TODO-lance.md) / [TODO for vortex](dev-docs/TODO-vortex.md) — format trackers incl. probe findings and the Route A/B decision record
-- [Lance Route A-vs-B benchmark](dev-docs/archive/REPORT-lance-route-a-vs-b.md) — why the DuckDB-extension architecture stays primary
-- [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, the date/time pushdown program design + empirical TZ findings, and the per-extension community catalog detail
+- [duckbridge](https://github.com/brikk/duckbridge) — the standalone Trino → DuckDB connector that now owns the DuckDB-engine pushdown, executors, and lance/vortex surfaces
+- [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, and the date/time pushdown program design + empirical TZ findings (incl. the tombstoned duckdb-format trackers)

@@ -15,10 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.common.collect.ImmutableList.toImmutableList
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_DUCKDB
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_LANCE
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
-import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_VORTEX
 import io.airlift.json.JsonCodec
 import io.airlift.log.Logger
 import io.airlift.slice.Slice
@@ -41,8 +38,6 @@ import org.apache.parquet.format.CompressionCodec
 import org.apache.parquet.schema.MessageType
 import java.io.IOException
 import java.io.UncheckedIOException
-import java.nio.file.Path
-import java.nio.file.Paths
 import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.UUID
@@ -54,7 +49,6 @@ class DucklakePageSink(
         private val fileSystem: TrinoFileSystem,
         private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
         parquetWriterConfig: ParquetWriterConfig,
-        duckdbTargetWriteBytes: Long,
         private val trinoVersion: String,
         pageIndexerFactory: PageIndexerFactory?,
         /**
@@ -116,15 +110,8 @@ class DucklakePageSink(
 
     init {
 
-        // Per-format rollover threshold. Parquet's block size targets compressed
-        // on-disk row-group size; DuckDB's target is logical input bytes (we can't
-        // probe on-disk size mid-write without a CHECKPOINT).
-        this.targetMaxFileSize = if (FORMAT_DUCKDB.equals(fileFormat, ignoreCase = true)) {
-            duckdbTargetWriteBytes
-        }
-        else {
-            parquetWriterConfig.rowGroupSize.toBytes()
-        }
+        // Parquet rollover threshold targets compressed on-disk row-group size.
+        this.targetMaxFileSize = parquetWriterConfig.rowGroupSize.toBytes()
 
         this.columnTypes = handle.columns.map(DucklakeColumnHandle::columnType)
         this.columnNames = handle.columns.map(DucklakeColumnHandle::columnName)
@@ -419,66 +406,9 @@ class DucklakePageSink(
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
             return openParquetWriter(partitionValues)
         }
-        if (FORMAT_DUCKDB.equals(fileFormat, ignoreCase = true)) {
-            return openDuckDbWriter(partitionValues)
-        }
-        if (FORMAT_VORTEX.equals(fileFormat, ignoreCase = true)) {
-            return openVortexWriter(partitionValues)
-        }
-        if (FORMAT_LANCE.equals(fileFormat, ignoreCase = true)) {
-            return openLanceWriter(partitionValues)
-        }
+        // Parquet is the only supported data-file format; the duckdb/vortex/lance writers were
+        // removed (see PLAN-duckdb-parity-moveout.md §4.2). Fail loud on any stray format.
         throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
-    }
-
-    /**
-     * Lance writer: same Arrow-stream path as vortex, but `COPY … (FORMAT lance)` produces a
-     * dataset *directory* (manifest + data + index files), which [DuckDbArrowStreamFileWriter]
-     * writes to local temp then walks+uploads file-by-file to the remote dataset location. Stats
-     * are gathered inline from the same pages. (Embedding/ARRAY columns are not yet writable — the
-     * Arrow-stream writer's type mapping is scalar-only; register externally-written embedding
-     * datasets via `add_files(file_format => 'lance')` instead.)
-     */
-    @Throws(IOException::class)
-    private fun openLanceWriter(partitionValues: Map<Int, String?>): DucklakeFileWriter {
-        val fileName = "ducklake-${UUID.randomUUID()}.lance"
-        val relativePath = buildRelativePath(partitionValues, fileName)
-        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
-        writtenFilePaths.add(filePath)
-        val partitionId = partitioner?.getPartitionId()
-        return DuckDbArrowStreamFileWriter(
-                fileSystem,
-                filePath,
-                relativePath,
-                partitionValues,
-                partitionId,
-                handle.columns,
-                duckDbLocalTempDir(),
-                FORMAT_LANCE)
-    }
-
-    /**
-     * Vortex writer: streams Trino pages through the Arrow-stream writer, which COPYs them
-     * straight to a local `.vortex` file (then uploads it) and gathers column stats inline from
-     * the same pages — see [DuckDbArrowStreamFileWriter] with FORMAT_VORTEX. No scratch `.db`,
-     * no read-back. Always uses the arrow-stream path regardless of duckdb_writer_mode.
-     */
-    @Throws(IOException::class)
-    private fun openVortexWriter(partitionValues: Map<Int, String?>): DucklakeFileWriter {
-        val fileName = "ducklake-${UUID.randomUUID()}.vortex"
-        val relativePath = buildRelativePath(partitionValues, fileName)
-        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
-        writtenFilePaths.add(filePath)
-        val partitionId = partitioner?.getPartitionId()
-        return DuckDbArrowStreamFileWriter(
-                fileSystem,
-                filePath,
-                relativePath,
-                partitionValues,
-                partitionId,
-                handle.columns,
-                duckDbLocalTempDir(),
-                FORMAT_VORTEX)
     }
 
     @Throws(IOException::class)
@@ -504,37 +434,6 @@ class DucklakePageSink(
 
         val partitionId = partitioner?.getPartitionId()
         return ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns, handle.allCatalogColumns)
-    }
-
-    @Throws(IOException::class)
-    private fun openDuckDbWriter(partitionValues: Map<Int, String?>):DucklakeFileWriter {
-        val fileName = "ducklake-${UUID.randomUUID()}.db"
-        val relativePath = buildRelativePath(partitionValues, fileName)
-
-        val filePath = Location.of(handle.tableDataPath).appendPath(relativePath)
-        writtenFilePaths.add(filePath)
-
-        val partitionId = partitioner?.getPartitionId()
-
-        // Pick the writer impl based on the session-driven duckdb_writer_mode on the handle.
-        if (DucklakeSessionProperties.WRITER_MODE_ARROW_STREAM.equals(handle.duckDbWriterMode, ignoreCase = true)) {
-            return DuckDbArrowStreamFileWriter(
-                    fileSystem,
-                    filePath,
-                    relativePath,
-                    partitionValues,
-                    partitionId,
-                    handle.columns,
-                    duckDbLocalTempDir())
-        }
-        return DuckDbFileWriter(
-                fileSystem,
-                filePath,
-                relativePath,
-                partitionValues,
-                partitionId,
-                handle.columns,
-                duckDbLocalTempDir())
     }
 
     private fun buildRelativePath(partitionValues: Map<Int, String?>, fileName: String): String {
@@ -576,9 +475,5 @@ class DucklakePageSink(
 
         /** Embedded row-lineage column name (readers match by field-id; the name is convention). */
         const val LINEAGE_COLUMN_NAME: String = "_ducklake_internal_row_id"
-
-        private fun duckDbLocalTempDir(): Path {
-            return Paths.get(System.getProperty("java.io.tmpdir"), "ducklake-write")
-        }
     }
 }
