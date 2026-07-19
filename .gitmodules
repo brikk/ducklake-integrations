@@ -1,6 +1,6 @@
 [submodule "jvm/trino-ducklake/ducklake-web"]
 	path = jvm/trino-ducklake/ducklake-web
 	url = https://github.com/duckdb/ducklake-web.git
-[submodule "jvm/ducklake-corpus-replay/ducklake"]
-	path = jvm/ducklake-corpus-replay/ducklake
+[submodule "jvm/trino-ducklake/ducklake"]
+	path = jvm/trino-ducklake/ducklake
 	url = https://github.com/duckdb/ducklake.git

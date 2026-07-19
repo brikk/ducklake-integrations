@@ -16,12 +16,7 @@ dependencyResolutionManagement {
     }
 }
 
-include(":ducklake-catalog")
-include(":ducklake-corpus-replay")
+// The Trino DuckLake connector. The shared catalog + corpus-replay now come in as published
+// dev.brikk.ducklake artifacts (from the ducklake-catalog repo), not as included subprojects.
+// The Doris connector moved to its own repo (github.com/brikk/doris-ducklake).
 include(":trino-ducklake")
-
-// :doris-ducklake depends on Apache Doris fe-connector-api/spi/thrift
-// 1.2-SNAPSHOT, published to ~/.m2 from the branch-catalog-spi P-series FE
-// build (see jvm/doris-ducklake/dev-docs/PLAN.md).
-include(":doris-ducklake")
-include(":jooq-custom-naming")

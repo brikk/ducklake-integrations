@@ -11,6 +11,9 @@ java-uuid-generator = "5.0.0"
 junit = "5.12.2"
 assertj = "3.27.3"
 trino = "483"
+# Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
+# when consuming a new catalog release; -SNAPSHOT resolves from the Central Portal snapshots repo.
+ducklake-catalog = "0.0.1"
 postgres = "42.7.8"
 mysql = "9.7.0"
 minio = "8.6.0"
@@ -53,6 +56,10 @@ lance-core = { module = "org.lance:lance-core", version.ref = "lance-core" }
 trino-jdbc = { module = "io.trino:trino-jdbc", version.ref = "trino" }
 trino-bom = { module = "io.trino:trino-root", version.ref = "trino" }
 postgres-jdbc = { module = "org.postgresql:postgresql", version.ref = "postgres" }
+
+# Published DuckLake catalog artifacts (from dev.brikk.ducklake:ducklake-catalog repo).
+ducklake-catalog = { module = "dev.brikk.ducklake:ducklake-catalog", version.ref = "ducklake-catalog" }
+ducklake-test-corpus-replay = { module = "dev.brikk.ducklake:ducklake-test-corpus-replay", version.ref = "ducklake-catalog" }
 mysql-jdbc = { module = "com.mysql:mysql-connector-j", version.ref = "mysql" }
 
 testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "containers" }

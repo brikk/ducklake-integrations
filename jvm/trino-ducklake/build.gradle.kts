@@ -16,10 +16,17 @@ detekt {
     source.setFrom("src", "test")
 }
 
-// The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from brikk's public GitHub Packages
-// Maven registry, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above) —
-// see that plugin for the token/credentials note. Only mavenCentral is module-local here.
+// The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from the Central Portal snapshots
+// repo, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above).
 repositories {
+    // dev.brikk.ducklake catalog + corpus-replay: resolve from mavenLocal during the local
+    // publish->consume smoke loop (before the snapshot/release is on Central). Released versions
+    // resolve from mavenCentral; -SNAPSHOTs from the Central Portal snapshots repo
+    // (buildlogic.kotlin.brikk). Scoped so it can't shadow anything else.
+    exclusiveContent {
+        forRepository { mavenLocal() }
+        filter { includeGroup("dev.brikk.ducklake") }
+    }
     mavenCentral()
 }
 
@@ -40,7 +47,7 @@ dependencies {
             classifier = "classes"
         }
     }
-    implementation(project(":ducklake-catalog"))
+    implementation(libs.ducklake.catalog)
     implementation(libs.hikari)
     implementation("io.airlift:bootstrap")
     implementation("io.airlift:configuration")
@@ -106,12 +113,13 @@ dependencies {
     testImplementation(libs.brikk.sql.verify)
 
     // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
-    // ducklake-catalog's java-test-fixtures source set.
-    testImplementation(testFixtures(project(":ducklake-catalog")))
+    // ducklake-catalog's java-test-fixtures source set, published as the -test-fixtures
+    // variant of dev.brikk.ducklake:ducklake-catalog.
+    testImplementation(testFixtures(libs.ducklake.catalog))
 
     // Upstream DuckLake sqllogictest corpus replay (oracle + driver + engine seam);
     // TrinoReplayEngine implements its ReplayReadEngine, TestTrinoCorpusReplay runs it.
-    testImplementation(project(":ducklake-corpus-replay"))
+    testImplementation(libs.ducklake.test.corpus.replay)
 
     // compileOnly deps also needed at test time
     testCompileOnly("com.fasterxml.jackson.core:jackson-annotations")
@@ -164,7 +172,7 @@ tasks.test {
     // (-Dducklake.corpus.dirs=all for the full corpus).
     systemProperty(
         "ducklake.corpus.root",
-        rootProject.projectDir.resolve("ducklake-corpus-replay/ducklake/test/sql").absolutePath,
+        rootProject.projectDir.resolve("trino-ducklake/ducklake/test/sql").absolutePath,
     )
     System.getProperty("ducklake.corpus.dirs")?.let {
         systemProperty("ducklake.corpus.dirs", it)
