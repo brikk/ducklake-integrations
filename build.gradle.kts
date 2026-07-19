@@ -8,7 +8,9 @@ plugins {
 }
 
 group = "dev.brikk.ducklake"
-version = "0.1.0"
+// <trino-version>-<our-release>: the leading 483 is the compatible Trino version (see
+// libs.versions.toml `trino`), so the plugin archive name tells you which Trino it targets.
+version = "483-0.1.0"
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
