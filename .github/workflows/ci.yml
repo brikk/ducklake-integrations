@@ -11,6 +11,10 @@
 #   that only exists in a developer's ~/.m2 from a custom Doris FE build. This is
 #   pre-existing drift unrelated to CI work; re-enable once the Doris FE is rebuilt and
 #   its artifacts are available to CI. We never invoke any :doris-ducklake task below.
+#
+# NOTE: the DuckDB `trino_parity` extension and the duckdb/vortex/lance data-file formats
+# were moved OUT of this repo (to github.com/brikk/duckbridge). trino-ducklake no longer
+# builds or bundles that extension, so this workflow no longer builds it either.
 
 name: CI
 
@@ -19,11 +23,8 @@ on:
   pull_request:
   # Pushes to main run post-merge validation AND populate the Actions cache. GitHub scopes
   # caches per-branch: entries created on the DEFAULT branch (main) are readable by ALL
-  # branches, but a feature branch's cache is NOT visible to main or to siblings. So building
-  # the parity extension on main seeds the cache that every PR/feature branch then restores.
-  # (If you also direct-push feature branches WITHOUT opening a PR, add them here or open a PR
-  # so they get CI — bare feature-branch pushes are intentionally not built to avoid
-  # double-runs with pull_request.)
+  # branches, but a feature branch's cache is NOT visible to main or to siblings — so building
+  # on main seeds the Gradle cache that every PR/feature branch then restores.
   push:
     branches: [main]
 
@@ -33,121 +34,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build the trino_parity DuckDB extension binary.
-  #
-  # WHY THIS JOB EXISTS:
-  #   jvm/trino-ducklake's DuckDB executor is a HARD requirement, not optional.
-  #   DucklakeDuckDbExecutorFactory.kt:82 throws CONFIGURATION_INVALID when
-  #   ducklake.duckdb.parity-extension-path is unset — there is NO SQL fallback.
-  #   Without this binary ~170 executor-dependent tests fail. The extension lives
-  #   in the `duckdb-trino-parity-extension` git submodule (public repo
-  #   brikk/duckdb-trino-parity-extension) and compiles DuckDB from source, so it
-  #   is built once here and handed to build-and-test as an artifact.
-  #
-  # WHY A SEPARATE JOB + ARTIFACT (not built inline in build-and-test):
-  #   The cold build compiles DuckDB + vendored ICU (~30 min). Isolating it lets
-  #   us SHA-key a cache and skip the whole thing on the common (unchanged) path,
-  #   and keeps the toolchain (cmake/ninja/C++) out of the Gradle test job.
-  build-parity-extension:
-    runs-on: ubuntu-latest
-    # Generous ceiling: a cold build compiles DuckDB from source. Warm/cache-hit
-    # runs finish in seconds, but the first build on a new submodule SHA is long.
-    timeout-minutes: 40
-    env:
-      # ccache speeds up cold rebuilds when only the extension's own sources
-      # change (DuckDB object files stay cached). Pinned to a workspace path so
-      # actions/cache can persist it. (Host `make` does NOT use vcpkg — the
-      # extension vendors ICU under third_party/icu and ships an intentionally
-      # empty vcpkg.json — so there is no vcpkg binary cache to persist here.)
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-    steps:
-      - name: Checkout (parent repo only — submodules deferred)
-        uses: actions/checkout@v7
-        # Intentionally NO `submodules:` here. The extension's PINNED commit (the
-        # gitlink SHA) is readable from the parent tree WITHOUT checking the
-        # submodule out, so we compute the cache key first and skip the large
-        # recursive submodule init (DuckDB source tree) entirely on a cache HIT.
-
-      - name: Resolve pinned extension SHA (cache key input)
-        id: ext-sha
-        # The gitlink SHA fully determines the build inputs: it transitively pins
-        # the extension sources AND its nested submodules (duckdb, extension-ci-tools)
-        # recorded at that commit. The built binary only changes when this changes.
-        run: echo "sha=$(git rev-parse HEAD:duckdb-trino-parity-extension)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cached extension binary
-        id: cache-ext
-        uses: actions/cache@v6
-        with:
-          # The known-good HOST build output path (see extension README "Building").
-          path: duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension
-          # Key = platform + DuckDB-line label + the pinned extension SHA. The SHA is the TRUE
-          # determinant: it transitively pins the extension sources AND its nested `duckdb`
-          # submodule (currently DuckDB v1.5.4 — what the host build actually bakes in), so the
-          # label value doesn't affect correctness. It's kept accurate (v1.5.4) as a human-readable
-          # hint + manual cache-buster if we ever retarget the DuckDB line independent of the SHA.
-          key: trino-parity-ext-linux-amd64-duckdb-v1.5.4-${{ steps.ext-sha.outputs.sha }}
-
-      # Secondary, best-effort ccache cache. Separate from the binary cache so a
-      # new extension SHA (binary MISS) can still reuse most DuckDB object files.
-      - name: Restore ccache
-        if: steps.cache-ext.outputs.cache-hit != 'true'
-        uses: actions/cache@v6
-        with:
-          path: ${{ github.workspace }}/.ccache
-          key: trino-parity-ccache-linux-amd64-${{ steps.ext-sha.outputs.sha }}
-          # Roll forward from any previous ccache regardless of SHA for partial reuse.
-          restore-keys: |
-            trino-parity-ccache-linux-amd64-
-
-      - name: Check out extension submodule + nested submodules (recursive)
-        if: steps.cache-ext.outputs.cache-hit != 'true'
-        # Only the parity extension and ITS nested submodules are needed — not the
-        # sibling ducklake-web / ducklake corpus submodules. A full (non-shallow)
-        # submodule clone is deliberate: DuckDB's CMake derives the version metadata
-        # baked into the binary from `git describe --tags` on the duckdb submodule,
-        # so the tags must be present (see Makefile OVERRIDE_GIT_DESCRIBE note). The
-        # extension + duckdb + extension-ci-tools repos are all PUBLIC — no token.
-        run: git submodule update --init --recursive -- duckdb-trino-parity-extension
-
-      - name: Install build prerequisites
-        if: steps.cache-ext.outputs.cache-hit != 'true'
-        # ubuntu-latest preinstalls cmake + build-essential (gcc/g++). The extension
-        # README calls out ninja + ccache as the only extra host-build prerequisites.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build ccache
-
-      - name: Build trino_parity (HOST make — not the Docker cross targets)
-        if: steps.cache-ext.outputs.cache-hit != 'true'
-        working-directory: duckdb-trino-parity-extension
-        # `GEN=ninja make` is the exact host build the extension README documents
-        # ("Building" section). The default `make`/`release` target builds for the
-        # HOST platform — on an ubuntu-latest amd64 runner that IS linux-amd64.
-        # We deliberately do NOT use the Makefile's `linux-amd64`/`linux-arm64`
-        # targets: those are Docker cross-builds for macOS devs (they spin up a
-        # container + qemu). We are already ON linux-amd64, so the plain host build
-        # is correct and far faster. OVERRIDE_GIT_DESCRIBE is left unset on purpose:
-        # the in-place host build has git context in duckdb/ (tags fetched above),
-        # so DuckDB's CMake resolves the real version instead of the v0.0.1 fallback.
-        run: GEN=ninja make
-
-      - name: Upload trino_parity extension artifact
-        # Runs on BOTH cache hit (restored file) and miss (freshly built file).
-        uses: actions/upload-artifact@v7
-        with:
-          name: trino-parity-extension
-          path: duckdb-trino-parity-extension/build/release/extension/trino_parity/trino_parity.duckdb_extension
-          # Fail loudly rather than silently hand the test job nothing.
-          if-no-files-found: error
-
   build-and-test:
     runs-on: ubuntu-latest
-    # The DuckDB executor tests require the parity extension binary produced above.
-    needs: build-parity-extension
     # detekt + the full test suite (incl. Testcontainers PostgreSQL and the corpus
-    # replay starter set) fit comfortably, but give headroom for extension downloads.
+    # replay starter set) fit comfortably on the default runner.
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
@@ -157,10 +47,6 @@ jobs:
           #   - jvm/ducklake-corpus-replay/ducklake (duckdb/ducklake): the sqllogictest
           #     corpus fixture that the replay tests read from.
           #   - jvm/trino-ducklake/ducklake-web (duckdb/ducklake-web).
-          # `recursive` also fetches the duckdb-trino-parity-extension submodule, but we
-          # do NOT build it here — the compiled trino_parity.duckdb_extension binary is
-          # produced by the build-parity-extension job and pulled in via download-artifact
-          # below, then passed to the tests with -Dducklake.test.parityExtensionPath.
           submodules: recursive
 
       - name: Set up JDK 25 (Temurin)
@@ -176,30 +62,6 @@ jobs:
         # gradle/actions/setup-gradle handles Gradle user-home caching (dependencies,
         # wrapper dist) and reads the wrapper version from jvm/gradle/wrapper.
         uses: gradle/actions/setup-gradle@v6
-
-      # Pull the trino_parity binary built by build-parity-extension. download-artifact
-      # extracts the artifact's single file into this directory.
-      - name: Download trino_parity extension
-        uses: actions/download-artifact@v8
-        with:
-          name: trino-parity-extension
-          path: ${{ github.workspace }}/parity-extension
-
-      # Stage the binary where the `bundleParityExtension` Gradle task expects the HOST build
-      # (parityExtensionSources maps hostPlatform -> duckdb-trino-parity-extension/build/release/
-      # extension/trino_parity/trino_parity.duckdb_extension). This is what makes the extension
-      # BUNDLED into the plugin's classpath resources, which is REQUIRED by tests that resolve it
-      # via TrinoParityExtensionResolver.resolveBundledExtensionPath() — the no-arg
-      # InProcessDuckDbExecutor() (Lance/Vortex/complex-type executor tests, IllegalStateException
-      # without it) and TestTrinoFunctionAliases (AssertionError without it). The
-      # -Dducklake.test.parityExtensionPath below only covers CONNECTOR tests (DucklakeQueryRunner
-      # threads it into config); the direct-executor + bundled-resolver tests need the RESOURCE.
-      # Must be staged before Gradle runs so bundleParityExtension picks it up.
-      - name: Stage parity extension for bundling
-        run: |
-          dest=duckdb-trino-parity-extension/build/release/extension/trino_parity
-          mkdir -p "$dest"
-          cp "${{ github.workspace }}/parity-extension/trino_parity.duckdb_extension" "$dest/trino_parity.duckdb_extension"
 
       # detekt and tests are split into two invocations ON PURPOSE. detekt runs in the
       # Gradle daemon (heap bumped in jvm/gradle.properties for cold-cache dependency
@@ -232,33 +94,20 @@ jobs:
         #
         # Docker + network dependency: tests use Testcontainers for PostgreSQL (Docker is
         # preinstalled on ubuntu-latest) and download DuckDB extensions at test time
-        # (INSTALL ducklake/postgres, plus lance/vortex). On a fully air-gapped runner
-        # these self-skip via JUnit assumeTrue; ubuntu-latest has outbound network, so
-        # they execute. No secrets or external services are required.
+        # (INSTALL ducklake/postgres). On a fully air-gapped runner these self-skip via
+        # JUnit assumeTrue; ubuntu-latest has outbound network, so they execute. No secrets
+        # or external services are required.
         #
-        # -Dducklake.test.parityExtensionPath=<absolute path> hands the freshly built
-        # trino_parity binary to the DuckDB executor. build.gradle.kts forwards this exact
-        # system property into the test JVM and DucklakeQueryRunner threads it into the
-        # catalog property ducklake.duckdb.parity-extension-path; without it the executor
-        # throws CONFIGURATION_INVALID (DucklakeDuckDbExecutorFactory.kt:82). The leading
-        # `-D` is REQUIRED and the property name must NOT be renamed — a typo (e.g.
-        # `-Ducklake...`) is silently parsed as `-D ucklake...` and the flag is lost.
-        # -PexcludeTags skips heavy/environment-specific integration tests on the PR gate:
-        #   * quack-container — Quack sidecar tests that mount the parity binary into an OLDER
-        #     Quack container; the runner-built binary links against the runner's newer glibc and
-        #     can't load there. Needs a glibc-portable (Docker-cross-built) binary — a dedicated
-        #     Quack CI job is a follow-up (dev-docs/TODO-WRITE-MODE.md).
-        #   * ci-unstable — a single orphan-dataset-dir cleanup test that passes locally but not on
-        #     the CI filesystem (cause not yet reproduced; tracked in TODO-WRITE-MODE.md).
-        # Everything else — including the rest of these classes — still runs.
+        # -PexcludeTags=ci-unstable skips one orphan-dataset-dir cleanup test that passes
+        # locally but not on the CI filesystem (cause not yet reproduced; tracked in
+        # dev-docs/TODO-WRITE-MODE.md). Everything else runs.
         run: >-
           ./gradlew
           :ducklake-catalog:test
           :ducklake-corpus-replay:test
           :trino-ducklake:test
           :jooq-custom-naming:check
-          -PexcludeTags=quack-container,ci-unstable
-          -Dducklake.test.parityExtensionPath=${{ github.workspace }}/parity-extension/trino_parity.duckdb_extension
+          -PexcludeTags=ci-unstable
           --stacktrace
 
       - name: Upload test & detekt reports

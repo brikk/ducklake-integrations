@@ -31,8 +31,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           # The corpus fixture is the submodule jvm/ducklake-corpus-replay/ducklake
-          # (duckdb/ducklake) — mandatory for this test. `recursive` also pulls the
-          # OPTIONAL duckdb-trino-parity-extension (checked out only, never built).
+          # (duckdb/ducklake) — mandatory for this test.
           submodules: recursive
 
       - name: Set up JDK 25 (Temurin)
