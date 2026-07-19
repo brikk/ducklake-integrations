@@ -1,4 +1,4 @@
-# CI for brikk/ducklake-integrations (the Trino DuckLake connector).
+# CI for brikk/trino-ducklake (the Trino DuckLake connector).
 #
 # Scope: this is now a single-project Gradle build at the repo ROOT (wrapper at ./gradlew,
 # settings at ./settings.gradle.kts). The shared catalog + corpus-replay moved to

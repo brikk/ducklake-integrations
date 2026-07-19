@@ -1,4 +1,4 @@
-# Nightly FULL corpus replay for brikk/ducklake-integrations (the Trino DuckLake connector).
+# Nightly FULL corpus replay for brikk/trino-ducklake (the Trino DuckLake connector).
 #
 # The PR job (ci.yml) runs TestTrinoCorpusReplay against only its default starter
 # directories to stay fast. This scheduled job runs the SAME test against the ENTIRE
