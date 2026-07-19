@@ -60,6 +60,12 @@ dependencies {
     // Test dependencies
     testImplementation("io.airlift:testing")
     testImplementation("io.trino:trino-main")
+    // The pushdown plan assertions (QueryAssertions.QueryAssert.isFullyPushedDown / the
+    // io.trino.sql.planner.assertions.* plan matchers) and AbstractTestQueryFramework live in the
+    // trino-main and trino-testing test-jars.
+    testImplementation("io.trino:trino-main") {
+        artifact { classifier = "tests" }
+    }
     testImplementation("io.trino:trino-testing")
     testImplementation("io.trino:trino-tpch")
     testImplementation("org.assertj:assertj-core")

@@ -15,16 +15,22 @@ package dev.brikk.duckbridge.trino.plugin
 
 import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
+import io.airlift.log.Logger
+import io.trino.plugin.base.expression.ConnectorExpressionRewriter
 import io.trino.plugin.base.mapping.IdentifierMapping
 import io.trino.plugin.jdbc.BaseJdbcClient
+import io.trino.plugin.jdbc.BaseJdbcClient.TopNFunction
 import io.trino.plugin.jdbc.BaseJdbcConfig
 import io.trino.plugin.jdbc.ColumnMapping
 import io.trino.plugin.jdbc.ConnectionFactory
+import io.trino.plugin.jdbc.JdbcColumnHandle
 import io.trino.plugin.jdbc.JdbcOutputTableHandle
+import io.trino.plugin.jdbc.JdbcSortItem
 import io.trino.plugin.jdbc.JdbcTableHandle
 import io.trino.plugin.jdbc.JdbcTypeHandle
 import io.trino.plugin.jdbc.LongWriteFunction
 import io.trino.plugin.jdbc.QueryBuilder
+import io.trino.plugin.jdbc.expression.ParameterizedExpression
 import io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping
 import io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction
 import io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping
@@ -57,6 +63,7 @@ import io.trino.spi.connector.ColumnMetadata
 import io.trino.spi.connector.ColumnPosition
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.SchemaTableName
+import io.trino.spi.expression.ConnectorExpression
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.CharType
@@ -80,15 +87,22 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoField.EPOCH_DAY
 import java.util.Optional
+import java.util.function.BiFunction
 import java.util.regex.Pattern
 
 /**
  * DuckBridge base-jdbc client for DuckDB, ported from upstream Trino 476's `DuckDbClient` and
- * adapted to the 483 SPI.
+ * adapted to the 483 SPI, then extended (P2) with parity-backed expression pushdown, session
+ * timezone plumbing, and LIMIT/TopN pushdown.
  *
  * The data plane still flows through the default [io.trino.plugin.jdbc.JdbcRecordSetProvider]
  * wired by [io.trino.plugin.jdbc.JdbcModule]; the type mappings here are structured so a later
  * phase can swap in a custom Arrow-based page source without touching this class's shape.
+ *
+ * Pushdown seam: [convertPredicate] delegates to [connectorExpressionRewriter], built in
+ * [DuckBridgeClientModule] over the ported [DuckBridgeExpressionTranslator]. base-jdbc's
+ * `DefaultJdbcMetadata.applyFilter` splits the constraint into conjuncts and calls
+ * [convertPredicate] per conjunct, so per-conjunct partial pushdown falls out for free.
  */
 class DuckBridgeClient
     @Inject
@@ -98,6 +112,8 @@ class DuckBridgeClient
         queryBuilder: QueryBuilder,
         identifierMapping: IdentifierMapping,
         queryModifier: RemoteQueryModifier,
+        private val connectorExpressionRewriter: ConnectorExpressionRewriter<ParameterizedExpression>,
+        private val parity: DuckBridgeParity,
     ) : BaseJdbcClient(
             "\"",
             connectionFactory,
@@ -109,8 +125,43 @@ class DuckBridgeClient
         ) {
         override fun getConnection(session: ConnectorSession): Connection {
             // BaseJdbcClient.getConnection calls Connection.setReadOnly, but DuckDB does not
-            // support changing read-only status at the connection level.
-            return connectionFactory.openConnection(session)
+            // support changing read-only status at the connection level, so open directly.
+            val connection = connectionFactory.openConnection(session)
+            try {
+                // Set the DuckDB session TimeZone to match Trino's session zone so date/time
+                // pushdown over TIMESTAMP WITH TIME ZONE interprets instants identically on both
+                // sides. Failure (e.g. a fractional bare offset DuckDB can't parse) is logged once
+                // and tolerated — Tier C pushdown degrades to Trino-side eval for this connection.
+                applySessionTimeZone(connection, session)
+                // First-touch parity init: LOAD + probe the extension. Fails loud if parity is
+                // enabled but the extension can't be loaded/probed.
+                parity.ensureInitialised(connection)
+            } catch (@Suppress("TooGenericExceptionCaught") e: Throwable) {
+                // Any failure while preparing the connection must not leak it back to the pool.
+                runCatching { connection.close() }
+                throw e
+            }
+            return connection
+        }
+
+        private fun applySessionTimeZone(connection: Connection, session: ConnectorSession) {
+            val trinoZone = session.timeZoneKey.id
+            val duckZone = TrinoTimeZoneNormaliser.normalise(trinoZone) ?: return
+            try {
+                connection.createStatement().use { stmt ->
+                    stmt.execute("SET TimeZone = '" + duckZone.replace("'", "''") + "'")
+                }
+            } catch (@Suppress("SwallowedException") e: SQLException) {
+                if (loggedTimeZoneFailures.add(duckZone)) {
+                    log.warn(
+                        "duckbridge: could not SET TimeZone = '%s' (from Trino zone '%s'); " +
+                            "TIMESTAMP WITH TIME ZONE pushdown will fall back to Trino-side evaluation. Cause: %s",
+                        duckZone,
+                        trinoZone,
+                        e.message,
+                    )
+                }
+            }
         }
 
         override fun renameSchema(session: ConnectorSession, schemaName: String, newSchemaName: String) {
@@ -293,7 +344,63 @@ class DuckBridgeClient
                 else -> null
             }
 
+        // ---- Expression pushdown ------------------------------------------------------------
+
+        /**
+         * base-jdbc calls this per top-level conjunct (see `DefaultJdbcMetadata.applyFilter`).
+         * Delegates to the parity rewriter. When parity is disabled, function-shape pushdown is off
+         * entirely (the rewriter has no rules) — domain and LIMIT/TopN pushdown are unaffected.
+         */
+        override fun convertPredicate(
+            session: ConnectorSession,
+            expression: ConnectorExpression,
+            assignments: Map<String, io.trino.spi.connector.ColumnHandle>,
+        ): Optional<ParameterizedExpression> =
+            connectorExpressionRewriter.rewrite(session, expression, assignments)
+
+        // ---- LIMIT / TopN pushdown ----------------------------------------------------------
+
+        override fun supportsLimit(): Boolean = true
+
+        // "Guaranteed" here means "the remote returns at most n rows, so Trino need not re-enforce
+        // the limit" — NOT that the row set is deterministic (Trino's LIMIT is inherently
+        // non-deterministic). A pushed DuckDB `LIMIT n` always returns at most n rows, so this is
+        // safely true (same stance as upstream trino-duckdb 476 and PostgreSqlClient).
+        override fun isLimitGuaranteed(session: ConnectorSession): Boolean = true
+
+        override fun limitFunction(): Optional<BiFunction<String, Long, String>> =
+            Optional.of(BiFunction { sql, limit -> "$sql LIMIT $limit" })
+
+        override fun supportsTopN(session: ConnectorSession, handle: JdbcTableHandle, sortOrder: List<JdbcSortItem>): Boolean = true
+
+        // ORDER BY ... LIMIT n IS a total order on the sort keys, but ties on the sort keys make the
+        // tail non-deterministic, so TopN is not guaranteed and Trino re-applies its TopNOperator.
+        override fun isTopNGuaranteed(session: ConnectorSession): Boolean = false
+
+        override fun topNFunction(): Optional<TopNFunction> =
+            Optional.of(
+                TopNFunction { query, sortItems, limit ->
+                    val orderBy =
+                        sortItems.joinToString(", ") { item ->
+                            val column = quoted(item.column.columnName)
+                            // DuckDB and Trino agree on ASC=NULLS LAST / DESC=NULLS FIRST as the default,
+                            // but base-jdbc's JdbcSortItem carries the explicit null ordering, so emit it
+                            // explicitly to stay correct regardless of engine default drift.
+                            val order = if (item.sortOrder.isAscending) "ASC" else "DESC"
+                            val nulls = if (item.sortOrder.isNullsFirst) "NULLS FIRST" else "NULLS LAST"
+                            "$column $order $nulls"
+                        }
+                    "$query ORDER BY $orderBy LIMIT $limit"
+                },
+            )
+
         private companion object {
+            private val log: Logger = Logger.get(DuckBridgeClient::class.java)
+
+            /** Zones we've already warned about failing to SET, so the WARN is one-shot per zone. */
+            private val loggedTimeZoneFailures: MutableSet<String> =
+                java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
             private val DECIMAL_PATTERN: Pattern = Pattern.compile("DECIMAL\\((?<precision>[0-9]+),(?<scale>[0-9]+)\\)")
             private val DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd")
 

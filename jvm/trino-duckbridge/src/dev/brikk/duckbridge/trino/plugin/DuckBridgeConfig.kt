@@ -40,4 +40,36 @@ class DuckBridgeConfig {
         this.isAllowUnsignedExtensions = allowUnsignedExtensions
         return this
     }
+
+    /**
+     * Master switch for parity-backed function-shape expression pushdown. When true (default), the
+     * connector LOADs and probes the trino_parity extension on first connection and pushes
+     * `trino_*(...)` predicates to DuckDB. When false, function-shape pushdown is OFF entirely
+     * (the expression rewriter has no parity rules); domain and LIMIT/TopN pushdown still apply.
+     */
+    var isParityEnabled: Boolean = true
+        private set
+
+    @Config("duckbridge.parity.enabled")
+    @ConfigDescription("Enable parity-backed function-shape expression pushdown via the trino_parity extension")
+    fun setParityEnabled(parityEnabled: Boolean): DuckBridgeConfig {
+        this.isParityEnabled = parityEnabled
+        return this
+    }
+
+    /**
+     * Optional explicit filesystem path to the `trino_parity.duckdb_extension` binary. When set,
+     * it overrides the bundled-per-platform extraction path resolved by
+     * [TrinoParityExtensionResolver]. Needed when the bundled binary doesn't match the runtime
+     * platform, or (P3) when a server-side DuckDB must LOAD a path only it can resolve.
+     */
+    var parityExtensionPath: String? = null
+        private set
+
+    @Config("duckbridge.parity-extension-path")
+    @ConfigDescription("Explicit path to trino_parity.duckdb_extension, overriding the bundled binary")
+    fun setParityExtensionPath(parityExtensionPath: String?): DuckBridgeConfig {
+        this.parityExtensionPath = parityExtensionPath?.takeIf { it.isNotBlank() }
+        return this
+    }
 }
