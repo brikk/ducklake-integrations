@@ -20,14 +20,8 @@ detekt {
 // The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from the Central Portal snapshots
 // repo, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above).
 repositories {
-    // dev.brikk.ducklake catalog + corpus-replay: resolve from mavenLocal during the local
-    // publish->consume smoke loop (before the snapshot/release is on Central). Released versions
-    // resolve from mavenCentral; -SNAPSHOTs from the Central Portal snapshots repo
-    // (buildlogic.kotlin.brikk). Scoped so it can't shadow anything else.
-    exclusiveContent {
-        forRepository { mavenLocal() }
-        filter { includeGroup("dev.brikk.ducklake") }
-    }
+    // dev.brikk.ducklake catalog + corpus-replay: released versions resolve from mavenCentral;
+    // -SNAPSHOTs from the Central Portal snapshots repo (wired in buildlogic.kotlin.brikk).
     mavenCentral()
 }
 

@@ -13,7 +13,7 @@ assertj = "3.27.3"
 trino = "483"
 # Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
 # when consuming a new catalog release; -SNAPSHOT resolves from the Central Portal snapshots repo.
-ducklake-catalog = "0.0.1"
+ducklake-catalog = "0.0.1-SNAPSHOT"
 postgres = "42.7.8"
 mysql = "9.7.0"
 minio = "8.6.0"
