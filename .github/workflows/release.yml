@@ -1,0 +1,55 @@
+# Build the Trino DuckLake plugin release archives and attach them to a GitHub Release.
+#
+# Triggered by pushing a version tag (e.g. v483-1-ALPHA) or manual dispatch. Produces
+# trino-ducklake-<version>.zip and .tar.gz (each expands to a single trino-ducklake-<version>/
+# directory of jars — drop it into a Trino coordinator/worker `plugin/` dir), plus .sha256
+# sidecars, and publishes them as assets on the GitHub Release for the tag.
+#
+# No secrets required: this is a plain artifact release (not a Maven publish). The shared
+# dev.brikk.ducklake:ducklake-catalog dependency resolves from Maven Central.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        # No submodules: building the plugin jar + assembling runtime deps needs neither the
+        # corpus nor ducklake-web submodule (those are test-only).
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build plugin distribution archives
+        run: ./gradlew pluginDist --stacktrace
+
+      - name: Attach archives to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/distributions/*.zip
+            build/distributions/*.tar.gz
+            build/distributions/*.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true

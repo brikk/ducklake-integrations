@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("buildlogic.kotlin.library")
     id("buildlogic.kotlin.brikk")
@@ -190,11 +192,55 @@ tasks.test {
     )
 }
 
+// Assemble the Trino plugin into build/trino-plugin/trino-ducklake-<version>/ as a flat set of
+// jars (this module's jar + every runtime dep). That directory is what a Trino server loads from
+// its plugin/ dir, and it's the payload for the release archives below.
 val pluginAssemble by tasks.registering(Copy::class) {
     dependsOn(tasks.jar)
     into(layout.buildDirectory.dir("trino-plugin/trino-ducklake-$version"))
     from(tasks.jar)
     from(configurations.runtimeClasspath)
+}
+
+// Release distribution archives. Both expand to a single top-level directory
+// `trino-ducklake-<version>/` full of jars — the standard Trino plugin layout: drop that
+// directory into the coordinator/worker `plugin/` dir. .zip and .tar.gz are both produced so
+// downloaders can pick their platform's norm; the release workflow attaches both to the GitHub
+// Release. SHA-256 sidecars are generated for integrity verification.
+val pluginDistZip by tasks.registering(Zip::class) {
+    dependsOn(pluginAssemble)
+    archiveBaseName.set("trino-ducklake")
+    archiveVersion.set(project.version.toString())
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    from(layout.buildDirectory.dir("trino-plugin"))
+}
+
+val pluginDistTar by tasks.registering(Tar::class) {
+    dependsOn(pluginAssemble)
+    archiveBaseName.set("trino-ducklake")
+    archiveVersion.set(project.version.toString())
+    compression = Compression.GZIP
+    archiveExtension.set("tar.gz")
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    from(layout.buildDirectory.dir("trino-plugin"))
+}
+
+val pluginDist by tasks.registering {
+    group = "distribution"
+    description = "Builds the Trino plugin release archives (.zip + .tar.gz) with SHA-256 sidecars."
+    dependsOn(pluginDistZip, pluginDistTar)
+    val distDir = layout.buildDirectory.dir("distributions")
+    val zipFile = pluginDistZip.flatMap { it.archiveFile }
+    val tarFile = pluginDistTar.flatMap { it.archiveFile }
+    outputs.dir(distDir)
+    doLast {
+        listOf(zipFile.get().asFile, tarFile.get().asFile).forEach { f ->
+            val sha = MessageDigest.getInstance("SHA-256")
+                .digest(f.readBytes())
+                .joinToString("") { b -> "%02x".format(b) }
+            File(f.parentFile, "${f.name}.sha256").writeText("$sha  ${f.name}\n")
+        }
+    }
 }
 
 tasks.build {
