@@ -207,7 +207,7 @@ run. For the long-form historical record see
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
 | `datafusion-ducklake/` | `main` | `c07cc79` (v0.5.0 + unreleased: CDC official-semantics rewrite; compaction; write-side stats) | 2026-07-18 |
-| `ducklake/` | `v1.5-variegata` | `84ef2d14` (unchanged since 2026-07-12 — release branch frozen ahead of 1.5.5) | 2026-07-18 |
+| `ducklake/` | `v1.5-variegata` | `d8a1881e` (was `84ef2d14`; only new content is PR #1321 inline-table cleanup on commit — engine-side write/maintenance, read-neutral for us) | 2026-07-21 |
 | `ducklake/` | `main` | `2856687c` (add_files canonicalize/validate; orphan-sweep now also `.puffin`; expire empty-version) | 2026-07-18 |
 | `ducklake-web/` | `main` | `c7b5b19` (CSS/footer only; no behavioral docs change) | 2026-07-18 |
 | `ducklake-web/` | `quack` | `9a8dcf9` (unchanged content from 2026-05-22) | 2026-07-18 |
@@ -216,7 +216,13 @@ run. For the long-form historical record see
 | `duckdb-quack/` | `main` | `2cb2728` (fetch-ahead/read-ahead streaming; server-side client-id hashing) | 2026-07-18 |
 | `duckdb-quack/` | `v1.5-variegata` | `b2466e4` (RETURNING reject; count(*)→EMPTY vcol + forbid rowid; fetch-tag pushdown hardening; EXTRA_HTTP_HEADERS) | 2026-07-18 |
 | `duckdb-web/` | `main` | `a48a99fb` (unchanged for our purposes; no DuckLake/Quack behavior docs) | 2026-07-18 |
-| `duckdb/` (core) | `v1.5-variegata` | latest tag `v1.5.4`; branch active toward 1.5.5 | 2026-07-18 |
+| `duckdb/` (core) | `v1.5-variegata` | `d8cdaa33` (toward 1.5.5, not yet tagged; DuckLake pin `84ef2d14`→`d8a1881e`; **DECIMAL `RETURN_STATS` min/max swap fix #23693** → read-side prune-guard handed to catalog agent, see `TODO-READ-MODE.md` decimal-swapped-minmax-prune-guard) | 2026-07-21 |
+
+**Note (2026-07-21 survey):** the next DuckLake **catalog spec change** is staged on
+`ducklake/main` and was deliberately **not** backported to the `v1.5` branches — so 1.5.5
+keeps the catalog on spec **v1.0** (migration ladder tops out at `1.0` in
+`ducklake_initializer.cpp`; unchanged from our baseline). No catalog migration or new
+version number ships in 1.5.5. Track the spec bump on `main` for a future DuckDB line.
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The

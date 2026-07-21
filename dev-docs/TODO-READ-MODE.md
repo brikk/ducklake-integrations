@@ -500,6 +500,16 @@ marks the CURRENT-version actionable set — stable ids shared with
 `TODO-WRITE-MODE.md` for the parallel agent working this area now (NOW-1/4/5/6 are
 write-path; NOW-2/3 below are read-path).
 
+- **decimal-swapped-minmax-prune-guard** — DuckDB PR #23693 (commit `7adf7a70b`,
+  `parquet_writer.cpp`, fixed in 1.5.5) wrote **swapped `min>max`** into
+  `ducklake_file_column_stats` for `DECIMAL(p>18)` (128-bit) files spanning >1 row group
+  (`RETURN_STATS` is how DuckLake populates those bounds). Catalogs written by DuckDB
+  ≤1.5.4 can therefore prune files that actually match → silently missing rows. Fix is
+  read-side hardening in the **shared catalog repo** (`dev.brikk.ducklake.catalog`)
+  range-overlap comparator: fail-open (don't prune) when a **type-aware** parse gives
+  `min>max`; never lexical. Brief handed to the catalog agent 2026-07-21; won't self-heal
+  until affected files are rewritten under ≥1.5.5. Trino side unchanged (we only feed the
+  bounds via `ColumnRangePredicate`).
 - **uint-type-promotion-audit** — upstream PR #1128 fixed type promotion for
   UINTEGER. Verify it's purely DuckDB-execution (not in `ducklake_column.column_type`
   catalog representation). ~10-min PR-and-test read.
