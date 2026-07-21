@@ -78,6 +78,7 @@ class TestTrinoCorpusReplay {
                 "JSON degraded-type rendering differs between engines (F8 territory)",
             "types/floats.test" to
                 "float golden text relies on DuckDB inf/nan casts + implicit varchar comparisons (dialect)",
+            "virtualcolumns/ducklake_snapshot_id.test" to VIRTUAL_COLUMN_ALIAS,
         )
 
     @BeforeAll
@@ -146,5 +147,10 @@ class TestTrinoCorpusReplay {
         private const val GEO_WKB =
             "GEOMETRY renders WKB blob text vs DuckDB's WKT (degraded type; same skip as the " +
                 "identity-control list)"
+        private const val VIRTUAL_COLUMN_ALIAS =
+            "DuckLake exposes virtual columns unprefixed (snapshot_id/rowid); the connector exposes " +
+                "them \$-prefixed (\$snapshot_id), so the verbatim replay can't resolve the bare name. " +
+                "DuckDB virtual-column name-aliases are deferred to v2 (DESIGN-virtual-columns.md \u00a7 3.1, " +
+                "TODO-READ-MODE.md)."
     }
 }
