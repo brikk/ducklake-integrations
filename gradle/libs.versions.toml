@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.3.10"
 adbc = "0.21.0"
-duckdb = "1.5.4.0"
+duckdb = "1.5.5.0"
 quack-jdbc = "0.3.0"
 arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
@@ -13,7 +13,7 @@ assertj = "3.27.3"
 trino = "483"
 # Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
 # when consuming a new catalog release; -SNAPSHOT resolves from the Central Portal snapshots repo.
-ducklake-catalog = "0.2.0"
+ducklake-catalog = "0.3.0"
 postgres = "42.7.8"
 mysql = "9.7.0"
 minio = "8.6.0"
@@ -30,7 +30,7 @@ lance-core = "6.0.0"
 # On 0.3.0-SNAPSHOT pending release: adds Finding.areas + TranspileReport.okAccepting {} and tiers
 # the DATE+INTERVAL hazard (provably-DATE→REFUSAL, bare-column→WARNING). See the gate policy in
 # TrinoCorpusDialect + the 0.3.0 migration note in dev-docs/NOTE-transpile-first-corpus-gate.md.
-brikk-sql = "0.7.0"
+brikk-sql = "0.8.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
